@@ -188,6 +188,6 @@ public sealed class GitDiffParserTests
 
         var hunk = Assert.Single(Assert.Single(document.Files).Hunks);
         Assert.Equal(2, hunk.OldStart);
-        Assert.Equal(new char[] { '-', '+' }, hunk.Lines.Select(static line => line.Origin));
+        Assert.Equal(['-', '+'], hunk.Lines.Select(static line => line.Origin));
     }
 }

@@ -48,7 +48,7 @@ public sealed class AgentTranscriptStoreTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((run.Completion).WaitAsync(TestContext.Current.CancellationToken)); });
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         store.FailOnAppend = false;
 
         Assert.Empty(session.GetTranscriptSnapshot().Turns);

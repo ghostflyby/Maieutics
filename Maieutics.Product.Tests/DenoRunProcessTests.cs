@@ -71,7 +71,7 @@ public sealed class DenoRunProcessTests
 
         await process.Completion.WaitAsync(deadline.Token);
         Assert.NotNull(process.StandardError);
-        Assert.Contains("boom", (await process.StandardError!.WaitAsync(deadline.Token)));
+        Assert.Contains("boom", await process.StandardError!.WaitAsync(deadline.Token));
     }
 
     [Fact(Timeout = 30_000)]

@@ -71,9 +71,7 @@ public sealed class TerminalSessionTests
             (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-shell"] }));
         await using var session = CreateSession(fake, "sh", [], restricted);
 
-        var start = () => session.StartAsync(TestContext.Current.CancellationToken);
-
-        var assertion36 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await start.Invoke(); });
+        var assertion36 = await Assert.ThrowsAnyAsync<AgentToolException>(() => session.StartAsync(TestContext.Current.CancellationToken));
         Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_start_failed"))(assertion36));
         Assert.Equal("faulted", session.GetSnapshot().State);
     }
@@ -131,10 +129,8 @@ public sealed class TerminalSessionTests
         // The sibling name merely shares the grant's prefix; the boundary rule keeps it out.
         await using var session = CreateSession(fake, "/usr/bin/safe-shell-evil", [], restricted);
 
-        var start = () => session.StartAsync(TestContext.Current.CancellationToken);
-
-        var assertion38 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await start.Invoke(); });
-        Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_start_failed"))(assertion38));
+        var assertion38 = await Assert.ThrowsAnyAsync<AgentToolException>(() => session.StartAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("terminal_start_failed", assertion38.Code);
         Assert.Equal("faulted", session.GetSnapshot().State);
     }
 
@@ -184,7 +180,7 @@ public sealed class TerminalSessionTests
 
         Assert.Equal(3, result.ExecutedLines);
         Assert.Null(result.FailedLine);
-        Assert.Equal(new string[] { "68656C6C6F", "0D", "776F726C64" }, fake.HexWrites);
+        Assert.Equal(["68656C6C6F", "0D", "776F726C64"], fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -245,7 +241,7 @@ public sealed class TerminalSessionTests
 
         Assert.Equal(1, result.ExecutedLines);
         Assert.Equal(2, result.FailedLine);
-        Assert.Equal(new string[] { "6F6E65" }, fake.HexWrites);
+        Assert.Equal(["6F6E65"], fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -268,7 +264,7 @@ public sealed class TerminalSessionTests
 
         await session.InterruptAsync(new TerminalSnapshotRequest(), TestContext.Current.CancellationToken);
 
-        Assert.Equal(new string[] { "03" }, fake.HexWrites);
+        Assert.Equal(["03"], fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -479,7 +475,7 @@ public sealed class TerminalSessionTests
         // assertion had already read it.
         var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
         await WaitForStateAsync(session, "running", TestContext.Current.CancellationToken);
-        cancel.Cancel();
+        await cancel.CancelAsync();
 
         var failure = () => run;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await failure.Invoke(); });
@@ -513,7 +509,7 @@ public sealed class TerminalSessionTests
             // not wait on a pathological spawn.
             var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
             await Task.Delay(50, TestContext.Current.CancellationToken);
-            cancel.Cancel();
+            await cancel.CancelAsync();
 
             var failure = () => run;
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await failure.Invoke(); });
@@ -570,8 +566,7 @@ public sealed class TerminalSessionTests
         // The one-shot's single-run bookkeeping is spent: a restart would spawn a second
         // child whose exit can never be recorded. It must be rejected, not corrupt the
         // session into a permanent "running" handle with a stale exit code.
-        var restart = () => session.StartAsync(TestContext.Current.CancellationToken);
-        var assertion39 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await restart.Invoke(); });
+        var assertion39 = await Assert.ThrowsAnyAsync<AgentToolException>(() => session.StartAsync(TestContext.Current.CancellationToken));
         Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_session_completed"))(assertion39));
 
         Assert.Equal("completed", session.GetSnapshot().State);
@@ -669,7 +664,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public event Action<ITerminalProcess>? Exited;
 
-    public IReadOnlyList<string> HexWrites => stream.Writes.Select(Convert.ToHexString).ToArray();
+    public IReadOnlyList<string> HexWrites => [.. stream.Writes.Select(Convert.ToHexString)];
 
     public bool Disposed { get; private set; }
 
@@ -739,7 +734,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
             chunks.Writer.TryComplete();
         }
 
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (!await chunks.Reader.WaitToReadAsync(cancellationToken)) return 0;
             if (!chunks.Reader.TryRead(out var chunk)) return 0;
@@ -750,7 +745,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
             return count;
         }
 
-        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             WriteCount++;
             if (failOnWrite is { } fail && WriteCount >= fail)
@@ -760,9 +755,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
             return ValueTask.CompletedTask;
         }
 
-        public override void Flush()
-        {
-        }
+        public override void Flush() { }
 
         public override int Read(byte[] buffer, int offset, int count)
         {

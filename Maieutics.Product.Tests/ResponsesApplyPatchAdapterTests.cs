@@ -102,9 +102,9 @@ public sealed class ResponsesApplyPatchAdapterTests
     {
         // The Responses adapter needs the local apply_patch function declared so the runtime
         // executes the projected call; only the general edit tools are hidden there.
-        Assert.Equal(new string[] { "write_text", "edit_text" }, ApplyPatchFunctions.ResponsesHiddenToolNames);
+        Assert.Equal(["write_text", "edit_text"], ApplyPatchFunctions.ResponsesHiddenToolNames);
         Assert.DoesNotContain(ApplyPatchFunctions.ToolName, ApplyPatchFunctions.ResponsesHiddenToolNames);
-        Assert.Equal(new string[] { ApplyPatchFunctions.ToolName }, ApplyPatchFunctions.NonResponsesHiddenToolNames);
+        Assert.Equal([ApplyPatchFunctions.ToolName], ApplyPatchFunctions.NonResponsesHiddenToolNames);
     }
 
     private static ApplyPatchOperation Read(string json)

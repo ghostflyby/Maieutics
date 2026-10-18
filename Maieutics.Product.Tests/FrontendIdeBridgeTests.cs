@@ -46,7 +46,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         // (the kernel is the translation point).
         Assert.Equal("textDocument/hover", invocation.Method);
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
-        Assert.StartsWith("ide-", (outgoing.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("ide-", outgoing.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null"));
         Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri, outgoing.GetProperty("params").GetProperty("uri").GetString());
         Assert.Equal(40, outgoing.GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
         Assert.Equal(6, outgoing.GetProperty("params").GetProperty("position").GetProperty("character").GetInt32());
@@ -136,8 +136,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             await announced.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(true));
         var requestId = payload.RootElement.GetProperty("ideRequest").GetProperty("requestId").GetString()!;
 
-        cancelled.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invocation)); });
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await invocation; });
         Assert.False(registry.TryComplete(requestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("1").RootElement.Clone())), "the cancelled tool call left no resumable request");
     }
 
@@ -196,7 +196,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         Assert.Equal("textDocument/foldingRange", envelope.GetProperty("method").GetString());
         Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri, envelope.GetProperty("params").GetProperty("uri").GetString());
         Assert.Equal(3, envelope.GetProperty("params").GetProperty("startLine").GetInt32());
-        Assert.Equal("ide_timeout", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await ((invocation)); })).Code);
+        Assert.Equal("ide_timeout", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await invocation; })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -813,7 +813,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             Assert.Equal("markdown", hover0.GetProperty("contents").GetProperty("kind").GetString());
             var frame = Assert.Single(frames);
             Assert.Equal("ide.request", frame.Type);
-            Assert.NotEmpty((frame.Data!.Value.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.NotEmpty(frame.Data!.Value.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null"));
             Assert.Equal("textDocument/hover", frame.Data!.Value.GetProperty("method").GetString());
             Assert.Null(frame.Sequence);
         }
@@ -897,7 +897,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             Assert.Null(roots.Failure);
             var rootValue = (JsonElement)roots.Result!;
             Assert.Equal("ab1", rootValue.GetProperty("folders")[0].GetProperty("id").GetString());
-            Assert.StartsWith("file://", (rootValue.GetProperty("folders")[0].GetProperty("uri").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.StartsWith("file://", rootValue.GetProperty("folders")[0].GetProperty("uri").GetString() ?? throw new InvalidOperationException("the assertion subject is null"));
 
             var read = Function(functions.Functions, "ide_fs_read");
             var invocation = await InvokeAsync(

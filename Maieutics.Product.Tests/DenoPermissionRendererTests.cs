@@ -21,7 +21,8 @@ public sealed class DenoPermissionRendererTests
             (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost:8080", "api.example.com"] }),
             (PermissionKind.Env, new PermissionKindRules { Allow = ["HOME", "PATH"] }));
 
-        Assert.Equal(new string[] { "--allow-read=/kernel,/ws", "--allow-net=localhost:8080,api.example.com", "--allow-env=HOME,PATH" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--allow-read=/kernel,/ws", "--allow-net=localhost:8080,api.example.com", "--allow-env=HOME,PATH",
+        ], DenoPermissionRenderer.Render(policy));
     }
 
     [Fact]
@@ -30,7 +31,7 @@ public sealed class DenoPermissionRendererTests
         var policy = Build(
             (PermissionKind.Run, new PermissionKindRules { AllowAll = true }));
 
-        Assert.Equal(new string[] { "--allow-run" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--allow-run"], DenoPermissionRenderer.Render(policy));
     }
 
     [Fact]
@@ -40,7 +41,7 @@ public sealed class DenoPermissionRendererTests
             (PermissionKind.Read, new PermissionKindRules { Deny = ["/ws/secret"] }),
             (PermissionKind.Write, new PermissionKindRules { DenyAll = true }));
 
-        Assert.Equal(new string[] { "--deny-read=/ws/secret", "--deny-write" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--deny-read=/ws/secret", "--deny-write"], DenoPermissionRenderer.Render(policy));
     }
 
     [Fact]
@@ -49,7 +50,7 @@ public sealed class DenoPermissionRendererTests
         var policy = Build(
             (PermissionKind.Read, new PermissionKindRules { Allow = ["/ws"], Deny = ["/ws/secret"] }));
 
-        Assert.Equal(new string[] { "--allow-read=/ws", "--deny-read=/ws/secret" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--allow-read=/ws", "--deny-read=/ws/secret"], DenoPermissionRenderer.Render(policy));
     }
 
     [Fact]
@@ -62,7 +63,7 @@ public sealed class DenoPermissionRendererTests
                 fixedVariables: null,
                 getEnvironmentVariable: null));
 
-        Assert.Equal(new string[] { "--allow-ffi=/ws/lib.dylib" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--allow-ffi=/ws/lib.dylib"], DenoPermissionRenderer.Render(policy));
     }
 
     [Fact]
@@ -73,7 +74,8 @@ public sealed class DenoPermissionRendererTests
             (PermissionKind.Sys, new PermissionKindRules { Allow = ["hostname", "loadavg"] }),
             (PermissionKind.Import, new PermissionKindRules { Allow = ["npm:", "https://deno.land/"] }));
 
-        Assert.Equal(new string[] { "--allow-net=unix:/tmp/maieutics.sock", "--allow-sys=hostname,loadavg", "--allow-import=npm:,https://deno.land/" }, DenoPermissionRenderer.Render(policy));
+        Assert.Equal(["--allow-net=unix:/tmp/maieutics.sock", "--allow-sys=hostname,loadavg", "--allow-import=npm:,https://deno.land/",
+        ], DenoPermissionRenderer.Render(policy));
     }
 
     private static EffectivePolicy Build(

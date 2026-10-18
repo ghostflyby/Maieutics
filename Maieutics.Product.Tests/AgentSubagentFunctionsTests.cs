@@ -32,7 +32,7 @@ public sealed class AgentSubagentFunctionsTests
         Assert.Equal(2, finishes.Count());
         var spawnValue = finishes[0].Result.GetProperty("value");
         var taskUri = spawnValue.GetProperty("taskUri").GetString();
-        Assert.StartsWith("task://agent/", (taskUri ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("task://agent/", taskUri ?? throw new InvalidOperationException("the assertion subject is null"));
         Assert.False(string.IsNullOrWhiteSpace(spawnValue.GetProperty("runId").GetString()));
         Assert.Equal("ok", finishes[1].Result.GetProperty("status").GetString());
         var waitValue = finishes[1].Result.GetProperty("value");
@@ -47,8 +47,8 @@ public sealed class AgentSubagentFunctionsTests
         // The spawned child streamed its activity into the display-plane buffer, which
         // outlives the join: the parent run forgot the child at commit, and later turns
         // refetch the report from this envelope instead of the plane.
-        Assert.Single(harness.Buffer.KnownChildren);
-        Assert.NotEmpty(harness.Buffer.Read(harness.Buffer.KnownChildren[0]));
+        var item = Assert.Single(harness.Buffer.KnownChildren);
+        Assert.NotEmpty(harness.Buffer.Read(item));
 
         // After the turn the child is no longer on the plane (join-before-complete), and the
         // plane reports that as a typed miss rather than a stale snapshot.

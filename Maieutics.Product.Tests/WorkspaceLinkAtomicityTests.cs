@@ -31,8 +31,8 @@ public sealed class WorkspaceLinkAtomicityTests
             UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         try
         {
-        var exception = Assert.ThrowsAny<Exception>(() => (context).OpenLink(second, null));
-        Assert.True((exception is IOException or UnauthorizedAccessException), $"the link creation failed with {exception.GetType().Name}");
+        var exception = Assert.ThrowsAny<Exception>(() => context.OpenLink(second, null));
+        Assert.True(exception is IOException or UnauthorizedAccessException, $"the link creation failed with {exception.GetType().Name}");
 
             var entries = WorkspaceLinkRegistry.Load(home.HomePath).Entries();
             Assert.Equal("first", Assert.Single(entries).Name);
@@ -95,7 +95,7 @@ public sealed class WorkspaceLinkAtomicityTests
 
         var after = context.Capture().Links ?? throw new InvalidOperationException("missing links");
         Assert.Empty(after.Records);
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (context.Capture()).Resolve("workspace://local/projects/project/marker.txt", false)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => context.Capture().Resolve("workspace://local/projects/project/marker.txt", false)).Code);
 
         // Reopening the same target sweeps the leftover and reuses the retired name.
         var reopened = context.OpenLink(project, null);

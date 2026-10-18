@@ -222,8 +222,8 @@ public sealed class DenoPermissionBrokerTests
                 pid,
                 Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath] })));
 
-            Assert.Equal("allow", (await AskAsync(broker, firstPath, cancellationToken)));
-            Assert.Equal("deny", (await AskAsync(broker, secondPath, cancellationToken)));
+            Assert.Equal("allow", await AskAsync(broker, firstPath, cancellationToken));
+            Assert.Equal("deny", await AskAsync(broker, secondPath, cancellationToken));
 
             // Second registration for the same pid, without retiring the slot first: the state a
             // recycled pid would find. Only the replacement policy allows the second path.
@@ -231,7 +231,7 @@ public sealed class DenoPermissionBrokerTests
                 pid,
                 Build((PermissionKind.Read, new PermissionKindRules { Allow = [firstPath, secondPath] })));
 
-            Assert.Equal("allow", (await AskAsync(broker, secondPath, cancellationToken)));
+            Assert.Equal("allow", await AskAsync(broker, secondPath, cancellationToken));
 
             broker.UnregisterProcess(pid);
         }

@@ -18,9 +18,9 @@ internal static class SqliteProviderInit
     /// <summary>Guards initialization so a caller cannot proceed until the provider is
     ///     registered and the serialized default has been requested. Held only across those
     ///     two synchronous calls.</summary>
-    private static readonly Lock initGate = new();
+    private static readonly Lock InitGate = new();
 
-    private static bool initialized;
+    private static bool _initialized;
 
     /// <summary>Module load is the first opportunity, so a process whose composition opens a
     ///     store without touching this type explicitly is still covered.</summary>
@@ -52,14 +52,14 @@ internal static class SqliteProviderInit
     ///     </para></summary>
     internal static void EnsureInitialized()
     {
-        lock (initGate)
+        lock (InitGate)
         {
-            if (initialized) return;
+            if (_initialized) return;
 
             SetProvider();
             RequestSerializedDefault();
             // Set last: a caller that observes it true has a fully initialized provider.
-            initialized = true;
+            _initialized = true;
         }
     }
 

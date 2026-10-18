@@ -156,7 +156,7 @@ public sealed class DenoReplSessionTests
         await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((execution)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await execution; });
         Assert.Equal(1, generation.ConnectionImpl.CancelCount);
         Assert.Equal(expectedTerminateCount, generation.TerminateCount);
         Assert.Equal(expectedState, session.GetSnapshot().State);
@@ -185,7 +185,7 @@ public sealed class DenoReplSessionTests
         var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
         await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
 
-        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await ((execution)); });
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await execution; });
         Assert.Equal("repl_timeout", failure.Code);
         Assert.Equal(1, generation.ConnectionImpl.CancelCount);
         Assert.Equal(0, generation.TerminateCount);
@@ -220,7 +220,7 @@ public sealed class DenoReplSessionTests
         Assert.Equal("idle", result.State);
         Assert.Equal(1, firstGeneration.DisposeCount);
         Assert.Equal(2, secondGeneration.Generation);
-        Assert.Equal(new int[] { 1, 2 }, factory.Starts.Select(static start => start.Generation));
+        Assert.Equal([1, 2], factory.Starts.Select(static start => start.Generation));
     }
 
     [Fact(Timeout = 15_000)]
@@ -472,7 +472,7 @@ public sealed class DenoReplSessionTests
             ControlledEval[] snapshot;
             lock (gate)
             {
-                snapshot = executions.ToArray();
+                snapshot = [.. executions];
             }
             foreach (var execution in snapshot) execution.CompleteCancelled();
         }

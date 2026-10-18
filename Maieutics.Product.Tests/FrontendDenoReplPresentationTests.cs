@@ -159,7 +159,7 @@ public sealed class FrontendDenoReplPresentationTests
         Assert.True(payload.GetProperty("password").GetBoolean());
 
         Assert.True(sink.TryCompleteInput(requestId, "ghost"));
-        Assert.Equal("ghost", (await wait));
+        Assert.Equal("ghost", await wait);
         // 第二次应答：请求已完成
         Assert.False(sink.TryCompleteInput(requestId, "again"));
     }
@@ -190,9 +190,9 @@ public sealed class FrontendDenoReplPresentationTests
         Assert.NotEqual(secondId, firstId);
 
         Assert.True(router.TryCompleteInput(secondId, "b"));
-        Assert.Equal("b", (await secondWait));
+        Assert.Equal("b", await secondWait);
         Assert.True(router.TryCompleteInput(firstId, "a"));
-        Assert.Equal("a", (await firstWait));
+        Assert.Equal("a", await firstWait);
         // Request ids are unique across sinks, so a delivered answer cannot be
         // re-delivered anywhere.
         Assert.False(router.TryCompleteInput(secondId, "again"));
@@ -220,7 +220,7 @@ public sealed class FrontendDenoReplPresentationTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
         var wait = sink.RequestInputAsync("prompt", false, cancellation.Token);
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
         var act = async () => await wait;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await act.Invoke(); });
     }

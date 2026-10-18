@@ -30,7 +30,7 @@ public sealed class ReplCommChannelTests
                 null,
                 data,
                 null,
-                [new byte[] { 0xAB, 0xCD }]);
+                [[0xAB, 0xCD]]);
             await host.PushCommMessageAsync("test-session", message, timeout.Token);
 
             var (opcode, payload) = await CommChildSocketStub.ReceiveFrameAsync(socket, timeout.Token);

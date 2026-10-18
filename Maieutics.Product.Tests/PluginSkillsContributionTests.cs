@@ -171,13 +171,13 @@ public sealed class PluginSkillsContributionTests : IDisposable
             """["./skills"]""",
             """["./"]""");
         // Rewrite the manifest with the recommended lowercase spelling of the kind.
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "extensions": { "skills": [ { "roots": ["./skills"] } ] }
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         WriteSkill(Path.Combine(root, "skills"), "delta", "declared in lowercase");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(workspaceRoot);
@@ -271,7 +271,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             """["./"]""");
         WriteSkill(Path.Combine(root, "skills"), "gamma", "never loads without approval");
         var approvals = Path.Combine(Path.GetTempPath(), $"mc-approvals-empty-{Guid.NewGuid():N}.json");
-        File.WriteAllText(approvals, """{"approvals": []}""");
+        await File.WriteAllTextAsync(approvals, """{"approvals": []}""", TestContext.Current.CancellationToken);
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
@@ -299,7 +299,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-generator-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -307,15 +307,15 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
-            """);
-        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n", TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
@@ -358,7 +358,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 new ResourceReadRequest(long.MaxValue),
                 TestContext.Current.CancellationToken);
             using var reader = new StreamReader(result.Content);
-            Assert.Contains("# Generated", (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)));
+            Assert.Contains("# Generated", await reader.ReadToEndAsync(TestContext.Current.CancellationToken));
 
             // A later failing invoke keeps the last good contribution (sticky). An
             // unchanged registry frame no longer re-invokes the generator (the
@@ -387,7 +387,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-publisher-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -395,8 +395,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
@@ -404,9 +404,9 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "entrypoints": { "worker": { "main": ["./mod.ts"] } },
               "extensions": { "skills": [ { "roots": ["./skills"] } ] }
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         WriteSkill(Path.Combine(root, "skills"), "declared", "the declarative part");
-        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n", TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
@@ -488,7 +488,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-ungranted-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -496,15 +496,15 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
-            """);
-        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n", TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
@@ -589,7 +589,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-flood-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -597,16 +597,16 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "capabilities": ["skills.publish"],
               "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
-            """);
-        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n", TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
@@ -650,7 +650,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-diff-zero-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -658,15 +658,15 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "entrypoints": { "worker": { "main": ["./mod.ts"] } }
             }
-            """);
-        File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n", TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
@@ -747,7 +747,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             // whose reload epoch proves the replacement worker is live — the unchanged
             // export-set frame alone would never re-run the generator.
             var applied = manager.ReloadApplied;
-            File.WriteAllText(Path.Combine(root, "mod.ts"), "export const Skills = {};\n// edited\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n// edited\n", TestContext.Current.CancellationToken);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
             await Task.Delay(300, TestContext.Current.CancellationToken);
@@ -822,14 +822,14 @@ public sealed class PluginSkillsContributionTests : IDisposable
             // so new module text is picked up — and that replacement worker's output
             // must be fetched, exactly like the ordinary reload path.
             var applied = manager.ReloadApplied;
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "maieutics.json"),
                 """
                 {
                   "isolation": "process",
                   "entrypoints": { "worker": { "main": ["./mod.ts"] } }
                 }
-                """);
+                """, TestContext.Current.CancellationToken);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
             await Task.Delay(300, TestContext.Current.CancellationToken);
@@ -974,7 +974,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         var root = Path.Combine(Path.GetTempPath(), $"skills-pubonly-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "deno.json"),
             """
             {
@@ -982,16 +982,16 @@ public sealed class PluginSkillsContributionTests : IDisposable
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         // No entrypoints and no declared skills: the plugin's only skill face is the
         // contribution slot its runtime publish holds.
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             Path.Combine(root, "maieutics.json"),
             """
             {
               "capabilities": ["skills.publish"]
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();

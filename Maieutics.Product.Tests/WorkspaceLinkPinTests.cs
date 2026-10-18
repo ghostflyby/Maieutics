@@ -72,17 +72,15 @@ public sealed class WorkspaceLinkPinTests
             WorkspaceHome.StateDirectoryName,
             "registry.json");
         var state = JsonSerializer.Deserialize(
-            File.ReadAllText(registryPath),
+            await File.ReadAllTextAsync(registryPath, TestContext.Current.CancellationToken),
             WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState);
         var stateLinks = state!.Links ?? throw new InvalidOperationException("missing links");
-        File.WriteAllText(
-            registryPath,
-            JsonSerializer.Serialize(
+        await File.WriteAllTextAsync(registryPath, JsonSerializer.Serialize(
                 new WorkspaceLinkRegistryState(
                     state.Version,
                     [stateLinks[0] with { Identity = null }],
                     state.Retired),
-                WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState));
+                WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState), TestContext.Current.CancellationToken);
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(remounted);
 

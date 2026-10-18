@@ -71,7 +71,7 @@ public sealed class PermissionPipelineIntegrationTests
         var source = new FixedLayerSource(appDefaults: null, workspaceProfile: profile);
         var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
 
-        var policy = acquirer.Acquire(baseline, null);
+        var policy = acquirer.Acquire(baseline);
 
         Assert.Contains("/bin/sh", policy.For(PermissionKind.Run).Deny);
         Assert.Contains("/workspace", policy.For(PermissionKind.Read).Allow);

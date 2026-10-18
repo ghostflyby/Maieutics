@@ -153,7 +153,7 @@ public sealed class ResourceReadToolTests
             cts.Token);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
         Assert.Equal("text/plain", ok.Content.Headers.ContentType?.MediaType);
-        Assert.Equal("first\nsecond\nthird\n", (await ok.Content.ReadAsStringAsync(cts.Token)));
+        Assert.Equal("first\nsecond\nthird\n", await ok.Content.ReadAsStringAsync(cts.Token));
 
         var unknown = await client.GetAsync(
             $"http://localhost/v1/resource?uri={Uri.EscapeDataString("mystery://a/b")}",
@@ -276,7 +276,7 @@ public sealed class ResourceReadToolTests
             var body = uri.Contains("binary", StringComparison.Ordinal)
                 ? (byte[])[0x00, 0x01, 0x02]
                 : "first\nsecond\nthird\n"u8.ToArray();
-            return ValueTask.FromResult<ResourceReadResult>(
+            return ValueTask.FromResult(
                 new ResourceReadResult(new MemoryStream(body), "text/plain"));
         }
 

@@ -256,7 +256,7 @@ internal sealed class IdeDebugTools
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
-        if ((launchName is null) == (configuration is null || configuration.Value.ValueKind == JsonValueKind.Null))
+        if (launchName is null == (configuration is null || configuration.Value.ValueKind == JsonValueKind.Null))
             throw new AgentToolException(
                 "ide_invalid_arguments",
                 "Provide exactly one of 'launchName' or 'configuration'.");

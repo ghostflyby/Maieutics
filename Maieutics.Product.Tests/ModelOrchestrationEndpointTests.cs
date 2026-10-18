@@ -36,7 +36,7 @@ public sealed class ModelOrchestrationEndpointTests
             var handle = JsonDocument.Parse(spawn.Body).RootElement;
             Assert.False(string.IsNullOrWhiteSpace(handle.GetProperty("childSessionId").GetString()));
             Assert.False(string.IsNullOrWhiteSpace(handle.GetProperty("runId").GetString()));
-            Assert.StartsWith("task://agent/", (handle.GetProperty("taskUri").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.StartsWith("task://agent/", handle.GetProperty("taskUri").GetString() ?? throw new InvalidOperationException("the assertion subject is null"));
             var runId = handle.GetProperty("runId").GetString()!;
 
             var wait = await harness.SendJsonAsync(
@@ -116,7 +116,7 @@ public sealed class ModelOrchestrationEndpointTests
                 new TerminalSnapshotRequest(),
                 deadline.Token);
             Assert.False(oneShot.Settled);
-            Assert.StartsWith("task://terminal/", (oneShot.TaskUri ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.StartsWith("task://terminal/", oneShot.TaskUri ?? throw new InvalidOperationException("the assertion subject is null"));
 
             // Waiting on a task that has not reached a terminal state times out at the
             // requested bound instead of returning a mid-flight snapshot.

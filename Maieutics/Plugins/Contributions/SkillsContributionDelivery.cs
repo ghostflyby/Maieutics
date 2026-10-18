@@ -114,7 +114,7 @@ internal sealed class SkillsContributionDelivery(
                     continue;
                 }
 
-                if (ParseGeneratedSkills(outcome.Value, Skills.SkillSource.PluginGenerated) is not { Count: > 0 } parsed)
+                if (ParseGeneratedSkills(outcome.Value) is not { Count: > 0 } parsed)
                 {
                     invokeFailed = true;
                     logger.LogWarning(

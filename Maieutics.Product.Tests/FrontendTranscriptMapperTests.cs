@@ -137,7 +137,7 @@ public sealed class FrontendTranscriptMapperTests
             [new FunctionCallContent("call-2", "workspace_list", new Dictionary<string, object?>())]);
         var absent = new ChatMessage(
             ChatRole.Assistant,
-            [new FunctionCallContent("call-3", "workspace_list", null)]);
+            [new FunctionCallContent("call-3", "workspace_list")]);
 
         foreach (var message in new[] { empty, absent })
         {

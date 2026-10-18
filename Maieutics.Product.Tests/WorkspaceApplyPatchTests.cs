@@ -41,7 +41,7 @@ public sealed class WorkspaceApplyPatchTests
                 $$"""{"patch":{{JsonSerializer.Serialize(MultiFilePatch)}}}"""),
             WorkspaceEditJsonSerializerContext.Default.ApplyPatchResult);
 
-        Assert.Equal(new string[] { "created", "updated", "deleted" }, result.Files.Select(static file => file.Operation));
+        Assert.Equal(["created", "updated", "deleted"], result.Files.Select(static file => file.Operation));
         Assert.Equal("docs/new.txt", result.Files[0].Path);
         var updated = result.Files[1];
         Assert.NotNull(updated.Diff);
@@ -50,9 +50,9 @@ public sealed class WorkspaceApplyPatchTests
         Assert.NotNull(deleted.Diff);
         Assert.Equal(1, deleted.Diff.Deletions);
 
-        Assert.Equal("using System;\nvar fresh = false;\n", (await File.ReadAllTextAsync(
-                workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "app.cs",
-                cancellationToken)));
+        Assert.Equal("using System;\nvar fresh = false;\n", await File.ReadAllTextAsync(
+            workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "app.cs",
+            cancellationToken));
         Assert.False(File.Exists(workspace.Path + Path.DirectorySeparatorChar + "obsolete.txt"));
     }
 
@@ -80,9 +80,9 @@ public sealed class WorkspaceApplyPatchTests
 
         Assert.Equal("created", result.Files[0].Operation);
         Assert.Equal("src/main.py", result.Files[0].MovedFrom);
-        Assert.Equal("def a():\n    return 1\ndef b():\n    return 3\n", (await File.ReadAllTextAsync(
-                workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "renamed.py",
-                cancellationToken)));
+        Assert.Equal("def a():\n    return 1\ndef b():\n    return 3\n", await File.ReadAllTextAsync(
+            workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "renamed.py",
+            cancellationToken));
         Assert.False(File.Exists(path));
     }
 
@@ -156,8 +156,8 @@ public sealed class WorkspaceApplyPatchTests
         var updated = ApplyPatchParser.ParseOperationDiff("update_file", "a.txt", "@@ context\n-old\n+new\n");
         Assert.Single(updated.Files[0].Changes);
         Assert.Equal("context", updated.Files[0].Changes[0].Anchor);
-        Assert.Equal(new string[] { "old" }, updated.Files[0].Changes[0].OldLines);
-        Assert.Equal(new string[] { "new" }, updated.Files[0].Changes[0].NewLines);
+        Assert.Equal(new[] { "old" }, updated.Files[0].Changes[0].OldLines);
+        Assert.Equal(new[] { "new" }, updated.Files[0].Changes[0].NewLines);
 
         var deleted = ApplyPatchParser.ParseOperationDiff("delete_file", "a.txt", null);
         Assert.Equal("delete_file", deleted.Files[0].Kind);
@@ -179,7 +179,7 @@ public sealed class WorkspaceApplyPatchTests
             WorkspaceEditJsonSerializerContext.Default.ApplyPatchResult);
 
         Assert.Equal("updated", result.Files[0].Operation);
-        Assert.Equal("first\r\nSECOND\r\n", (await File.ReadAllTextAsync(path, cancellationToken)));
+        Assert.Equal("first\r\nSECOND\r\n", await File.ReadAllTextAsync(path, cancellationToken));
     }
 
     private static WorkspaceEditFunctions CreateFunctions(string root)

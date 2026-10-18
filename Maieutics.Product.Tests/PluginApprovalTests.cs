@@ -207,7 +207,7 @@ public sealed class PluginApprovalTests
         Assert.True(reloaded.TryGet("probe", out var record));
         var persisted = record ?? throw new InvalidOperationException("The record is missing.");
         Assert.Equal("F1", persisted.Fingerprint);
-        Assert.Equal(new string[] { "A" }, persisted.Grants.Env.Values);
+        Assert.Equal(["A"], persisted.Grants.Env.Values);
 
         Assert.True(store.Remove("probe"));
         Assert.False(PluginApprovalStore.Load(path, out _).TryGet("probe", out _));
@@ -264,7 +264,7 @@ public sealed class PluginApprovalTests
 
             // Approval persists the fingerprint and activates in-process: the
             // synthetic registration appears without a host restart.
-            Assert.Contains("Approved", (await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken)));
+            Assert.Contains("Approved", await manager.ApproveAsync(pluginId, TestContext.Current.CancellationToken));
             Assert.Equal(pluginId, Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)).PluginId);
             Assert.Equal(0, manager.GetStatus().PendingApprovals);
             Assert.Equal(PluginApprovalState.Approved, Assert.Single(manager.ListPluginApprovals()).State);
@@ -402,15 +402,13 @@ public sealed class PluginApprovalTests
         Directory.CreateDirectory(root);
         // Import-map values point at module files; the kernel derives the package
         // directory from each target's parent (ScanProject).
-        File.WriteAllText(
-            Path.Combine(root, "deno.json"),
-            """
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"), """
             {
               "name": "@maieutics/plugins",
               "imports": { "dep": "./dep/mod.ts", "consumer": "./consumer/mod.ts" }
             }
-            """);
-        File.WriteAllText(Path.Combine(root, "maieutics.json"), """{ "entrypoints": {} }""");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), """{ "entrypoints": {} }""", TestContext.Current.CancellationToken);
         WriteNestedPlugin(root, "dep", dependencies: null);
         WriteNestedPlugin(root, "consumer", dependencies: ["dep"]);
         var approvalsPath = PluginApprovalSeeds.SeedPlugins(
@@ -456,7 +454,7 @@ public sealed class PluginApprovalTests
         {
             await StartAsync(manager);
 
-            Assert.Equal(new string[] { "%maieutics", "plugin", "list" }, MaieuticsCommandLanguage.NormalizeCommandArguments(["%plugin", "list"]));
+            Assert.Equal(new[] { "%maieutics", "plugin", "list" }, MaieuticsCommandLanguage.NormalizeCommandArguments(["%plugin", "list"]));
             Assert.True(MaieuticsCommandLanguage.IsCommandCell("%plugin approve x"));
 
             var list = await executor.ExecuteAsync("%plugin list", null, TestContext.Current.CancellationToken);

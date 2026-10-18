@@ -56,8 +56,8 @@ public sealed class PluginHostIntegrationTests
         {
             Assert.Equal(PluginHostState.NotStarted, manager.GetStatus().State);
             var readiness = manager.WaitUntilReadyAsync(canceledWait.Token);
-            canceledWait.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((readiness)); });
+            await canceledWait.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await readiness; });
             Assert.Equal(PluginHostState.NotStarted, manager.GetStatus().State);
 
             await manager.StartAsync(deadline.Token);
@@ -143,8 +143,8 @@ public sealed class PluginHostIntegrationTests
 
         try
         {
-            var startupFailure = (await Assert.ThrowsAnyAsync<Exception>(async () => { await ((manager.StartAsync(deadline.Token))); }));
-            var readinessFailure = (await Assert.ThrowsAnyAsync<Exception>(async () => { await ((manager.WaitUntilReadyAsync(deadline.Token))); }));
+            var startupFailure = await Assert.ThrowsAnyAsync<Exception>(async () => { await manager.StartAsync(deadline.Token); });
+            var readinessFailure = await Assert.ThrowsAnyAsync<Exception>(async () => { await manager.WaitUntilReadyAsync(deadline.Token); });
 
             Assert.Same(startupFailure, readinessFailure);
             Assert.Equal(PluginHostState.Failed, manager.GetStatus().State);
@@ -572,10 +572,10 @@ public sealed class PluginHostIntegrationTests
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
-            var registration = (Assert.Single((await WaitForRegistrationsAsync(
-                    manager,
-                    ReplExtensionPointName.McpDiscover,
-                    timeout.Token))));
+            var registration = Assert.Single(await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token));
             Assert.Equal(Path.GetFileName(root), registration.PluginId);
             Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 
@@ -659,10 +659,10 @@ public sealed class PluginHostIntegrationTests
             await manager.StartAsync(timeout.Token);
             await manager.WaitUntilReadyAsync(timeout.Token);
 
-            var registration = (Assert.Single((await WaitForRegistrationsAsync(
-                    manager,
-                    ReplExtensionPointName.McpDiscover,
-                    timeout.Token))));
+            var registration = Assert.Single(await WaitForRegistrationsAsync(
+                manager,
+                ReplExtensionPointName.McpDiscover,
+                timeout.Token));
             Assert.Equal(Path.GetFileName(root), registration.PluginId);
             Assert.Equal(PluginHostManager.ManifestExportName, registration.ExportName);
 

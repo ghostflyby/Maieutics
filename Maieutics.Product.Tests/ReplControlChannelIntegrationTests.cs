@@ -209,7 +209,7 @@ public sealed class ReplControlChannelIntegrationTests
                     }
                 }
 
-                Assert.Equal(new string[] { nameof(ReplEvalInputRequestEvent) }, received);
+                Assert.Equal(new[] { nameof(ReplEvalInputRequestEvent) }, received);
                 var terminal = await execution.Completion.WaitAsync(timeout.Token);
                 Assert.Equal("Ada", Assert.IsType<ReplEvalResultTerminal>(terminal).Value?.GetString());
             }

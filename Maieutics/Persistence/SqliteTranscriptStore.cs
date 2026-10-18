@@ -488,7 +488,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         var text = turn.Messages.FirstOrDefault(message => message.Role == ChatRole.User)?.Text;
         if (string.IsNullOrWhiteSpace(text)) return null;
 
-        var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var lines = text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var preview = string.Join(' ', lines).Trim();
         if (preview.Length == 0) return null;
         return preview.Length <= MaxDisplayTextLength

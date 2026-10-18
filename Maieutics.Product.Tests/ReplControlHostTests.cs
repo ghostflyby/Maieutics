@@ -137,25 +137,25 @@ public sealed class ReplControlHostTests
                 socket,
                 """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
                 timeout.Token);
-            Assert.Contains("comm_not_open", (await ReceiveBusAsync(socket, timeout.Token)));
+            Assert.Contains("comm_not_open", await ReceiveBusAsync(socket, timeout.Token));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"comm.open","payload":{"commId":"c1","targetName":"test"}}""",
                 timeout.Token);
-            Assert.Contains("\"type\":\"comm.ack\"", (await ReceiveBusAsync(socket, timeout.Token)));
+            Assert.Contains("\"type\":\"comm.ack\"", await ReceiveBusAsync(socket, timeout.Token));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"comm.msg","payload":{"commId":"c1"}}""",
                 timeout.Token);
-            Assert.Contains("\"type\":\"comm.ack\"", (await ReceiveBusAsync(socket, timeout.Token)));
+            Assert.Contains("\"type\":\"comm.ack\"", await ReceiveBusAsync(socket, timeout.Token));
 
             await SendBusAsync(
                 socket,
                 """{"version":1,"type":"nonsense.unknown"}""",
                 timeout.Token);
-            Assert.Contains("unknown_message", (await ReceiveBusAsync(socket, timeout.Token)));
+            Assert.Contains("unknown_message", await ReceiveBusAsync(socket, timeout.Token));
         }
     }
 
@@ -259,7 +259,7 @@ public sealed class ReplControlHostTests
                 socket,
                 """{"version":1,"type":"control.cancel","payload":{"correlationId":"cancel-me"}}""",
                 timeout.Token);
-            Assert.Contains("control.cancelled", (await ReceiveBusAsync(socket, timeout.Token)));
+            Assert.Contains("control.cancelled", await ReceiveBusAsync(socket, timeout.Token));
 
             var response = await invoke;
             Assert.Contains("\"status\":\"cancelled\"", response);
@@ -851,7 +851,7 @@ public sealed class ReplControlHostTests
         var headerEnd = response.IndexOf("\r\n\r\n", StringComparison.Ordinal);
         if (headerEnd < 0) return false;
 
-        var headerLines = response[..headerEnd].Split("\r\n", StringSplitOptions.None);
+        var headerLines = response[..headerEnd].Split("\r\n");
         if (headerLines.Length == 0 ||
             !headerLines[0].StartsWith("HTTP/1.1 413 ", StringComparison.Ordinal))
             return false;

@@ -130,8 +130,7 @@ public sealed class TerminalRegistryTests
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        var failure = () => registry.CloseAsync(owner, "missing", TestContext.Current.CancellationToken);
-        Assert.Equal("terminal_session_not_found", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await failure.Invoke(); })).Code);
+        Assert.Equal("terminal_session_not_found", (await Assert.ThrowsAnyAsync<AgentToolException>(() => registry.CloseAsync(owner, "missing", TestContext.Current.CancellationToken))).Code);
     }
 
     [Fact(Timeout = 10_000)]
@@ -155,8 +154,7 @@ public sealed class TerminalRegistryTests
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        var failure = () => registry.Snapshot(owner, new TerminalSnapshotRequest(), null);
-        Assert.Equal("terminal_session_not_found", Assert.ThrowsAny<AgentToolException>(() => failure.Invoke()).Code);
+        Assert.Equal("terminal_session_not_found", Assert.ThrowsAny<AgentToolException>(() => registry.Snapshot(owner, new TerminalSnapshotRequest(), null)).Code);
         Assert.Empty(registry.List(owner));
     }
 
@@ -167,12 +165,11 @@ public sealed class TerminalRegistryTests
         await using var registry = CreateRegistry(process);
         var owner = AgentSessionId.Create();
 
-        var failure = () => registry.InterruptAsync(
+        await Assert.ThrowsAnyAsync<AgentToolException>(() => registry.InterruptAsync(
             owner,
             new TerminalSnapshotRequest(),
             null,
-            TestContext.Current.CancellationToken);
-        await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await failure.Invoke(); });
+            TestContext.Current.CancellationToken));
         Assert.Empty(registry.List(owner));
     }
 }

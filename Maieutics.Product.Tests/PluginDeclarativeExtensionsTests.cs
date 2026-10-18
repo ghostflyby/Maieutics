@@ -107,29 +107,25 @@ public sealed class PluginDeclarativeExtensionsTests
         // escalated to a generation restart that re-detected itself.
         var outside = Path.Combine(Path.GetTempPath(), $"mc-import-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outside);
-        File.WriteAllText(
-            Path.Combine(outside, "deno.json"),
-            """
+        await File.WriteAllTextAsync(Path.Combine(outside, "deno.json"), """
             {
               "name": "@dep/shared",
               "version": "0.1.0"
             }
-            """);
-        File.WriteAllText(Path.Combine(outside, "maieutics.json"), "{}");
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(outside, "maieutics.json"), "{}", TestContext.Current.CancellationToken);
 
         var root = Path.Combine(Path.GetTempPath(), $"mc-import-root-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         var outsideReference = Path.GetRelativePath(root, Path.Combine(outside, "mod.ts"));
-        File.WriteAllText(
-            Path.Combine(root, "deno.json"),
-            $$"""
-            {
-              "name": "@maieutics/import-root",
-              "version": "0.1.0",
-              "imports": { "@dep/shared": "{{outsideReference.Replace("\\", "\\\\")}}" }
-            }
-            """);
-        File.WriteAllText(Path.Combine(root, "maieutics.json"), "{}");
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"), $$"""
+              {
+                "name": "@maieutics/import-root",
+                "version": "0.1.0",
+                "imports": { "@dep/shared": "{{outsideReference.Replace("\\", "\\\\")}}" }
+              }
+              """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), "{}", TestContext.Current.CancellationToken);
 
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
@@ -210,21 +206,17 @@ public sealed class PluginDeclarativeExtensionsTests
 
         var root = Path.Combine(Path.GetTempPath(), $"declarative-add-reload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
-            Path.Combine(root, "deno.json"),
-            """
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"), """
             {
               "name": "@maieutics/declarative-add",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
-            Path.Combine(root, "maieutics.json"),
-            """
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), """
             {
               "capabilities": ["tools.invoke"]
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
 
@@ -469,14 +461,13 @@ public sealed class PluginDeclarativeExtensionsTests
             await manager.WaitUntilReadyAsync(lifecycle.Token);
 
             using var canceled = new CancellationTokenSource();
-            canceled.Cancel();
+            await canceled.CancelAsync();
             var applied = manager.ReloadApplied;
-            Func<Task> wait = async () => await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
+            Assert.NotNull(await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager,
                 clock,
                 applied,
-                canceled.Token);
-            Assert.NotNull((await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await wait.Invoke(); })));
+                canceled.Token)));
         }
         finally
         {
@@ -634,18 +625,14 @@ public sealed class PluginDeclarativeExtensionsTests
         // inert degradation, which is the skills grammar's shape, not MCP's).
         var root = Path.Combine(Path.GetTempPath(), $"declarative-invalid-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
-            Path.Combine(root, "deno.json"),
-            """
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"), """
             {
               "name": "@maieutics/declarative-invalid",
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
-            Path.Combine(root, "maieutics.json"),
-            """
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), """
             {
               "capabilities": ["tools.invoke"],
               "extensions": {
@@ -655,7 +642,7 @@ public sealed class PluginDeclarativeExtensionsTests
                 ]
               }
             }
-            """);
+            """, TestContext.Current.CancellationToken);
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
 
@@ -690,18 +677,14 @@ public sealed class PluginDeclarativeExtensionsTests
         // the merge rules mirror the coordinator's cross-plugin rules.
         var root = Path.Combine(Path.GetTempPath(), $"declarative-conflict-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        File.WriteAllText(
-            Path.Combine(root, "deno.json"),
-            """
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"), """
             {
               "name": "@maieutics/declarative-conflict",
               "version": "0.1.0",
               "permissions": { "default": { "read": ["./"] } }
             }
-            """);
-        File.WriteAllText(
-            Path.Combine(root, "maieutics.json"),
-            """
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), """
             {
               "capabilities": ["tools.invoke"],
               "entrypoints": { "mcp": "./mcp.json" },
@@ -711,12 +694,10 @@ public sealed class PluginDeclarativeExtensionsTests
                 ]
               }
             }
-            """);
-        File.WriteAllText(
-            Path.Combine(root, "mcp.json"),
-            """
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(root, "mcp.json"), """
             { "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }
-            """);
+            """, TestContext.Current.CancellationToken);
         var clock = new FakeTimeProvider();
         var manager = CreateManager(root, clock);
 

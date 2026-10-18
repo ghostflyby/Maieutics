@@ -22,7 +22,7 @@ public sealed class AgentObjectResourceTests
 
         Assert.Equal("application/json", read.MimeType);
         using var reader = new StreamReader(read.Content, Encoding.UTF8);
-        Assert.Equal("resurrect the instruction from the object store", reader.ReadToEnd());
+        Assert.Equal("resurrect the instruction from the object store", await reader.ReadToEndAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]

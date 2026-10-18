@@ -38,7 +38,7 @@ public sealed class FrontendObjectAttachmentTests
         // The content address is the same object store the display-bundle GET serves.
         var served = await client.GetAsync($"/v1/objects/{sha256}", deadline.Token);
         Assert.Equal(HttpStatusCode.OK, served.StatusCode);
-        Assert.Equal(payload, (await served.Content.ReadAsByteArrayAsync(deadline.Token)));
+        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(deadline.Token));
 
         // Content addressing: identical bytes deduplicate to the same address.
         var again = await client.PostAsync(

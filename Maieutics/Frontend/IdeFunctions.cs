@@ -411,7 +411,7 @@ internal sealed class IdeFunctions
             throw new AgentToolException("ide_result_invalid", "The formatting answer is not an edit list.");
         if (edits.GetArrayLength() == 0)
             return JsonSerializer.SerializeToElement(
-                new IdeApplyEditsValue("unchanged", [], null, null, null),
+                new IdeApplyEditsValue("unchanged", []),
                 IdeFunctionJsonContext.Default.IdeApplyEditsValue);
         var rawEdits = ImmutableArray.CreateBuilder<IdeRawEdit>();
         foreach (var entry in edits.EnumerateArray())

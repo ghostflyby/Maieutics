@@ -47,7 +47,7 @@ public sealed class McpServerFileTests : IDisposable
         var stdio = Assert.Single(definitions, d => d.Id == "plugin:demo::stdio");
         var stdioTransport = Assert.IsType<StdioMcpTransportDefinition>(stdio.Transport);
         Assert.Equal("deno", stdioTransport.Command);
-        Assert.Equal(new string[] { "run", "--help" }, stdioTransport.Arguments);
+        Assert.Equal(["run", "--help"], stdioTransport.Arguments);
         Assert.True((stdioTransport.EnvironmentVariables ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("DENO_DIR"));
         Assert.Equal(Path.GetFullPath("./server", BaseDirectory), stdioTransport.WorkingDirectory);
         Assert.True(stdio.RootsEnabled);

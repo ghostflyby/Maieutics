@@ -107,7 +107,7 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first question", deadline.Token);
         var result = await CompleteTurnAsync(session, "second question", deadline.Token);
 
-        Assert.Equal(new string?[] { "static instructions", "static instructions" }, client.Instructions);
+        Assert.Equal(new[] { "static instructions", "static instructions" }, client.Instructions);
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(MessageTuple));
         Assert.Equal(2, result.Transcript.Version);
         Assert.Equal(2, result.Transcript.Turns.Count());
@@ -128,8 +128,8 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first question", deadline.Token);
         var result = await CompleteTurnAsync(session, "second question", deadline.Token);
 
-        Assert.Equal(new string?[] { "first instructions" }, firstClient.Instructions);
-        Assert.Equal(new string?[] { "second instructions" }, secondClient.Instructions);
+        Assert.Equal(new[] { "first instructions" }, firstClient.Instructions);
+        Assert.Equal(new[] { "second instructions" }, secondClient.Instructions);
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, secondClient.Requests.Single().Select(MessageTuple));
         Assert.Equal(1, firstLease.DisposeCount);
         Assert.Equal(1, secondLease.DisposeCount);
@@ -149,7 +149,7 @@ public sealed class AgentRunProfileTests
 
         var pending = session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
         Assert.False(pending.IsCompleted);
-        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (((Session: session, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("second"), ((Session: session, deadline.Token)).Token)); });
+        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (Session: session, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("second"), (Session: session, deadline.Token).Token); });
 
         acquisition.SetResult(lease);
         await using var run = await pending.WaitAsync(deadline.Token);
@@ -175,9 +175,9 @@ public sealed class AgentRunProfileTests
         var session = new AgentSession(provider);
 
         var pending = session.StartTurnAsync(AgentTurn.FromText("cancel"), cancellation.Token);
-        cancellation.Cancel();
+        await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((pending)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await pending; });
         var result = await CompleteTurnAsync(session, "next", deadline.Token);
 
         Assert.Equal("recovered", result.AssistantMessage.Text);
@@ -223,7 +223,7 @@ public sealed class AgentRunProfileTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        var failure = (await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
 
         Assert.Equal(AgentModelCapabilities.StreamingText, failure.RequiredCapability);
         Assert.Equal(identity, failure.ModelIdentity);
@@ -249,7 +249,7 @@ public sealed class AgentRunProfileTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        var failure = (await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
 
         Assert.Equal(AgentModelCapabilities.FunctionCalling, failure.RequiredCapability);
         Assert.Equal(identity, failure.ModelIdentity);
@@ -312,8 +312,8 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first", deadline.Token);
         await CompleteTurnAsync(session, "second", deadline.Token);
 
-        Assert.All(firstClient.ToolNames, names => Assert.Equal(new string[] { "first_tool" }, names));
-        Assert.All(secondClient.ToolNames, names => Assert.Equal(new string[] { "second_tool" }, names));
+        Assert.All(firstClient.ToolNames, names => Assert.Equal(new[] { "first_tool" }, names));
+        Assert.All(secondClient.ToolNames, names => Assert.Equal(new[] { "second_tool" }, names));
         Assert.Equal(1, firstLease.DisposeCount);
         Assert.Equal(1, secondLease.DisposeCount);
     }
@@ -332,7 +332,7 @@ public sealed class AgentRunProfileTests
             new AgentSessionOptions { MaxInputCharacters = 10 }));
         var session = new AgentSession(new QueueProfileProvider(rejectedLease, acceptedLease));
 
-        await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (((Session: session, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("four"), ((Session: session, deadline.Token)).Token)); });
+        await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (Session: session, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("four"), (Session: session, deadline.Token).Token); });
 
         Assert.Equal(1, rejectedLease.DisposeCount);
         Assert.Empty(rejectedClient.Requests);
@@ -376,7 +376,7 @@ public sealed class AgentRunProfileTests
         await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
         {
             await ReadEventsAsync(failed, deadline.Token);
-            var assertion1 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((failed.Completion.WaitAsync(deadline.Token))); });
+            var assertion1 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await failed.Completion.WaitAsync(deadline.Token); });
             Assert.Equal("lease release failed", assertion1.Message);
         }
 
@@ -401,7 +401,7 @@ public sealed class AgentRunProfileTests
         await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
         {
             await ReadEventsAsync(failed, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await ((failed.Completion.WaitAsync(deadline.Token))); });
+            await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await failed.Completion.WaitAsync(deadline.Token); });
         }
 
         Assert.Equal(1, failedLease.DisposeCount);
@@ -426,7 +426,7 @@ public sealed class AgentRunProfileTests
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("cancel"), deadline.Token);
         await providerStarted.Task.WaitAsync(deadline.Token);
         await run.CancelAsync(deadline.Token);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
 
         Assert.Equal(1, canceledLease.DisposeCount);
         await CompleteTurnAsync(session, "next", deadline.Token);
@@ -456,7 +456,7 @@ public sealed class AgentRunProfileTests
         // The request carries both the local function (still invocable by the runtime) and the
         // provider-hosted tool (executed by the provider).
         Assert.Contains(Assert.Single(client.AllTools), tool => tool is HostedWebSearchTool);
-        Assert.Equal(new string[] { "read_text" }, Assert.Single(client.ToolNames));
+        Assert.Equal(new[] { "read_text" }, Assert.Single(client.ToolNames));
     }
 
     private sealed class SingleProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider

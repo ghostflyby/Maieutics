@@ -357,12 +357,12 @@ internal sealed class AgentSubagentHost(
         IAgentRun childRun;
         try
         {
-            var childOptions = (baseOptions with
+            var childOptions = baseOptions with
             {
                 SystemPrompt = spec.Instructions,
                 MaxTurnDuration = spec.MaxTurnDuration ?? subagents.MaxChildTurnDuration,
                 Subagents = subagents with { MaxDepth = subagents.MaxDepth - 1 }
-            });
+            };
             childSession = new AgentSession(
                 new OptionsOverrideProfileProvider(
                     profileProvider, childOptions, ResolveTools(spec.Tools, availableTools)),
@@ -479,7 +479,7 @@ internal sealed class AgentSubagentHost(
         IReadOnlyList<AIFunction> available)
     {
         if (allowlist is null)
-            return available.ToArray();
+            return [.. available];
 
         var byName = available
             .GroupBy(static function => function.Name)
@@ -540,10 +540,13 @@ internal sealed class AgentSubagentHost(
     {
         lock (gate)
         {
-            return childrenByParent.Values
-                .SelectMany(static children => children)
-                .Concat(detached)
-                .ToArray();
+            return
+            [
+                .. childrenByParent.Values
+                    .SelectMany(static children => children),
+
+                .. detached,
+            ];
         }
     }
 
@@ -640,12 +643,12 @@ internal sealed class AgentSubagentHost(
             IAgentRun childRun;
             try
             {
-                var childOptions = (parentOptions with
+                var childOptions = parentOptions with
                 {
                     SystemPrompt = spec.Instructions,
                     MaxTurnDuration = spec.MaxTurnDuration ?? subagents.MaxChildTurnDuration,
                     Subagents = subagents with { MaxDepth = subagents.MaxDepth - 1 }
-                });
+                };
                 childSession = new AgentSession(
                     new OptionsOverrideProfileProvider(
                         host.profileProvider, childOptions, ResolveTools(spec.Tools)),
@@ -706,7 +709,7 @@ internal sealed class AgentSubagentHost(
         private IReadOnlyList<AIFunction> ResolveTools(IReadOnlyList<string>? allowlist)
         {
             if (allowlist is null)
-                return parentTools.Values.ToArray();
+                return [.. parentTools.Values];
 
             var resolved = new List<AIFunction>(allowlist.Count);
             foreach (var name in allowlist)

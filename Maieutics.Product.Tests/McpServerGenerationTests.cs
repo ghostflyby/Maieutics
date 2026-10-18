@@ -234,7 +234,7 @@ public sealed class McpServerGenerationTests
 
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        Assert.Equal(new string[] { "echo", "echo_alias" }, lease.Tools.Select(static function => function.Name));
+        Assert.Equal(["echo", "echo_alias"], lease.Tools.Select(static function => function.Name));
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hi\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
             static property => property.Name,
@@ -245,7 +245,7 @@ public sealed class McpServerGenerationTests
             Assert.Equal("hi", Assert.IsType<JsonElement>(result).GetProperty("structuredContent").GetProperty("value").GetString());
         }
 
-        Assert.Equal(new (string RemoteName, string ExposedName)[] { (("echo", "echo")), (("echo", "echo_alias")) }, generation.GetInfo().Tools.Select(static info => (info.RemoteName, info.ExposedName)));
+        Assert.Equal(new (string RemoteName, string ExposedName)[] { ("echo", "echo"), ("echo", "echo_alias") }, generation.GetInfo().Tools.Select(static info => (info.RemoteName, info.ExposedName)));
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -587,7 +587,7 @@ public sealed class McpServerGenerationTests
         await forwarder.FlushAsync();
 
         Assert.Equal(2, calls);
-        Assert.Equal(new double[] { 1d }, payloads);
+        Assert.Equal(new[] { 1d }, payloads);
     }
 
     private static AgentToolContext CreateProgressContext(
@@ -615,8 +615,8 @@ public sealed class McpServerGenerationTests
         var stdioDefinition = Assert.IsType<StdioMcpTransportDefinition>(stdio.RootElement
             .Deserialize(McpJsonContext.Default.McpTransportDefinition));
         Assert.Equal("deno", stdioDefinition.Command);
-        Assert.Equal(new string[] { "run", "server.ts" }, stdioDefinition.Arguments);
-        Assert.Equal("8080", Assert.Contains("PORT", (stdioDefinition.EnvironmentVariables ?? throw new InvalidOperationException("the assertion subject is null"))));
+        Assert.Equal(["run", "server.ts"], stdioDefinition.Arguments);
+        Assert.Equal("8080", Assert.Contains("PORT", stdioDefinition.EnvironmentVariables ?? throw new InvalidOperationException("the assertion subject is null")));
         Assert.Equal(McpServerTransportKind.Stdio, stdioDefinition.Kind);
 
         using var http = JsonDocument.Parse("""
@@ -698,7 +698,7 @@ public sealed class McpServerGenerationTests
         // The client answered the server's roots query with the live workspace root, so the
         // server-side tool observed it mid-call. Compare URIs: the wire form is a file URI,
         // which is not byte-identical to the platform path on Windows.
-        Assert.StartsWith("roots:file://", (echoed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("roots:file://", echoed ?? throw new InvalidOperationException("the assertion subject is null"));
         Assert.Contains(new Uri(Path.GetFullPath(workspace.Path)).AbsoluteUri, echoed);
         await generation.Retire().WaitAsync(deadline.Token);
     }
@@ -853,8 +853,8 @@ public sealed class McpServerGenerationTests
             {
                 // ClientSend EOF fails the client's next outbound write; ServerSend EOF ends
                 // its receive loop — the session completion the supervisor waits on.
-                clientSend.Complete();
-                serverSend.Complete();
+                await clientSend.CompleteAsync();
+                await serverSend.CompleteAsync();
                 await server.DisposeAsync().ConfigureAwait(false);
             }
 
@@ -945,8 +945,7 @@ public sealed class McpServerGenerationTests
                     ServerInfo = new Implementation { Name = "test", Version = "1.0" },
                     ToolCollection = [tool]
                 },
-                loggerFactory,
-                null);
+                loggerFactory);
             servers.Add((server, server.RunAsync(lifetime.Token), clientToServer.Writer, serverToClient.Writer));
             IClientTransport clientTransport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),

@@ -186,14 +186,14 @@ public sealed class PluginImportMergerTests
         Assert.True(PluginImportMerger.SameMapping(baseMap, baseMap));
         Assert.False(PluginImportMerger.SameMapping(
             baseMap,
-            new[] { Entry("@std/bytes", "jsr:@std/bytes@1.0.6") }));
+            [Entry("@std/bytes", "jsr:@std/bytes@1.0.6")]));
         Assert.False(PluginImportMerger.SameMapping(
             baseMap,
-            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") }));
+            [Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1")]));
         // Order and array-vs-string shape are not runtime-visible.
         Assert.True(PluginImportMerger.SameMapping(
-            new[] { Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1") },
-            new[] { Entry("@std/path", "jsr:@std/path@^1"), Entry("@std/bytes", "jsr:@std/bytes@1", wasArray: true) }));
+            [Entry("@std/bytes", "jsr:@std/bytes@1"), Entry("@std/path", "jsr:@std/path@^1")],
+            [Entry("@std/path", "jsr:@std/path@^1"), Entry("@std/bytes", "jsr:@std/bytes@1", wasArray: true)]));
     }
 
     private static PluginImportEntry Entry(string key, string value, bool wasArray = false) =>

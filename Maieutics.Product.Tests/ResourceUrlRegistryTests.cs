@@ -86,7 +86,7 @@ public sealed class ResourceUrlRegistryTests
         using (read.Content)
         {
             using var buffered = new MemoryStream();
-            read.Content.CopyTo(buffered);
+            await read.Content.CopyToAsync(buffered, TestContext.Current.CancellationToken);
             Assert.Equal("content", Encoding.UTF8.GetString(buffered.ToArray()));
         }
     }

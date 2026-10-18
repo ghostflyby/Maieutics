@@ -87,9 +87,7 @@ public sealed class SkillCatalogTests : IDisposable
         WriteSkill(workspaceRoot, "alpha", "first");
         // Two different directories declaring the same frontmatter name.
         Directory.CreateDirectory(Path.Combine(workspaceRoot, "beta"));
-        File.WriteAllText(
-            Path.Combine(workspaceRoot, "beta", "SKILL.md"),
-            "---\nname: alpha\ndescription: second\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(workspaceRoot, "beta", "SKILL.md"), "---\nname: alpha\ndescription: second\n---\nBody.\n", TestContext.Current.CancellationToken);
         await using var catalog = CreateCatalog(new FakeTimeProvider(), userSource: false);
 
         var snapshot = catalog.Current;
@@ -132,7 +130,7 @@ public sealed class SkillCatalogTests : IDisposable
         // The burst coalesces: well below one rebuild per written file. The generous
         // bound keeps CI flake out while still failing if debouncing regresses to
         // per-event rescans.
-        Assert.InRange((catalog.RebuildCount - rebuildsBefore), 1, 3);
+        Assert.InRange(catalog.RebuildCount - rebuildsBefore, 1, 3);
         Assert.Equal(6, catalog.Current.Skills.Count());
     }
 
@@ -186,9 +184,7 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Equal(12, catalog.Current.Skills.Count());
 
         var visitsBefore = catalog.DirectoryVisits;
-        File.WriteAllText(
-            Path.Combine(workspaceRoot, "skill-06", "SKILL.md"),
-            "---\nname: skill-06\ndescription: the edited body\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(workspaceRoot, "skill-06", "SKILL.md"), "---\nname: skill-06\ndescription: the edited body\n---\nBody.\n", TestContext.Current.CancellationToken);
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
             snapshot.Skills.Single(skill => skill.Name == "skill-06").Description == "the edited body");
@@ -196,7 +192,7 @@ public sealed class SkillCatalogTests : IDisposable
         // A full-tree walk of twelve skills costs fourteen directory visits (root file
         // probe, root listing, one probe per skill directory); the differential path
         // revalidates only the edited skill's directory, a handful of visits at most.
-        Assert.True((catalog.DirectoryVisits - visitsBefore) < 10);
+        Assert.True(catalog.DirectoryVisits - visitsBefore < 10);
     }
 
     [Fact]
@@ -304,9 +300,7 @@ public sealed class SkillCatalogTests : IDisposable
         // event of this root can release.
         var outside = Path.Combine(Path.GetTempPath(), $"maieutics-skill-away-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(outside, "alpha"));
-        File.WriteAllText(
-            Path.Combine(outside, "alpha", "SKILL.md"),
-            "---\nname: stowaway\ndescription: lives outside the root\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(outside, "alpha", "SKILL.md"), "---\nname: stowaway\ndescription: lives outside the root\n---\nBody.\n", TestContext.Current.CancellationToken);
         try
         {
             Directory.Move(Path.Combine(workspaceRoot, "alpha"), Path.Combine(outside, "moved"));
@@ -349,9 +343,7 @@ public sealed class SkillCatalogTests : IDisposable
         // A mutator touching the tree through a differently-cased spelling of the same
         // directory (case-insensitive volume): the event must match the known key and
         // revalidate it — not plant an out-of-root phantom beside the stale entry.
-        File.WriteAllText(
-            Path.Combine(workspaceRoot, "alpha", "SKILL.md"),
-            "---\nname: alpha\ndescription: the edited body\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(workspaceRoot, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: the edited body\n---\nBody.\n", TestContext.Current.CancellationToken);
         catalog.RecordWatchedChange(Path.Combine(workspaceRoot, "ALPHA", "SKILL.md"));
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
@@ -433,7 +425,7 @@ public sealed class SkillPromptComposerTests
 
         var composed = SkillPromptComposer.Compose("base prompt", snapshot);
 
-        Assert.StartsWith("base prompt", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("base prompt", composed ?? throw new InvalidOperationException("the assertion subject is null"));
         Assert.Contains("## Skills", composed);
         Assert.Contains("### Workspace skills", composed);
         Assert.Contains("### User skills", composed);
@@ -451,7 +443,7 @@ public sealed class SkillPromptComposerTests
 
         var composed = SkillPromptComposer.Compose(null, snapshot);
 
-        Assert.StartsWith("## Skills", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("## Skills", composed ?? throw new InvalidOperationException("the assertion subject is null"));
     }
 
     [Fact]
@@ -515,7 +507,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             TestContext.Current.CancellationToken);
 
         using var reader = new StreamReader(result.Content);
-        Assert.Contains("The body.", (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)));
+        Assert.Contains("The body.", await reader.ReadToEndAsync(TestContext.Current.CancellationToken));
         Assert.Equal("text/markdown", result.MimeType);
     }
 
@@ -566,9 +558,7 @@ public sealed class SkillResourceProviderTests : IDisposable
     public async Task CatalogListsActiveSkillsOnly()
     {
         Directory.CreateDirectory(Path.Combine(root, "inert"));
-        File.WriteAllText(
-            Path.Combine(root, "inert", "SKILL.md"),
-            "---\nname: inert\n---\nNo description.\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "inert", "SKILL.md"), "---\nname: inert\n---\nNo description.\n", TestContext.Current.CancellationToken);
         await using var catalog = CreateCatalog();
         var provider = new SkillResourceProvider(catalog);
 
@@ -590,7 +580,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             var provider = new SkillResourceProvider(catalog);
             var bodyPath = Path.Combine(root, "alpha", "SKILL.md");
             File.Delete(bodyPath);
-            File.WriteAllText(Path.Combine(outsideDirectory, "SKILL.md"), "Stolen body.\n");
+            await File.WriteAllTextAsync(Path.Combine(outsideDirectory, "SKILL.md"), "Stolen body.\n", TestContext.Current.CancellationToken);
             File.CreateSymbolicLink(bodyPath, Path.Combine(outsideDirectory, "SKILL.md"));
 
             var act = () => provider.ReadAsync(
@@ -611,9 +601,7 @@ public sealed class SkillResourceProviderTests : IDisposable
     {
         await using var catalog = CreateCatalog();
         var provider = new SkillResourceProvider(catalog);
-        File.WriteAllBytes(
-            Path.Combine(root, "alpha", "SKILL.md"),
-            new byte[16 * 1024]);
+        await File.WriteAllBytesAsync(Path.Combine(root, "alpha", "SKILL.md"), new byte[16 * 1024], TestContext.Current.CancellationToken);
 
         var act = () => provider.ReadAsync(
             "skill://alpha",
@@ -674,9 +662,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
         Assert.Null((await AcquireAsync(provider)).Options.SystemPrompt);
 
         Directory.CreateDirectory(Path.Combine(root, "alpha"));
-        File.WriteAllText(
-            Path.Combine(root, "alpha", "SKILL.md"),
-            "---\nname: alpha\ndescription: arrived later\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: arrived later\n---\nBody.\n", TestContext.Current.CancellationToken);
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
         while (DateTime.UtcNow < deadline && catalog.Current.Skills.IsEmpty)
         {
@@ -694,9 +680,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
     public async Task TheComposedPromptRidesTheConfiguredBasePrompt()
     {
         Directory.CreateDirectory(Path.Combine(root, "alpha"));
-        File.WriteAllText(
-            Path.Combine(root, "alpha", "SKILL.md"),
-            "---\nname: alpha\ndescription: present from start\n---\nBody.\n");
+        await File.WriteAllTextAsync(Path.Combine(root, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: present from start\n---\nBody.\n", TestContext.Current.CancellationToken);
         await using var catalog = SkillCatalog.Create(
             [(SkillSource.Workspace, root)],
             new FakeTimeProvider(),
@@ -705,7 +689,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
 
         var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
 
-        Assert.StartsWith("base instructions", (composed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.StartsWith("base instructions", composed ?? throw new InvalidOperationException("the assertion subject is null"));
         Assert.Contains("skill://alpha", composed);
     }
 

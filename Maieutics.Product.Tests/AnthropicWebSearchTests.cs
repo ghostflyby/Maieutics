@@ -34,7 +34,7 @@ public sealed class AnthropicWebSearchTests
 
         var contents = updates.SelectMany(static update => update.Contents).ToArray();
         var searchCall = contents.OfType<WebSearchToolCallContent>().Single();
-        Assert.Equal(new string[] { "zhipu ai" }, searchCall.Queries);
+        Assert.Equal(["zhipu ai"], searchCall.Queries);
         Assert.Equal("srvtoolu_test", searchCall.CallId);
 
         var searchResult = contents.OfType<WebSearchToolResultContent>().Single();
@@ -117,7 +117,7 @@ public sealed class AnthropicWebSearchTests
 
         // A constructed call with no preserved wire block cannot be faithfully replayed.
         var fabricated = new WebSearchToolCallContent("srvtoolu_x") { Queries = new List<string> { "q" } };
-        await Assert.ThrowsAnyAsync<NotSupportedException>(async () => { await (ConsumeAsync((client), fabricated, deadline.Token)); });
+        await Assert.ThrowsAnyAsync<NotSupportedException>(async () => { await ConsumeAsync(client, fabricated, deadline.Token); });
     }
 
     private static async Task ConsumeAsync(IChatClient client, AIContent content, CancellationToken cancellationToken)

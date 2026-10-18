@@ -73,7 +73,8 @@ public sealed class AgentTranscriptCodecTests
         Assert.Equal("provider-message", privateAssistant.MessageId);
         Assert.Null(privateAssistant.RawRepresentation);
         Assert.True((privateAssistant.AdditionalProperties ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("provider_message"));
-        Assert.Equal(new Type[] { typeof(TextContent), typeof(TextReasoningContent), typeof(FunctionCallContent), typeof(FunctionResultContent), typeof(UsageContent), typeof(DataContent) }, privateAssistant.Contents.Select(static content => content.GetType()));
+        Assert.Equal([typeof(TextContent), typeof(TextReasoningContent), typeof(FunctionCallContent), typeof(FunctionResultContent), typeof(UsageContent), typeof(DataContent),
+        ], privateAssistant.Contents.Select(static content => content.GetType()));
         var privateReasoning = privateAssistant.Contents.OfType<TextReasoningContent>().Single();
         Assert.Equal("private reasoning", privateReasoning.Text);
         Assert.NotNull(privateReasoning.ProtectedData);
@@ -82,7 +83,7 @@ public sealed class AgentTranscriptCodecTests
         Assert.Equal("provider-call", privateAssistant.Contents.OfType<FunctionResultContent>().Single().CallId);
         Assert.Equal(3, privateAssistant.Contents.OfType<UsageContent>().Single().Details.ReasoningTokenCount);
         Assert.Equal(Encoding.UTF8.GetBytes("{\"value\":1}"), privateAssistant.Contents.OfType<DataContent>().Single().Data.ToArray());
-        Assert.IsType<CitationAnnotation>(Assert.Single((privateAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null"))));
+        Assert.IsType<CitationAnnotation>(Assert.Single(privateAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null")));
 
         var publicTranscript = AgentTranscriptCodec.CreatePublicTranscript(state);
         var publicAssistant = publicTranscript.Turns.Single().Messages[1];
@@ -90,7 +91,7 @@ public sealed class AgentTranscriptCodecTests
         Assert.Null(publicAssistant.RawRepresentation);
         Assert.Null(publicAssistant.AdditionalProperties);
         Assert.All(publicAssistant.Contents, static content => Assert.True(content.RawRepresentation == null && content.AdditionalProperties == null));
-        Assert.Null(Assert.Single((publicAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null"))).AdditionalProperties);
+        Assert.Null(Assert.Single(publicAssistant.Contents.OfType<TextContent>().Single().Annotations ?? throw new InvalidOperationException("the assertion subject is null")).AdditionalProperties);
     }
 
     [Fact]
@@ -109,9 +110,9 @@ public sealed class AgentTranscriptCodecTests
         var publicTruncated = AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(sessionId, 1, [truncated]));
         Assert.True(publicTruncated.Turns.Single().Truncated);
-        Assert.Equal(new string[] { "question", "answer" }, publicTruncated.Turns.Single().Messages.Select(static message => message.Text));
+        Assert.Equal(["question", "answer"], publicTruncated.Turns.Single().Messages.Select(static message => message.Text));
 
-        var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages, false);
+        var complete = AgentTranscriptCodec.DetachPrivateTurn(runId, null, messages);
         Assert.False(complete.Truncated);
         Assert.False(AgentTranscriptCodec.CreatePublicTranscript(
             new AgentTranscriptState(sessionId, 2, [complete])).Turns.Single().Truncated);
@@ -265,7 +266,7 @@ public sealed class AgentTranscriptCodecTests
             message.Contents.OfType<TextReasoningContent>().Any());
         Assert.All(cached.Turns[0].Messages.SelectMany(static message => message.Contents), static content => Assert.True(content.RawRepresentation == null && content.AdditionalProperties == null));
         var publicText = cached.Turns[0].Messages[1].Contents.OfType<TextContent>().Single();
-        Assert.Null(Assert.Single((publicText.Annotations ?? throw new InvalidOperationException("the assertion subject is null"))).AdditionalProperties);
+        Assert.Null(Assert.Single(publicText.Annotations ?? throw new InvalidOperationException("the assertion subject is null")).AdditionalProperties);
         Assert.Null(Assert.Single(publicText.Annotations).RawRepresentation);
 
         // Re-projecting the cached state after mutating the first handout stays pristine.
@@ -317,7 +318,7 @@ public sealed class AgentTranscriptSessionTests
 
         var first = await CompleteTurnAsync(session, "question", deadline.Token);
 
-        Assert.Equal(new string[] { "visible answer" }, first.Events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
+        Assert.Equal(["visible answer"], first.Events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
         Assert.DoesNotContain(first.Events.OfType<AgentMessageCompleted>().Single().Message.Contents, static content => content is TextReasoningContent);
         Assert.DoesNotContain(first.Result.AssistantMessage.Contents, static content => content is TextReasoningContent);
         Assert.DoesNotContain(first.Result.Transcript.Turns.Single().Messages[1].Contents, static content => content is TextReasoningContent);
@@ -341,7 +342,7 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await reasoningOnly.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
         {
             await ReadEventsAsync(run, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         }
 
         Assert.Equal(0, reasoningOnly.GetTranscriptSnapshot().Version);
@@ -353,7 +354,7 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await custom.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
         {
             await ReadEventsAsync(run, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentContentCompatibilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
+            await Assert.ThrowsAnyAsync<AgentContentCompatibilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         }
 
         Assert.Equal(0, custom.GetTranscriptSnapshot().Version);
@@ -375,9 +376,9 @@ public sealed class AgentTranscriptSessionTests
         await using (var run = await session.StartTurnAsync(AgentTurn.FromText("image"), deadline.Token))
         {
             var events = await ReadEventsAsync(run, deadline.Token);
-            Assert.Equal(new string[] { "visible" }, events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
+            Assert.Equal(["visible"], events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
             Assert.DoesNotContain(events, static agentEvent => agentEvent is AgentMessageCompleted);
-            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         }
 
         var rolledBack = session.GetTranscriptSnapshot();
@@ -407,7 +408,7 @@ public sealed class AgentTranscriptSessionTests
         await CompleteTurnAsync(session, "second question", deadline.Token);
 
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(static message => (message.Role, message.Text)));
-        Assert.Equal(new string[] { "first question", "first answer" }, session.GetTranscriptSnapshot().Turns[0].Messages.Select(static message => message.Text));
+        Assert.Equal(["first question", "first answer"], session.GetTranscriptSnapshot().Turns[0].Messages.Select(static message => message.Text));
     }
 
     [Fact(Timeout = 30_000)]
@@ -452,7 +453,7 @@ public sealed class AgentTranscriptSessionTests
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(2, transcript.Version);
         Assert.Single(transcript.Turns);
-        Assert.Equal(new string[] { "问题", "答案" }, transcript.Turns.Single().Messages.Select(static message => message.Text));
+        Assert.Equal(["问题", "答案"], transcript.Turns.Single().Messages.Select(static message => message.Text));
     }
 
     private static async Task<(AgentRunResult Result, IReadOnlyList<AgentEvent> Events)> CompleteTurnAsync(

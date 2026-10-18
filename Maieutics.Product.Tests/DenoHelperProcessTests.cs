@@ -51,11 +51,11 @@ public sealed class DenoHelperProcessTests
                 await Task.Delay(50, deadline.Token);
             }
 
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
 
             // The helper must surface the cancellation promptly (not wait for the child)...
             var runDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run)); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run; });
             Assert.True(DateTime.UtcNow < runDeadline);
 
             // ...and the child must actually be dead: the stamp stops advancing.

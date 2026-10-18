@@ -215,7 +215,7 @@ public sealed class TaskResourceTests
 
         var read = await provider.ReadAsync(
             uri, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
-        using var document = JsonDocument.Parse(read.Content);
+        using var document = await JsonDocument.ParseAsync(read.Content, cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal("[1,2,3]", document.RootElement.GetRawText());
         Assert.Equal("application/json", read.MimeType);
 

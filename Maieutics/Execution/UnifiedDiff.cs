@@ -139,7 +139,7 @@ internal static class UnifiedDiff
         var newCount = newEnd - newStart;
         var maximumDistance = Math.Min(MaximumEditDistance, oldCount + newCount);
         var offset = maximumDistance;
-        var vectors = new int[(2 * offset) + 1];
+        var vectors = new int[2 * offset + 1];
         var trace = new List<int[]>(maximumDistance + 1);
         var comparisons = 0L;
         var distance = -1;
@@ -149,7 +149,7 @@ internal static class UnifiedDiff
             for (var k = -d; k <= d; k += 2)
             {
                 int previousK;
-                if (k == -d || (k != d && vectors[(k - 1) + offset] < vectors[(k + 1) + offset]))
+                if (k == -d || (k != d && vectors[k - 1 + offset] < vectors[k + 1 + offset]))
                     previousK = k + 1;
                 else
                     previousK = k - 1;
@@ -198,7 +198,7 @@ internal static class UnifiedDiff
             var vector = trace[d];
             var k = x0 - y0;
             int previousK;
-            if (k == -d || (k != d && vector[(k - 1) + offset] < vector[(k + 1) + offset]))
+            if (k == -d || (k != d && vector[k - 1 + offset] < vector[k + 1 + offset]))
                 previousK = k + 1;
             else
                 previousK = k - 1;

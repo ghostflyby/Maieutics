@@ -63,11 +63,11 @@ public sealed class FrontendWorkspaceBridgeTests
             return Task.CompletedTask;
         });
 
-        Assert.True((await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken)));
+        Assert.True(await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken));
         Assert.Equivalent(new[] { "first" }, received, strict: true);
 
         sockets.Withdraw("session-a", first);
-        Assert.False((await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken)), "a withdrawn registration is a lost authority, not a broadcast");
+        Assert.False(await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken), "a withdrawn registration is a lost authority, not a broadcast");
         Assert.Single(received);
     }
 
@@ -116,7 +116,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
         var listing = await channel.ListAsync([], 10, TestContext.Current.CancellationToken);
         Assert.False(listing.Truncated);
-        Assert.All(new[] { ("sub", "directory") }, item => Assert.Contains(item, listing.Entries.Select(static entry => (entry.Name, entry.Kind))));
+        Assert.All([("sub", "directory")], item => Assert.Contains(item, listing.Entries.Select(static entry => (entry.Name, entry.Kind))));
 
         Func<Task> missingList = async () =>
             await channel.ListAsync(["no-such-dir"], 10, TestContext.Current.CancellationToken);
@@ -133,7 +133,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
         // The write carries the hash of exactly the text the channel answered.
         await channel.WriteAsync(["doc.md"], "after\n", WorkspaceBridgeChannel.ContentHash("before\n"), false, TestContext.Current.CancellationToken);
-        Assert.Equal("after\n", (await File.ReadAllTextAsync(Path.Combine(harness.Root, "doc.md"), TestContext.Current.CancellationToken)));
+        Assert.Equal("after\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "doc.md"), TestContext.Current.CancellationToken));
 
         // A precondition computed from a state the frontend never answered is a conflict.
         Func<Task> conflict = async () =>
@@ -228,8 +228,8 @@ public sealed class FrontendWorkspaceBridgeTests
             .Select(static entry => entry.GetProperty("operation").GetString())
             .ToList();
         Assert.Equal(["updated", "created"], operations);
-        Assert.Equal("covered two\n", File.ReadAllText(Path.Combine(appFolder, "covered.txt")));
-        Assert.Equal("patched locally\n", File.ReadAllText(Path.Combine(harness.Root, "docs", "local.txt")));
+        Assert.Equal("covered two\n", await File.ReadAllTextAsync(Path.Combine(appFolder, "covered.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal("patched locally\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "docs", "local.txt"), TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -418,14 +418,14 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments("""{"uri":"workspace://local/new.txt","content":"created\n"}"""),
             TestContext.Current.CancellationToken))!;
         Assert.Equal("created", created.GetProperty("operation").GetString());
-        Assert.Equal("created\n", File.ReadAllText(Path.Combine(harness.Root, "new.txt")));
+        Assert.Equal("created\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "new.txt"), TestContext.Current.CancellationToken));
 
         var updated = (JsonElement)(await write.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/new.txt","content":"updated\n"}"""),
             TestContext.Current.CancellationToken))!;
         Assert.Equal("updated", updated.GetProperty("operation").GetString());
         Assert.Equal(JsonValueKind.Object, updated.GetProperty("diff").ValueKind);
-        Assert.Equal("updated\n", File.ReadAllText(Path.Combine(harness.Root, "new.txt")));
+        Assert.Equal("updated\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "new.txt"), TestContext.Current.CancellationToken));
 
         // The instruction-surface gate (ADR 0032) guards the bridged path with the
         // same posture: no policy allow, no write — before the bridge is engaged.
@@ -449,7 +449,7 @@ public sealed class FrontendWorkspaceBridgeTests
                 """{"uri":"workspace://local/code.cs","oldText":"int a = 1;","newText":"int a = 42;"}"""),
             TestContext.Current.CancellationToken))!;
         Assert.Equal(1, edited.GetProperty("replacements").GetInt32());
-        Assert.Equal("int a = 42;\nint b = 2;\n", File.ReadAllText(Path.Combine(harness.Root, "code.cs")));
+        Assert.Equal("int a = 42;\nint b = 2;\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "code.cs"), TestContext.Current.CancellationToken));
 
         var patch = edit.Functions.Single(static function => function.Name == "apply_patch");
         var patched = (JsonElement)(await patch.InvokeAsync(
@@ -458,7 +458,7 @@ public sealed class FrontendWorkspaceBridgeTests
             TestContext.Current.CancellationToken))!;
         var files = patched.GetProperty("files");
         Assert.Equal(["created", "updated", "deleted"], files.EnumerateArray().Select(static entry => entry.GetProperty("operation").GetString()));
-        Assert.Equal("int a = 42;\nint b = 3;\n", File.ReadAllText(Path.Combine(harness.Root, "code.cs")));
+        Assert.Equal("int a = 42;\nint b = 3;\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "code.cs"), TestContext.Current.CancellationToken));
         Assert.False(File.Exists(Path.Combine(harness.Root, "patchnew.txt")));
 
         // An exclusive bridged create on an existing target fails exactly like the
@@ -682,7 +682,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
                 var entries = new DirectoryInfo(path).EnumerateFileSystemInfos()
                     .OrderBy(static entry => entry.Name, StringComparer.Ordinal)
-                    .Select(static entry => (Name: entry.Name, Kind: entry switch
+                    .Select(static entry => (entry.Name, Kind: entry switch
                     {
                         _ when (entry.Attributes & FileAttributes.Directory) != 0 => 2,
                         _ when (entry.Attributes & FileAttributes.ReparsePoint) != 0 => 64,

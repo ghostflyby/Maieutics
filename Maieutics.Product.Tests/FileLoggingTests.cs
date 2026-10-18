@@ -40,7 +40,6 @@ public sealed class FileLoggingTests : IDisposable
 
         first.LogInformation("first message");
         second.LogWarning("second message");
-        provider.Dispose();
 
         var lines = File.ReadAllLines(LogFilePath);
         Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Information\] Maieutics\.Tests\.First: first message$", lines.Single(line => line.Contains("Maieutics.Tests.First", StringComparison.Ordinal)));
@@ -54,10 +53,9 @@ public sealed class FileLoggingTests : IDisposable
         var logger = provider.CreateLogger("Maieutics.Tests.Errors");
 
         logger.LogError(new InvalidOperationException("boom"), "operation failed");
-        provider.Dispose();
 
         var lines = File.ReadAllLines(LogFilePath);
-        Assert.Equal(2, lines.Count());
+        Assert.Equal(2, lines.Length);
         Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Error\] Maieutics\.Tests\.Errors: operation failed$", lines[0]);
         Assert.Contains("InvalidOperationException", lines[1]);
         Assert.Contains("boom", lines[1]);

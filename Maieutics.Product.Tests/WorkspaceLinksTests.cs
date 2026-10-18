@@ -126,24 +126,24 @@ public sealed class WorkspaceLinksTests
 
         var foreign = Path.Combine(workspace.Path, "foreign");
         ManagedWorkspaceLink.Create(foreign, workspace.ParentPath);
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/foreign", false)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve("workspace://local/foreign", false)).Code);
 
         var unregistered = Path.Combine(home.ProjectsRoot, "unregistered");
         ManagedWorkspaceLink.Create(unregistered, workspace.ParentPath);
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/unregistered", false)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve("workspace://local/projects/unregistered", false)).Code);
 
         var retargeted = Path.Combine(home.ProjectsRoot, "project");
         Directory.Delete(retargeted);
         ManagedWorkspaceLink.Create(retargeted, workspace.Path);
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/project/inner", false)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve("workspace://local/projects/project/inner", false)).Code);
 
-        Assert.Equal("workspace_path_denied", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/.maieutics/registry.json", false)).Code);
+        Assert.Equal("workspace_path_denied", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve("workspace://local/.maieutics/registry.json", false)).Code);
 
         Directory.Delete(retargeted);
         ManagedWorkspaceLink.Create(retargeted, project);
         var insideTarget = Path.Combine(project, "inner", "escape");
         ManagedWorkspaceLink.Create(insideTarget, workspace.Path);
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/project/inner/escape", false)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve("workspace://local/projects/project/inner/escape", false)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -195,17 +195,17 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(home);
 
-        Assert.ThrowsAny<DirectoryNotFoundException>(() => (context).OpenLink(
+        Assert.ThrowsAny<DirectoryNotFoundException>(() => context.OpenLink(
                 Path.Combine(workspace.ParentPath, "missing"),
                 null));
 
         if (OperatingSystem.IsWindows())
         {
-            var assertion42 = Assert.ThrowsAny<ArgumentException>(() => (context).OpenLink(@"\\server\share\project", null));
+            var assertion42 = Assert.ThrowsAny<ArgumentException>(() => context.OpenLink(@"\\server\share\project", null));
             Assert.Matches("(?is)^.*workspace\\ link\\ target.*$", assertion42.Message);
         }
 
-        var assertion43 = Assert.ThrowsAny<ArgumentException>(() => (context).OpenLink(workspace.Path, null));
+        var assertion43 = Assert.ThrowsAny<ArgumentException>(() => context.OpenLink(workspace.Path, null));
         Assert.Matches("(?is)^.*contain,\\ or\\ be\\ contained\\ by,\\ the\\ workspace\\ home.*$", assertion43.Message);
     }
 
@@ -242,10 +242,10 @@ public sealed class WorkspaceLinksTests
             TestContext.Current.CancellationToken);
         Assert.Contains("Projects: none", closed.Markdown);
 
-        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () => { await ((executor).ExecuteAsync(
-                "%workspace use somewhere",
-                null,
-                TestContext.Current.CancellationToken)); });
+        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () => { await executor.ExecuteAsync(
+            "%workspace use somewhere",
+            null,
+            TestContext.Current.CancellationToken); });
     }
 
     private static string TargetHash(string canonicalTarget, int characters)

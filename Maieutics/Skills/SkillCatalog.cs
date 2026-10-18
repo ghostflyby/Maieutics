@@ -241,7 +241,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
             pumpTasks = [.. pumps];
         }
 
-        lifetime.Cancel();
+        await lifetime.CancelAsync();
         try
         {
             // A pump that already entered its (synchronous, cancellation-blind) rescan walk

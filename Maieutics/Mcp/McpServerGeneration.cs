@@ -1254,22 +1254,22 @@ internal sealed class McpServerGeneration
 
         /// <summary>Renames / re-describes / re-schemas a tool surface without
         /// changing invocation: the call still routes to the inner remote tool.</summary>
+        // ReSharper disable once InconsistentNaming
         private sealed class RenamingAIFunction : DelegatingAIFunction
         {
-            private readonly string? description;
             private readonly JsonElement? schema;
 
             public RenamingAIFunction(AIFunction innerFunction, string name, string? description, JsonElement? schema)
                 : base(innerFunction)
             {
                 Name = name;
-                this.description = description;
+                Description = description;
                 this.schema = schema;
             }
 
             public override string Name { get; }
 
-            public override string Description => description ?? base.Description;
+            public override string Description => field ?? base.Description;
 
             public override JsonElement JsonSchema =>
                 schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;

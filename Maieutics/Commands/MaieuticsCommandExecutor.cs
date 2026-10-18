@@ -610,7 +610,7 @@ internal sealed class MaieuticsCommandExecutor(
             raw = preview.Length <= 40 ? preview : preview[..40] + "…";
         }
 
-        var oneLine = string.Join(' ', raw.Split(new[] { '\r', '\n' },
+        var oneLine = string.Join(' ', raw.Split(['\r', '\n'],
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         var escaped = oneLine.Replace("|", "\\|", StringComparison.Ordinal);
         if (session.ParentSessionId is not null && !escaped.Contains("branch @ turn", StringComparison.Ordinal))

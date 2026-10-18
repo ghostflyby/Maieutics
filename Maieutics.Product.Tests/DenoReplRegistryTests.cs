@@ -23,17 +23,17 @@ public sealed class DenoReplRegistryTests
 
         var functions = new DenoReplFunctions(registry).Functions;
 
-        Assert.Equal(new string[] { "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close" }, functions.Select(static function => function.Name));
+        Assert.Equal(["repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
             function.JsonSchema.GetProperty("type").GetString() == "object"));
-        Assert.Equal(new string[] { "code", "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_execute")));
-        Assert.Equal(new string?[] { "code" }, functions.Single(static function => function.Name == "repl_execute")
+        Assert.Equal(new[] { "code", "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_execute")));
+        Assert.Equal(["code"], functions.Single(static function => function.Name == "repl_execute")
             .JsonSchema.GetProperty("required").EnumerateArray()
             .Select(static value => value.GetString()));
         Assert.Empty(SchemaProperties(functions.Single(static function => function.Name == "repl_create")));
         Assert.Empty(SchemaProperties(functions.Single(static function => function.Name == "repl_list")));
-        Assert.Equal(new string[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_restart")));
-        Assert.Equal(new string[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_close")));
+        Assert.Equal(new[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_restart")));
+        Assert.Equal(new[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_close")));
         Assert.Contains("private reasoning", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("Deno.jupyter.display", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("raw: true", functions.Single(static function => function.Name == "repl_execute").Description);
@@ -69,12 +69,12 @@ public sealed class DenoReplRegistryTests
             Assert.Equal(firstRoot, first.Cwd);
             Assert.Equal(firstRoot, second.Cwd);
             Assert.Equal(2, factory.Generations.Count());
-            Assert.Equal(new string[] { firstRoot, firstRoot }, factory.Starts.Select(static start => start.WorkingDirectory));
+            Assert.Equal([firstRoot, firstRoot], factory.Starts.Select(static start => start.WorkingDirectory));
             Assert.Equal(2, registry.List(owner).Sessions.Count());
 
-            var limitFailure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (((Registry: registry, Owner: owner)).Registry.CreateAsync(
-                    ((Registry: registry, Owner: owner)).Owner,
-                    TestContext.Current.CancellationToken)); });
+            var limitFailure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (Registry: registry, Owner: owner).Registry.CreateAsync(
+                (Registry: registry, Owner: owner).Owner,
+                TestContext.Current.CancellationToken); });
             Assert.Equal("repl_session_limit", limitFailure.Code);
 
             var restarted = await registry.RestartAsync(
@@ -116,9 +116,9 @@ public sealed class DenoReplRegistryTests
 
         try
         {
-            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (((Registry: registry, Owner: owner)).Registry.CreateAsync(
-                    ((Registry: registry, Owner: owner)).Owner,
-                    TestContext.Current.CancellationToken)); });
+            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (Registry: registry, Owner: owner).Registry.CreateAsync(
+                (Registry: registry, Owner: owner).Owner,
+                TestContext.Current.CancellationToken); });
             Assert.Equal("repl_start_failed", failure.Code);
 
             var faulted = Assert.Single(registry.List(owner).Sessions);
@@ -131,7 +131,7 @@ public sealed class DenoReplRegistryTests
                 TestContext.Current.CancellationToken);
             Assert.Equal(2, restarted.Generation);
             Assert.Equal("idle", restarted.State);
-            Assert.Equal(new int[] { 1, 2 }, factory.Attempts);
+            Assert.Equal(new[] { 1, 2 }, factory.Attempts);
         }
         finally
         {
@@ -169,7 +169,7 @@ public sealed class DenoReplRegistryTests
             Assert.False(second.IsCompleted);
 
             generation.AllowDisposal.TrySetResult();
-            Assert.All((await Task.WhenAll(first, second)), result => Assert.True(result.Closed));
+            Assert.All(await Task.WhenAll(first, second), result => Assert.True(result.Closed));
             Assert.Empty(registry.List(owner).Sessions);
             Assert.Equal(1, generation.DisposeCount);
         }
@@ -216,9 +216,11 @@ public sealed class DenoReplRegistryTests
 
     private static string[] SchemaProperties(AIFunction function)
     {
-        return function.JsonSchema.GetProperty("properties").EnumerateObject()
-            .Select(static property => property.Name)
-            .ToArray();
+        return
+        [
+            .. function.JsonSchema.GetProperty("properties").EnumerateObject()
+                .Select(static property => property.Name),
+        ];
     }
 
     private sealed class FailOnceFactory : IDenoReplSessionFactory

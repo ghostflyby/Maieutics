@@ -167,7 +167,7 @@ internal sealed class SessionBusConnection : IAsyncDisposable
         }
         finally
         {
-            lifetime.Cancel();
+            await lifetime.CancelAsync();
         }
 
         if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)

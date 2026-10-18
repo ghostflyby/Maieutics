@@ -11,13 +11,12 @@ namespace Maieutics.Mcp;
 /// templates in the live catalogs, resolves a URI by exact resource before
 /// template match in <c>mcp.json</c> server order, and reads through
 /// <c>resources/read</c> under the connection lease and request timeout.</summary>
-internal sealed class McpResourceProvider : IResourceProvider, IResourceCatalogProvider
+internal sealed class McpResourceProvider : IResourceCatalogProvider
 {
     private const string EscapeHatchScheme = "mcp";
     private const string EscapeHatchPrefix = "mcp://";
 
     private readonly Func<IMcpResourceCatalogSource> sourceFactory;
-    private IMcpResourceCatalogSource? source;
 
     internal McpResourceProvider(Func<IMcpResourceCatalogSource> sourceFactory)
     {
@@ -26,7 +25,7 @@ internal sealed class McpResourceProvider : IResourceProvider, IResourceCatalogP
 
     /// <summary>Resolved on first use: the composition root wires this provider into the
     /// registry while the runtime configuration itself is still being constructed.</summary>
-    private IMcpResourceCatalogSource Source => source ??= sourceFactory();
+    private IMcpResourceCatalogSource Source => field ??= sourceFactory();
 
     public string Id => "mcp";
 

@@ -106,7 +106,7 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"kind\":\"open\",\"commId\":\"u1\"," +
             "\"targetName\":\"maieutics.view/maieutics/form\",\"data\":{\"state\":{\"title\":\"hi\"}}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
+        var sent = await harness.Host.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.Contains("\"capability.result\"", sent);
         Assert.Contains("\"ui-1\"", sent);
         Assert.Equal("u1", Assert.Single(frames).CommId);
@@ -134,7 +134,7 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ui.models\"," +
             "\"payload\":{\"kind\":\"message\",\"commId\":\"u1\",\"data\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
+        var sent = await harness.Host.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.Contains("\"capability_denied\"", sent);
         Assert.False(sinkRan);
     }
@@ -161,7 +161,7 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ui.models\"," +
             "\"payload\":{\"kind\":\"open\",\"commId\":\"u1\"}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
+        var sent = await harness.Host.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.Contains("\"invalid_capability_invoke\"", sent);
         Assert.False(sinkRan);
     }
@@ -183,7 +183,7 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ui.models\"," +
             "\"payload\":{\"kind\":\"message\",\"commId\":\"u1\",\"data\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
+        var sent = await harness.Host.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.Contains("\"ui_frame_rejected\"", sent);
         Assert.Contains("No active session", sent);
     }
@@ -227,7 +227,7 @@ public sealed class PluginUiCapabilityTests
             session.ToString(),
             publisher,
             "plugin-1",
-            new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form", null),
+            new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form"),
             TestContext.Current.CancellationToken);
         await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await act.Invoke(); });
         var live = router.PlaneFor(session.ToString()).SnapshotLive();

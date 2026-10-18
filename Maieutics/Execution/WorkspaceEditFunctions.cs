@@ -821,7 +821,7 @@ internal sealed class WorkspaceEditFunctions
         }
 
         var body = string.Join(crlf ? "\r\n" : "\n", lines);
-        var trailing = endsWithNewline(before) ? (crlf ? "\r\n" : "\n") : "";
+        var trailing = endsWithNewline(before) ? crlf ? "\r\n" : "\n" : "";
         return body + trailing;
 
         static bool endsWithNewline(string text)

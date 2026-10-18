@@ -37,8 +37,8 @@ public sealed class PermissionProfileLoaderTests
             var layer = PermissionProfileLoader.Load(path);
 
             var read = layer.Kinds[PermissionKind.Read];
-            Assert.Equal(new string[] { Path.Combine(root, "src"), absolutePath }, read.Allow);
-            Assert.Equal(new string[] { Path.Combine(root, "src", "secret") }, read.Deny);
+            Assert.Equal([Path.Combine(root, "src"), absolutePath], read.Allow);
+            Assert.Equal([Path.Combine(root, "src", "secret")], read.Deny);
         }
         finally
         {

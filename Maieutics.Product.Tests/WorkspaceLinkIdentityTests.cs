@@ -133,7 +133,7 @@ public sealed class WorkspaceLinkIdentityTests
         Assert.Equal(WorkspaceLinkState.IdentityChanged, links.HealthByName["project"].State);
         Assert.False(Directory.Exists(Path.Combine(remounted.ProjectsRoot, "project")), "the physical link is withheld so the wrong project is never read");
 
-        var assertion41 = Assert.ThrowsAny<InvalidOperationException>(() => (context).OpenLink(replacement, null));
+        var assertion41 = Assert.ThrowsAny<InvalidOperationException>(() => context.OpenLink(replacement, null));
         Assert.Matches("(?is)^.*bound\\ to\\ a\\ different\\ project.*$", assertion41.Message);
 
         // The explicit recovery path: close the stale binding and adopt the new directory,

@@ -18,14 +18,14 @@ public sealed class WorkspaceEditToolTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var functions = CreateFunctions(workspace.Path).Functions;
 
-        Assert.Equal(new string[] { "write_text", "edit_text", "apply_patch" }, functions.Select(static function => function.Name));
+        Assert.Equal(["write_text", "edit_text", "apply_patch"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
             function.JsonSchema.GetProperty("type").GetString() == "object"));
 
         var write = Function(functions, "write_text");
-        var assertion40 = await Assert.ThrowsAnyAsync<Exception>(async () => { await ((write).InvokeAsync(
-                Arguments("""{"uri":"workspace://local/a.txt","content":"x","extra":1}"""),
-                cancellationToken).AsTask()); });
+        var assertion40 = await Assert.ThrowsAnyAsync<Exception>(async () => { await write.InvokeAsync(
+            Arguments("""{"uri":"workspace://local/a.txt","content":"x","extra":1}"""),
+            cancellationToken).AsTask(); });
         Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
                 exception.GetType() == typeof(JsonException)))(assertion40));
     }
@@ -52,9 +52,9 @@ public sealed class WorkspaceEditToolTests
         Assert.Equal(2, result.Diff.Additions);
         Assert.Equal(0, result.Diff.Deletions);
         Assert.False(result.Diff.Truncated);
-        Assert.Equal("one\ntwo\n", (await File.ReadAllTextAsync(
-                Path.Combine(workspace.Path, "deep", "nested", "a.txt"),
-                cancellationToken)));
+        Assert.Equal("one\ntwo\n", await File.ReadAllTextAsync(
+            Path.Combine(workspace.Path, "deep", "nested", "a.txt"),
+            cancellationToken));
     }
 
     [Fact(Timeout = 30_000)]
@@ -107,7 +107,7 @@ public sealed class WorkspaceEditToolTests
 
         Assert.Equal(1, result.Replacements);
         Assert.Contains("-gamma\n+GAMMA\n", result.Diff.Unified);
-        Assert.Equal([0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("alpha\nGAMMA\n")], (await File.ReadAllBytesAsync(marked, cancellationToken)));
+        Assert.Equal([0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes("alpha\nGAMMA\n")], await File.ReadAllBytesAsync(marked, cancellationToken));
     }
 
     [Fact(Timeout = 30_000)]
@@ -162,7 +162,7 @@ public sealed class WorkspaceEditToolTests
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.EditTextResult);
         Assert.Equal(1, result.Replacements);
-        Assert.Equal("FIRST\r\nSECOND\r\n", (await File.ReadAllTextAsync(crlf, cancellationToken)));
+        Assert.Equal("FIRST\r\nSECOND\r\n", await File.ReadAllTextAsync(crlf, cancellationToken));
 
         await File.WriteAllTextAsync(
             workspace.Path + Path.DirectorySeparatorChar + "dupe.txt",
@@ -174,9 +174,9 @@ public sealed class WorkspaceEditToolTests
                 cancellationToken),
             WorkspaceEditJsonSerializerContext.Default.EditTextResult);
         Assert.Equal(2, all.Replacements);
-        Assert.Equal("z\ny\nz\n", (await File.ReadAllTextAsync(
-                workspace.Path + Path.DirectorySeparatorChar + "dupe.txt",
-                cancellationToken)));
+        Assert.Equal("z\ny\nz\n", await File.ReadAllTextAsync(
+            workspace.Path + Path.DirectorySeparatorChar + "dupe.txt",
+            cancellationToken));
     }
 
     [Fact(Timeout = 30_000)]
@@ -390,8 +390,8 @@ public sealed class WorkspaceEditToolTests
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbiddenSkill).Code);
 
         // Ordinary workspace files are unaffected by the instruction gate.
-        Assert.Null((await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/docs/notes.md"))));
+        Assert.Null(await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/docs/notes.md")));
 
         // A session override allow admits the instruction path explicitly (the migration path).
         registry.Set(sessionId, new PermissionLayer
@@ -402,8 +402,8 @@ public sealed class WorkspaceEditToolTests
             }
         });
 
-        Assert.Null((await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/AGENTS.md"))));
+        Assert.Null(await Record.ExceptionAsync(
+            () => invokeWrite("workspace://local/AGENTS.md")));
     }
 
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);

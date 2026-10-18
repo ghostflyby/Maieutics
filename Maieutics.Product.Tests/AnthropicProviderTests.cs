@@ -68,7 +68,7 @@ public sealed class AnthropicProviderTests
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 
-        var assertion1 = await Assert.ThrowsAnyAsync<InvalidDataException>(async () => { await (ConsumeAsync((client), TestContext.Current.CancellationToken)); });
+        var assertion1 = await Assert.ThrowsAnyAsync<InvalidDataException>(async () => { await ConsumeAsync(client, TestContext.Current.CancellationToken); });
         Assert.Matches("(?is)^.*overloaded_error.*$", assertion1.Message);
         await server.Request.WaitAsync(TestContext.Current.CancellationToken);
     }
@@ -91,11 +91,11 @@ public sealed class AnthropicProviderTests
                 cancellationToken: cancellation.Token)
             .GetAsyncEnumerator(cancellation.Token);
 
-        Assert.True((await updates.MoveNextAsync()));
+        Assert.True(await updates.MoveNextAsync());
         Assert.Equal("partial", updates.Current.Text);
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((updates).MoveNextAsync()); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await updates.MoveNextAsync(); });
     }
 
     private static async Task ConsumeAsync(IChatClient client, CancellationToken cancellationToken)

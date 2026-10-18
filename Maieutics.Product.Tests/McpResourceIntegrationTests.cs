@@ -143,7 +143,7 @@ public sealed class McpResourceIntegrationTests
         public async ValueTask DisposeAsync()
         {
             var retirement = generation.Retire();
-            lifetime.Cancel();
+            await lifetime.CancelAsync();
             try
             {
                 await serverTask;
@@ -227,11 +227,10 @@ public sealed class McpResourceIntegrationTests
                             })
                     }
                 },
-                NullLoggerFactory.Instance,
-                null);
+                NullLoggerFactory.Instance);
             var serverTask = server.RunAsync(linked.Token);
 
-            var transportDefinition = new StdioMcpTransportDefinition("in-proc", [], null, null);
+            var transportDefinition = new StdioMcpTransportDefinition("in-proc", []);
             var definition = new McpServerDefinition(
                 "test-server",
                 transportDefinition,

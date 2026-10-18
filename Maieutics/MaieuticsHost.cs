@@ -296,7 +296,7 @@ public static class MaieuticsHost
                 await services.GetRequiredService<ReplControlHost>()
                     .PushCommMessageAsync(sessionId, message, cancellationToken)
                     .ConfigureAwait(false)));
-        builder.Services.AddSingleton<FrontendSessionService>(CreateFrontendSessionService);
+        builder.Services.AddSingleton(CreateFrontendSessionService);
         builder.Services.AddSingleton<IFrontendSessionFramePublisher>(static services =>
             services.GetRequiredService<FrontendSessionService>());
         builder.Services.AddSingleton<FrontendFormModelHost>(static services => new FrontendFormModelHost(
@@ -322,9 +322,10 @@ public static class MaieuticsHost
             services.GetRequiredService<WorkspaceEditFunctions>(),
             services.GetRequiredService<FrontendIdeSockets>()));
         builder.Services.AddSingleton(static services => new IdeToolFamily(
-            services.GetRequiredService<IdeFunctions>().Functions
-                .Concat(services.GetRequiredService<IdeDebugTools>().Functions)
-                .ToList(),
+            [
+                .. services.GetRequiredService<IdeFunctions>().Functions,
+                .. services.GetRequiredService<IdeDebugTools>().Functions,
+            ],
             services.GetRequiredService<IIdeFrontendGate>()));
         // The workspace file-system bridge (ADR 0042 stage F, decision 12): when an
         // announcing frontend is live, the workspace tools' I/O forwards to the elected
@@ -512,7 +513,7 @@ public static class MaieuticsHost
             .. services.GetRequiredService<ResourceFunctions>().Functions,
             .. services.GetRequiredService<DenoReplFunctions>().Functions,
             .. services.GetRequiredService<AgentSubagentFunctions>().Functions,
-            .. (services.GetService<AgentObjectFunctions>()?.Functions ?? [])
+            .. services.GetService<AgentObjectFunctions>()?.Functions ?? []
         ]);
         builder.Services.AddSingleton(CreateAgentSessionManager);
         builder.Services.AddSingleton<IAgentSession>(static services =>
@@ -980,28 +981,33 @@ internal sealed class FrontendPluginSurfaceAdapter(PluginHostManager manager) : 
             gateway?.Hostname,
             gateway?.Port ?? 0,
             gateway?.Token);
-        return surfaces.Select(surface => new FrontendPluginSurfaceEntry(
-            surface.Id,
-            surface.Name,
-            surface.ApprovalState.ToString(),
-            surface.Form is null
-                ? null
-                : new FrontendUiFormState(
-                    surface.Form.Title,
-                    surface.Form.Fields
-                        .Select(field => new FrontendUiFormField(
-                            field.Name,
-                            field.Label,
-                            field.Type,
-                            field.Choices?.Select(choice => new FrontendUiFormChoice(choice.Value, choice.Label))
-                                .ToArray(),
-                            field.Required,
-                            field.Placeholder))
-                        .ToArray(),
-                    surface.Form.SubmitLabel,
-                    surface.Form.CancelLabel),
-            surface.Form?.Error,
-            surface.PageUrl)).ToArray();
+        return
+        [
+            .. surfaces.Select(surface => new FrontendPluginSurfaceEntry(
+                surface.Id,
+                surface.Name,
+                surface.ApprovalState.ToString(),
+                surface.Form is null
+                    ? null
+                    : new FrontendUiFormState(
+                        surface.Form.Title,
+                        [
+                            .. surface.Form.Fields
+                                .Select(field => new FrontendUiFormField(
+                                    field.Name,
+                                    field.Label,
+                                    field.Type,
+                                    field.Choices
+                                        ?.Select(choice => new FrontendUiFormChoice(choice.Value, choice.Label))
+                                        .ToArray(),
+                                    field.Required,
+                                    field.Placeholder)),
+                        ],
+                        surface.Form.SubmitLabel,
+                        surface.Form.CancelLabel),
+                surface.Form?.Error,
+                surface.PageUrl)),
+        ];
     }
 
     public ValueTask PublishUiFormAsync(string pluginId, CancellationToken cancellationToken) =>

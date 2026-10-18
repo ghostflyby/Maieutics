@@ -195,7 +195,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
         catch (TimeoutException)
         {
         }
-        lifetime.Cancel();
+        await lifetime.CancelAsync();
         try
         {
             await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
@@ -312,8 +312,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                     })
                 }
             },
-            NullLoggerFactory.Instance,
-            null);
+            NullLoggerFactory.Instance);
         var serverTask = server.RunAsync(linked.Token);
 
         var clientTransport = new StreamClientTransport(
@@ -325,7 +324,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
         var generation = await McpServerGeneration.CreateAsync(
             new McpServerDefinition(
                 "test-server",
-                new StdioMcpTransportDefinition("in-proc", [], null, null),
+                new StdioMcpTransportDefinition("in-proc", []),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),
                 TimeSpan.FromSeconds(5),

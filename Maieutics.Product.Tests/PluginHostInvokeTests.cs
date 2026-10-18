@@ -72,7 +72,7 @@ public sealed class PluginHostInvokeTests
             deadline.Token);
         Assert.False(invoke.IsCompleted, "a pending invoke waits for the host response");
 
-        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
         Assert.Contains("\"host.invoke\"", sent);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
         Assert.False(string.IsNullOrWhiteSpace(envelope.CorrelationId));
@@ -110,7 +110,7 @@ public sealed class PluginHostInvokeTests
             request: null,
             deadline.Token);
 
-        var envelope = EnvelopeOf(await harness.Host!.ReadSentAsync(deadline.Token));
+        var envelope = EnvelopeOf(await harness.Host.ReadSentAsync(deadline.Token));
         harness.Manager.HandleHostMessage(
             "{\"version\":1,\"type\":\"host.invokeError\",\"correlationId\":\"" + envelope.CorrelationId +
             "\",\"payload\":{\"code\":\"extension_failed\",\"message\":\"boom\"}}");
@@ -150,7 +150,7 @@ public sealed class PluginHostInvokeTests
         var markers = new List<int>();
         for (var index = 0; index < 12; index++)
         {
-            var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+            var sent = await harness.Host.ReadSentAsync(deadline.Token);
             var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
             Assert.Equal("capability.result", envelope.Type);
             var payload = JsonSerializer.Deserialize(
@@ -185,7 +185,7 @@ public sealed class PluginHostInvokeTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
             "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
         Assert.Equal("capability.result", envelope.Type);
         Assert.Equal("cap-1", envelope.CorrelationId);
@@ -219,7 +219,7 @@ public sealed class PluginHostInvokeTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"filesystem.write\"," +
             "\"payload\":{\"tool\":\"workspace_write\",\"arguments\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
         Assert.Equal("capability.error", envelope.Type);
         Assert.Equal("cap-2", envelope.CorrelationId);
@@ -248,7 +248,7 @@ public sealed class PluginHostInvokeTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
             "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
         Assert.Equal("capability.error", envelope.Type);
         var payload = JsonSerializer.Deserialize(
@@ -273,7 +273,7 @@ public sealed class PluginHostInvokeTests
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
             "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
 
-        var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
         var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
         Assert.Equal("capability.error", envelope.Type);
         var payload = JsonSerializer.Deserialize(
@@ -300,9 +300,9 @@ public sealed class PluginHostInvokeTests
             ReplExtensionPointName.ToolPreInvoke,
             request: null,
             deadline.Token);
-        _ = await harness.Host!.ReadSentAsync(deadline.Token);
+        _ = await harness.Host.ReadSentAsync(deadline.Token);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invoke)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await invoke; });
     }
 
     [Fact(Timeout = 60_000)]
@@ -322,10 +322,10 @@ public sealed class PluginHostInvokeTests
             ReplExtensionPointName.ToolPreInvoke,
             request: null,
             callCancellation.Token);
-        _ = await harness.Host!.ReadSentAsync(deadline.Token);
+        _ = await harness.Host.ReadSentAsync(deadline.Token);
 
-        callCancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invoke)); });
+        await callCancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await invoke; });
     }
 
     [Fact(Timeout = 60_000)]
@@ -344,11 +344,11 @@ public sealed class PluginHostInvokeTests
             ReplExtensionPointName.ToolPreInvoke,
             request: null,
             deadline.Token);
-        _ = await harness.Host!.ReadSentAsync(deadline.Token);
+        _ = await harness.Host.ReadSentAsync(deadline.Token);
 
         // Closing the host connection runs the manager's receive-loop finally, which fails every
         // pending invoke with a typed host_disconnected outcome (never a hang).
-        harness.Host!.Dispose();
+        harness.Host.Dispose();
 
         var outcome = await invoke;
         Assert.True(outcome.IsError);
@@ -404,7 +404,7 @@ public sealed class PluginHostInvokeTests
             "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"cap-after-refusal\"," +
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"tools.invoke\"," +
             "\"payload\":{\"tool\":\"workspace_list\",\"arguments\":{}}}}");
-        var stillFirst = await harness.Host!.ReadSentAsync(deadline.Token);
+        var stillFirst = await harness.Host.ReadSentAsync(deadline.Token);
         Assert.Contains("cap-after-refusal", stillFirst);
 
         // After the live host detaches, a fresh attach is accepted again. The old detach finishes
@@ -414,7 +414,7 @@ public sealed class PluginHostInvokeTests
         // refused attach completes instantly and an attempt-count retry loop spins without
         // waiting (the CI failure mode).
         var released = harness.Manager.HostConnectionReleased;
-        harness.Host!.Dispose();
+        harness.Host.Dispose();
         await released.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
 
         var thirdAttached = harness.Manager.HostConnectionAttached;
@@ -492,7 +492,7 @@ public sealed class PluginHostInvokeTests
             this.fakeDenoPath = fakeDenoPath;
         }
 
-        internal FakeHostWebSocket? Host { get; }
+        internal FakeHostWebSocket Host { get; }
 
         internal PluginHostManager Manager { get; }
 
@@ -637,7 +637,7 @@ public sealed class PluginHostInvokeTests
         "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
         "\"payload\":{\"tool\":\"ide_diagnostics\",\"arguments\":{}}}}");
 
-    var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+    var sent = await harness.Host.ReadSentAsync(deadline.Token);
     var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
     Assert.Equal("capability.result", envelope.Type);
     var payload = JsonSerializer.Deserialize(
@@ -669,7 +669,7 @@ public sealed class PluginHostInvokeTests
         "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
         "\"payload\":{\"tool\":\"ide_apply_edit\",\"arguments\":{}}}}");
 
-    var sent = await harness.Host!.ReadSentAsync(deadline.Token);
+    var sent = await harness.Host.ReadSentAsync(deadline.Token);
     var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
     Assert.Equal("capability.error", envelope.Type);
     var payload = JsonSerializer.Deserialize(

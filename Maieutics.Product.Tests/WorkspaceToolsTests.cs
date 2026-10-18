@@ -20,7 +20,7 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var functions = CreateFunctions(workspace.Path).Functions;
 
-        Assert.Equal(new string[] { "list_directory", "read_text", "search_text" }, functions.Select(static function => function.Name));
+        Assert.Equal(["list_directory", "read_text", "search_text"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
             function.JsonSchema.GetProperty("type").GetString() == "object"));
 
@@ -30,9 +30,9 @@ public sealed class WorkspaceToolsTests
             TestContext.Current.CancellationToken);
         Assert.IsType<JsonElement>(result);
 
-        var assertion44 = await Assert.ThrowsAnyAsync<Exception>(async () => { await ((list).InvokeAsync(
-                Arguments("""{"unexpected":true}"""),
-                TestContext.Current.CancellationToken).AsTask()); });
+        var assertion44 = await Assert.ThrowsAnyAsync<Exception>(async () => { await list.InvokeAsync(
+            Arguments("""{"unexpected":true}"""),
+            TestContext.Current.CancellationToken).AsTask(); });
         Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
                 exception.GetType() == typeof(JsonException)))(assertion44));
     }
@@ -53,7 +53,7 @@ public sealed class WorkspaceToolsTests
             """{"pageSize":2}"""), WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
 
         Assert.Equal("workspace://local/", first.Uri);
-        Assert.Equal(new string[] { "a.txt", "b" }, first.Entries.Select(static entry => entry.Name));
+        Assert.Equal(["a.txt", "b"], first.Entries.Select(static entry => entry.Name));
         Assert.Equivalent(new
         {
             Uri = "workspace://local/a.txt",
@@ -69,7 +69,7 @@ public sealed class WorkspaceToolsTests
                 tool,
                 $$"""{"cursor":{{JsonSerializer.Serialize(first.NextCursor)}}}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        Assert.Equal(new string[] { "c.txt" }, second.Entries.Select(static entry => entry.Name));
+        Assert.Equal(["c.txt"], second.Entries.Select(static entry => entry.Name));
         Assert.Null(second.NextCursor);
 
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "d.txt"), "d", TestContext.Current.CancellationToken);
@@ -96,7 +96,7 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
 
-        Assert.Equal("workspace_invalid_uri", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve(uri)).Code);
+        Assert.Equal("workspace_invalid_uri", Assert.ThrowsAny<WorkspaceException>(() => snapshot.Resolve(uri)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -164,13 +164,13 @@ public sealed class WorkspaceToolsTests
         File.Delete(file);
         File.CreateSymbolicLink(file, outside);
 
-        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).OpenVerifiedRead(resolved)).Code);
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => snapshot.OpenVerifiedRead(resolved)).Code);
 
         File.Delete(file);
         Directory.Delete(directory);
         Directory.CreateSymbolicLink(directory, workspace.ParentPath);
 
-        Assert.ThrowsAny<IOException>(() => (snapshot).OpenVerifiedRead(resolved));
+        Assert.ThrowsAny<IOException>(() => snapshot.OpenVerifiedRead(resolved));
     }
 
     [Fact]
@@ -180,13 +180,13 @@ public sealed class WorkspaceToolsTests
         var child = Directory.CreateDirectory(Path.Combine(workspace.Path, "child")).FullName;
 
         Assert.Equal(child, Workspace.Create("child", workspace.Path).Capture().RootPath);
-        Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(" ", (workspace).Path));
+        Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(" ", workspace.Path));
 
         if (!OperatingSystem.IsWindows())
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, (workspace).ParentPath));
+            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, workspace.ParentPath));
         }
     }
 
@@ -374,9 +374,9 @@ public sealed class WorkspaceToolsTests
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
         var token = canceled.Token;
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((fileLimited).InvokeAsync(
-                Arguments("""{"query":"target"}"""),
-                token).AsTask()); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await fileLimited.InvokeAsync(
+            Arguments("""{"query":"target"}"""),
+            token).AsTask(); });
     }
 
     [Fact(Timeout = 10_000)]
@@ -534,7 +534,8 @@ public sealed class WorkspaceToolsTests
                 ["--config", configurationFile, "--workspace", commandRoot]);
             using var commandHost = commandBuilder.Build();
             Assert.Equal(commandRoot, commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
-            Assert.Equal(new string[] { "list_directory", "read_text", "search_text", "write_text", "edit_text", "apply_patch", "list_resources", "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close", "agent_spawn", "task_wait", "task_cancel" }, commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
+            Assert.Equal(["list_directory", "read_text", "search_text", "write_text", "edit_text", "apply_patch", "list_resources", "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close", "agent_spawn", "task_wait", "task_cancel",
+            ], commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
                 .Select(static function => function.Name));
         }
 
@@ -583,7 +584,7 @@ public sealed class WorkspaceToolsTests
         {
             var link = Path.Combine(workspace.ParentPath, "workspace-link");
             Directory.CreateSymbolicLink(link, workspace.Path);
-            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, (workspace).ParentPath));
+            Assert.ThrowsAny<ArgumentException>(() => Workspace.Create(link, workspace.ParentPath));
         }
     }
 

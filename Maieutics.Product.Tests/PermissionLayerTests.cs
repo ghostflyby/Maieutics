@@ -24,7 +24,7 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([baseline, session], CreateVariables(workspace: "/ws"));
 
-        Assert.Equal(new string[] { "/kernel", "/ws/cache" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(["/kernel", "/ws/cache"], policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class PermissionLayerTests
 
         var read = policy.For(PermissionKind.Read);
         Assert.True(read.AllowAll);
-        Assert.Equal(new string[] { "/kernel/secret", "/kernel/secret/gift" }, read.Deny);
+        Assert.Equal(["/kernel/secret", "/kernel/secret/gift"], read.Deny);
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public sealed class PermissionLayerTests
 
         var write = policy.For(PermissionKind.Write);
         Assert.True(write.DenyAll);
-        Assert.Equal(new string[] { "/data" }, write.Allow);
+        Assert.Equal(["/data"], write.Allow);
     }
 
     [Fact]
@@ -67,9 +67,9 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([layer], CreateVariables());
 
-        Assert.Equal(new string[] { "localhost:8080" }, policy.For(PermissionKind.Net).Allow);
-        Assert.Equal(new string[] { "hostname" }, policy.For(PermissionKind.Sys).Allow);
-        Assert.Equal(new string[] { "HOME" }, policy.For(PermissionKind.Env).Allow);
+        Assert.Equal(["localhost:8080"], policy.For(PermissionKind.Net).Allow);
+        Assert.Equal(["hostname"], policy.For(PermissionKind.Sys).Allow);
+        Assert.Equal(["HOME"], policy.For(PermissionKind.Env).Allow);
         Assert.Equal(PermissionKindRules.Empty, policy.For(PermissionKind.Run));
     }
 
@@ -81,7 +81,7 @@ public sealed class PermissionLayerTests
 
         var policy = PermissionLayerStore.Build([layer], CreateVariables(workspace: "/ws"));
 
-        Assert.Equal(new string[] { "/ws" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(["/ws"], policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]

@@ -14,6 +14,7 @@ namespace Maieutics.Mcp;
 /// elicitation (ADR 0029 decision 3). The wrapper is inert outside a Maieutics tool call:
 /// script-tool invocations carry no <see cref="AgentToolContext"/>, so those calls keep the
 /// plain transport behavior.</summary>
+// ReSharper disable once InconsistentNaming
 internal sealed class ProgressReportingAIFunction(
     McpClientTool tool,
     string serverId,

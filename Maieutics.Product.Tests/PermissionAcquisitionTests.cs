@@ -17,7 +17,7 @@ public sealed class PermissionAcquisitionTests
 
         var policy = acquirer.Acquire(baseline);
 
-        Assert.Equal(new string[] { "/workspace" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(["/workspace"], policy.For(PermissionKind.Read).Allow);
         Assert.Empty(policy.For(PermissionKind.Read).Deny);
     }
 
@@ -35,8 +35,8 @@ public sealed class PermissionAcquisitionTests
         var policy = acquirer.Acquire(baseline, sessionId);
 
         // Lists append in layer order; the enforcer applies deny-wins over the merged lists.
-        Assert.Equal(new string[] { "/builtin", "/app-allow", "/workspace-allow", "/override-allow" }, policy.For(PermissionKind.Read).Allow);
-        Assert.Equal(new string[] { "/app-deny" }, policy.For(PermissionKind.Read).Deny);
+        Assert.Equal(["/builtin", "/app-allow", "/workspace-allow", "/override-allow"], policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(["/app-deny"], policy.For(PermissionKind.Read).Deny);
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public sealed class PermissionAcquisitionTests
         var source = new RegistryLayerSource(registry);
         var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
 
-        Assert.Equal(new string[] { "evil.example.com:443" }, acquirer.Acquire(baseline, sessionId).For(PermissionKind.Net).Deny);
+        Assert.Equal(["evil.example.com:443"], acquirer.Acquire(baseline, sessionId).For(PermissionKind.Net).Deny);
         // Another session (or no session) acquires without the override.
         Assert.Empty(acquirer.Acquire(baseline).For(PermissionKind.Net).Deny);
         Assert.Empty(acquirer.Acquire(baseline, AgentSessionId.Create()).For(PermissionKind.Net).Deny);
@@ -85,7 +85,7 @@ public sealed class PermissionAcquisitionTests
         // Variable expansion is pure string substitution; the pattern's own
         // separator is kept verbatim, so the expectation is a literal, not a
         // platform Path.Combine result.
-        Assert.Equal(new string[] { "/tmp/ws/notes" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(["/tmp/ws/notes"], policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public sealed class PermissionAcquisitionTests
         // deny cannot be bypassed by delegating work to a child run (ADR 0030 decision 3).
         var source = new RegistryLayerSource(registry);
         var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
-        Assert.Equal(new string[] { "evil.example.com:443" }, acquirer.Acquire(Layer("net", allow: ["localhost:80"]), child).For(PermissionKind.Net).Deny);
+        Assert.Equal(["evil.example.com:443"], acquirer.Acquire(Layer("net", allow: ["localhost:80"]), child).For(PermissionKind.Net).Deny);
     }
 
     [Fact]

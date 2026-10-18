@@ -157,7 +157,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         var configurationFile = Path.Combine(root, "maieutics.json");
         try
         {
-            File.WriteAllText(configurationFile, "one");
+            await File.WriteAllTextAsync(configurationFile, "one", TestContext.Current.CancellationToken);
             var initialWriteTime = new FileInfo(configurationFile).LastWriteTimeUtc;
 
             using var provider = MaieuticsConfigurationFileProvider.Create(configurationFile);
@@ -165,7 +165,7 @@ internal static void DeleteDirectoryWithRetry(string path)
 
             // Inject the race: the write completes and the metadata stamp is restored so a
             // metadata-only poller cannot distinguish "before" from "after". The content changes.
-            File.WriteAllText(configurationFile, "two");
+            await File.WriteAllTextAsync(configurationFile, "two", TestContext.Current.CancellationToken);
             File.SetLastWriteTimeUtc(configurationFile, initialWriteTime);
 
             var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -215,7 +215,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
             Assert.Empty(runtime.GetModelProfileSelection().Profiles);
-            Assert.Empty((await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token)));
+            Assert.Empty(await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token));
         }
         finally
         {
@@ -251,7 +251,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             var pluginHosts = host.Services.GetRequiredService<PluginHostManager>();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((runtime).InitializeAsync(pluginHosts, cancellation.Token)); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await runtime.InitializeAsync(pluginHosts, cancellation.Token); });
         }
         finally
         {
@@ -288,7 +288,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
             var pluginHosts = host.Services.GetRequiredService<PluginHostManager>();
 
-            var assertion15 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((runtime).InitializeAsync(pluginHosts, deadline.Token)); });
+            var assertion15 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await runtime.InitializeAsync(pluginHosts, deadline.Token); });
             Assert.Matches("(?is)^.*provider\\ creation\\ failure.*$", assertion15.Message);
         }
         finally
@@ -323,11 +323,11 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
             Assert.Empty(runtime.GetModelProfileSelection().Profiles);
-            Assert.Equal(new string[] { "vendor" }, runtime.GetModelSourceIds());
+            Assert.Equal(["vendor"], runtime.GetModelSourceIds());
             var groups = await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             Assert.Equal(2, Assert.Single(groups).Models.Count());
 
-            Assert.Equal(new string[] { "@vendor/model-alpha", "@vendor/model-beta" }, runtime.GetCachedAutomaticModelProfiles().Select(static profile => profile.Id));
+            Assert.Equal(["@vendor/model-alpha", "@vendor/model-beta"], runtime.GetCachedAutomaticModelProfiles().Select(static profile => profile.Id));
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
             var selection = runtime.GetModelProfileSelection();
             Assert.Equal("@vendor/model-alpha", selection.SelectedProfileId);
@@ -384,9 +384,9 @@ internal static void DeleteDirectoryWithRetry(string path)
                 if (model == "model-alpha") cancellation.Cancel();
             };
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((runtime)
-                    .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
-                    .AsTask()); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await runtime
+                .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
+                .AsTask(); });
 
             Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
@@ -548,7 +548,7 @@ internal static void DeleteDirectoryWithRetry(string path)
                 deadline.Token);
             factory.ReleaseAutomaticCreate.TrySetResult();
 
-            var assertion16 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await (selection); });
+            var assertion16 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await selection; });
             Assert.Matches("(?is)^.*changed\\ while\\ the\\ automatic\\ profile\\ was\\ selected.*$", assertion16.Message);
             Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
@@ -589,9 +589,9 @@ internal static void DeleteDirectoryWithRetry(string path)
 
             var acquisition = runtime.AcquireAsync(cancellation.Token);
             Assert.False(acquisition.IsCompleted);
-            cancellation.Cancel();
+            await cancellation.CancelAsync();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((acquisition)); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await acquisition; });
         }
         finally
         {
@@ -685,7 +685,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             await factory.FirstDiscoveryStarted.Task.WaitAsync(deadline.Token);
             await cancellation.CancelAsync();
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await (cancelledDiscovery); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await cancelledDiscovery; });
             Assert.Equal(1, factory.DiscoveryCount);
 
             var recovered = await runtime.GetDiscoveredModelsAsync(
@@ -728,7 +728,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
-            var assertion17 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await ((runtime).SelectModelProfileAsync("model-alpha", deadline.Token).AsTask()); });
+            var assertion17 = await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await runtime.SelectModelProfileAsync("model-alpha", deadline.Token).AsTask(); });
             Assert.Matches("(?is)^.*'@first/model-alpha'.*'@second/model-alpha'.*$", assertion17.Message);
 
             await runtime.SelectModelProfileAsync("@second/model-alpha", deadline.Token);
@@ -860,8 +860,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         var configurationFile = Path.Combine(root, "maieutics.json");
         File.WriteAllText(configurationFile, CreateConfiguration(
             "OpenAI",
-            "json-model",
-            OpenAiApiFlavor.Responses));
+            "json-model"));
 
         using var environment = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
@@ -1012,7 +1011,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
-            var assertion18 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            var assertion18 = Assert.ThrowsAny<InvalidOperationException>(() => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>());
             Assert.Contains(unknownField, assertion18.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally
@@ -1077,7 +1076,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
-            var assertion19 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            var assertion19 = Assert.ThrowsAny<InvalidOperationException>(() => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>());
             Assert.Matches("(?is)^.*MaxHistoryBytes.*MaxHistoryCharacters.*$", assertion19.Message);
         }
         finally
@@ -1442,7 +1441,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
             await using var host = builder.Build();
 
-            var assertion20 = Assert.ThrowsAny<InvalidOperationException>(() => (host.Services).GetRequiredService<MaieuticsRuntimeConfiguration>());
+            var assertion20 = Assert.ThrowsAny<InvalidOperationException>(() => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>());
             Assert.Matches("(?is)^.*cannot\\ be\\ combined.*$", assertion20.Message);
         }
         finally
@@ -1879,7 +1878,7 @@ internal static void DeleteDirectoryWithRetry(string path)
                 profile.SourceId == "vendor" &&
                 profile.ModelId == "model-alpha" &&
                 profile.KnownVendor &&
-                profile.HostedCapabilities.SequenceEqual(new[] { "WebSearch" }));
+                profile.HostedCapabilities.SequenceEqual(["WebSearch"]));
 
             await WriteAndWaitForReloadAsync(
                 configuration,

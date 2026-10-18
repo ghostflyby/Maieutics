@@ -25,8 +25,9 @@ public sealed class DenoModuleGraphWarmerTests
 
         // The warm either succeeds or logs a failure; either way the host stays up. Await the
         // internal completion signal (the test seam) instead of polling.
-        Assert.NotNull(warmer.WarmCompletion);
-        await warmer.WarmCompletion!.WaitAsync(timeout.Token);
+        var completion = warmer.WarmCompletion;
+        Assert.NotNull(completion);
+        await completion.WaitAsync(timeout.Token);
         await warmer.StopAsync(timeout.Token);
 
         // Observable success: the warm finished with the success log and no failure log,
@@ -60,7 +61,13 @@ public sealed class DenoModuleGraphWarmerTests
         private readonly Lock gate = new();
         private readonly List<string> lines = [];
 
-        public IReadOnlyList<string> Lines { get { lock (gate) return [.. lines]; } }
+        public IReadOnlyList<string> Lines
+        {
+            get
+            {
+                lock (gate) return [.. lines];
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 

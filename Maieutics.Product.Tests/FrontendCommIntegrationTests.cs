@@ -77,7 +77,7 @@ public sealed class FrontendCommIntegrationTests
                 null,
                 JsonSerializer.SerializeToElement(new { click = 1 }),
                 null,
-                [new byte[] { 0xEF }]),
+                [[0xEF]]),
             deadline.Token);
 
         var (opcode, payload) = await CommChildSocketStub.ReceiveFrameAsync(child, deadline.Token);
@@ -132,7 +132,7 @@ public sealed class FrontendCommIntegrationTests
         using var first = await ConnectCommsAsync(harness, sessionId, deadline.Token);
         firstHello = await ReceiveHelloAsync(first, deadline.Token);
         Assert.False(firstHello.GetProperty("replayed").GetBoolean());
-        Assert.Equal(new string?[] { "w1", "w2" }, firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString()));
+        Assert.Equal(["w1", "w2"], firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString()));
         var (one, _) = await ReceiveCommAsync(first, deadline.Token);
         var (two, _) = await ReceiveCommAsync(first, deadline.Token);
         Assert.Equal(1, one);
@@ -262,11 +262,10 @@ public sealed class FrontendCommIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         // An unknown session fails the handshake...
-        var unknown = async () => await ConnectCommsAsync(
+        await Assert.ThrowsAnyAsync<WebSocketException>(async () => await ConnectCommsAsync(
             harness,
             Guid.NewGuid().ToString("N"),
-            deadline.Token);
-        await Assert.ThrowsAnyAsync<WebSocketException>(async () => { await unknown.Invoke(); });
+            deadline.Token));
 
         // ...while any known session's comms plane is served directly, whether
         // or not it is the foreground session.

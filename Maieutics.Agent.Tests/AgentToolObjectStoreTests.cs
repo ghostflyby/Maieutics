@@ -54,7 +54,7 @@ public sealed class AgentToolObjectStoreTests
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
 
-        await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion).WaitAsync(TestContext.Current.CancellationToken)); });
+        await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
     }
 
     [Fact(Timeout = 30_000)]

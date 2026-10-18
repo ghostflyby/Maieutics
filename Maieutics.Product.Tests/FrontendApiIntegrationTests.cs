@@ -89,7 +89,7 @@ public sealed class FrontendApiIntegrationTests
         {
             var discovery = harness.Discovery;
             Assert.Equal(1, discovery.GetProperty("version").GetInt32());
-            Assert.StartsWith("http://127.0.0.1:", (discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.StartsWith("http://127.0.0.1:", discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("the assertion subject is null"));
             Assert.Equal(64, (discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("the assertion subject is null")).Length);
             Assert.True(discovery.GetProperty("pid").GetInt32() > 0);
         }
@@ -168,8 +168,8 @@ public sealed class FrontendApiIntegrationTests
             deadline.Token);
 
         var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
-        Assert.Equal(new[] { "run.started", "run.status" }, types.Take(2));
-        Assert.Equal(new[] { "message.completed", "run.completed", "run.status" }, types.TakeLast(3));
+        Assert.Equal(["run.started", "run.status"], types.Take(2));
+        Assert.Equal(["message.completed", "run.completed", "run.status"], types.TakeLast(3));
         Assert.Contains("text.delta", types);
         Assert.False(frames[^2].GetProperty("truncated").GetBoolean());
         var statuses = frames
@@ -291,7 +291,7 @@ public sealed class FrontendApiIntegrationTests
         var failure = frames.Single(frame => frame.GetProperty("type").GetString() == "run.failed");
         Assert.Equal("run_cancelled", failure.GetProperty("code").GetString());
         Assert.Equal(runId, failure.GetProperty("runId").GetString());
-        Assert.Equal(new[] { "run.failed", "run.status" }, frames.Select(frame => frame.GetProperty("type").GetString()).TakeLast(2));
+        Assert.Equal(["run.failed", "run.status"], frames.Select(frame => frame.GetProperty("type").GetString()).TakeLast(2));
 
         var missing = await harness.Client.PostAsync(
             $"/v1/agent/runs/{Guid.NewGuid():N}/cancel",
@@ -323,7 +323,7 @@ public sealed class FrontendApiIntegrationTests
             deadline.Token);
         Assert.Equal(HttpStatusCode.OK, answer.StatusCode);
 
-        Assert.Equal("ghost", (await wait));
+        Assert.Equal("ghost", await wait);
 
         // A second answer for the same id is a typed 404, and so is an unknown id.
         var duplicate = await harness.Client.PostAsJsonAsync(
@@ -1065,9 +1065,9 @@ public sealed class FrontendApiIntegrationTests
             Assert.Contains("apply_patch_call_output", secondRequest.GetRawText());
             Assert.Contains("patched.txt", secondRequest.GetRawText());
 
-            Assert.Equal("patched body\n", (await File.ReadAllTextAsync(
-                    Path.Combine(workspace, "patched.txt"),
-                    deadline.Token)));
+            Assert.Equal("patched body\n", await File.ReadAllTextAsync(
+                Path.Combine(workspace, "patched.txt"),
+                deadline.Token));
         }
         finally
         {
@@ -1347,7 +1347,7 @@ public sealed class FrontendApiIntegrationTests
         var sha256 = harness.ObjectStore.Ingest(new MemoryStream(payload)).Sha256;
         var served = await client.GetAsync($"/v1/objects/{sha256.ToUpperInvariant()}", deadline.Token);
         Assert.Equal(HttpStatusCode.OK, served.StatusCode);
-        Assert.Equal(payload, (await served.Content.ReadAsByteArrayAsync(deadline.Token)));
+        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(deadline.Token));
 
         // A well-formed but unknown id is a typed not_found, and a non-hex id is a typed
         // invalid_request — never an unhandled 500.

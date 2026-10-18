@@ -134,7 +134,7 @@ public sealed class ReplOutputWebSocketTests
             "{}",
             displayId: "",
             isUpdate: false,
-            new byte[] { 1, 2, 3 });
+            [1, 2, 3]);
         foreach (var length in new[] { 0, 10, frame.Length - 1 })
         {
             var truncated = frame.AsSpan(0, length).ToArray();
@@ -201,12 +201,12 @@ public sealed class ReplOutputWebSocketTests
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "first"));
             socket.QueueBinary(Frame.Stdout(2, "execution-1", "second"));
             await using var events = connection.Events.GetAsyncEnumerator(deadline.Token);
-            Assert.True((await events.MoveNextAsync()));
-            Assert.True((await events.MoveNextAsync()));
+            Assert.True(await events.MoveNextAsync());
+            Assert.True(await events.MoveNextAsync());
 
             // A skipped sequence (3 -> 5) for the same execution terminates the connection.
             socket.QueueBinary(Frame.Stdout(5, "execution-1", "skip"));
-            Assert.Equal("sequence_mismatch", (await Assert.ThrowsAnyAsync<ReplOutputProtocolException>(async () => { await ((connection.Completion)); })).Code);
+            Assert.Equal("sequence_mismatch", (await Assert.ThrowsAnyAsync<ReplOutputProtocolException>(async () => { await connection.Completion; })).Code);
             await attached.WaitAsync(deadline.Token);
             socket.Dispose();
         }
@@ -236,7 +236,7 @@ public sealed class ReplOutputWebSocketTests
             var seen = new List<ReplOutputFrame>();
             await foreach (var frame in connection.Events.WithCancellation(deadline.Token))
                 seen.Add(frame);
-            Assert.Equal(new long[] { 1, 1, 2, 2 }, seen.Select(static frame => frame.Seq));
+            Assert.Equal([1, 1, 2, 2], seen.Select(static frame => frame.Seq));
             await attached.WaitAsync(deadline.Token);
             socket.Dispose();
         }
@@ -259,7 +259,7 @@ public sealed class ReplOutputWebSocketTests
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "alive"));
             await using (var events = connection.Events.GetAsyncEnumerator(deadline.Token))
             {
-                Assert.True((await events.MoveNextAsync()));
+                Assert.True(await events.MoveNextAsync());
             }
 
             await host.DisposeAsync();

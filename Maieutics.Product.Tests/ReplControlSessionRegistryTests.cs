@@ -33,6 +33,6 @@ public sealed class ReplControlSessionRegistryTests
     public void RejectsInvalidRegistration()
     {
         var registry = new ReplControlSessionRegistry();
-        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (registry).Register(0, "session"));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => registry.Register(0, "session"));
     }
 }

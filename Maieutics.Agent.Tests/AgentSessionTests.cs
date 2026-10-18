@@ -23,7 +23,7 @@ public sealed class AgentSessionTests
         await providerStarted.Task.WaitAsync(deadline.Token);
         Assert.NotEqual(Guid.Empty, run.Id.Value);
         Assert.Equal(session.Id, run.SessionId);
-        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (((Session: session, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("concurrent"), ((Session: session, deadline.Token)).Token)); });
+        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (Session: session, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("concurrent"), (Session: session, deadline.Token).Token); });
 
         releaseProvider.SetResult();
         await ReadEventsAsync(run, deadline.Token);
@@ -45,11 +45,11 @@ public sealed class AgentSessionTests
         var result = await run.Completion.WaitAsync(deadline.Token);
 
         Assert.Equal(3, events.Count());
-        Assert.Equal(new long[] { 1, 2, 3 }, events.Select(agentEvent => agentEvent.Sequence));
+        Assert.Equal([1, 2, 3], events.Select(agentEvent => agentEvent.Sequence));
         var runId = run.Id;
         Assert.All(events, agentEvent => Assert.True(agentEvent.RunId == runId));
         var deltas = events.OfType<AgentTextDelta>().ToArray();
-        Assert.Equal(new string[] { "Hello", " world" }, deltas.Select(delta => delta.Text));
+        Assert.Equal(["Hello", " world"], deltas.Select(delta => delta.Text));
         var completed = events.OfType<AgentMessageCompleted>().Single();
         Assert.All(deltas.Select(delta => delta.MessageId), id => Assert.True(id == completed.AgentMessageId));
         Assert.Equivalent(result.AssistantMessage, completed.Message);
@@ -63,7 +63,8 @@ public sealed class AgentSessionTests
         Assert.Equal(1, result.Transcript.Version);
         Assert.Single(result.Transcript.Turns);
         Assert.Equal(run.Id, result.Transcript.Turns[0].RunId);
-        Assert.Equal(new (ChatRole Role, string Text)[] { (result.UserMessage.Role, result.UserMessage.Text), (result.AssistantMessage.Role, result.AssistantMessage.Text) }, result.Transcript.Turns[0].Messages.Select(static message => (message.Role, message.Text)));
+        Assert.Equal([(result.UserMessage.Role, result.UserMessage.Text), (result.AssistantMessage.Role, result.AssistantMessage.Text),
+        ], result.Transcript.Turns[0].Messages.Select(static message => (message.Role, message.Text)));
         Assert.Equivalent(result.Transcript, session.GetTranscriptSnapshot());
     }
 
@@ -78,8 +79,8 @@ public sealed class AgentSessionTests
 
         await using var failedRun = await session.StartTurnAsync(AgentTurn.FromText("failure"), deadline.Token);
         var events = await ReadEventsAsync(failedRun, deadline.Token);
-        Assert.Equal(new string[] { "partial" }, events.OfType<AgentTextDelta>().Select(delta => delta.Text));
-        var failure = (await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await ((failedRun.Completion.WaitAsync(deadline.Token))); }));
+        Assert.Equal(["partial"], events.OfType<AgentTextDelta>().Select(delta => delta.Text));
+        var failure = await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await failedRun.Completion.WaitAsync(deadline.Token); });
         Assert.IsType<InvalidOperationException>(failure.InnerException);
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
@@ -103,8 +104,8 @@ public sealed class AgentSessionTests
         await run.CancelAsync(deadline.Token);
         var events = await ReadEventsAsync(run, deadline.Token);
 
-        Assert.Equal(new string[] { "partial" }, events.OfType<AgentTextDelta>().Select(delta => delta.Text));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        Assert.Equal(["partial"], events.OfType<AgentTextDelta>().Select(delta => delta.Text));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -118,7 +119,7 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var unusedClient = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var inputLimited = new AgentSession(unusedClient, new AgentSessionOptions { MaxInputCharacters = 3 });
-        var inputFailure = (await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (((Session: inputLimited, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("four"), ((Session: inputLimited, deadline.Token)).Token)); }));
+        var inputFailure = await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (Session: inputLimited, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("four"), (Session: inputLimited, deadline.Token).Token); });
         Assert.Equal(4, inputFailure.ActualCharacters);
         Assert.Empty(unusedClient.Requests);
         Assert.Empty(inputLimited.GetTranscriptSnapshot().Turns);
@@ -128,8 +129,8 @@ public sealed class AgentSessionTests
             new AgentSessionOptions { MaxResponseCharacters = 5 });
         await using var run = await responseLimited.StartTurnAsync(AgentTurn.FromText("limit"), deadline.Token);
         var events = await ReadEventsAsync(run, deadline.Token);
-        Assert.Equal(new string[] { "123" }, events.OfType<AgentTextDelta>().Select(delta => delta.Text));
-        await Assert.ThrowsAnyAsync<AgentResponseLimitExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
+        Assert.Equal(["123"], events.OfType<AgentTextDelta>().Select(delta => delta.Text));
+        await Assert.ThrowsAnyAsync<AgentResponseLimitExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         Assert.Empty(responseLimited.GetTranscriptSnapshot().Turns);
     }
 
@@ -139,8 +140,8 @@ public sealed class AgentSessionTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var emptySession = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync()));
         await using var emptyRun = await emptySession.StartTurnAsync(AgentTurn.FromText("empty"), deadline.Token);
-        Assert.Empty((await ReadEventsAsync(emptyRun, deadline.Token)));
-        await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((emptyRun.Completion.WaitAsync(deadline.Token))); });
+        Assert.Empty(await ReadEventsAsync(emptyRun, deadline.Token));
+        await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await emptyRun.Completion.WaitAsync(deadline.Token); });
         Assert.Empty(emptySession.GetTranscriptSnapshot().Turns);
 
         var unsupportedUpdate = new ChatResponseUpdate(
@@ -152,7 +153,7 @@ public sealed class AgentSessionTests
             AgentTurn.FromText("unsupported"),
             deadline.Token);
         await ReadEventsAsync(unsupportedRun, deadline.Token);
-        await Assert.ThrowsAnyAsync<AgentToolArgumentsException>(async () => { await ((unsupportedRun.Completion.WaitAsync(deadline.Token))); });
+        await Assert.ThrowsAnyAsync<AgentToolArgumentsException>(async () => { await unsupportedRun.Completion.WaitAsync(deadline.Token); });
         Assert.Empty(unsupportedSession.GetTranscriptSnapshot().Turns);
     }
 
@@ -177,8 +178,8 @@ public sealed class AgentSessionTests
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(3, transcript.Version);
         Assert.Single(transcript.Turns);
-        Assert.Equal(new ChatRole[] { ChatRole.User, ChatRole.Assistant }, transcript.Turns[0].Messages.Select(message => message.Role));
-        Assert.Equal(new string[] { "c", "three" }, transcript.Turns[0].Messages.Select(message => message.Text));
+        Assert.Equal([ChatRole.User, ChatRole.Assistant], transcript.Turns[0].Messages.Select(message => message.Role));
+        Assert.Equal(["c", "three"], transcript.Turns[0].Messages.Select(message => message.Text));
     }
 
     [Fact(Timeout = 30_000)]
@@ -190,7 +191,7 @@ public sealed class AgentSessionTests
 
         await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
-        var assertion2 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await (ReadEventsAsync(((Run: run, deadline.Token)).Run, ((Run: run, deadline.Token)).Token)); });
+        var assertion2 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ReadEventsAsync((Run: run, deadline.Token).Run, (Run: run, deadline.Token).Token); });
         Assert.Matches("(?is)^.*only\\ one\\ consumer.*$", assertion2.Message);
     }
 
@@ -209,7 +210,7 @@ public sealed class AgentSessionTests
         Assert.False(run.Completion.IsCompleted);
 
         await run.CancelAsync(deadline.Token);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -234,7 +235,7 @@ public sealed class AgentSessionTests
         await run.DisposeAsync();
         await run.DisposeAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
         await next.Completion.WaitAsync(deadline.Token);
@@ -253,7 +254,7 @@ public sealed class AgentSessionTests
         await CompleteTurnAsync(session, "Second question", deadline.Token);
 
         Assert.Equal(2, client.Requests.Count());
-        Assert.Equal(new string?[] { "Be concise.", "Be concise." }, client.Instructions);
+        Assert.Equal(new[] { "Be concise.", "Be concise." }, client.Instructions);
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "First question") }, client.Requests[0].Select(MessageTuple));
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "First question"), (ChatRole.Assistant, "First answer"), (ChatRole.User, "Second question") }, client.Requests[1].Select(MessageTuple));
     }
@@ -273,7 +274,7 @@ public sealed class AgentSessionTests
 
         await using var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
         await ReadEventsAsync(failed, deadline.Token);
-        await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await ((failed.Completion.WaitAsync(deadline.Token))); });
+        await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await failed.Completion.WaitAsync(deadline.Token); });
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
         await using var recovered = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
@@ -321,12 +322,12 @@ public sealed class AgentSessionTests
 
         await using (var events = run.Events.GetAsyncEnumerator(deadline.Token))
         {
-            Assert.True((await events.MoveNextAsync()));
+            Assert.True(await events.MoveNextAsync());
             Assert.IsType<AgentTextDelta>(events.Current);
         }
 
         await run.DisposeAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
@@ -362,7 +363,8 @@ public sealed class AgentSessionTests
         var result = await run.Completion.WaitAsync(deadline.Token);
 
         Assert.Equal(Enumerable.Range(1, events.Count).Select(static value => (long)value), events.Select(agentEvent => agentEvent.Sequence));
-        Assert.Equal(new Type[] { typeof(AgentMessageCompleted), typeof(AgentToolStarted), typeof(AgentToolProgress), typeof(AgentToolFinished), typeof(AgentTextDelta), typeof(AgentMessageCompleted) }, events.Select(agentEvent => agentEvent.GetType()));
+        Assert.Equal([typeof(AgentMessageCompleted), typeof(AgentToolStarted), typeof(AgentToolProgress), typeof(AgentToolFinished), typeof(AgentTextDelta), typeof(AgentMessageCompleted),
+        ], events.Select(agentEvent => agentEvent.GetType()));
         Assert.Equal(2, events.OfType<AgentMessageCompleted>().Count());
         Assert.Equal("hello", events.OfType<AgentToolStarted>().Single().Arguments
             .Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text);
@@ -370,7 +372,7 @@ public sealed class AgentSessionTests
 
         Assert.Single(result.Transcript.Turns);
         var messages = result.Transcript.Turns[0].Messages;
-        Assert.Equal(new ChatRole[] { ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant }, messages.Select(message => message.Role));
+        Assert.Equal([ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant], messages.Select(message => message.Role));
         var call = messages[1].Contents.OfType<FunctionCallContent>().Single();
         var toolResult = messages[2].Contents.OfType<FunctionResultContent>().Single();
         Assert.Equal(call.CallId, toolResult.CallId);
@@ -393,7 +395,7 @@ public sealed class AgentSessionTests
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("Continue"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
         await next.Completion.WaitAsync(deadline.Token);
-        Assert.Equal(new ChatRole[] { ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant, ChatRole.User }, client.Requests[2].Select(message => message.Role));
+        Assert.Equal([ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant, ChatRole.User], client.Requests[2].Select(message => message.Role));
         Assert.Equal("provider-call", client.Requests[2].SelectMany(static message => message.Contents)
             .OfType<FunctionCallContent>().Single().CallId);
         Assert.Equal("provider-call", client.Requests[2].SelectMany(static message => message.Contents)
@@ -468,9 +470,9 @@ public sealed class AgentSessionTests
         var events = await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
 
-        Assert.Equal(new string[] { "one", "two" }, order);
+        Assert.Equal(new[] { "one", "two" }, order);
         Assert.Equal(1, maximumActive);
-        Assert.Equal(new[] { "one", "two" }, events.OfType<AgentToolStarted>().Select(started =>
+        Assert.Equal(["one", "two"], events.OfType<AgentToolStarted>().Select(started =>
                 started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text));
     }
 
@@ -487,7 +489,7 @@ public sealed class AgentSessionTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Explode"), deadline.Token);
         var events = await ReadEventsAsync(run, deadline.Token);
-        var failure = (await Assert.ThrowsAnyAsync<AgentToolInvocationException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolInvocationException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
 
         Assert.Equal("explode", failure.ToolName);
         Assert.IsType<InvalidOperationException>(failure.InnerException);
@@ -516,7 +518,7 @@ public sealed class AgentSessionTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Return raw"), deadline.Token);
         var events = await ReadEventsAsync(run, deadline.Token);
-        var failure = (await Assert.ThrowsAnyAsync<AgentToolInvocationException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolInvocationException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
 
         Assert.Contains("JsonElement or null", Assert.IsType<InvalidOperationException>(failure.InnerException).Message);
         Assert.Single(events.OfType<AgentToolStarted>());
@@ -542,8 +544,8 @@ public sealed class AgentSessionTests
             [tool]);
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Limit"), deadline.Token);
-        Assert.Empty((await ReadEventsAsync(run, deadline.Token)));
-        var failure = (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        Assert.Empty(await ReadEventsAsync(run, deadline.Token));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
 
         Assert.Equal(nameof(AgentSessionOptions.MaxToolArgumentsBytes), failure.LimitName);
         Assert.False(invoked);
@@ -582,7 +584,7 @@ public sealed class AgentSessionTests
 
         await canceled.Task.WaitAsync(deadline.Token);
         Assert.Single(events.OfType<AgentToolStarted>());
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
     }
 
@@ -604,7 +606,7 @@ public sealed class AgentSessionTests
         await using (var run = await resultLimited.StartTurnAsync(AgentTurn.FromText("Large"), deadline.Token))
         {
             await ReadEventsAsync(run, deadline.Token);
-            var failure = (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+            var failure = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
             Assert.Equal(nameof(AgentSessionOptions.MaxToolResultBytes), failure.LimitName);
         }
 
@@ -626,8 +628,8 @@ public sealed class AgentSessionTests
         await using (var run = await progressLimited.StartTurnAsync(AgentTurn.FromText("Progress"), deadline.Token))
         {
             var events = await ReadEventsAsync(run, deadline.Token);
-            Assert.Equal(new string[] { "one" }, events.OfType<AgentToolProgress>().Select(progress => ((TextContent)progress.Content).Text));
-            var failure = (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+            Assert.Equal(["one"], events.OfType<AgentToolProgress>().Select(progress => ((TextContent)progress.Content).Text));
+            var failure = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
             Assert.Equal(nameof(AgentSessionOptions.MaxToolProgressEventsPerCall), failure.LimitName);
         }
 
@@ -659,8 +661,8 @@ public sealed class AgentSessionTests
             ]);
         await using (var run = await callLimited.StartTurnAsync(AgentTurn.FromText("Count"), deadline.Token))
         {
-            Assert.Empty((await ReadEventsAsync(run, deadline.Token)));
-            var failure = (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+            Assert.Empty(await ReadEventsAsync(run, deadline.Token));
+            var failure = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
             Assert.Equal(nameof(AgentSessionOptions.MaxToolCallsPerTurn), failure.LimitName);
         }
 
@@ -688,7 +690,7 @@ public sealed class AgentSessionTests
             Assert.Single(events.OfType<AgentTurnTruncated>());
             var turn = Assert.Single(result.Transcript.Turns);
             Assert.True(turn.Truncated);
-            Assert.Equal(new ChatRole[] { ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant }, turn.Messages.Select(static message => message.Role));
+            Assert.Equal([ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant], turn.Messages.Select(static message => message.Role));
             Assert.Single(turn.Messages[^1].Contents.OfType<FunctionCallContent>());
         }
 
@@ -700,7 +702,7 @@ public sealed class AgentSessionTests
             Assert.Equal("continued", (await continued.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
         }
 
-        Assert.Equal(new ChatRole[] { ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.User }, iterationClient.Requests[2].Select(static message => message.Role));
+        Assert.Equal([ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.User], iterationClient.Requests[2].Select(static message => message.Role));
         Assert.Equal("Continue", iterationClient.Requests[2][^1].Text);
     }
 
@@ -741,7 +743,7 @@ public sealed class AgentSessionTests
             new AgentSessionOptions { MaxTurnDuration = TimeSpan.FromMilliseconds(100) });
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("slow"), deadline.Token);
-        var failure = (await Assert.ThrowsAnyAsync<AgentTurnDurationExceededException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
+        var failure = await Assert.ThrowsAnyAsync<AgentTurnDurationExceededException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         Assert.Equal(TimeSpan.FromMilliseconds(100), failure.MaximumDuration);
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
@@ -779,7 +781,7 @@ public sealed class AgentSessionTests
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(2, transcript.Version);
         Assert.Single(transcript.Turns);
-        Assert.Equal(new string[] { "plain turn", "second" }, transcript.Turns[0].Messages.Select(message => message.Text));
+        Assert.Equal(["plain turn", "second"], transcript.Turns[0].Messages.Select(message => message.Text));
         Assert.DoesNotContain(transcript.Turns[0].Messages
             .SelectMany(message => message.Contents), content => content is FunctionCallContent or FunctionResultContent);
     }
@@ -809,7 +811,7 @@ public sealed class AgentSessionTests
 
         var deltas = events.OfType<AgentTextDelta>().ToArray();
         var completed = events.OfType<AgentMessageCompleted>().ToArray();
-        Assert.Equal(new string[] { "checking", "done" }, deltas.Select(delta => delta.Text));
+        Assert.Equal(["checking", "done"], deltas.Select(delta => delta.Text));
         Assert.Equal(completed[0].AgentMessageId, deltas[0].MessageId);
         Assert.Equal(completed[^1].AgentMessageId, deltas[1].MessageId);
         Assert.NotEqual(completed[^1].AgentMessageId, completed[0].AgentMessageId);
@@ -873,8 +875,8 @@ public sealed class AgentSessionTests
 
         // The run completed and closed its event writer; a straggler reporter observes the
         // typed recoverable failure instead of ChannelClosedException.
-        await Assert.ThrowsAnyAsync<AgentRunCompletedException>(async () => { await (context
-                .ReportProgressAsync(new TextContent("late"), deadline.Token).AsTask()); });
+        await Assert.ThrowsAnyAsync<AgentRunCompletedException>(async () => { await context
+            .ReportProgressAsync(new TextContent("late"), deadline.Token).AsTask(); });
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);

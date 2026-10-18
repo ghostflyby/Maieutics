@@ -11,7 +11,7 @@ namespace Maieutics.Skills;
 /// any broader filesystem grant. Bodies are read fresh from disk on every request, and the
 /// descriptor's root containment is re-checked so a post-discovery swap (rename, relink)
 /// cannot serve a path outside the declared root. Inert skills never reach this plane.</summary>
-internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourceProvider, IResourceCatalogProvider
+internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourceCatalogProvider
 {
     internal const string Scheme = "skill";
 

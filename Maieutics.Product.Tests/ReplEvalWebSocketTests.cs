@@ -72,7 +72,7 @@ public sealed class ReplEvalWebSocketTests
             request.RequestId,
             request,
             ReplEvalJsonContext.Default.ReplEvalInputRequestPayload));
-        Assert.True((await events.MoveNextAsync()));
+        Assert.True(await events.MoveNextAsync());
         var input = Assert.IsType<ReplEvalInputRequestEvent>(events.Current);
         await connection.ReplyInputAsync(input, "Ada", deadline.Token);
         var reply = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
@@ -85,8 +85,8 @@ public sealed class ReplEvalWebSocketTests
             execution.ExecutionId,
             new ReplEvalResultPayload(execution.ExecutionId, resultDocument.RootElement.Clone()),
             ReplEvalJsonContext.Default.ReplEvalResultPayload));
-        Assert.IsType<ReplEvalResultTerminal>((await execution.Completion.WaitAsync(deadline.Token)));
-        Assert.False((await events.MoveNextAsync()));
+        Assert.IsType<ReplEvalResultTerminal>(await execution.Completion.WaitAsync(deadline.Token));
+        Assert.False(await events.MoveNextAsync());
 
         await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
     }
@@ -175,7 +175,7 @@ public sealed class ReplEvalWebSocketTests
                 })),
             ReplEvalJsonContext.Default.ReplEvalEnvelope);
         socket.QueueText(consoleJson);
-        Assert.Equal("unknown_message_type", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await ((connection.Completion)); })).Code);
+        Assert.Equal("unknown_message_type", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await connection.Completion; })).Code);
         await attached.WaitAsync(deadline.Token);
     }
 
@@ -208,7 +208,7 @@ public sealed class ReplEvalWebSocketTests
 
         socket.QueueText(result);
 
-        Assert.Equal("duplicate_terminal", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await ((connection.Completion)); })).Code);
+        Assert.Equal("duplicate_terminal", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await connection.Completion; })).Code);
         await attached.WaitAsync(deadline.Token);
     }
 
@@ -242,7 +242,7 @@ public sealed class ReplEvalWebSocketTests
             ReplEvalJsonContext.Default.ReplEvalCancelledPayload));
 
         await cancel;
-        Assert.IsType<ReplEvalCancelledTerminal>((await execution.Completion));
+        Assert.IsType<ReplEvalCancelledTerminal>(await execution.Completion);
         await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
     }
 

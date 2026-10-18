@@ -43,7 +43,7 @@ public sealed class PluginRegistryDiscoveryTests
         Assert.Single(descriptor.Workers);
         Assert.Equal("https://jsr.io/@acme/widget/1.0.0/mod.ts", descriptor.Workers[0].EntryUrl);
         Assert.Equal("jsr:@std/bytes@1", Assert.Single(descriptor.Imports).Value);
-        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
+        Assert.Equal(["./"], descriptor.Permissions.Read.Values);
     }
 
     [Fact]

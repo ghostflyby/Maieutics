@@ -41,7 +41,7 @@ public sealed class PluginManifestTests
 
         Assert.Equal("@maieutics/example", descriptor.Name);
         Assert.Equal("auto", descriptor.Isolation);
-        Assert.Equal(new string[] { "base" }, descriptor.Dependencies);
+        Assert.Equal(["base"], descriptor.Dependencies);
         // Two entrypoints → two workers; the exports "./mcp" does not create a
         // worker on its own (exports only expose the API surface).
         Assert.Equal(2, descriptor.Workers.Count());
@@ -51,7 +51,7 @@ public sealed class PluginManifestTests
         Assert.Equal("echo", descriptor.Workers[1].ExportName);
         Assert.EndsWith("/src/echo.ts", descriptor.Workers[1].EntryUrl);
         Assert.False(descriptor.Permissions.Read.AllowAll);
-        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
+        Assert.Equal(["./"], descriptor.Permissions.Read.Values);
         Assert.Empty(descriptor.Permissions.Net.Values);
         Assert.True(descriptor.Permissions.Write.AllowAll);
     }
@@ -124,7 +124,7 @@ public sealed class PluginManifestTests
             """);
 
         Assert.False(descriptor.Permissions.Read.AllowAll);
-        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
+        Assert.Equal(["./"], descriptor.Permissions.Read.Values);
         Assert.False(descriptor.Permissions.Net.AllowAll);
         Assert.Empty(descriptor.Permissions.Net.Values);
         Assert.False(descriptor.Permissions.Env.AllowAll);
@@ -547,7 +547,7 @@ public sealed class PluginManifestTests
             Assert.Equal("watch", watch.Kind);
             Assert.Equal(PluginTriggerAction.Rediscover, watch.Action);
             // Watch paths are kernel-expanded through the permission variable table.
-            Assert.Equal(new string[] { "/Users/tester/Library/Caches/JetBrains/**" }, watch.WatchPaths);
+            Assert.Equal(["/Users/tester/Library/Caches/JetBrains/**"], watch.WatchPaths);
             Assert.Equal(2, watch.Depth);
 
             var cron = Assert.Single(descriptor.Triggers, t => t.Name == "nightly");
@@ -629,7 +629,7 @@ public sealed class PluginManifestTests
 
         // Any spelling routes through the kind catalog; entries record the canonical
         // spelling every downstream comparison expects (manifest section order is kept).
-        Assert.Equal(new string[] { SkillsContributionKind.ExtensionKind, McpDiscoverContributionKind.ExtensionKind }, descriptor.Extensions.Select(static entry => entry.Kind));
+        Assert.Equal([SkillsContributionKind.ExtensionKind, McpDiscoverContributionKind.ExtensionKind], descriptor.Extensions.Select(static entry => entry.Kind));
     }
 
     [Fact]
@@ -659,7 +659,7 @@ public sealed class PluginManifestTests
         // silently activating its formerly inert interpretation). A misspelled known
         // name is unknown to the grammar: collected but inert, with the catalog
         // diagnostic, and it interprets nothing.
-        Assert.Equal(new string[] { "MCP", "UI" }, loaded.DataEntries.Select(static entry => entry.Name));
+        Assert.Equal(["MCP", "UI"], loaded.DataEntries.Select(static entry => entry.Name));
         Assert.Empty(loaded.McpServers);
         Assert.Null(loaded.UiForm);
         Assert.Contains(loaded.ExtensionDiagnostics, static diagnostic =>
@@ -829,7 +829,7 @@ public sealed class PluginManifestTests
 
         // The default path equals the former hardcoded values exactly: the metadata
         // defaults hash byte-for-byte identically (framework §5 timeout parity).
-        var stdio = new StdioMcpTransportDefinition("deno", ["serve"], null, null);
+        var stdio = new StdioMcpTransportDefinition("deno", ["serve"]);
         var expectedKey = McpServerDefinition.CreateGenerationKey(
             stdio,
             TimeSpan.FromSeconds(30),
@@ -873,7 +873,7 @@ public sealed class PluginManifestTests
         // rebuild itself is the existing differential behavior covered by
         // PluginMcpCoordinatorTests).
         var expandedKey = McpServerDefinition.CreateGenerationKey(
-            new StdioMcpTransportDefinition("tools/deno", null, null, null),
+            new StdioMcpTransportDefinition("tools/deno"),
             TimeSpan.FromSeconds(30),
             TimeSpan.FromMinutes(2),
             TimeSpan.FromSeconds(5),
@@ -982,7 +982,8 @@ public sealed class PluginManifestTests
         Assert.True(mcp.StickyPerSourceKey);
         Assert.False(mcp.UsesKernelRetrySet, "MCP retries inside its revision engine");
         // The defaults are the former fixed values byte-for-byte.
-        Assert.Equal(new TimeSpan[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30) }, mcp.DefaultTimeouts);
+        Assert.Equal([TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30),
+        ], mcp.DefaultTimeouts);
         Assert.True(mcp.DeclarationInterpolation, "the data path joins the interpolation parity");
     }
 

@@ -49,7 +49,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
         var inner = new StubChatClient(WebSearchUpdates(calls: 3));
         using var client = new BuiltinToolCallLimitChatClient(inner);
 
-        var act = async () =>
+        var exception = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () =>
         {
             await foreach (var _ in client.GetStreamingResponseAsync(
                                [new ChatMessage(ChatRole.User, "search")],
@@ -57,9 +57,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
                                TestContext.Current.CancellationToken))
             {
             }
-        };
-
-        var exception = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await act.Invoke(); });
+        });
         Assert.Equal("MaxBuiltinToolCalls", exception.LimitName);
         Assert.Equal(2, exception.Maximum);
     }

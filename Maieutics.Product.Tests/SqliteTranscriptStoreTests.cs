@@ -253,10 +253,10 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         Assert.Equal(first.RunId, transcript.Turns[0].RunId);
         Assert.Equal(identity, transcript.Turns[0].ModelIdentity);
         Assert.False(transcript.Turns[0].Truncated);
-        Assert.Equal(new string[] { "Question one", "Answer one" }, transcript.Turns[0].Messages.Select(message => message.Text));
+        Assert.Equal(["Question one", "Answer one"], transcript.Turns[0].Messages.Select(message => message.Text));
         Assert.Null(transcript.Turns[1].ModelIdentity);
         Assert.True(transcript.Turns[1].Truncated);
-        Assert.Equal(new string[] { "Question two", "Answer two" }, transcript.Turns[1].Messages.Select(message => message.Text));
+        Assert.Equal(["Question two", "Answer two"], transcript.Turns[1].Messages.Select(message => message.Text));
 
         var sessions = reopened.ListSessions();
         Assert.Single(sessions);
@@ -356,7 +356,7 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
 
         var loaded = store.LoadTranscript(forkB)!.Turns;
         Assert.Equal(3, loaded.Count());
-        Assert.Equal(new string[] { "Question a", "Question b", "Question d" }, loaded.Select(turn => turn.Messages[0].Text));
+        Assert.Equal(["Question a", "Question b", "Question d"], loaded.Select(turn => turn.Messages[0].Text));
         Assert.Equal(forkA, store.ListSessions().Single(session => session.Id == forkB)
             .ParentSessionId);
     }
@@ -417,13 +417,12 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
             using var insert = raw.CreateCommand();
             insert.CommandText =
                 $"INSERT INTO sessions(id, created_at, last_activity_at, turn_count, parent_session_id, fork_point_seq) " +
-                $"VALUES('{fork.Value.ToString("N")}', '2026-01-01T00:00:00.0000000+00:00', " +
+                $"VALUES('{fork.Value:N}', '2026-01-01T00:00:00.0000000+00:00', " +
                 $"'2026-01-01T00:00:00.0000000+00:00', 0, '{missing}', 1);";
             insert.ExecuteNonQuery();
         }
 
-        var load = () => store.LoadTranscript(fork);
-        var assertion34 = Assert.ThrowsAny<InvalidOperationException>(() => load.Invoke());
+        var assertion34 = Assert.ThrowsAny<InvalidOperationException>(() => store.LoadTranscript(fork));
         Assert.Matches("(?is)^.*has\\ no\\ session\\ row.*$", assertion34.Message);
     }
 

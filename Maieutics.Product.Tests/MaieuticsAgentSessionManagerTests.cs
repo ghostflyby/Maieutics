@@ -75,7 +75,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
         Assert.False(manager.PersistenceEnabled);
         Assert.Empty(manager.ListStoredSessions());
-        var assertion13 = Assert.ThrowsAny<ArgumentException>(() => (manager).Resume(AgentSessionId.Create()));
+        var assertion13 = Assert.ThrowsAny<ArgumentException>(() => manager.Resume(AgentSessionId.Create()));
         Assert.Matches("(?is)^.*persistence\\ is\\ disabled.*$", assertion13.Message);
 
         var before = manager.Id;
@@ -136,7 +136,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
 
         using var manager = CreateManager();
         var sessions = manager.ListStoredSessions();
-        Assert.All(new[] { older, newer }, item => Assert.Contains(item, sessions.Select(session => session.Id)));
+        Assert.All([older, newer], item => Assert.Contains(item, sessions.Select(session => session.Id)));
         Assert.True(sessions.First().LastActivityAt >= sessions.Last().LastActivityAt);
     }
 
@@ -145,7 +145,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
     {
         using var manager = CreateManager();
 
-        Assert.ThrowsAny<AgentSessionNotFoundException>(() => (manager).Resume(AgentSessionId.Create()));
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => manager.Resume(AgentSessionId.Create()));
     }
 
     [Fact]
@@ -190,9 +190,9 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         }
 
         using var manager = CreateManager();
-        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (manager).Fork(source, 2));
-        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (manager).Fork(source, -1));
-        Assert.ThrowsAny<AgentSessionNotFoundException>(() => (manager).Fork(AgentSessionId.Create(), 0));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => manager.Fork(source, 2));
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => manager.Fork(source, -1));
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => manager.Fork(AgentSessionId.Create(), 0));
 
         // A rejected fork leaves no phantom head row behind.
         Assert.Single(manager.ListStoredSessions());
@@ -200,7 +200,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         // Creating a fork head over a missing parent fails typed and writes nothing.
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
-            var assertion14 = Assert.ThrowsAny<InvalidOperationException>(() => (store).CreateForkSession(
+            var assertion14 = Assert.ThrowsAny<InvalidOperationException>(() => store.CreateForkSession(
                     AgentSessionId.Create(), AgentSessionId.Create(), 0, null));
             Assert.Matches("(?is)^.*has\\ no\\ row.*$", assertion14.Message);
         }

@@ -14,8 +14,8 @@ public sealed class TerminalInputParserTests
         Assert.Equal(3, batch.LineCount);
         var text = batch.Operations.Select(static operation => Assert.IsType<TerminalTextOperation>(operation))
             .ToArray();
-        Assert.Equal(new string[] { "hello", "<script>alert('x')</script>", "tab\there" }, text.Select(static operation => operation.Text));
-        Assert.Equal(new int[] { 1, 2, 3 }, text.Select(static operation => operation.Line));
+        Assert.Equal(["hello", "<script>alert('x')</script>", "tab\there"], text.Select(static operation => operation.Text));
+        Assert.Equal([1, 2, 3], text.Select(static operation => operation.Line));
     }
 
     [Fact]
@@ -25,7 +25,8 @@ public sealed class TerminalInputParserTests
 
         Assert.Equal(3, batch.Operations.Count());
         var first = Assert.IsType<TerminalKeysOperation>(batch.Operations[0]);
-        Assert.Equal(new TerminalKey[] { new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)) }, first.Keys);
+        Assert.Equal([new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)),
+        ], first.Keys);
 
         var second = Assert.IsType<TerminalKeysOperation>(batch.Operations[1]);
         Assert.Equal(new TerminalKey(
@@ -33,7 +34,8 @@ public sealed class TerminalInputParserTests
             new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None)), Assert.Single(second.Keys));
 
         var third = Assert.IsType<TerminalKeysOperation>(batch.Operations[2]);
-        Assert.Equal(new TerminalKeySpec[] { new TerminalCharKey('w', TerminalKeyModifiers.Control), new TerminalCharKey('j', TerminalKeyModifiers.Control) }, third.Keys.Select(static key => key.Spec));
+        Assert.Equal([new TerminalCharKey('w', TerminalKeyModifiers.Control), new TerminalCharKey('j', TerminalKeyModifiers.Control),
+        ], third.Keys.Select(static key => key.Spec));
     }
 
     [Theory]
@@ -96,7 +98,8 @@ public sealed class TerminalInputParserTests
     {
         var batch = TerminalInputBatchParser.Parse("k <S-Tab> <C-F1> <A-Up>");
         var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
-        Assert.Equal(new TerminalKey[] { new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)) }, keys.Keys);
+        Assert.Equal([new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)),
+        ], keys.Keys);
     }
 
     [Theory]
@@ -142,7 +145,7 @@ public sealed class TerminalKeyEncoderTests
         var encoder = CreateEncoder(out _);
         var bytes = encoder.Encode([Key('c', TerminalKeyModifiers.Control)]);
 
-        Assert.Equal(new byte[] { (byte)(0x03) }, bytes);
+        Assert.Equal(new[] { (byte)0x03 }, bytes);
     }
 
     [Theory]
@@ -158,7 +161,7 @@ public sealed class TerminalKeyEncoderTests
         var character = token[0];
         var bytes = encoder.Encode([Key(character, TerminalKeyModifiers.Control)]);
 
-        Assert.Equal(new byte[] { expected }, bytes);
+        Assert.Equal(new[] { expected }, bytes);
     }
 
     [Fact]
@@ -167,40 +170,40 @@ public sealed class TerminalKeyEncoderTests
         var encoder = CreateEncoder(out _);
         var bytes = encoder.Encode([Key('x', TerminalKeyModifiers.Alt)]);
 
-        Assert.Equal(Esc.Concat("x"u8.ToArray()), bytes);
+        Assert.Equal(Esc.Concat([.. "x"u8]), bytes);
     }
 
     [Fact]
     public void EnterTabAndSpaceEncodeAsRawControlBytes()
     {
         var encoder = CreateEncoder(out _);
-        Assert.Equal(new byte[] { (byte)(0x0d) }, encoder.Encode([Special(TerminalKeyName.Enter)]));
-        Assert.Equal(new byte[] { (byte)(0x09) }, encoder.Encode([Special(TerminalKeyName.Tab)]));
-        Assert.Equal(new byte[] { (byte)(0x20) }, encoder.Encode([Special(TerminalKeyName.Space)]));
+        Assert.Equal(new[] { (byte)0x0d }, encoder.Encode([Special(TerminalKeyName.Enter)]));
+        Assert.Equal(new[] { (byte)0x09 }, encoder.Encode([Special(TerminalKeyName.Tab)]));
+        Assert.Equal(new[] { (byte)0x20 }, encoder.Encode([Special(TerminalKeyName.Space)]));
     }
 
     [Fact]
     public void InsertEncodesAsTheStandardEscapeSequence()
     {
         var encoder = CreateEncoder(out _);
-        Assert.Equal(Esc.Concat("[2~"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Insert)]));
+        Assert.Equal(Esc.Concat([.. "[2~"u8]), encoder.Encode([Special(TerminalKeyName.Insert)]));
     }
 
     [Fact]
     public void EscapeEncodesAsItsOwnByte()
     {
         var encoder = CreateEncoder(out _);
-        Assert.Equal(new byte[] { (byte)(0x1b) }, encoder.Encode([Special(TerminalKeyName.Escape)]));
+        Assert.Equal(new[] { (byte)0x1b }, encoder.Encode([Special(TerminalKeyName.Escape)]));
     }
 
     [Fact]
     public void ArrowKeysFollowApplicationCursorMode()
     {
         var encoder = CreateEncoder(out var terminal);
-        Assert.Equal(Esc.Concat("[A"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Up)]));
+        Assert.Equal(Esc.Concat([.. "[A"u8]), encoder.Encode([Special(TerminalKeyName.Up)]));
 
         terminal.ApplicationCursorKeys = true;
-        Assert.Equal(Esc.Concat("OA"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Up)]));
+        Assert.Equal(Esc.Concat([.. "OA"u8]), encoder.Encode([Special(TerminalKeyName.Up)]));
     }
 
     [Fact]
@@ -210,11 +213,11 @@ public sealed class TerminalKeyEncoderTests
         var bytes = encoder.Encode([new TerminalKey(5, new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None))]);
 
         Assert.Equal(5 * 3, bytes.Count());
-        Assert.Equal(Esc.Concat("[B"u8.ToArray())
-            .Concat(Esc.Concat("[B"u8.ToArray()))
-            .Concat(Esc.Concat("[B"u8.ToArray()))
-            .Concat(Esc.Concat("[B"u8.ToArray()))
-            .Concat(Esc.Concat("[B"u8.ToArray())), bytes);
+        Assert.Equal(Esc.Concat([.. "[B"u8])
+            .Concat(Esc.Concat([.. "[B"u8]))
+            .Concat(Esc.Concat([.. "[B"u8]))
+            .Concat(Esc.Concat([.. "[B"u8]))
+            .Concat(Esc.Concat([.. "[B"u8])), bytes);
     }
 
     [Fact]
@@ -225,7 +228,7 @@ public sealed class TerminalKeyEncoderTests
             null,
             new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Control))]);
 
-        Assert.Equal(Esc.Concat("[1;5A"u8.ToArray()), bytes);
+        Assert.Equal(Esc.Concat([.. "[1;5A"u8]), bytes);
     }
 
     [Fact]
@@ -240,7 +243,7 @@ public sealed class TerminalKeyEncoderTests
         ]);
 
         // The ESC of the meta 'x' must not be split from its payload by the surrounding keys.
-        Assert.Equal(new byte[] { (byte)(0x1b), (byte)(0x1b), (byte)'x', (byte)(0x0d) }, bytes);
+        Assert.Equal(new[] { (byte)0x1b, (byte)0x1b, (byte)'x', (byte)0x0d }, bytes);
     }
 
     private static TerminalKey Special(TerminalKeyName name)

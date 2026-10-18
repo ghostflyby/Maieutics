@@ -282,8 +282,8 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                 terminalError = new IOException("The REPL eval WebSocket owner ended unexpectedly.");
 
             outgoing.Writer.TryComplete(terminalError);
-            lifetime.Cancel();
-            ownerCancellation.Dispose();
+            await lifetime.CancelAsync();
+            await ownerCancellation.DisposeAsync();
 
             var failure = terminalError ?? new ObjectDisposedException(nameof(ReplEvalWebSocketConnection));
             while (outgoing.Reader.TryRead(out var message)) message.Sent.TrySetException(failure);

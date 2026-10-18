@@ -99,8 +99,8 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
             }
 
             frames.Writer.TryComplete(terminalError);
-            lifetime.Cancel();
-            ownerCancellation.Dispose();
+            await lifetime.CancelAsync();
+            await ownerCancellation.DisposeAsync();
 
             if (terminalError is null)
                 completion.TrySetResult();

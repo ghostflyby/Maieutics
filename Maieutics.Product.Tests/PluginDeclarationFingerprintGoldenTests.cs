@@ -64,7 +64,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             // The collection invariants beneath the extensions/data fingerprint
             // domains, pinned structurally so a silent inclusion flip cannot hide
             // behind an unchanged-looking hash.
-            Assert.Equal(new string[] { McpDiscoverContributionKind.ExtensionKind, SkillsContributionKind.ExtensionKind }, descriptor.Extensions.Select(static entry => entry.Kind));
+            Assert.Equal([McpDiscoverContributionKind.ExtensionKind, SkillsContributionKind.ExtensionKind], descriptor.Extensions.Select(static entry => entry.Kind));
             Assert.Contains(descriptor.ExtensionDiagnostics, diagnostic =>
                 diagnostic.Contains("unknown-extension", StringComparison.Ordinal));
             Assert.Equivalent(new[] { "mcp", "notices", "broken" }, descriptor.DataEntries.Select(static entry => entry.Name));

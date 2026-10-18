@@ -59,25 +59,25 @@ public sealed class DenoReplExecutionCollectorTests
                 DisplaySkippedCount: 1,
                 DigestTruncated: false,
                 // The update folds into the display's digest entry instead of adding a second one.
-                Digests: new[]
-                {
+                Digests:
+                [
                     new DenoReplDisplayDigest(
-                        new[] { "text/plain" },
+                        ["text/plain"],
                         "visible update",
                         "inner",
-                        IsUpdate: true)
-                }),
+                        IsUpdate: true),
+                ]),
             Truncated = false,
             OmittedBytes = 0
         }, result);
-        Assert.Equal(new string[] { "stdout", "stderr", "result" }, result.Outputs.Select(static output => output.Kind));
+        Assert.Equal(["stdout", "stderr", "result"], result.Outputs.Select(static output => output.Kind));
         Assert.Equal("private stdout", result.Outputs[0].Text);
         Assert.Equal("shared stderr", result.Outputs[1].Text);
         Assert.Equal(42, result.Outputs[2].Value?.GetInt32());
-        Assert.Equal(new string[] { "visible display" }, sink.Displays);
+        Assert.Equal(new[] { "visible display" }, sink.Displays);
         Assert.Equal("visible update", Assert.Single(sink.Updates).Text);
-        Assert.Equal(new bool[] { true }, sink.Clears);
-        Assert.Equal(new string[] { "shared stderr" }, sink.Stderr);
+        Assert.Equal(new[] { true }, sink.Clears);
+        Assert.Equal(new[] { "shared stderr" }, sink.Stderr);
         Assert.Equal((input, "Ada"), Assert.Single(connection.InputReplies));
     }
 
@@ -158,8 +158,8 @@ public sealed class DenoReplExecutionCollectorTests
             TestContext.Current.CancellationToken);
 
         // The bundle carries an object reference, never base64 (invariant 26).
-        Assert.Single(sink.BinaryDisplays);
-        var reference = sink.BinaryDisplays.Single().Data["image/png"];
+        var item = Assert.Single(sink.BinaryDisplays);
+        var reference = item.Data["image/png"];
         Assert.Equal(JsonValueKind.Object, reference.ValueKind);
         var url = reference.GetProperty("$object").GetString()!;
         Assert.StartsWith("/v1/objects/", url);
@@ -216,7 +216,7 @@ public sealed class DenoReplExecutionCollectorTests
             TestContext.Current.CancellationToken);
 
         var digest = Assert.Single(result.Presentation.Digests);
-        Assert.Equal(new string[] { "image/png" }, digest.MediaTypes);
+        Assert.Equal(["image/png"], digest.MediaTypes);
         Assert.Null(digest.Preview);
         var reference = sink.BinaryDisplays.Single().Data["image/png"];
         var url = reference.GetProperty("$object").GetString()!;
@@ -259,7 +259,7 @@ public sealed class DenoReplExecutionCollectorTests
 
         var digest = Assert.Single(result.Presentation.Digests);
         Assert.Equal("plain text", digest.Preview);
-        Assert.Equal(new string[] { "text/html", "application/vnd.vega.v5+json", "text/plain" }, digest.MediaTypes);
+        Assert.Equal(["text/html", "application/vnd.vega.v5+json", "text/plain"], digest.MediaTypes);
     }
 
     [Fact(Timeout = 15_000)]
@@ -312,7 +312,7 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(new string?[] { """{"width":200}""", "# title", null }, result.Presentation.Digests.Select(static digest => digest.Preview));
+        Assert.Equal(["""{"width":200}""", "# title", null], result.Presentation.Digests.Select(static digest => digest.Preview));
     }
 
     [Fact(Timeout = 15_000)]
@@ -605,7 +605,7 @@ public sealed class DenoReplExecutionCollectorTests
 
         Assert.True(result.Truncated);
         Assert.True(result.OmittedBytes > 0);
-        Assert.Equal(new string[] { "after truncation" }, sink.Displays);
+        Assert.Equal(new[] { "after truncation" }, sink.Displays);
     }
 
     [Fact(Timeout = 15_000)]
@@ -677,7 +677,7 @@ public sealed class DenoReplExecutionCollectorTests
             BundleSkippedCount: 0,
             DisplaySkippedCount: 2,
             DigestTruncated: false,
-            Digests: new[] { new DenoReplDisplayDigest(new[] { "text/plain" }, "display") }), result.Presentation);
+            Digests: [new DenoReplDisplayDigest(["text/plain"], "display")]), result.Presentation);
         Assert.Equal("still modeled", Assert.Single(result.Outputs).Text);
         Assert.Single(sink.Displays);
         Assert.Empty(sink.Clears);

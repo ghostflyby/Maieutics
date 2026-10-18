@@ -327,8 +327,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 state.Running is { } running
                     ? new FrontendQueueRunningItem(running.ItemId, running.RunId)
                     : null,
-                items,
-                Capacity);
+                items);
             return (snapshot, state.Version);
         }
     }

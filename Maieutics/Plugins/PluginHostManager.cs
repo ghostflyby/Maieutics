@@ -3440,7 +3440,7 @@ internal sealed class PluginHostManager(
     private void ForceRediscoverPlugin(string pluginId)
     {
         PluginRegistration[] snapshot;
-        var hasMcpDiscover = false;
+        bool hasMcpDiscover;
         lock (gate)
         {
             snapshot = registrations.ToArray();

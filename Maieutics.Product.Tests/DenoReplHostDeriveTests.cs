@@ -145,7 +145,7 @@ public sealed class DenoReplHostDeriveTests
         Assert.NotNull(shell);
         Assert.NotNull(shell.Read);
         Assert.Equal(JsonValueKind.Array, shell.Read!.Value.ValueKind);
-        Assert.Equal(new string?[] { "/tmp/modules", "/tmp/ws" }, shell.Read.Value.EnumerateArray().Select(static item => item.GetString()));
+        Assert.Equal(["/tmp/modules", "/tmp/ws"], shell.Read.Value.EnumerateArray().Select(static item => item.GetString()));
         Assert.NotNull(shell.Env);
         Assert.Equal("HOME", shell.Env!.Value.EnumerateArray().Single().GetString());
         // AllowAll renders as JSON true (worker-actor spawnProcess grants the kind fully).
@@ -250,9 +250,9 @@ public sealed class DenoReplHostDeriveTests
             new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
             deadline.Token);
         // A duplicate derive for the same session/generation is rejected synchronously.
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((harness.Manager).RequestReplDeriveAsync(
-                new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
-                deadline.Token)); });
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await harness.Manager.RequestReplDeriveAsync(
+            new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
+            deadline.Token); });
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"dup-session","generation":0,"pid":55}}""");
         Assert.False((await first).Failed);
@@ -562,8 +562,7 @@ public sealed class DenoReplHostDeriveTests
         return await CreateHarnessAsync(
             cancellationToken,
             registry ?? new ReplControlSessionRegistry(),
-            new ReplControlCredentialRegistry(),
-            attachEvalHost: false).ConfigureAwait(false);
+            new ReplControlCredentialRegistry()).ConfigureAwait(false);
     }
 
     /// <summary>Attaches a simulated host AND starts a real Kestrel control + eval host so the
@@ -573,15 +572,14 @@ public sealed class DenoReplHostDeriveTests
         ReplControlSessionRegistry registry,
         ReplControlCredentialRegistry credentials)
     {
-        return await CreateHarnessAsync(cancellationToken, registry, credentials, attachEvalHost: true)
+        return await CreateHarnessAsync(cancellationToken, registry, credentials)
             .ConfigureAwait(false);
     }
 
     private static async Task<HostHarness> CreateHarnessAsync(
         CancellationToken cancellationToken,
         ReplControlSessionRegistry registry,
-        ReplControlCredentialRegistry credentials,
-        bool attachEvalHost)
+        ReplControlCredentialRegistry credentials)
     {
         var fakeDenoPath = CreateFakeDenoExecutable();
         var manager = CreateManager(registry, broker: null, fakeDenoPath);
@@ -901,8 +899,6 @@ public sealed class DenoReplHostDeriveTests
 
         public override string? SubProtocol => null;
 
-        internal Task Closed => closed.Task;
-
         internal ValueTask<string> ReadSentAsync(CancellationToken cancellationToken)
         {
             return sent.Reader.ReadAsync(cancellationToken);
@@ -952,7 +948,7 @@ public sealed class DenoReplHostDeriveTests
 
         public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
             Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken)
         {
             await closed.Task.WaitAsync(cancellationToken);
             state = WebSocketState.CloseReceived;
@@ -978,7 +974,7 @@ public sealed class DenoReplHostDeriveTests
             ReadOnlyMemory<byte> buffer,
             WebSocketMessageType messageType,
             bool endOfMessage,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (messageType != WebSocketMessageType.Text || !endOfMessage)

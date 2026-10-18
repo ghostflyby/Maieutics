@@ -79,7 +79,7 @@ public sealed class AgentSubagentTests
         await childStarted.Task.WaitAsync(deadline.Token);
         await run.CancelAsync(deadline.Token);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
         var handle = await handleSource.Task.WaitAsync(deadline.Token);
         var childResult = await handle.Completion.WaitAsync(deadline.Token);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
@@ -324,8 +324,8 @@ public sealed class AgentSubagentTests
                 Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
             });
 
-        await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await (((Spawner: spawner, Token: deadline.Token)).Spawner.StartChildAsync(
-                new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, ((Spawner: spawner, Token: deadline.Token)).Token)); });
+        await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await (Spawner: spawner, deadline.Token).Spawner.StartChildAsync(
+            new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, (Spawner: spawner, deadline.Token).Token); });
     }
 
     [Fact(Timeout = 30_000)]
@@ -652,7 +652,7 @@ public sealed class AgentSubagentTests
         await run.Completion.WaitAsync(deadline.Token);
         await collector.Settled.Task.WaitAsync(deadline.Token);
 
-        Assert.Equal(new string[] { "started", "event", "settled" }, collector.Order);
+        Assert.Equal(new[] { "started", "event", "settled" }, collector.Order);
         Assert.Equal(AgentSubagentStatus.Completed, collector.SettledStatus);
     }
 
@@ -716,12 +716,14 @@ public sealed class AgentSubagentTests
         await session.SubagentHost.StartDetachedChildAsync(
             new AgentSubagentSpec { Input = "first" }, spawnerOptions, [], deadline.Token);
 
+        var token = deadline.Token;
+
         var second = () => session.SubagentHost.StartDetachedChildAsync(
-            new AgentSubagentSpec { Input = "second" }, spawnerOptions, [], deadline.Token);
+            new AgentSubagentSpec { Input = "second" }, spawnerOptions, [], token);
         Assert.Equal(nameof(AgentSubagentOptions.MaxDetachedChildren), (await Assert.ThrowsAnyAsync<AgentSubagentBudgetExceededException>(async () => { await second.Invoke(); })).LimitName);
 
-        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await ((session.SubagentHost).WaitDetachedAsync(
-                AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None)); });
+        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await session.SubagentHost.WaitDetachedAsync(
+            AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None); });
     }
 
     [Fact(Timeout = 30_000)]
@@ -801,8 +803,8 @@ public sealed class AgentSubagentTests
             .CancelChildByIdAsync(handle.RunId, deadline.Token);
         Assert.Equal(AgentSubagentStatus.Completed, cancelled.Status);
 
-        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await ((session.SubagentHost).WaitChildByIdAsync(
-                AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None)); });
+        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await session.SubagentHost.WaitChildByIdAsync(
+            AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None); });
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)

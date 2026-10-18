@@ -80,9 +80,9 @@ public sealed class ObjectStoreTests : IDisposable
         var digest = new string('a', 64);
 
         Assert.False(store.Exists(digest));
-        Assert.ThrowsAny<FileNotFoundException>(() => (store).Open(digest));
-        Assert.ThrowsAny<ArgumentException>(() => (store).Open("not-a-digest"));
-        Assert.ThrowsAny<ArgumentException>(() => (store).Open(new string('A', 64)));
+        Assert.ThrowsAny<FileNotFoundException>(() => store.Open(digest));
+        Assert.ThrowsAny<ArgumentException>(() => store.Open("not-a-digest"));
+        Assert.ThrowsAny<ArgumentException>(() => store.Open(new string('A', 64)));
     }
 
     [Fact]

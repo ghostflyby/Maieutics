@@ -100,7 +100,7 @@ public sealed class McpAdjustmentChainTests
         Assert.Contains("plugin:provider::main", dropped);
         // The provider adjuster's scope is empty (it has no dependencies) and is
         // skipped; "consumer" folds after "middle", whose drop removed the provider.
-        Assert.Equal(new string[] { "middle", "consumer" }, calls.Select(call => call.PluginId));
+        Assert.Equal(["middle", "consumer"], calls.Select(call => call.PluginId));
         Assert.Contains("plugin:provider::main", calls.Where(call => call.PluginId == "middle").Select(call => call.ServerIds)
             .Single());
         Assert.DoesNotContain("plugin:provider::main", calls.Where(call => call.PluginId == "consumer").Select(call => call.ServerIds)

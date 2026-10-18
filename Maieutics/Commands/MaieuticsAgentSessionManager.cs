@@ -330,9 +330,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             descriptors.AddRange(RequiredStore(new AgentSessionId(familyId)).ListSessions());
         }
 
-        return descriptors
-            .OrderByDescending(session => session.LastActivityAt)
-            .ToArray();
+        return
+        [
+            .. descriptors
+                .OrderByDescending(session => session.LastActivityAt),
+        ];
     }
 
     /// <summary>Sets or clears one stored session's title. Renaming works for any stored
@@ -486,7 +488,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         var display = source?.Title ?? source?.Preview;
         if (string.IsNullOrWhiteSpace(display)) return null;
 
-        var oneLine = string.Join(' ', display.Split(new[] { '\r', '\n' },
+        var oneLine = string.Join(' ', display.Split(['\r', '\n'],
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         var suffix = $" · branch @ turn {forkPointSeq + 1}";
         var budget = SqliteTranscriptStore.MaxDisplayTextLength - suffix.Length;
@@ -703,7 +705,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
             // OrderBy is stable like the LINQ pipeline this replaces; List<T>.Sort is not,
             // and eviction order must not reshuffle when Touched ticks tie.
-            candidates = candidates.OrderBy(entry => entry.Touched).ToList();
+            candidates = [.. candidates.OrderBy(entry => entry.Touched)];
         }
 
         foreach (var (id, reason) in skipped)

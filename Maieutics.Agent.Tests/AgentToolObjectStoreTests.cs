@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -30,15 +29,15 @@ public sealed class AgentToolObjectStoreTests
         var events = await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
 
-        store.Objects.Should().HaveCount(1);
+        Assert.Single(store.Objects);
         var finished = events.OfType<AgentToolFinished>().Single();
-        finished.Result.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        Assert.True(finished.Result.GetProperty("truncated").GetBoolean());
         var sha = finished.Result.GetProperty("object").GetProperty("sha256").GetString();
-        sha.Should().NotBeNull();
-        store.Objects.Should().ContainKey(sha);
-        store.Objects[sha].Should().HaveCountGreaterThan(512);
-        Encoding.UTF8.GetString(store.Objects[sha]).Should().Contain(new string('x', 4_096));
-        finished.Result.GetProperty("value").GetString().Should().Contain("truncated");
+        Assert.NotNull(sha);
+        Assert.True(store.Objects.ContainsKey(sha));
+        Assert.True(store.Objects[sha].Count() > 512);
+        Assert.Contains(new string('x', 4_096), Encoding.UTF8.GetString(store.Objects[sha]));
+        Assert.Contains("truncated", finished.Result.GetProperty("value").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -55,8 +54,7 @@ public sealed class AgentToolObjectStoreTests
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
 
-        await run.Completion.Awaiting(static completion => completion.WaitAsync(TestContext.Current.CancellationToken))
-            .Should().ThrowAsync<AgentToolLimitExceededException>();
+        await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await ((run.Completion).WaitAsync(TestContext.Current.CancellationToken)); });
     }
 
     [Fact(Timeout = 30_000)]
@@ -77,10 +75,10 @@ public sealed class AgentToolObjectStoreTests
         var events = await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
 
-        store.Objects.Should().BeEmpty();
+        Assert.Empty(store.Objects);
         var finished = events.OfType<AgentToolFinished>().Single();
-        finished.Result.GetProperty("value").GetString().Should().Be("small");
-        finished.Result.TryGetProperty("truncated", out _).Should().BeFalse();
+        Assert.Equal("small", finished.Result.GetProperty("value").GetString());
+        Assert.False(finished.Result.TryGetProperty("truncated", out _));
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)

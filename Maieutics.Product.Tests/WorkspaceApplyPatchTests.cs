@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -42,21 +41,19 @@ public sealed class WorkspaceApplyPatchTests
                 $$"""{"patch":{{JsonSerializer.Serialize(MultiFilePatch)}}}"""),
             WorkspaceEditJsonSerializerContext.Default.ApplyPatchResult);
 
-        result.Files.Select(static file => file.Operation)
-            .Should().Equal("created", "updated", "deleted");
-        result.Files[0].Path.Should().Be("docs/new.txt");
+        Assert.Equal(new string[] { "created", "updated", "deleted" }, result.Files.Select(static file => file.Operation));
+        Assert.Equal("docs/new.txt", result.Files[0].Path);
         var updated = result.Files[1];
-        updated.Diff.Should().NotBeNull();
-        updated.Diff.Unified.Should().Contain("+var fresh = false;\n");
+        Assert.NotNull(updated.Diff);
+        Assert.Contains("+var fresh = false;\n", updated.Diff.Unified);
         var deleted = result.Files[2];
-        deleted.Diff.Should().NotBeNull();
-        deleted.Diff.Deletions.Should().Be(1);
+        Assert.NotNull(deleted.Diff);
+        Assert.Equal(1, deleted.Diff.Deletions);
 
-        (await File.ReadAllTextAsync(
+        Assert.Equal("using System;\nvar fresh = false;\n", (await File.ReadAllTextAsync(
                 workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "app.cs",
-                cancellationToken))
-            .Should().Be("using System;\nvar fresh = false;\n");
-        File.Exists(workspace.Path + Path.DirectorySeparatorChar + "obsolete.txt").Should().BeFalse();
+                cancellationToken)));
+        Assert.False(File.Exists(workspace.Path + Path.DirectorySeparatorChar + "obsolete.txt"));
     }
 
     [Fact(Timeout = 30_000)]
@@ -81,13 +78,12 @@ public sealed class WorkspaceApplyPatchTests
                 $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}"""),
             WorkspaceEditJsonSerializerContext.Default.ApplyPatchResult);
 
-        result.Files[0].Operation.Should().Be("created");
-        result.Files[0].MovedFrom.Should().Be("src/main.py");
-        (await File.ReadAllTextAsync(
+        Assert.Equal("created", result.Files[0].Operation);
+        Assert.Equal("src/main.py", result.Files[0].MovedFrom);
+        Assert.Equal("def a():\n    return 1\ndef b():\n    return 3\n", (await File.ReadAllTextAsync(
                 workspace.Path + Path.DirectorySeparatorChar + "src" + Path.DirectorySeparatorChar + "renamed.py",
-                cancellationToken))
-            .Should().Be("def a():\n    return 1\ndef b():\n    return 3\n");
-        File.Exists(path).Should().BeFalse();
+                cancellationToken)));
+        Assert.False(File.Exists(path));
     }
 
     [Fact(Timeout = 30_000)]
@@ -97,25 +93,25 @@ public sealed class WorkspaceApplyPatchTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var apply = Function(CreateFunctions(workspace.Path).Functions, "apply_patch");
         var missing = "*** Begin Patch\n*** Delete File: absent.txt\n*** End Patch\n";
-        (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(missing)}}}""", cancellationToken))
-            .Code.Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(missing)}}}""", cancellationToken))
+            .Code);
 
         var conflict = "*** Begin Patch\n*** Add File: exists.txt\n+dup\n*** End Patch\n";
         await File.WriteAllTextAsync(
             workspace.Path + Path.DirectorySeparatorChar + "exists.txt",
             "already here\n",
             cancellationToken);
-        (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(conflict)}}}""", cancellationToken))
-            .Code.Should().Be("workspace_path_exists");
+        Assert.Equal("workspace_path_exists", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(conflict)}}}""", cancellationToken))
+            .Code);
 
         var escaped = "*** Begin Patch\n*** Update File: missing-file.txt\n@@\n-a\n+b\n*** End Patch\n";
-        (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(escaped)}}}""", cancellationToken))
-            .Code.Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(escaped)}}}""", cancellationToken))
+            .Code);
 
         // .git stays denied through patch paths.
         var git = "*** Begin Patch\n*** Delete File: .git/config\n*** End Patch\n";
-        (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(git)}}}""", cancellationToken))
-            .Code.Should().Be("workspace_path_denied");
+        Assert.Equal("workspace_path_denied", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(git)}}}""", cancellationToken))
+            .Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -136,39 +132,35 @@ public sealed class WorkspaceApplyPatchTests
                     "-    return 2\n" +
                     "+    return 3\n" +
                     "*** End Patch\n";
-        (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}""", cancellationToken))
-            .Code.Should().Be("workspace_patch_context_not_found");
+        Assert.Equal("workspace_patch_context_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}""", cancellationToken))
+            .Code);
     }
 
     [Fact]
     public void ApplyPatchParserRejectsMalformedDocuments()
     {
-        FluentActions.Invoking(() => ApplyPatchParser.Parse("no sentinels"))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("workspace_patch_invalid");
-        FluentActions.Invoking(() => ApplyPatchParser.Parse("*** Begin Patch\n*** Add File: a.txt\n+one\n"))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("workspace_patch_invalid");
-        FluentActions.Invoking(() => ApplyPatchParser.Parse(
-                "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n"))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("workspace_patch_invalid");
-        FluentActions.Invoking(() => ApplyPatchParser.Parse("*** Begin Patch\n*** End Patch\n"))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("workspace_patch_invalid");
+        Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("no sentinels")).Code);
+        Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** Add File: a.txt\n+one\n")).Code);
+        Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse(
+                "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n")).Code);
+        Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** End Patch\n")).Code);
     }
 
     [Fact]
     public void ApplyPatchParserParsesStructuredOperationDiffs()
     {
         var created = ApplyPatchParser.ParseOperationDiff("create_file", "a.txt", "+one\n+two\n");
-        created.Files[0].Diff.Should().Be("one\ntwo\n");
+        Assert.Equal("one\ntwo\n", created.Files[0].Diff);
 
         // The text after @@ is the anchor line, not a context line.
         var updated = ApplyPatchParser.ParseOperationDiff("update_file", "a.txt", "@@ context\n-old\n+new\n");
-        updated.Files[0].Changes.Should().HaveCount(1);
-        updated.Files[0].Changes[0].Anchor.Should().Be("context");
-        updated.Files[0].Changes[0].OldLines.Should().Equal("old");
-        updated.Files[0].Changes[0].NewLines.Should().Equal("new");
+        Assert.Single(updated.Files[0].Changes);
+        Assert.Equal("context", updated.Files[0].Changes[0].Anchor);
+        Assert.Equal(new string[] { "old" }, updated.Files[0].Changes[0].OldLines);
+        Assert.Equal(new string[] { "new" }, updated.Files[0].Changes[0].NewLines);
 
         var deleted = ApplyPatchParser.ParseOperationDiff("delete_file", "a.txt", null);
-        deleted.Files[0].Kind.Should().Be("delete_file");
+        Assert.Equal("delete_file", deleted.Files[0].Kind);
     }
 
     [Fact(Timeout = 30_000)]
@@ -186,8 +178,8 @@ public sealed class WorkspaceApplyPatchTests
                 $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}"""),
             WorkspaceEditJsonSerializerContext.Default.ApplyPatchResult);
 
-        result.Files[0].Operation.Should().Be("updated");
-        (await File.ReadAllTextAsync(path, cancellationToken)).Should().Be("first\r\nSECOND\r\n");
+        Assert.Equal("updated", result.Files[0].Operation);
+        Assert.Equal("first\r\nSECOND\r\n", (await File.ReadAllTextAsync(path, cancellationToken)));
     }
 
     private static WorkspaceEditFunctions CreateFunctions(string root)
@@ -230,13 +222,14 @@ public sealed class WorkspaceApplyPatchTests
         CancellationToken cancellationToken)
     {
         var invocation = await InvokeAsync(function, json);
-        return invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+        Assert.NotNull(invocation.Failure);
+        return Assert.IsType<AgentToolException>(invocation.Failure);
     }
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
-        invocation.Failure.Should().BeNull();
-        var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+        Assert.Null(invocation.Failure);
+        var result = Assert.IsType<JsonElement>(invocation.Result);
         return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using Maieutics.Persistence;
@@ -50,12 +49,12 @@ public sealed class DenoReplSessionTests
 
         // The session passes the display object store through to the collector, so the binary
         // mime becomes an object reference on the wire instead of being dropped (invariant 26).
-        sink.BinaryDisplays.Should().ContainSingle();
+        Assert.Single(sink.BinaryDisplays);
         var reference = sink.BinaryDisplays.Single().Data["image/png"];
-        reference.ValueKind.Should().Be(JsonValueKind.Object);
+        Assert.Equal(JsonValueKind.Object, reference.ValueKind);
         var url = reference.GetProperty("$object").GetString()!;
-        url.Should().StartWith("/v1/objects/");
-        reference.GetProperty("byteLength").GetInt64().Should().Be(png.Length);
+        Assert.StartsWith("/v1/objects/", url);
+        Assert.Equal(png.Length, reference.GetProperty("byteLength").GetInt64());
     }
 
     [Fact(Timeout = 15_000)]
@@ -85,7 +84,7 @@ public sealed class DenoReplSessionTests
             // The execution fails on the dead generation; the assertion below is the point.
         }
 
-        session.GetSnapshot().State.Should().Be("faulted");
+        Assert.Equal("faulted", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 30_000)]
@@ -117,8 +116,8 @@ public sealed class DenoReplSessionTests
         var secondGeneration = await secondFactory.NextGenerationAsync(TestContext.Current.CancellationToken);
         var parallelExecution = await secondGeneration.ConnectionImpl.NextExecutionAsync(
             TestContext.Current.CancellationToken);
-        probe.Active.Should().Be(2);
-        probe.Maximum.Should().Be(2);
+        Assert.Equal(2, probe.Active);
+        Assert.Equal(2, probe.Maximum);
 
         firstExecution.CompleteResult(1);
         parallelExecution.CompleteResult(2);
@@ -128,8 +127,8 @@ public sealed class DenoReplSessionTests
         queuedExecution.CompleteResult(3);
         await queued;
 
-        probe.Maximum.Should().Be(2);
-        probe.Active.Should().Be(0);
+        Assert.Equal(2, probe.Maximum);
+        Assert.Equal(0, probe.Active);
     }
 
     [Theory(Timeout = 15_000)]
@@ -157,10 +156,10 @@ public sealed class DenoReplSessionTests
         await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
-        await execution.Invoking(static task => task).Should().ThrowAsync<OperationCanceledException>();
-        generation.ConnectionImpl.CancelCount.Should().Be(1);
-        generation.TerminateCount.Should().Be(expectedTerminateCount);
-        session.GetSnapshot().State.Should().Be(expectedState);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((execution)); });
+        Assert.Equal(1, generation.ConnectionImpl.CancelCount);
+        Assert.Equal(expectedTerminateCount, generation.TerminateCount);
+        Assert.Equal(expectedState, session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 15_000)]
@@ -186,11 +185,11 @@ public sealed class DenoReplSessionTests
         var generation = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
         await generation.ConnectionImpl.NextExecutionAsync(TestContext.Current.CancellationToken);
 
-        var failure = await execution.Invoking(static task => task).Should().ThrowAsync<AgentToolException>();
-        failure.Which.Code.Should().Be("repl_timeout");
-        generation.ConnectionImpl.CancelCount.Should().Be(1);
-        generation.TerminateCount.Should().Be(0);
-        session.GetSnapshot().State.Should().Be("idle");
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await ((execution)); });
+        Assert.Equal("repl_timeout", failure.Code);
+        Assert.Equal(1, generation.ConnectionImpl.CancelCount);
+        Assert.Equal(0, generation.TerminateCount);
+        Assert.Equal("idle", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 15_000)]
@@ -211,17 +210,17 @@ public sealed class DenoReplSessionTests
             TestContext.Current.CancellationToken);
 
         var restart = session.RestartAsync(TestContext.Current.CancellationToken);
-        restart.IsCompleted.Should().BeFalse();
+        Assert.False(restart.IsCompleted);
         controlled.CompleteResult(42);
 
         await execution;
         var result = await restart;
         var secondGeneration = await factory.NextGenerationAsync(TestContext.Current.CancellationToken);
-        result.Generation.Should().Be(2);
-        result.State.Should().Be("idle");
-        firstGeneration.DisposeCount.Should().Be(1);
-        secondGeneration.Generation.Should().Be(2);
-        factory.Starts.Select(static start => start.Generation).Should().Equal(1, 2);
+        Assert.Equal(2, result.Generation);
+        Assert.Equal("idle", result.State);
+        Assert.Equal(1, firstGeneration.DisposeCount);
+        Assert.Equal(2, secondGeneration.Generation);
+        Assert.Equal(new int[] { 1, 2 }, factory.Starts.Select(static start => start.Generation));
     }
 
     [Fact(Timeout = 15_000)]
@@ -239,12 +238,12 @@ public sealed class DenoReplSessionTests
         var first = session.DisposeAsync().AsTask();
         await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
         var second = session.DisposeAsync().AsTask();
-        second.IsCompleted.Should().BeFalse();
+        Assert.False(second.IsCompleted);
 
         generation.AllowDisposal.TrySetResult();
         await Task.WhenAll(first, second);
-        generation.DisposeCount.Should().Be(1);
-        session.GetSnapshot().State.Should().Be("closed");
+        Assert.Equal(1, generation.DisposeCount);
+        Assert.Equal("closed", session.GetSnapshot().State);
     }
 
     private static DenoReplOptions LongRunningOptions(TimeSpan? executionTimeout = null)

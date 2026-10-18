@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.DenoRepl;
 using Microsoft.Extensions.Logging;
 
@@ -26,14 +25,14 @@ public sealed class DenoModuleGraphWarmerTests
 
         // The warm either succeeds or logs a failure; either way the host stays up. Await the
         // internal completion signal (the test seam) instead of polling.
-        warmer.WarmCompletion.Should().NotBeNull();
+        Assert.NotNull(warmer.WarmCompletion);
         await warmer.WarmCompletion!.WaitAsync(timeout.Token);
         await warmer.StopAsync(timeout.Token);
 
         // Observable success: the warm finished with the success log and no failure log,
         // not merely "the task completed" (a failure also completes the task).
-        logger.Lines.Should().Contain(line => line.Contains("Deno REPL module graph warmed successfully."));
-        logger.Lines.Should().NotContain(line => line.Contains("Deno REPL module-graph warm failed"));
+        Assert.Contains(logger.Lines, line => line.Contains("Deno REPL module graph warmed successfully."));
+        Assert.DoesNotContain(logger.Lines, line => line.Contains("Deno REPL module-graph warm failed"));
     }
 
     /// <summary>True when a <c>deno</c> executable is resolvable on the current PATH.</summary>

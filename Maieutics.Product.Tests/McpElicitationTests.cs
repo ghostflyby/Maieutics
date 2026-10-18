@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Mcp;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -41,9 +40,9 @@ public sealed class McpElicitationTests
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
-        result.Action.Should().Be("accept");
-        result.Content.Should().ContainKey("token");
-        result.Content!["token"].GetString().Should().Be("s3cret");
+        Assert.Equal("accept", result.Action);
+        Assert.True((result.Content ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("token"));
+        Assert.Equal("s3cret", result.Content!["token"].GetString());
         coordinator.UnregisterCall(callId);
     }
 
@@ -61,8 +60,8 @@ public sealed class McpElicitationTests
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
-        result.Action.Should().Be("cancel");
-        presented.Should().BeFalse();
+        Assert.Equal("cancel", result.Action);
+        Assert.False(presented);
     }
 
     [Fact]
@@ -76,7 +75,7 @@ public sealed class McpElicitationTests
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
-        result.Action.Should().Be("cancel");
+        Assert.Equal("cancel", result.Action);
         coordinator.UnregisterCall(first);
         coordinator.UnregisterCall(second);
     }
@@ -98,11 +97,11 @@ public sealed class McpElicitationTests
         var first = coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
         var second = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
-        second.Action.Should().Be("cancel");
+        Assert.Equal("cancel", second.Action);
         hold.TrySetResult(new McpElicitationAnswer("accept", null));
-        (await first).Action.Should().Be("accept");
+        Assert.Equal("accept", (await first).Action);
         // The second request was refused at the in-flight gate, before any presenter call.
-        Volatile.Read(ref calls).Should().Be(1);
+        Assert.Equal(1, Volatile.Read(ref calls));
     }
 
     [Fact]
@@ -116,7 +115,7 @@ public sealed class McpElicitationTests
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
-        result.Action.Should().Be("cancel");
+        Assert.Equal("cancel", result.Action);
     }
 
     [Fact]
@@ -127,8 +126,8 @@ public sealed class McpElicitationTests
             NullLogger.Instance);
         RegisterCall(coordinator, out _);
 
-        (await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken))
-            .Action.Should().Be("decline");
+        Assert.Equal("decline", (await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken))
+            .Action);
     }
 
     [Fact]
@@ -149,8 +148,8 @@ public sealed class McpElicitationTests
             BuildRequest(new string('x', 5 * 1024)),
             TestContext.Current.CancellationToken);
 
-        result.Action.Should().Be("cancel");
-        presented.Should().BeFalse();
+        Assert.Equal("cancel", result.Action);
+        Assert.False(presented);
     }
 
     private sealed class StubPresenter(Func<McpElicitationRequest, ValueTask<McpElicitationAnswer>> answer)

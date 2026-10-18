@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
@@ -22,10 +21,9 @@ public sealed class BuiltinToolCallLimitChatClientTests
                            [new ChatMessage(ChatRole.User, "search")], options, TestContext.Current.CancellationToken))
             updates.Add(update);
 
-        updates.Should().HaveCount(5);
-        updates.SelectMany(static update => update.Contents)
-            .OfType<WebSearchToolCallContent>()
-            .Should().HaveCount(5);
+        Assert.Equal(5, updates.Count());
+        Assert.Equal(5, updates.SelectMany(static update => update.Contents)
+            .OfType<WebSearchToolCallContent>().Count());
     }
 
     [Fact]
@@ -41,9 +39,8 @@ public sealed class BuiltinToolCallLimitChatClientTests
                            TestContext.Current.CancellationToken))
             updates.Add(update);
 
-        updates.SelectMany(static update => update.Contents)
-            .OfType<WebSearchToolCallContent>()
-            .Should().HaveCount(2);
+        Assert.Equal(2, updates.SelectMany(static update => update.Contents)
+            .OfType<WebSearchToolCallContent>().Count());
     }
 
     [Fact]
@@ -62,9 +59,9 @@ public sealed class BuiltinToolCallLimitChatClientTests
             }
         };
 
-        var exception = await act.Should().ThrowAsync<AgentToolLimitExceededException>();
-        exception.Which.LimitName.Should().Be("MaxBuiltinToolCalls");
-        exception.Which.Maximum.Should().Be(2);
+        var exception = await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await act.Invoke(); });
+        Assert.Equal("MaxBuiltinToolCalls", exception.LimitName);
+        Assert.Equal(2, exception.Maximum);
     }
 
     [Fact]
@@ -82,8 +79,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
             OptionsWithLimit(1),
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<AgentToolLimitExceededException>())
-            .Which.LimitName.Should().Be("MaxBuiltinToolCalls");
+        Assert.Equal("MaxBuiltinToolCalls", (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await act.Invoke(); })).LimitName);
     }
 
     private static ChatOptions OptionsWithLimit(int limit)

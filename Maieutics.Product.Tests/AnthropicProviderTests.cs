@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Providers.Anthropic;
 using Microsoft.Extensions.AI;
 
@@ -26,15 +25,14 @@ public sealed class AnthropicProviderTests
             updates.Add(update);
 
         var request = await server.Request.WaitAsync(TestContext.Current.CancellationToken);
-        request.Method.Should().Be("POST");
-        request.Path.Should().Be("/v1/messages");
-        request.Headers["x-api-key"].Should().Be("configured-key");
-        request.Body.GetProperty("model").GetString().Should().Be("claude-test");
-        request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
-        string.Concat(updates.SelectMany(static update => update.Contents)
+        Assert.Equal("POST", request.Method);
+        Assert.Equal("/v1/messages", request.Path);
+        Assert.Equal("configured-key", request.Headers["x-api-key"]);
+        Assert.Equal("claude-test", request.Body.GetProperty("model").GetString());
+        Assert.True(request.Body.GetProperty("stream").GetBoolean());
+        Assert.Equal("Hello from Claude", string.Concat(updates.SelectMany(static update => update.Contents)
                 .OfType<TextContent>()
-                .Select(static content => content.Text))
-            .Should().Be("Hello from Claude");
+                .Select(static content => content.Text)));
     }
 
     [Fact(Timeout = 15_000)]
@@ -52,12 +50,11 @@ public sealed class AnthropicProviderTests
             updates.Add(update);
 
         await server.Request.WaitAsync(TestContext.Current.CancellationToken);
-        var call = updates.SelectMany(static update => update.Contents)
-            .OfType<FunctionCallContent>()
-            .Should().ContainSingle().Subject;
-        call.CallId.Should().Be("toolu_test");
-        call.Name.Should().Be("echo");
-        JsonSerializer.Serialize(call.Arguments).Should().Contain("hello");
+        var call = Assert.Single(updates.SelectMany(static update => update.Contents)
+            .OfType<FunctionCallContent>());
+        Assert.Equal("toolu_test", call.CallId);
+        Assert.Equal("echo", call.Name);
+        Assert.Contains("hello", JsonSerializer.Serialize(call.Arguments));
     }
 
     [Fact(Timeout = 15_000)]
@@ -71,9 +68,8 @@ public sealed class AnthropicProviderTests
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 
-        await client.Awaiting(state => ConsumeAsync(state, TestContext.Current.CancellationToken))
-            .Should().ThrowAsync<InvalidDataException>()
-            .WithMessage("*overloaded_error*");
+        var assertion1 = await Assert.ThrowsAnyAsync<InvalidDataException>(async () => { await (ConsumeAsync((client), TestContext.Current.CancellationToken)); });
+        Assert.Matches("(?is)^.*overloaded_error.*$", assertion1.Message);
         await server.Request.WaitAsync(TestContext.Current.CancellationToken);
     }
 
@@ -95,12 +91,11 @@ public sealed class AnthropicProviderTests
                 cancellationToken: cancellation.Token)
             .GetAsyncEnumerator(cancellation.Token);
 
-        (await updates.MoveNextAsync()).Should().BeTrue();
-        updates.Current.Text.Should().Be("partial");
+        Assert.True((await updates.MoveNextAsync()));
+        Assert.Equal("partial", updates.Current.Text);
         await cancellation.CancelAsync();
 
-        await updates.Awaiting(static state => state.MoveNextAsync())
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((updates).MoveNextAsync()); });
     }
 
     private static async Task ConsumeAsync(IChatClient client, CancellationToken cancellationToken)

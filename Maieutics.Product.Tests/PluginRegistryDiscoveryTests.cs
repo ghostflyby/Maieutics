@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Plugins;
 
 namespace Maieutics.Product.Tests;
@@ -38,13 +37,13 @@ public sealed class PluginRegistryDiscoveryTests
             url => url.EndsWith("deno.json") ? denoJson : maieutics,
             []);
 
-        descriptor.Should().NotBeNull();
-        descriptor.Id.Should().Be("@acme/widget");
-        descriptor.Name.Should().Be("@acme/widget");
-        descriptor.Workers.Should().ContainSingle();
-        descriptor.Workers[0].EntryUrl.Should().Be("https://jsr.io/@acme/widget/1.0.0/mod.ts");
-        descriptor.Imports.Should().ContainSingle().Which.Value.Should().Be("jsr:@std/bytes@1");
-        descriptor.Permissions.Read.Values.Should().Equal("./");
+        Assert.NotNull(descriptor);
+        Assert.Equal("@acme/widget", descriptor.Id);
+        Assert.Equal("@acme/widget", descriptor.Name);
+        Assert.Single(descriptor.Workers);
+        Assert.Equal("https://jsr.io/@acme/widget/1.0.0/mod.ts", descriptor.Workers[0].EntryUrl);
+        Assert.Equal("jsr:@std/bytes@1", Assert.Single(descriptor.Imports).Value);
+        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
     }
 
     [Fact]
@@ -59,11 +58,11 @@ public sealed class PluginRegistryDiscoveryTests
         var descriptor = PluginRegistryDiscovery.TryLoadFromPackageDir(
             "@acme/widget", "npm:@acme/widget@1.0.0", packageDir, []);
 
-        descriptor.Should().NotBeNull();
-        descriptor.Id.Should().Be("@acme/widget");
-        descriptor.RootDirectory.Should().Be(packageDir);
-        descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
-        descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
+        Assert.NotNull(descriptor);
+        Assert.Equal("@acme/widget", descriptor.Id);
+        Assert.Equal(packageDir, descriptor.RootDirectory);
+        Assert.StartsWith("file://", descriptor.Workers[0].EntryUrl);
+        Assert.EndsWith("/mod.ts", descriptor.Workers[0].EntryUrl);
     }
 
     // Synchronous on purpose: the probe's subprocess budget lives inside the
@@ -79,8 +78,8 @@ public sealed class PluginRegistryDiscoveryTests
         var descriptor = PluginRegistryDiscovery.TryLoadNpm(
             "chalk", "npm:chalk@5", "deno", diagnostics);
 
-        descriptor.Should().BeNull();
-        diagnostics.Should().ContainSingle().Which.Should().Contain("maieutics.json");
+        Assert.Null(descriptor);
+        Assert.Contains("maieutics.json", Assert.Single(diagnostics));
     }
 
     [Fact]
@@ -94,8 +93,8 @@ public sealed class PluginRegistryDiscoveryTests
             _ => null,
             diagnostics);
 
-        descriptor.Should().BeNull();
-        diagnostics.Should().ContainSingle().Which.Should().Contain("exact version");
+        Assert.Null(descriptor);
+        Assert.Contains("exact version", Assert.Single(diagnostics));
     }
 
     [Fact]
@@ -112,8 +111,8 @@ public sealed class PluginRegistryDiscoveryTests
             url => url.EndsWith("deno.json") ? denoJson : null,
             diagnostics);
 
-        descriptor.Should().BeNull();
-        diagnostics.Should().ContainSingle().Which.Should().Contain("maieutics.json");
+        Assert.Null(descriptor);
+        Assert.Contains("maieutics.json", Assert.Single(diagnostics));
     }
 
     [Fact]
@@ -123,7 +122,7 @@ public sealed class PluginRegistryDiscoveryTests
         var descriptor = PluginRegistryDiscovery.TryLoadJsr(
             "chalk", "npm:chalk@5", "deno", _ => null, diagnostics);
 
-        descriptor.Should().BeNull();
-        diagnostics.Should().ContainSingle().Which.Should().Contain("only jsr:");
+        Assert.Null(descriptor);
+        Assert.Contains("only jsr:", Assert.Single(diagnostics));
     }
 }

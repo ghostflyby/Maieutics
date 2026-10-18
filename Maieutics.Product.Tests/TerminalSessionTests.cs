@@ -1,6 +1,5 @@
 using System.Text;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Permissions;
@@ -74,9 +73,9 @@ public sealed class TerminalSessionTests
 
         var start = () => session.StartAsync(TestContext.Current.CancellationToken);
 
-        await start.Should().ThrowAsync<AgentToolException>()
-            .Where(static exception => exception.Code == "terminal_start_failed");
-        session.GetSnapshot().State.Should().Be("faulted");
+        var assertion36 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await start.Invoke(); });
+        Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_start_failed"))(assertion36));
+        Assert.Equal("faulted", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 10_000)]
@@ -101,9 +100,9 @@ public sealed class TerminalSessionTests
         {
             var start = () => session.StartAsync(TestContext.Current.CancellationToken);
 
-            await start.Should().ThrowAsync<AgentToolException>()
-                .Where(static exception => exception.Code == "terminal_start_failed");
-            session.GetSnapshot().State.Should().Be("faulted");
+            var assertion37 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await start.Invoke(); });
+            Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_start_failed"))(assertion37));
+            Assert.Equal("faulted", session.GetSnapshot().State);
         }
         finally
         {
@@ -120,7 +119,7 @@ public sealed class TerminalSessionTests
 
         await session.StartAsync(TestContext.Current.CancellationToken);
 
-        session.GetSnapshot().State.Should().Be("idle");
+        Assert.Equal("idle", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 10_000)]
@@ -134,9 +133,9 @@ public sealed class TerminalSessionTests
 
         var start = () => session.StartAsync(TestContext.Current.CancellationToken);
 
-        await start.Should().ThrowAsync<AgentToolException>()
-            .Where(static exception => exception.Code == "terminal_start_failed");
-        session.GetSnapshot().State.Should().Be("faulted");
+        var assertion38 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await start.Invoke(); });
+        Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_start_failed"))(assertion38));
+        Assert.Equal("faulted", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 10_000)]
@@ -148,12 +147,12 @@ public sealed class TerminalSessionTests
 
         await using var exact = CreateSession(fake, "/opt/shells", [], restricted);
         await exact.StartAsync(TestContext.Current.CancellationToken);
-        exact.GetSnapshot().State.Should().Be("idle");
+        Assert.Equal("idle", exact.GetSnapshot().State);
 
         var nestedFake = new FakeTerminalProcess();
         await using var nested = CreateSession(nestedFake, "/opt/shells/nested/sh", [], restricted);
         await nested.StartAsync(TestContext.Current.CancellationToken);
-        nested.GetSnapshot().State.Should().Be("idle");
+        Assert.Equal("idle", nested.GetSnapshot().State);
     }
 
     private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
@@ -183,9 +182,9 @@ public sealed class TerminalSessionTests
             new TerminalSnapshotRequest(),
             TestContext.Current.CancellationToken);
 
-        result.ExecutedLines.Should().Be(3);
-        result.FailedLine.Should().BeNull();
-        fake.HexWrites.Should().Equal("68656C6C6F", "0D", "776F726C64");
+        Assert.Equal(3, result.ExecutedLines);
+        Assert.Null(result.FailedLine);
+        Assert.Equal(new string[] { "68656C6C6F", "0D", "776F726C64" }, fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -200,21 +199,21 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var first = session.Snapshot(new TerminalSnapshotRequest());
-        first.Frame.Full.Should().BeTrue();
-        first.Frame.Lines.Should().Contain(row => row.Row == 0 && row.Text.Contains("hello"));
+        Assert.True(first.Frame.Full);
+        Assert.Contains(first.Frame.Lines, row => row.Row == 0 && row.Text.Contains("hello"));
 
         // An unchanged frame still carries the cursor row so the cursor's content window stays anchored.
         var unchanged = session.Snapshot(new TerminalSnapshotRequest());
-        unchanged.Frame.Full.Should().BeFalse();
-        unchanged.Frame.Lines.Should().ContainSingle().Which.Row.Should().Be(2);
+        Assert.False(unchanged.Frame.Full);
+        Assert.Equal(2, Assert.Single(unchanged.Frame.Lines).Row);
 
         before = session.ScreenVersion;
         fake.Emit("changed\r\n");
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
         var changed = session.Snapshot(new TerminalSnapshotRequest());
-        changed.Frame.Full.Should().BeFalse();
-        changed.Frame.Lines.Should().Contain(row => row.Row == 2 && row.Text.Contains("changed"));
-        changed.Frame.Lines.Should().Contain(row => row.Row == 3); // the new cursor row is included too
+        Assert.False(changed.Frame.Full);
+        Assert.Contains(changed.Frame.Lines, row => row.Row == 2 && row.Text.Contains("changed"));
+        Assert.Contains(changed.Frame.Lines, row => row.Row == 3); // the new cursor row is included too
     }
 
     [Fact(Timeout = 10_000)]
@@ -229,7 +228,7 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var frame = session.Snapshot(new TerminalSnapshotRequest()).Frame;
-        frame.AlternateBuffer.Should().BeTrue();
+        Assert.True(frame.AlternateBuffer);
     }
 
     [Fact(Timeout = 10_000)]
@@ -244,9 +243,9 @@ public sealed class TerminalSessionTests
             new TerminalSnapshotRequest(),
             TestContext.Current.CancellationToken);
 
-        result.ExecutedLines.Should().Be(1);
-        result.FailedLine.Should().Be(2);
-        fake.HexWrites.Should().Equal("6F6E65");
+        Assert.Equal(1, result.ExecutedLines);
+        Assert.Equal(2, result.FailedLine);
+        Assert.Equal(new string[] { "6F6E65" }, fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -269,7 +268,7 @@ public sealed class TerminalSessionTests
 
         await session.InterruptAsync(new TerminalSnapshotRequest(), TestContext.Current.CancellationToken);
 
-        fake.HexWrites.Should().Equal("03");
+        Assert.Equal(new string[] { "03" }, fake.HexWrites);
     }
 
     [Fact(Timeout = 10_000)]
@@ -281,8 +280,8 @@ public sealed class TerminalSessionTests
 
         await session.DisposeAsync();
 
-        fake.Disposed.Should().BeTrue();
-        session.GetSnapshot().State.Should().Be("closed");
+        Assert.True(fake.Disposed);
+        Assert.Equal("closed", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 10_000)]
@@ -300,13 +299,13 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
-        cursor.Visible.Should().BeTrue();
-        cursor.Row.Should().Be(0);
-        cursor.Column.Should().Be(4);
+        Assert.True(cursor.Visible);
+        Assert.Equal(0, cursor.Row);
+        Assert.Equal(4, cursor.Column);
         // The minimal unique window: "(" ends and "b" begins at only one gap on this row.
-        cursor.Left.Should().Be("(");
-        cursor.Right.Should().Be("b");
-        cursor.Unambiguous.Should().BeTrue();
+        Assert.Equal("(", cursor.Left);
+        Assert.Equal("b", cursor.Right);
+        Assert.True(cursor.Unambiguous);
     }
 
     [Fact(Timeout = 10_000)]
@@ -321,8 +320,8 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
-        cursor.Style.Should().Be("bar");
-        cursor.Blink.Should().BeFalse();
+        Assert.Equal("bar", cursor.Style);
+        Assert.False(cursor.Blink);
     }
 
     [Fact(Timeout = 10_000)]
@@ -340,12 +339,12 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
-        cursor.Row.Should().Be(1);
-        cursor.Column.Should().Be(2);
+        Assert.Equal(1, cursor.Row);
+        Assert.Equal(2, cursor.Column);
         // Two b's on the left and four on the right is the first minimal unique window (total budget 6).
-        cursor.Left.Should().Be("bb");
-        cursor.Right.Should().Be("bbbb");
-        cursor.Unambiguous.Should().BeTrue();
+        Assert.Equal("bb", cursor.Left);
+        Assert.Equal("bbbb", cursor.Right);
+        Assert.True(cursor.Unambiguous);
     }
 
     [Fact(Timeout = 10_000)]
@@ -363,11 +362,11 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
-        cursor.Row.Should().Be(0);
-        cursor.Column.Should().Be(7);
-        cursor.Left.Should().Be("aaaaaa");
-        cursor.Right.Should().Be("aaa");
-        cursor.Unambiguous.Should().BeFalse();
+        Assert.Equal(0, cursor.Row);
+        Assert.Equal(7, cursor.Column);
+        Assert.Equal("aaaaaa", cursor.Left);
+        Assert.Equal("aaa", cursor.Right);
+        Assert.False(cursor.Unambiguous);
     }
 
     [Fact(Timeout = 10_000)]
@@ -382,8 +381,8 @@ public sealed class TerminalSessionTests
         await session.WaitForScreenVersionAsync(before + 1, TestContext.Current.CancellationToken);
 
         var cursor = session.Snapshot(new TerminalSnapshotRequest()).Frame.Cursor;
-        cursor.Visible.Should().BeFalse();
-        cursor.Style.Should().Be("block");
+        Assert.False(cursor.Visible);
+        Assert.Equal("block", cursor.Style);
     }
 
     [Fact(Timeout = 10_000)]
@@ -399,13 +398,13 @@ public sealed class TerminalSessionTests
 
         // A tight budget truncates the frame mid-way and keeps the cursor row anchored.
         var first = session.Snapshot(new TerminalSnapshotRequest(null, 20));
-        first.Frame.Truncated.Should().BeTrue();
+        Assert.True(first.Frame.Truncated);
 
         // The identical screen must produce an empty diff on the next frame: no phantom rows from
         // truncated-vs-full text mismatches.
         var second = session.Snapshot(new TerminalSnapshotRequest(null, 20));
-        second.Frame.Truncated.Should().BeTrue();
-        second.Frame.Lines.Should().ContainSingle(); // only the cursor row anchor, no phantom diffs
+        Assert.True(second.Frame.Truncated);
+        Assert.Single(second.Frame.Lines); // only the cursor row anchor, no phantom diffs
     }
 
     [Fact(Timeout = 10_000)]
@@ -435,9 +434,9 @@ public sealed class TerminalSessionTests
         fake.RaiseExited(0);
 
         var result = await run;
-        result.State.Should().Be("completed");
-        result.ExitCode.Should().Be(0);
-        result.Frame.Lines.Should().Contain(row => row.Text.Contains("hi"));
+        Assert.Equal("completed", result.State);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(result.Frame.Lines, row => row.Text.Contains("hi"));
     }
 
     [Fact(Timeout = 10_000)]
@@ -452,16 +451,16 @@ public sealed class TerminalSessionTests
             new TerminalSnapshotRequest(),
             TestContext.Current.CancellationToken);
 
-        result.State.Should().Be("running");
-        result.ExitCode.Should().BeNull();
+        Assert.Equal("running", result.State);
+        Assert.Null(result.ExitCode);
 
         // The handle stays alive: snapshots report running until the child exits.
-        session.GetSnapshot().State.Should().Be("running");
+        Assert.Equal("running", session.GetSnapshot().State);
 
         fake.EndOfOutput();
         fake.RaiseExited(3);
         await WaitForStateAsync(session, "completed", TestContext.Current.CancellationToken);
-        session.GetSnapshot().ExitCode.Should().Be(3);
+        Assert.Equal(3, session.GetSnapshot().ExitCode);
     }
 
     [Fact(Timeout = 10_000)]
@@ -483,8 +482,8 @@ public sealed class TerminalSessionTests
         cancel.Cancel();
 
         var failure = () => run;
-        await failure.Should().ThrowAsync<OperationCanceledException>();
-        fake.Disposed.Should().BeTrue();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await failure.Invoke(); });
+        Assert.True(fake.Disposed);
     }
 
     [Fact(Timeout = 10_000)]
@@ -517,14 +516,14 @@ public sealed class TerminalSessionTests
             cancel.Cancel();
 
             var failure = () => run;
-            await failure.Should().ThrowAsync<OperationCanceledException>();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await failure.Invoke(); });
             release.TrySetResult();
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
             while (!fake.Disposed && DateTime.UtcNow < deadline)
                 await Task.Delay(10, TestContext.Current.CancellationToken);
 
-            fake.Disposed.Should().BeTrue("the reclaim must dispose the late spawn even though the cancellation surfaced first");
+            Assert.True(fake.Disposed, "the reclaim must dispose the late spawn even though the cancellation surfaced first");
         }
         finally
         {
@@ -549,9 +548,9 @@ public sealed class TerminalSessionTests
 
 
         var completed = await run;
-        completed.State.Should().Be("completed");
+        Assert.Equal("completed", completed.State);
         var snapshot = session.Snapshot(new TerminalSnapshotRequest());
-        snapshot.ExitCode.Should().Be(7);
+        Assert.Equal(7, snapshot.ExitCode);
     }
 
     [Fact(Timeout = 10_000)]
@@ -572,10 +571,10 @@ public sealed class TerminalSessionTests
         // child whose exit can never be recorded. It must be rejected, not corrupt the
         // session into a permanent "running" handle with a stale exit code.
         var restart = () => session.StartAsync(TestContext.Current.CancellationToken);
-        await restart.Should().ThrowAsync<AgentToolException>()
-            .Where(static exception => exception.Code == "terminal_session_completed");
+        var assertion39 = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await restart.Invoke(); });
+        Assert.True(((Func<AgentToolException, bool>)(static exception => exception.Code == "terminal_session_completed"))(assertion39));
 
-        session.GetSnapshot().State.Should().Be("completed");
+        Assert.Equal("completed", session.GetSnapshot().State);
     }
 
     [Fact(Timeout = 10_000)]
@@ -592,9 +591,9 @@ public sealed class TerminalSessionTests
         fake.RaiseSignaled(9);
 
         var completed = await run;
-        completed.State.Should().Be("completed");
-        completed.ExitCode.Should().BeNull();
-        session.GetSnapshot().ExitCode.Should().BeNull();
+        Assert.Equal("completed", completed.State);
+        Assert.Null(completed.ExitCode);
+        Assert.Null(session.GetSnapshot().ExitCode);
     }
 
     /// <summary>State polling is the residual wait in this fixture: the session writes its

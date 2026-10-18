@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Providers.Anthropic;
 using Microsoft.Extensions.AI;
@@ -26,29 +25,27 @@ public sealed class AnthropicWebSearchTests
 
         // The request declares Anthropic's versioned server tool, not a function with a schema.
         var tools = provider.RequestBody.GetProperty("tools");
-        tools.GetArrayLength().Should().Be(1);
-        tools[0].GetProperty("type").GetString().Should().Be("web_search_20250305");
-        tools[0].GetProperty("name").GetString().Should().Be("web_search");
-        tools[0].TryGetProperty("input_schema", out _).Should().BeFalse();
+        Assert.Equal(1, tools.GetArrayLength());
+        Assert.Equal("web_search_20250305", tools[0].GetProperty("type").GetString());
+        Assert.Equal("web_search", tools[0].GetProperty("name").GetString());
+        Assert.False(tools[0].TryGetProperty("input_schema", out _));
         // No limit is configured, so the wire block carries no cap.
-        tools[0].TryGetProperty("max_uses", out _).Should().BeFalse();
+        Assert.False(tools[0].TryGetProperty("max_uses", out _));
 
         var contents = updates.SelectMany(static update => update.Contents).ToArray();
         var searchCall = contents.OfType<WebSearchToolCallContent>().Single();
-        searchCall.Queries.Should().Equal("zhipu ai");
-        searchCall.CallId.Should().Be("srvtoolu_test");
+        Assert.Equal(new string[] { "zhipu ai" }, searchCall.Queries);
+        Assert.Equal("srvtoolu_test", searchCall.CallId);
 
         var searchResult = contents.OfType<WebSearchToolResultContent>().Single();
-        searchResult.CallId.Should().Be(searchCall.CallId);
+        Assert.Equal(searchCall.CallId, searchResult.CallId);
 
         // The answer text streams as deltas; the citations ride a trailing content item whose
         // annotations the aggregated response preserves.
         var texts = contents.OfType<TextContent>().ToArray();
-        string.Concat(texts.Select(static text => text.Text))
-            .Should().Contain("Zhipu AI is a Chinese AI company.");
+        Assert.Contains("Zhipu AI is a Chinese AI company.", string.Concat(texts.Select(static text => text.Text)));
         var cited = texts.Single(text => text.Annotations is { Count: > 0 });
-        cited.Annotations![0].Should().BeOfType<CitationAnnotation>()
-            .Which.Url.Should().Be(new Uri("https://example.com/zhipu"));
+        Assert.Equal(new Uri("https://example.com/zhipu"), Assert.IsType<CitationAnnotation>(cited.Annotations![0]).Url);
     }
 
     [Fact(Timeout = 30_000)]
@@ -71,8 +68,8 @@ public sealed class AnthropicWebSearchTests
         }
 
         // The endpoint limit rides the wire as the server tool's own per-request cap.
-        provider.RequestBody.GetProperty("tools")[0]
-            .GetProperty("max_uses").GetInt32().Should().Be(4);
+        Assert.Equal(4, provider.RequestBody.GetProperty("tools")[0]
+            .GetProperty("max_uses").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -102,13 +99,13 @@ public sealed class AnthropicWebSearchTests
             client,
             deadline.Token);
 
-        requestBody.Should().Contain("\"type\":\"server_tool_use\"");
-        requestBody.Should().Contain("\"type\":\"web_search_tool_result\"");
-        requestBody.Should().Contain("ENCRYPTED_PAYLOAD");
-        requestBody.Should().Contain("\"tool_use_id\":\"srvtoolu_test\"");
+        Assert.Contains("\"type\":\"server_tool_use\"", requestBody);
+        Assert.Contains("\"type\":\"web_search_tool_result\"", requestBody);
+        Assert.Contains("ENCRYPTED_PAYLOAD", requestBody);
+        Assert.Contains("\"tool_use_id\":\"srvtoolu_test\"", requestBody);
         // Citations replay with their opaque encrypted_index intact.
-        requestBody.Should().Contain("ENCRYPTED_INDEX");
-        requestBody.Should().Contain("Zhipu AI is a Chinese AI company.");
+        Assert.Contains("ENCRYPTED_INDEX", requestBody);
+        Assert.Contains("Zhipu AI is a Chinese AI company.", requestBody);
     }
 
     [Fact(Timeout = 30_000)]
@@ -120,8 +117,7 @@ public sealed class AnthropicWebSearchTests
 
         // A constructed call with no preserved wire block cannot be faithfully replayed.
         var fabricated = new WebSearchToolCallContent("srvtoolu_x") { Queries = new List<string> { "q" } };
-        await client.Awaiting(c => ConsumeAsync(c, fabricated, deadline.Token))
-            .Should().ThrowAsync<NotSupportedException>();
+        await Assert.ThrowsAnyAsync<NotSupportedException>(async () => { await (ConsumeAsync((client), fabricated, deadline.Token)); });
     }
 
     private static async Task ConsumeAsync(IChatClient client, AIContent content, CancellationToken cancellationToken)

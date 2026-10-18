@@ -1,6 +1,5 @@
 using System.IO.Pipelines;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Mcp;
@@ -26,8 +25,8 @@ public sealed class McpServerGenerationTests
 
         var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted);
 
-        check.Should().Throw<ArgumentException>()
-            .WithMessage("*not permitted by the effective policy*");
+        var assertion26 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion26.Message);
     }
 
     [Fact]
@@ -55,8 +54,8 @@ public sealed class McpServerGenerationTests
 
         var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted);
 
-        check.Should().Throw<ArgumentException>()
-            .WithMessage("*not permitted by the effective policy*");
+        var assertion27 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion27.Message);
     }
 
     [Fact]
@@ -168,23 +167,20 @@ public sealed class McpServerGenerationTests
 
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        var tool = lease.Tools.Should().ContainSingle().Which;
-        tool.Name.Should().Be("echo_safe");
-        tool.Description.Should().Be("Safe echo");
+        var tool = Assert.Single(lease.Tools);
+        Assert.Equal("echo_safe", tool.Name);
+        Assert.Equal("Safe echo", tool.Description);
         // Invocation still routes to the remote echo tool.
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
             static property => property.Name,
             static property => (object?)property.Value.Clone()));
         var result = await tool.InvokeAsync(arguments, deadline.Token);
-        result.Should().BeOfType<JsonElement>().Which
-            .GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
+        Assert.Equal("hello", Assert.IsType<JsonElement>(result).GetProperty("structuredContent").GetProperty("value").GetString());
 
-        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
-            new MaieuticsMcpToolInfo("echo", "echo_safe", true));
-        seenListing.Should().NotBeNull();
-        seenListing.Value.EnumerateArray().Should().ContainSingle().Which
-            .GetProperty("name").GetString().Should().Be("echo");
+        Assert.Equal(new MaieuticsMcpToolInfo("echo", "echo_safe", true), Assert.Single(generation.GetInfo().Tools));
+        Assert.NotNull(seenListing);
+        Assert.Equal("echo", Assert.Single(seenListing.Value.EnumerateArray()).GetProperty("name").GetString());
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -208,8 +204,8 @@ public sealed class McpServerGenerationTests
 
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        lease.Tools.Should().BeEmpty("a failed adjustment with no previous listing exposes nothing (fail-closed)");
-        generation.GetInfo().Tools.Should().BeEmpty();
+        Assert.Empty(lease.Tools);
+        Assert.Empty(generation.GetInfo().Tools);
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -238,7 +234,7 @@ public sealed class McpServerGenerationTests
 
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        lease.Tools.Select(static function => function.Name).Should().Equal("echo", "echo_alias");
+        Assert.Equal(new string[] { "echo", "echo_alias" }, lease.Tools.Select(static function => function.Name));
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hi\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
             static property => property.Name,
@@ -246,13 +242,10 @@ public sealed class McpServerGenerationTests
         foreach (var tool in lease.Tools)
         {
             var result = await tool.InvokeAsync(arguments, deadline.Token);
-            result.Should().BeOfType<JsonElement>().Which
-                .GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hi");
+            Assert.Equal("hi", Assert.IsType<JsonElement>(result).GetProperty("structuredContent").GetProperty("value").GetString());
         }
 
-        generation.GetInfo().Tools.Select(static info => (info.RemoteName, info.ExposedName)).Should().Equal(
-            (("echo", "echo")),
-            (("echo", "echo_alias")));
+        Assert.Equal(new (string RemoteName, string ExposedName)[] { (("echo", "echo")), (("echo", "echo_alias")) }, generation.GetInfo().Tools.Select(static info => (info.RemoteName, info.ExposedName)));
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -281,7 +274,7 @@ public sealed class McpServerGenerationTests
 
         var firstLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
         // The adjuster stops producing: the refresh fails closed (nothing exposed)
@@ -296,7 +289,7 @@ public sealed class McpServerGenerationTests
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var refreshedLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        refreshedLease.Tools.Should().BeEmpty();
+        Assert.Empty(refreshedLease.Tools);
         var retirement = generation.Retire();
         await refreshedLease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -329,7 +322,7 @@ public sealed class McpServerGenerationTests
 
         var firstLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        firstLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
         // As above: await the refresh's application, not just the adjuster call, so the
@@ -341,7 +334,7 @@ public sealed class McpServerGenerationTests
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var stickyLease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a lease");
-        stickyLease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo_safe");
+        Assert.Equal("echo_safe", Assert.Single(stickyLease.Tools).Name);
         var retirement = generation.Retire();
         await stickyLease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -362,9 +355,9 @@ public sealed class McpServerGenerationTests
             serverFactory.CreateTransportAsync);
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
-        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
+        Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hello\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
             static property => property.Name,
@@ -372,13 +365,12 @@ public sealed class McpServerGenerationTests
 
         var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
 
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.TryGetProperty("isError", out _).Should().BeFalse();
-        resultElement.GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
-        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
-            new MaieuticsMcpToolInfo("echo", "echo", true));
+        var resultElement = Assert.IsType<JsonElement>(result);
+        Assert.False(resultElement.TryGetProperty("isError", out _));
+        Assert.Equal("hello", resultElement.GetProperty("structuredContent").GetProperty("value").GetString());
+        Assert.Equal(new MaieuticsMcpToolInfo("echo", "echo", true), Assert.Single(generation.GetInfo().Tools));
         var retirement = generation.Retire();
-        retirement.IsCompleted.Should().BeFalse();
+        Assert.False(retirement.IsCompleted);
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
     }
@@ -399,10 +391,9 @@ public sealed class McpServerGenerationTests
             new HashSet<string>(StringComparer.Ordinal) { "echo" });
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
-        acquired.Tools.Should().BeEmpty();
-        generation.GetInfo().Tools.Should().ContainSingle().Which.Should().Be(
-            new MaieuticsMcpToolInfo("echo", "echo", false));
+        Assert.NotNull(acquired);
+        Assert.Empty(acquired.Tools);
+        Assert.Equal(new MaieuticsMcpToolInfo("echo", "echo", false), Assert.Single(generation.GetInfo().Tools));
         var retirement = generation.Retire();
         await acquired.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -432,15 +423,15 @@ public sealed class McpServerGenerationTests
         await serverFactory.DisconnectClientsAsync();
         await registered.WaitAsync(deadline.Token);
         var waiting = generation.GetInfo();
-        waiting.State.Should().Be(MaieuticsMcpServerState.Reconnecting);
-        waiting.NextReconnectDelay.Should().Be(McpServerGeneration.InitialReconnectDelay);
+        Assert.Equal(MaieuticsMcpServerState.Reconnecting, waiting.State);
+        Assert.Equal(McpServerGeneration.InitialReconnectDelay, waiting.NextReconnectDelay);
 
         clock.Advance(McpServerGeneration.InitialReconnectDelay);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
-        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
-        generation.GetInfo().State.Should().Be(MaieuticsMcpServerState.Connected);
+        Assert.Equal("echo", Assert.Single(lease.Tools).Name);
+        Assert.Equal(MaieuticsMcpServerState.Connected, generation.GetInfo().State);
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -478,14 +469,14 @@ public sealed class McpServerGenerationTests
         clock.Advance(McpServerGeneration.InitialReconnectDelay);
         await reRegistration.WaitAsync(deadline.Token);
         var doubled = TimeSpan.FromSeconds(2);
-        generation.GetInfo().NextReconnectDelay.Should().Be(doubled);
+        Assert.Equal(doubled, generation.GetInfo().NextReconnectDelay);
 
         serverFactory.FailNextTransport = false;
         clock.Advance(doubled);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
             ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
-        lease.Tools.Should().ContainSingle().Which.Name.Should().Be("echo");
+        Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         var retirement = generation.Retire();
         await lease.DisposeAsync();
         await retirement.WaitAsync(deadline.Token);
@@ -506,14 +497,14 @@ public sealed class McpServerGenerationTests
             serverFactory.CreateTransportAsync);
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         var reported = new List<JsonElement>();
         var bothForwarded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var context = CreateProgressContext((content, _) =>
         {
-            var data = content.Should().BeOfType<DataContent>().Subject;
-            data.MediaType.Should().Be("application/json");
+            var data = Assert.IsType<DataContent>(content);
+            Assert.Equal("application/json", data.MediaType);
             using var document = JsonDocument.Parse(data.Data);
             lock (reported)
             {
@@ -535,16 +526,16 @@ public sealed class McpServerGenerationTests
         await bothForwarded.Task.WaitAsync(TimeSpan.FromSeconds(5), deadline.Token);
         await lease.DisposeAsync();
 
-        result.Should().BeOfType<JsonElement>();
-        reported.Should().HaveCount(2);
+        Assert.IsType<JsonElement>(result);
+        Assert.Equal(2, reported.Count());
         // The SDK dispatches notifications on the thread pool, so delivery order between two
         // reports is not guaranteed; the forwarding chain only serializes the writes.
         var ordered = reported.OrderBy(static element => element.GetProperty("progress").GetDouble()).ToArray();
-        ordered[0].GetProperty("progress").GetDouble().Should().Be(25);
-        ordered[0].GetProperty("total").GetDouble().Should().Be(100);
-        ordered[0].GetProperty("message").GetString().Should().Be("quarter");
-        ordered[1].GetProperty("progress").GetDouble().Should().Be(100);
-        ordered[1].TryGetProperty("message", out _).Should().BeFalse();
+        Assert.Equal(25, ordered[0].GetProperty("progress").GetDouble());
+        Assert.Equal(100, ordered[0].GetProperty("total").GetDouble());
+        Assert.Equal("quarter", ordered[0].GetProperty("message").GetString());
+        Assert.Equal(100, ordered[1].GetProperty("progress").GetDouble());
+        Assert.False(ordered[1].TryGetProperty("message", out _));
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
@@ -563,15 +554,15 @@ public sealed class McpServerGenerationTests
             serverFactory.CreateTransportAsync);
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "hello" });
 
         var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
         await lease.DisposeAsync();
 
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.GetProperty("structuredContent").GetProperty("value").GetString().Should().Be("hello");
+        var resultElement = Assert.IsType<JsonElement>(result);
+        Assert.Equal("hello", resultElement.GetProperty("structuredContent").GetProperty("value").GetString());
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
@@ -595,8 +586,8 @@ public sealed class McpServerGenerationTests
         forwarder.Report(new ProgressNotificationValue { Progress = 3 });
         await forwarder.FlushAsync();
 
-        calls.Should().Be(2);
-        payloads.Should().Equal(1d);
+        Assert.Equal(2, calls);
+        Assert.Equal(new double[] { 1d }, payloads);
     }
 
     private static AgentToolContext CreateProgressContext(
@@ -621,15 +612,12 @@ public sealed class McpServerGenerationTests
                                                "futureField": 42
                                              }
                                              """);
-        var stdioDefinition = stdio.RootElement
-            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
-            .Should()
-            .BeOfType<StdioMcpTransportDefinition>()
-            .Subject;
-        stdioDefinition.Command.Should().Be("deno");
-        stdioDefinition.Arguments.Should().Equal("run", "server.ts");
-        stdioDefinition.EnvironmentVariables.Should().ContainKey("PORT").WhoseValue.Should().Be("8080");
-        stdioDefinition.Kind.Should().Be(McpServerTransportKind.Stdio);
+        var stdioDefinition = Assert.IsType<StdioMcpTransportDefinition>(stdio.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition));
+        Assert.Equal("deno", stdioDefinition.Command);
+        Assert.Equal(new string[] { "run", "server.ts" }, stdioDefinition.Arguments);
+        Assert.Equal("8080", Assert.Contains("PORT", (stdioDefinition.EnvironmentVariables ?? throw new InvalidOperationException("the assertion subject is null"))));
+        Assert.Equal(McpServerTransportKind.Stdio, stdioDefinition.Kind);
 
         using var http = JsonDocument.Parse("""
                                             {
@@ -638,22 +626,17 @@ public sealed class McpServerGenerationTests
                                               "headers": { "Authorization": "Bearer token" }
                                             }
                                             """);
-        var httpDefinition = http.RootElement
-            .Deserialize(McpJsonContext.Default.McpTransportDefinition)
-            .Should()
-            .BeOfType<HttpMcpTransportDefinition>()
-            .Subject;
-        httpDefinition.Endpoint.Should().Be(new Uri("https://example.com/mcp"));
-        httpDefinition.Headers.Should().ContainKey("Authorization");
-        httpDefinition.Kind.Should().Be(McpServerTransportKind.Http);
+        var httpDefinition = Assert.IsType<HttpMcpTransportDefinition>(http.RootElement
+            .Deserialize(McpJsonContext.Default.McpTransportDefinition));
+        Assert.Equal(new Uri("https://example.com/mcp"), httpDefinition.Endpoint);
+        Assert.True((httpDefinition.Headers ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("Authorization"));
+        Assert.Equal(McpServerTransportKind.Http, httpDefinition.Kind);
 
-        FluentActions.Invoking(() =>
+        Assert.ThrowsAny<JsonException>(() =>
             {
                 using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
                 return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
-            })
-            .Should()
-            .Throw<JsonException>();
+            });
     }
 
     private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false, bool elicitationEnabled = false)
@@ -703,20 +686,20 @@ public sealed class McpServerGenerationTests
             rootsSource: new StubRootsSource(workspace.Path));
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "roots" });
 
         var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
         await lease.DisposeAsync();
 
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
+        var resultElement = Assert.IsType<JsonElement>(result);
         var echoed = resultElement.GetProperty("structuredContent").GetProperty("value").GetString();
         // The client answered the server's roots query with the live workspace root, so the
         // server-side tool observed it mid-call. Compare URIs: the wire form is a file URI,
         // which is not byte-identical to the platform path on Windows.
-        echoed.Should().StartWith("roots:file://").And.Contain(
-            new Uri(Path.GetFullPath(workspace.Path)).AbsoluteUri);
+        Assert.StartsWith("roots:file://", (echoed ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.Contains(new Uri(Path.GetFullPath(workspace.Path)).AbsoluteUri, echoed);
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
@@ -735,7 +718,7 @@ public sealed class McpServerGenerationTests
             rootsSource: new StubRootsSource(Directory.GetCurrentDirectory()));
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "roots" });
 
@@ -744,9 +727,9 @@ public sealed class McpServerGenerationTests
 
         // No capability was declared, so the server-side roots request fails and surfaces as
         // a tool error instead of a client answer.
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.TryGetProperty("isError", out var isError).Should().BeTrue();
-        isError.GetBoolean().Should().BeTrue();
+        var resultElement = Assert.IsType<JsonElement>(result);
+        Assert.True(resultElement.TryGetProperty("isError", out var isError));
+        Assert.True(isError.GetBoolean());
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
@@ -782,7 +765,7 @@ public sealed class McpServerGenerationTests
             }));
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         // Attribution rides the AgentToolContext the run attaches to every tool call; a call
         // without one is a script-tool invocation and cannot be attributed.
@@ -799,12 +782,11 @@ public sealed class McpServerGenerationTests
         var result = await lease.Tools.Single().InvokeAsync(arguments, deadline.Token);
         await lease.DisposeAsync();
 
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.GetProperty("structuredContent").GetProperty("value").GetString()
-            .Should().Be("echo:accept:t0k");
-        presented.Should().NotBeNull();
-        presented!.Message.Should().Be("echo token");
-        presented.Password.Should().BeFalse();
+        var resultElement = Assert.IsType<JsonElement>(result);
+        Assert.Equal("echo:accept:t0k", resultElement.GetProperty("structuredContent").GetProperty("value").GetString());
+        Assert.NotNull(presented);
+        Assert.Equal("echo token", presented!.Message);
+        Assert.False(presented.Password);
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
@@ -824,7 +806,7 @@ public sealed class McpServerGenerationTests
                 new McpElicitationAnswer("accept", "{}")));
 
         var acquired = generation.TryAcquire();
-        acquired.Should().NotBeNull();
+        Assert.NotNull(acquired);
         var lease = acquired;
         var arguments = new AIFunctionArguments(new Dictionary<string, object?> { ["value"] = "echo" });
 
@@ -833,9 +815,9 @@ public sealed class McpServerGenerationTests
 
         // No capability was declared, so the server-side elicitation fails and surfaces as a
         // tool error instead of a presenter round trip.
-        var resultElement = result.Should().BeOfType<JsonElement>().Subject;
-        resultElement.TryGetProperty("isError", out var isError).Should().BeTrue();
-        isError.GetBoolean().Should().BeTrue();
+        var resultElement = Assert.IsType<JsonElement>(result);
+        Assert.True(resultElement.TryGetProperty("isError", out var isError));
+        Assert.True(isError.GetBoolean());
         await generation.Retire().WaitAsync(deadline.Token);
     }
 

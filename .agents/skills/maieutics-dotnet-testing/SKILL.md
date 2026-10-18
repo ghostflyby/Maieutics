@@ -1,6 +1,6 @@
 ---
 name: maieutics-dotnet-testing
-description: Use when writing, reviewing, or running Maieutics tests with xUnit v3, FluentAssertions, sockets, fake model providers, Deno execution, external processes, configuration reload, or NativeAOT publishing.
+description: Use when writing, reviewing, or running Maieutics tests with xUnit v3 and its built-in Assert API, sockets, fake model providers, Deno execution, external processes, configuration reload, or NativeAOT publishing.
 ---
 
 # Maieutics .NET Testing
@@ -16,9 +16,9 @@ description: Use when writing, reviewing, or running Maieutics tests with xUnit 
 - Use xUnit v3 and flow `TestContext.Current.CancellationToken` into cancellable APIs.
 - **Every asynchronous test must carry a declarative xUnit `Timeout`** (`[Fact(Timeout = 30_000)]` / `[Theory(Timeout = ...)]`). Do not rely on an internal deadline alone; the attribute is the outer safety net.
 - **The internal deadline must be strictly smaller than the declared xUnit `Timeout`.** Default pairing: 20s internal deadline under 30s Timeout; heavier integration 50s under 60s; process-level 90s under 120s. When raising an internal deadline, raise the Timeout to match.
-- For asynchronous exception assertions, invoke through FluentAssertions `Awaiting(...)`.
-- Do not create a temporary `async` delegate solely for `delegate.Should().ThrowAsync(...)`.
-- When `Awaiting` overloads are ambiguous, return an explicit `Task`/`ValueTask`, or use a named helper with a concrete return type.
+- For asynchronous exception assertions, use `await Assert.ThrowsAnyAsync<TException>(...)` (xUnit's exact-type `ThrowsAsync` is too strict where a derived exception such as `TaskCanceledException` is legitimate).
+- Do not create a temporary `async` delegate solely to satisfy an assertion helper; pass the awaited invocation directly.
+- Prefer `Assert.Contains` / `Assert.DoesNotContain` / `Assert.Single` / `Assert.Empty` over manual `Assert.True(collection.Contains(...))` or `Assert.Equal(1, collection.Count())` forms, which the xUnit analyzers reject.
 - Assert protocol stages and typed failures, not incidental exception text unless the text is the public contract.
 
 ## Determinism

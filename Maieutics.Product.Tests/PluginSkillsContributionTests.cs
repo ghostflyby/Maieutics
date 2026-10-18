@@ -1,7 +1,6 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Threading.Channels;
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
@@ -151,8 +150,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 TestContext.Current.CancellationToken);
 
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "alpha");
-            skill.Source.Should().Be(SkillSource.PluginDeclared);
-            skill.BodyPath.Should().Contain("skills-plain");
+            Assert.Equal(SkillSource.PluginDeclared, skill.Source);
+            Assert.Contains("skills-plain", skill.BodyPath);
         }
         finally
         {
@@ -198,8 +197,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "delta"),
                 TestContext.Current.CancellationToken);
 
-            catalog.Current.Skills.Single(skill => skill.Name == "delta").Source
-                .Should().Be(SkillSource.PluginDeclared);
+            Assert.Equal(SkillSource.PluginDeclared, catalog.Current.Skills.Single(skill => skill.Name == "delta").Source);
         }
         finally
         {
@@ -247,8 +245,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await Task.Delay(300, TestContext.Current.CancellationToken);
 
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "beta");
-            skill.Source.Should().Be(SkillSource.PluginDeclared);
-            catalog.Current.Diagnostics.Should().Contain(diagnostic =>
+            Assert.Equal(SkillSource.PluginDeclared, skill.Source);
+            Assert.Contains(catalog.Current.Diagnostics, diagnostic =>
                 diagnostic.Contains("not covered by a read grant"));
         }
         finally
@@ -283,7 +281,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await manager.WaitUntilReadyAsync(TestContext.Current.CancellationToken);
             await Task.Delay(500, TestContext.Current.CancellationToken);
 
-            catalog.Current.Skills.Should().BeEmpty();
+            Assert.Empty(catalog.Current.Skills);
         }
         finally
         {
@@ -350,8 +348,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 TestContext.Current.CancellationToken);
 
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "gen-skill");
-            skill.Source.Should().Be(SkillSource.PluginGenerated);
-            skill.BodyText.Should().Be("# Generated\n");
+            Assert.Equal(SkillSource.PluginGenerated, skill.Source);
+            Assert.Equal("# Generated\n", skill.BodyText);
 
             // The plane serves the inline body like any filesystem skill.
             var provider = new SkillResourceProvider(catalog);
@@ -360,7 +358,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 new ResourceReadRequest(long.MaxValue),
                 TestContext.Current.CancellationToken);
             using var reader = new StreamReader(result.Content);
-            (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Contain("# Generated");
+            Assert.Contains("# Generated", (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)));
 
             // A later failing invoke keeps the last good contribution (sticky). An
             // unchanged registry frame no longer re-invokes the generator (the
@@ -371,7 +369,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             fakeSocket.ReplyError(manager, secondInvoke, "generator_broken", "the worker failed");
             await Task.Delay(300, TestContext.Current.CancellationToken);
 
-            catalog.Current.Skills.Should().Contain(skill => skill.Name == "gen-skill");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "gen-skill");
         }
         finally
         {
@@ -438,8 +436,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "published-one"),
                 TestContext.Current.CancellationToken);
             var published = catalog.Current.Skills.Single(skill => skill.Name == "published-one");
-            published.Source.Should().Be(SkillSource.PluginPublished);
-            catalog.Current.Skills.Should().Contain(skill => skill.Name == "declared");
+            Assert.Equal(SkillSource.PluginPublished, published.Source);
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
 
             // The next publish replaces the published set wholesale (empty clears it)
             // while the declarative part survives.
@@ -449,16 +447,14 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "published-two"),
                 TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should()
-                .Contain(skill => skill.Name == "declared")
-                .And.Contain(skill => skill.Name == "published-two")
-                .And.NotContain(skill => skill.Name == "published-one");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "published-two");
+            Assert.DoesNotContain(catalog.Current.Skills, skill => skill.Name == "published-one");
 
             manager.HandleHostMessage(SkillsPublishFrame(pluginId, "[]"));
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should()
-                .Contain(skill => skill.Name == "declared")
-                .And.NotContain(skill => skill.Name == "published-two");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
+            Assert.DoesNotContain(catalog.Current.Skills, skill => skill.Name == "published-two");
 
             // An unrelated reconcile event (any registry frame) must not wipe the
             // published part of a publish-only plugin: cleanup is keyed on descriptor
@@ -473,9 +469,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
             manager.HandleHostMessage(
                 SkillsRegistryFrame((pluginId, "./mod.ts")));
             await Task.Delay(500, TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should()
-                .Contain(skill => skill.Name == "declared")
-                .And.Contain(skill => skill.Name == "published-three");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "published-three");
         }
         finally
         {
@@ -529,9 +524,9 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 """[{"name":"denied","description":"never lands"}]"""));
 
             var reply = await fakeSocket.ReadAsync(TestContext.Current.CancellationToken);
-            reply.Should().Contain("capability_denied");
+            Assert.Contains("capability_denied", reply);
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should().BeEmpty();
+            Assert.Empty(catalog.Current.Skills);
         }
         finally
         {
@@ -573,7 +568,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "epsilon"),
                 TestContext.Current.CancellationToken);
-            catalog.Current.Diagnostics.Should().Contain(diagnostic =>
+            Assert.Contains(catalog.Current.Diagnostics, diagnostic =>
                 diagnostic.Contains("cannot be resolved") ||
                 diagnostic.Contains("not covered by a read grant"));
         }
@@ -635,9 +630,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "flood-0000"),
                 TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Count(skill => skill.Name.StartsWith("flood-", StringComparison.Ordinal))
-                .Should().Be(256);
-            catalog.Current.Diagnostics.Should().Contain(diagnostic =>
+            Assert.Equal(256, catalog.Current.Skills.Count(skill => skill.Name.StartsWith("flood-", StringComparison.Ordinal)));
+            Assert.Contains(catalog.Current.Diagnostics, diagnostic =>
                 diagnostic.Contains("exceeds") && diagnostic.Contains("256"));
         }
         finally
@@ -697,16 +691,15 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(1);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // The differential reconcile: a registry frame whose Skills export set is
             // identical to the previous frame's takes zero action — the generator is
             // not re-invoked and the contribution stays as committed.
             manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
             await Task.Delay(500, TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(
-                1, "an unchanged Skills export set must not re-invoke the generator");
-            catalog.Current.Skills.Should().Contain(skill => skill.Name == "gen-skill");
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "gen-skill");
         }
         finally
         {
@@ -747,7 +740,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(1);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // A watched source edit reloads the owner's worker. The forced rediscovery
             // must not run against the outgoing worker: it defers to the registry frame
@@ -758,16 +751,14 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(
-                1, "the force must not invoke the generator before the reload completed");
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // A frame carrying epochs but no bump for the plugin (another plugin's
             // reload completing, a mount-table change) must not drain the mark.
             manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
                 new Dictionary<string, int>(), (pluginId, "./mod.ts")));
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(
-                1, "a frame without the plugin's reload epoch must not drain the deferred force");
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // The post-reload frame reports the plugin's epoch: the forced re-invoke
             // runs against the reloaded worker and its new output replaces the old.
@@ -783,7 +774,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill =>
                     skill.Name == "gen-skill" && skill.Description == "after the reload"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(2);
+            Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }
         finally
         {
@@ -824,7 +815,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(1);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // A manifest edit that demands process isolation cannot be applied by an
             // in-process reload, but the owner still restarts with its previous config
@@ -842,7 +833,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(1);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
                 new Dictionary<string, int> { [pluginId] = 1 }, (pluginId, "./mod.ts")));
@@ -856,7 +847,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill =>
                     skill.Name == "gen-skill" && skill.Description == "after the isolation reload"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(2);
+            Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }
         finally
         {
@@ -891,8 +882,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
             var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             fakeSocket.ReplyError(manager, invoke, "generator_busy", "a transient failure");
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should().BeEmpty();
-            fakeSocket.TotalSkillInvokes.Should().Be(1);
+            Assert.Empty(catalog.Current.Skills);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // The next registry frame retries the failed plugin even though its Skills
             // export set is unchanged — the MCP coordinator's "never-succeeded stays
@@ -908,14 +899,13 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
                 TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(2);
+            Assert.Equal(2, fakeSocket.TotalSkillInvokes);
 
             // A fully successful pass clears the retry flag: a further unchanged frame
             // invokes nothing.
             manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
             await Task.Delay(500, TestContext.Current.CancellationToken);
-            fakeSocket.TotalSkillInvokes.Should().Be(
-                2, "a recovered generator must not be retried by unchanged frames");
+            Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }
         finally
         {
@@ -948,7 +938,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             _ = attach;
             await Task.Delay(300, TestContext.Current.CancellationToken);
-            catalog.Current.Skills.Should().BeEmpty("an unapproved plugin contributes nothing");
+            Assert.Empty(catalog.Current.Skills);
 
             // The runtime approval activates the plugin: the host upserts the worker and
             // its post-activation registry frame joins the Skills export, whose
@@ -965,8 +955,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "gen-skill"),
                 TestContext.Current.CancellationToken);
 
-            catalog.Current.Skills.Single(skill => skill.Name == "gen-skill").Source
-                .Should().Be(SkillSource.PluginGenerated);
+            Assert.Equal(SkillSource.PluginGenerated, catalog.Current.Skills.Single(skill => skill.Name == "gen-skill").Source);
         }
         finally
         {
@@ -1089,16 +1078,14 @@ public sealed class PluginSkillsContributionTests : IDisposable
             // contribution is untouched and its generator is never invoked.
             manager.HandleHostMessage(PluginTriggerFrame("alpha"));
             var triggerInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
-            PluginIdOf(triggerInvoke).Should().Be("alpha");
+            Assert.Equal("alpha", PluginIdOf(triggerInvoke));
             fakeSocket.Reply(manager, triggerInvoke, """{"value":[]}""");
             await Task.Delay(300, TestContext.Current.CancellationToken);
 
-            fakeSocket.SkillInvokesBy("alpha").Should().Be(2);
-            fakeSocket.SkillInvokesBy("beta").Should().Be(
-                1, "a trigger must not re-invoke another plugin's generator");
-            catalog.Current.Skills.Should()
-                .Contain(skill => skill.Name == "alpha-skill")
-                .And.Contain(skill => skill.Name == "beta-skill");
+            Assert.Equal(2, fakeSocket.SkillInvokesBy("alpha"));
+            Assert.Equal(1, fakeSocket.SkillInvokesBy("beta"));
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "alpha-skill");
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "beta-skill");
         }
         finally
         {
@@ -1157,10 +1144,9 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 snapshot => snapshot.Skills.All(skill => skill.Name != "beta-skill"),
                 TestContext.Current.CancellationToken);
 
-            catalog.Current.Skills.Should().Contain(skill => skill.Name == "alpha-skill");
-            fakeSocket.SkillInvokesBy("alpha").Should().Be(
-                1, "an approval transition must not re-invoke an unrelated plugin's generator");
-            fakeSocket.SkillInvokesBy("beta").Should().Be(1);
+            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "alpha-skill");
+            Assert.Equal(1, fakeSocket.SkillInvokesBy("alpha"));
+            Assert.Equal(1, fakeSocket.SkillInvokesBy("beta"));
         }
         finally
         {

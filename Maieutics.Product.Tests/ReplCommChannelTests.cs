@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using System.Text.Json;
@@ -35,13 +34,13 @@ public sealed class ReplCommChannelTests
             await host.PushCommMessageAsync("test-session", message, timeout.Token);
 
             var (opcode, payload) = await CommChildSocketStub.ReceiveFrameAsync(socket, timeout.Token);
-            opcode.Should().Be(0x2);
+            Assert.Equal(0x2, opcode);
             var decoded = ReplCommCodec.Decode(payload);
-            decoded.Kind.Should().Be(ReplCommKind.Message);
-            decoded.CommId.Should().Be("comm-9");
-            decoded.Data.Should().NotBeNull();
-            decoded.Data!.Value.GetProperty("marker").GetString().Should().Be("relay");
-            decoded.Buffers.Should().ContainSingle().Which.Should().Equal(new byte[] { 0xAB, 0xCD });
+            Assert.Equal(ReplCommKind.Message, decoded.Kind);
+            Assert.Equal("comm-9", decoded.CommId);
+            Assert.NotNull(decoded.Data);
+            Assert.Equal("relay", decoded.Data!.Value.GetProperty("marker").GetString());
+            Assert.Equal(new byte[] { 0xAB, 0xCD }, Assert.Single(decoded.Buffers));
         }
     }
 
@@ -62,7 +61,7 @@ public sealed class ReplCommChannelTests
 
             // The host closes the socket with a policy violation when the hello session is not owned.
             var (opcode, _) = await CommChildSocketStub.ReceiveFrameAsync(socket, timeout.Token);
-            opcode.Should().Be(0x8);
+            Assert.Equal(0x8, opcode);
         }
     }
 }

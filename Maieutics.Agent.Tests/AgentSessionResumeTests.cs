@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -24,23 +23,23 @@ public sealed class AgentSessionResumeTests
             new ScriptedChatClient((_, _) => StreamAsync("second")));
         var resumed = AgentSession.Resume(resumedProvider, store, sessionId);
 
-        resumed.Id.Should().Be(sessionId);
+        Assert.Equal(sessionId, resumed.Id);
         var snapshot = resumed.GetTranscriptSnapshot();
-        snapshot.Turns.Should().HaveCount(1);
-        snapshot.Turns[0].Messages[0].Text.Should().Be("one");
-        snapshot.Turns[0].Messages[^1].Text.Should().Be("first");
+        Assert.Single(snapshot.Turns);
+        Assert.Equal("one", snapshot.Turns[0].Messages[0].Text);
+        Assert.Equal("first", snapshot.Turns[0].Messages[^1].Text);
 
         await using var next = await resumed.StartTurnAsync(AgentTurn.FromText("two"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
-        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("second");
+        Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
 
         if (store.LoadTranscript(sessionId) is not { } persisted)
         {
             throw new InvalidOperationException("The resumed session's turns were not persisted.");
         }
 
-        persisted.Turns.Should().HaveCount(2);
-        persisted.Turns[1].Messages[0].Text.Should().Be("two");
+        Assert.Equal(2, persisted.Turns.Count());
+        Assert.Equal("two", persisted.Turns[1].Messages[0].Text);
     }
 
     [Fact]
@@ -50,7 +49,7 @@ public sealed class AgentSessionResumeTests
         var store = new InMemoryTranscriptStore();
 
         var resume = () => AgentSession.Resume(provider, store, AgentSessionId.Create());
-        resume.Should().Throw<AgentSessionNotFoundException>();
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => resume.Invoke());
     }
 
     private sealed class FixedProfileProvider(IChatClient client) : IAgentRunProfileProvider

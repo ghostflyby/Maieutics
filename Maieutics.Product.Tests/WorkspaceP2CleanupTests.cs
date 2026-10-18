@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 using static Maieutics.Product.Tests.WorkspaceToolInvocations;
 
@@ -34,13 +33,12 @@ public sealed class WorkspaceP2CleanupTests
         var readFailure = ShouldFailure(await InvokeAsync(
             Function(new WorkspaceFunctions(context), "read_text"),
             $$"""{"uri":"{{uri}}"}"""));
-        readFailure.Code.Should().Be("workspace_path_not_found",
-            $"a dangling link is a missing path, not an I/O error (got: {readFailure.Message})");
+        Assert.Equal("workspace_path_not_found", readFailure.Code);
 
         var listFailure = ShouldFailure(await InvokeAsync(
             Function(new WorkspaceFunctions(context), "list_directory"),
             """{"uri":"workspace://local/projects/project"}"""));
-        listFailure.Code.Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", listFailure.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -66,15 +64,14 @@ public sealed class WorkspaceP2CleanupTests
         {
             // A case-sensitive file system has no `Projects/` directory; the URI is
             // honestly not found there even though the registry matches names loosely.
-            ShouldFailure(invocation).Code.Should().Be("workspace_path_not_found");
+            Assert.Equal("workspace_path_not_found", ShouldFailure(invocation).Code);
         }
         else
         {
             var read = Result<ReadTextResult>(
                 invocation,
                 WorkspaceJsonSerializerContext.Default.ReadTextResult);
-            read.Text.Should().Be("case insensitive segment",
-                "the segment is compared like the registry compares names");
+            Assert.Equal("case insensitive segment", read.Text);
         }
     }
 }

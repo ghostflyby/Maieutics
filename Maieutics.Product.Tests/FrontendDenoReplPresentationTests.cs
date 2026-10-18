@@ -1,6 +1,5 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
@@ -41,12 +40,12 @@ public sealed class FrontendDenoReplPresentationTests
             EmptyMetadata(),
             TestContext.Current.CancellationToken);
 
-        target.Published.Should().HaveCount(2);
-        target.Published[0].Type.Should().Be("repl.display");
-        target.Published[1].Type.Should().Be("repl.updateDisplay");
-        target.Published.Should().OnlyContain(entry => entry.DisplayId == displayId.Value);
-        target.Published[0].Data.GetProperty("text/markdown").GetString().Should().Be("# hello");
-        target.Published[1].Data.GetProperty("text/plain").GetString().Should().Be("updated");
+        Assert.Equal(2, target.Published.Count());
+        Assert.Equal("repl.display", target.Published[0].Type);
+        Assert.Equal("repl.updateDisplay", target.Published[1].Type);
+        Assert.All(target.Published, entry => Assert.True(entry.DisplayId == displayId.Value));
+        Assert.Equal("# hello", target.Published[0].Data.GetProperty("text/markdown").GetString());
+        Assert.Equal("updated", target.Published[1].Data.GetProperty("text/plain").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -61,10 +60,10 @@ public sealed class FrontendDenoReplPresentationTests
             TestContext.Current.CancellationToken);
         await sink.PublishErrorAsync("Boom", "broken", [], TestContext.Current.CancellationToken);
 
-        target.Published[0].Type.Should().Be("repl.display");
-        target.Published[0].DisplayId.Should().BeNull();
-        target.Published[1].Type.Should().Be("repl.error");
-        target.Published[1].Data.GetProperty("text/plain").GetString().Should().Contain("Boom: broken");
+        Assert.Equal("repl.display", target.Published[0].Type);
+        Assert.Null(target.Published[0].DisplayId);
+        Assert.Equal("repl.error", target.Published[1].Type);
+        Assert.Contains("Boom: broken", target.Published[1].Data.GetProperty("text/plain").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -93,13 +92,11 @@ public sealed class FrontendDenoReplPresentationTests
 
         await sink.DisplayAsync(bundle, EmptyMetadata(), TestContext.Current.CancellationToken);
 
-        target.Published.Should().HaveCount(1);
+        Assert.Single(target.Published);
         var data = target.Published[0].Data;
-        data.GetProperty("application/vnd.maieutics.view+json").GetProperty("viewFamily").GetString()
-            .Should().Be("maieutics/form");
-        data.GetProperty("application/vnd.maieutics.view+json").GetProperty("modelId").GetString()
-            .Should().Be("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01");
-        data.GetProperty("text/plain").GetString().Should().Be("form");
+        Assert.Equal("maieutics/form", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("viewFamily").GetString());
+        Assert.Equal("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("modelId").GetString());
+        Assert.Equal("form", data.GetProperty("text/plain").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -110,8 +107,7 @@ public sealed class FrontendDenoReplPresentationTests
 
         await sink.ClearOutputAsync(wait: false, TestContext.Current.CancellationToken);
 
-        target.Published.Should().ContainSingle()
-            .Which.Type.Should().Be("repl.clear");
+        Assert.Equal("repl.clear", Assert.Single(target.Published).Type);
     }
 
     [Fact(Timeout = 30_000)]
@@ -127,7 +123,7 @@ public sealed class FrontendDenoReplPresentationTests
         router.OpenCall(sessionId, callId);
         var resolved = await router
             .WaitForCallAsync(sessionId, callId, TestContext.Current.CancellationToken);
-        resolved.Should().BeSameAs(sink);
+        Assert.Same(sink, resolved);
 
         await scope.DisposeAsync();
 
@@ -136,11 +132,10 @@ public sealed class FrontendDenoReplPresentationTests
             ReplDisplayBundle.FromText("late"),
             EmptyMetadata(),
             CancellationToken.None);
-        await act.Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await act.Invoke(); });
         var lateCall = async () => await router.WaitForCallAsync(sessionId, callId, CancellationToken.None);
-        (await lateCall.Should().ThrowAsync<AgentToolException>()).Which.Code.Should()
-            .Be("repl_presentation_unavailable");
-        target.Published.Should().BeEmpty();
+        Assert.Equal("repl_presentation_unavailable", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await lateCall.Invoke(); })).Code);
+        Assert.Empty(target.Published);
     }
 
     [Fact(Timeout = 30_000)]
@@ -153,27 +148,27 @@ public sealed class FrontendDenoReplPresentationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
 
         var wait = sink.RequestInputAsync("Name:", password: true, deadline.Token);
-        target.Published.Should().ContainSingle();
+        Assert.Single(target.Published);
         var frame = target.Published[0];
-        frame.Type.Should().Be("input.request");
-        frame.DisplayId.Should().BeNull();
+        Assert.Equal("input.request", frame.Type);
+        Assert.Null(frame.DisplayId);
 
         var payload = JsonSerializer.Deserialize<JsonElement>(frame.Data.GetRawText());
         var requestId = payload.GetProperty("requestId").GetString()!;
-        payload.GetProperty("prompt").GetString().Should().Be("Name:");
-        payload.GetProperty("password").GetBoolean().Should().BeTrue();
+        Assert.Equal("Name:", payload.GetProperty("prompt").GetString());
+        Assert.True(payload.GetProperty("password").GetBoolean());
 
-        sink.TryCompleteInput(requestId, "ghost").Should().BeTrue();
-        (await wait).Should().Be("ghost");
+        Assert.True(sink.TryCompleteInput(requestId, "ghost"));
+        Assert.Equal("ghost", (await wait));
         // 第二次应答：请求已完成
-        sink.TryCompleteInput(requestId, "again").Should().BeFalse();
+        Assert.False(sink.TryCompleteInput(requestId, "again"));
     }
 
     [Fact]
     public void UnknownInputAnswerReturnsFalse()
     {
         var sink = new FrontendDenoReplPresentationSink(new FakeTarget());
-        sink.TryCompleteInput("input-404", "x").Should().BeFalse();
+        Assert.False(sink.TryCompleteInput("input-404", "x"));
     }
 
     [Fact(Timeout = 30_000)]
@@ -192,22 +187,22 @@ public sealed class FrontendDenoReplPresentationTests
         var secondWait = second.Sink.RequestInputAsync("second:", false, deadline.Token);
         var firstId = RequestIdOf(firstTarget);
         var secondId = RequestIdOf(secondTarget);
-        firstId.Should().NotBe(secondId);
+        Assert.NotEqual(secondId, firstId);
 
-        router.TryCompleteInput(secondId, "b").Should().BeTrue();
-        (await secondWait).Should().Be("b");
-        router.TryCompleteInput(firstId, "a").Should().BeTrue();
-        (await firstWait).Should().Be("a");
+        Assert.True(router.TryCompleteInput(secondId, "b"));
+        Assert.Equal("b", (await secondWait));
+        Assert.True(router.TryCompleteInput(firstId, "a"));
+        Assert.Equal("a", (await firstWait));
         // Request ids are unique across sinks, so a delivered answer cannot be
         // re-delivered anywhere.
-        router.TryCompleteInput(secondId, "again").Should().BeFalse();
+        Assert.False(router.TryCompleteInput(secondId, "again"));
     }
 
     [Fact]
     public void RouterInputAnswerWithoutAttachedSinksReturnsFalse()
     {
-        new FrontendDenoReplPresentationRouter()
-            .TryCompleteInput($"input-{Guid.NewGuid():N}-1", "x").Should().BeFalse();
+        Assert.False(new FrontendDenoReplPresentationRouter()
+            .TryCompleteInput($"input-{Guid.NewGuid():N}-1", "x"));
     }
 
     private static string RequestIdOf(FakeTarget target)
@@ -227,7 +222,7 @@ public sealed class FrontendDenoReplPresentationTests
         var wait = sink.RequestInputAsync("prompt", false, cancellation.Token);
         cancellation.Cancel();
         var act = async () => await wait;
-        await act.Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await act.Invoke(); });
     }
 
     private static IReadOnlyDictionary<string, JsonElement> EmptyMetadata()

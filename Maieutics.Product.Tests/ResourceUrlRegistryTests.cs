@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Maieutics.Execution;
 
 namespace Maieutics.Product.Tests;
@@ -13,11 +12,11 @@ public sealed class ResourceUrlRegistryTests
         var specific = new FakeProvider("specific", ResourceProviderClass.Custom, new ResourceClaim("notes", "db1"));
         var registry = new ResourceRegistry([wildcard, specific]);
 
-        ResourceRegistry.TryParseUri("notes://db1/table", out var uri).Should().BeTrue();
-        registry.Resolve(uri).Should().BeSameAs(specific);
+        Assert.True(ResourceRegistry.TryParseUri("notes://db1/table", out var uri));
+        Assert.Same(specific, registry.Resolve(uri));
 
-        ResourceRegistry.TryParseUri("notes://db2/table", out var other).Should().BeTrue();
-        registry.Resolve(other).Should().BeSameAs(wildcard);
+        Assert.True(ResourceRegistry.TryParseUri("notes://db2/table", out var other));
+        Assert.Same(wildcard, registry.Resolve(other));
     }
 
     [Fact]
@@ -28,9 +27,9 @@ public sealed class ResourceUrlRegistryTests
         var mcp = new FakeProvider("mcp", ResourceProviderClass.Mcp, new ResourceClaim("notes"));
         var registry = new ResourceRegistry([builtIn, custom, mcp]);
 
-        ResourceRegistry.TryParseUri("notes://any/thing", out var uri).Should().BeTrue();
-        registry.Resolve(uri).Should().BeSameAs(builtIn);
-        registry.GetConflicts().Should().BeEmpty("different classes resolve by precedence, not conflict");
+        Assert.True(ResourceRegistry.TryParseUri("notes://any/thing", out var uri));
+        Assert.Same(builtIn, registry.Resolve(uri));
+        Assert.Empty(registry.GetConflicts());
     }
 
     [Fact]
@@ -40,12 +39,12 @@ public sealed class ResourceUrlRegistryTests
         var second = new FakeProvider("second", ResourceProviderClass.Custom, new ResourceClaim("notes"));
         var registry = new ResourceRegistry([first, second]);
 
-        ResourceRegistry.TryParseUri("notes://a/b", out var uri).Should().BeTrue();
-        registry.Resolve(uri).Should().BeSameAs(first);
-        var conflict = registry.GetConflicts().Should().ContainSingle().Which;
-        conflict.ProviderId.Should().Be("second");
-        conflict.Reason.Should().Be("duplicate_claim");
-        conflict.ShadowedBy.Should().Be("first");
+        Assert.True(ResourceRegistry.TryParseUri("notes://a/b", out var uri));
+        Assert.Same(first, registry.Resolve(uri));
+        var conflict = Assert.Single(registry.GetConflicts());
+        Assert.Equal("second", conflict.ProviderId);
+        Assert.Equal("duplicate_claim", conflict.Reason);
+        Assert.Equal("first", conflict.ShadowedBy);
     }
 
     [Fact]
@@ -58,17 +57,17 @@ public sealed class ResourceUrlRegistryTests
         var registry = new ResourceRegistry([customWorkspace, customFile, mcp]);
 
         var conflicts = registry.GetConflicts();
-        conflicts.Should().Contain(conflict =>
+        Assert.Contains(conflicts, conflict =>
             conflict.ProviderId == "custom-workspace" && conflict.Reason == "reserved_scheme");
-        conflicts.Should().Contain(conflict =>
+        Assert.Contains(conflicts, conflict =>
             conflict.ProviderId == "custom-file" && conflict.Reason == "reserved_scheme");
-        conflicts.Should().NotContain(conflict => conflict.ProviderId == "mcp");
+        Assert.DoesNotContain(conflicts, conflict => conflict.ProviderId == "mcp");
 
-        ResourceRegistry.TryParseUri("workspace://local/a.txt", out var uri).Should().BeTrue();
-        registry.Resolve(uri).Should().BeNull("the reserved claim is disabled, not honored");
+        Assert.True(ResourceRegistry.TryParseUri("workspace://local/a.txt", out var uri));
+        Assert.Null(registry.Resolve(uri));
 
-        ResourceRegistry.TryParseUri("mcp://server/x", out var escape).Should().BeTrue();
-        registry.Resolve(escape).Should().BeSameAs(mcp, "the owning class keeps its scheme");
+        Assert.True(ResourceRegistry.TryParseUri("mcp://server/x", out var escape));
+        Assert.Same(mcp, registry.Resolve(escape));
     }
 
     [Fact]
@@ -79,7 +78,7 @@ public sealed class ResourceUrlRegistryTests
 
         var provider = new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path));
 
-        ResourceRegistry.TryParseUri("workspace://local/a.txt", out _).Should().BeTrue();
+        Assert.True(ResourceRegistry.TryParseUri("workspace://local/a.txt", out _));
         var read = await provider.ReadAsync(
             "workspace://local/a.txt",
             new ResourceReadRequest(1024),
@@ -88,7 +87,7 @@ public sealed class ResourceUrlRegistryTests
         {
             using var buffered = new MemoryStream();
             read.Content.CopyTo(buffered);
-            Encoding.UTF8.GetString(buffered.ToArray()).Should().Be("content");
+            Assert.Equal("content", Encoding.UTF8.GetString(buffered.ToArray()));
         }
     }
 
@@ -103,15 +102,15 @@ public sealed class ResourceUrlRegistryTests
             "workspace://local/folder",
             new ResourceReadRequest(1024),
             TestContext.Current.CancellationToken);
-        var notFileAssertions = await notFile.Should().ThrowAsync<WorkspaceException>();
-        notFileAssertions.Which.Code.Should().Be("workspace_not_file");
+        var notFileAssertions = await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await notFile.Invoke(); });
+        Assert.Equal("workspace_not_file", notFileAssertions.Code);
 
         Func<Task> missing = async () => await provider.ReadAsync(
             "workspace://local/absent.txt",
             new ResourceReadRequest(1024),
             TestContext.Current.CancellationToken);
-        var missingAssertions = await missing.Should().ThrowAsync<WorkspaceException>();
-        missingAssertions.Which.Code.Should().Be("workspace_path_not_found");
+        var missingAssertions = await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await missing.Invoke(); });
+        Assert.Equal("workspace_path_not_found", missingAssertions.Code);
     }
 
     [Fact]
@@ -129,17 +128,17 @@ public sealed class ResourceUrlRegistryTests
             "workspace://local/big.txt",
             new ResourceReadRequest(8),
             TestContext.Current.CancellationToken);
-        var assertions = await tooLarge.Should().ThrowAsync<ResourceException>();
-        assertions.Which.Code.Should().Be("resource_too_large");
+        var assertions = await Assert.ThrowsAnyAsync<ResourceException>(async () => { await tooLarge.Invoke(); });
+        Assert.Equal("resource_too_large", assertions.Code);
     }
 
     [Fact]
     public void ParseUriRejectsRelativeValuesAndFragments()
     {
-        ResourceRegistry.TryParseUri("not a uri", out _).Should().BeFalse();
-        ResourceRegistry.TryParseUri("", out _).Should().BeFalse();
-        ResourceRegistry.TryParseUri("notes://a/b#frag", out _).Should().BeFalse();
-        ResourceRegistry.TryParseUri("notes://a/b?q=1", out _).Should().BeTrue();
+        Assert.False(ResourceRegistry.TryParseUri("not a uri", out _));
+        Assert.False(ResourceRegistry.TryParseUri("", out _));
+        Assert.False(ResourceRegistry.TryParseUri("notes://a/b#frag", out _));
+        Assert.True(ResourceRegistry.TryParseUri("notes://a/b?q=1", out _));
     }
 
     private sealed class FakeProvider(

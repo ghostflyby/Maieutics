@@ -1,6 +1,5 @@
 using Maieutics.DenoRepl;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Control;
 
 namespace Maieutics.Product.Tests;
@@ -27,14 +26,14 @@ public sealed class ReplCommCodecTests
         var encoded = ReplCommCodec.Encode(message);
         var decoded = ReplCommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(ReplCommKind.Open);
-        decoded.CommId.Should().Be("comm-42");
-        decoded.TargetName.Should().Be("widget-test");
-        decoded.Data.Should().NotBeNull();
-        decoded.Data!.Value.GetProperty("marker").GetString().Should().Be("payload");
-        decoded.Buffers.Should().HaveCount(2);
-        decoded.Buffers[0].Should().Equal(buffers[0]);
-        decoded.Buffers[1].Should().Equal(buffers[1]);
+        Assert.Equal(ReplCommKind.Open, decoded.Kind);
+        Assert.Equal("comm-42", decoded.CommId);
+        Assert.Equal("widget-test", decoded.TargetName);
+        Assert.NotNull(decoded.Data);
+        Assert.Equal("payload", decoded.Data!.Value.GetProperty("marker").GetString());
+        Assert.Equal(2, decoded.Buffers.Count());
+        Assert.Equal(buffers[0], decoded.Buffers[0]);
+        Assert.Equal(buffers[1], decoded.Buffers[1]);
     }
 
     [Fact]
@@ -56,12 +55,12 @@ public sealed class ReplCommCodecTests
             [buffer]);
 
         var encoded = ReplCommCodec.Encode(message);
-        encoded.Length.Should().BeLessThan(ReplControlLimits.MaximumCommMessageBytes);
+        Assert.True(encoded.Length < ReplControlLimits.MaximumCommMessageBytes);
         var decoded = ReplCommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(ReplCommKind.Message);
-        decoded.CommId.Should().Be("comm-media");
-        decoded.Buffers.Should().ContainSingle().Which.Should().Equal(buffer);
+        Assert.Equal(ReplCommKind.Message, decoded.Kind);
+        Assert.Equal("comm-media", decoded.CommId);
+        Assert.Equal(buffer, Assert.Single(decoded.Buffers));
     }
 
     [Fact]
@@ -78,10 +77,10 @@ public sealed class ReplCommCodecTests
         var encoded = ReplCommCodec.Encode(message);
         var decoded = ReplCommCodec.Decode(encoded);
 
-        decoded.Kind.Should().Be(ReplCommKind.Close);
-        decoded.CommId.Should().Be("comm-7");
-        decoded.TargetName.Should().BeNull();
-        decoded.Data.Should().BeNull();
-        decoded.Buffers.Should().BeEmpty();
+        Assert.Equal(ReplCommKind.Close, decoded.Kind);
+        Assert.Equal("comm-7", decoded.CommId);
+        Assert.Null(decoded.TargetName);
+        Assert.Null(decoded.Data);
+        Assert.Empty(decoded.Buffers);
     }
 }

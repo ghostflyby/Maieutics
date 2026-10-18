@@ -1,5 +1,4 @@
 using System.Text.RegularExpressions;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 
@@ -35,17 +34,16 @@ public sealed partial class DenoEmbeddedModulesTests
 
         foreach (var package in ExpectedPackages)
         {
-            names.Should().ContainMatch($"Deno/{package}/*.ts",
-                $"the {package} package must be batch-embedded (a miss means the glob exclusion ate it)");
+            Assert.Contains(names, item => Regex.IsMatch(item, "^Deno/" + Regex.Escape(package) + "/.*\\.ts$"));
         }
 
         // The config/lock companions materialize beside their packages.
-        names.Should().Contain("Deno/maieutics-deno-repl/deno.json");
-        names.Should().Contain("Deno/maieutics-deno-repl/deno.lock");
-        names.Should().Contain("Deno/maieutics-plugin-sdk/deno.json");
+        Assert.Contains("Deno/maieutics-deno-repl/deno.json", names);
+        Assert.Contains("Deno/maieutics-deno-repl/deno.lock", names);
+        Assert.Contains("Deno/maieutics-plugin-sdk/deno.json", names);
         // Tests and fixtures are excluded by design; they run in the deno workspace.
-        names.Should().NotContainMatch("Deno/*/*_test.ts");
-        names.Should().NotContainMatch("Deno/*/test_fixtures/*");
+        Assert.DoesNotContain(names, item => Regex.IsMatch(item, "^Deno/.*/.*_test\\.ts$"));
+        Assert.DoesNotContain(names, item => Regex.IsMatch(item, "^Deno/.*/test_fixtures/.*$"));
     }
 
     [Fact]
@@ -78,9 +76,7 @@ public sealed partial class DenoEmbeddedModulesTests
             }
         }
 
-        missing.Should().BeEmpty(
-            "every relative import inside the materialized Deno tree must resolve to a file the " +
-            "pipeline embedded and wrote (an unresolvable import means the batch embedding missed a module)");
+        Assert.Empty(missing);
         }
         finally
         {

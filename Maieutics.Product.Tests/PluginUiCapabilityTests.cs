@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Frontend;
@@ -34,22 +33,21 @@ public sealed class PluginUiCapabilityTests
                 """{"name":"probe-ui","version":"1.0.0","exports":"./main.ts"}""");
 
             var loaded = PluginManifest.TryLoad(directory, out var descriptor, out var loadError);
-            loaded.Should().BeTrue(loadError);
-            descriptor!.UiForm.Should().NotBeNull();
-            descriptor.UiForm!.Title.Should().Be("Approve deploy?");
-            descriptor.UiForm.Error.Should().BeNull();
-            descriptor.UiForm.Fields.Should().HaveCount(2);
-            descriptor.UiForm.Fields[0].Required.Should().BeTrue();
-            descriptor.UiForm.Fields[1].Choices.Should().BeEquivalentTo(
-                new[] { new { Value = "fast", Label = "fast" }, new { Value = "slow", Label = "slow" } });
-            descriptor.UiForm.SubmitTool.Should().Be("deploy");
+            Assert.True(loaded, loadError);
+            Assert.NotNull(descriptor!.UiForm);
+            Assert.Equal("Approve deploy?", descriptor.UiForm!.Title);
+            Assert.Null(descriptor.UiForm.Error);
+            Assert.Equal(2, descriptor.UiForm.Fields.Count());
+            Assert.True(descriptor.UiForm.Fields[0].Required);
+            Assert.Equivalent(new[] { new { Value = "fast", Label = "fast" }, new { Value = "slow", Label = "slow" } }, descriptor.UiForm.Fields[1].Choices);
+            Assert.Equal("deploy", descriptor.UiForm.SubmitTool);
 
             // A changed ui entry changes the fingerprint's data section inputs.
             File.WriteAllText(Path.Combine(directory, "ui-form.json"),
                 """{"title":"Changed","fields":[{"name":"note","type":"text"}]}""");
             var reloaded = PluginManifest.TryLoad(directory, out var reloadedDescriptor, out var reloadError);
-            reloaded.Should().BeTrue(reloadError);
-            reloadedDescriptor!.UiForm!.Title.Should().Be("Changed");
+            Assert.True(reloaded, reloadError);
+            Assert.Equal("Changed", reloadedDescriptor!.UiForm!.Title);
         }
         finally
         {
@@ -67,8 +65,8 @@ public sealed class PluginUiCapabilityTests
             TestContext.Current.CancellationToken);
 
         var act = () => harness.Manager.PublishUiFormAsync("plugin-without-ui", TestContext.Current.CancellationToken);
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*declares no ui data entry*");
+        var assertion30 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await act.Invoke(); });
+        Assert.Matches("(?is)^.*declares\\ no\\ ui\\ data\\ entry.*$", assertion30.Message);
     }
 
     private sealed class FakePublisher : IFrontendSessionFramePublisher
@@ -97,7 +95,7 @@ public sealed class PluginUiCapabilityTests
         var frames = new List<PluginUiFramePayload>();
         harness.Manager.UiFrameSink = (pluginId, frame, _) =>
         {
-            pluginId.Should().Be("plugin-1");
+            Assert.Equal("plugin-1", pluginId);
             frames.Add(frame);
             return ValueTask.CompletedTask;
         };
@@ -109,11 +107,11 @@ public sealed class PluginUiCapabilityTests
             "\"targetName\":\"maieutics.view/maieutics/form\",\"data\":{\"state\":{\"title\":\"hi\"}}}}}");
 
         var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
-        sent.Should().Contain("\"capability.result\"");
-        sent.Should().Contain("\"ui-1\"");
-        frames.Should().ContainSingle().Which.CommId.Should().Be("u1");
-        frames[0].TargetName.Should().Be("maieutics.view/maieutics/form");
-        frames[0].Data!.Value.GetProperty("state").GetProperty("title").GetString().Should().Be("hi");
+        Assert.Contains("\"capability.result\"", sent);
+        Assert.Contains("\"ui-1\"", sent);
+        Assert.Equal("u1", Assert.Single(frames).CommId);
+        Assert.Equal("maieutics.view/maieutics/form", frames[0].TargetName);
+        Assert.Equal("hi", frames[0].Data!.Value.GetProperty("state").GetProperty("title").GetString());
     }
 
     [Fact]
@@ -137,8 +135,8 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"kind\":\"message\",\"commId\":\"u1\",\"data\":{}}}}");
 
         var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
-        sent.Should().Contain("\"capability_denied\"");
-        sinkRan.Should().BeFalse();
+        Assert.Contains("\"capability_denied\"", sent);
+        Assert.False(sinkRan);
     }
 
     [Fact]
@@ -164,8 +162,8 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"kind\":\"open\",\"commId\":\"u1\"}}}");
 
         var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
-        sent.Should().Contain("\"invalid_capability_invoke\"");
-        sinkRan.Should().BeFalse();
+        Assert.Contains("\"invalid_capability_invoke\"", sent);
+        Assert.False(sinkRan);
     }
 
     [Fact]
@@ -186,8 +184,8 @@ public sealed class PluginUiCapabilityTests
             "\"payload\":{\"kind\":\"message\",\"commId\":\"u1\",\"data\":{}}}}");
 
         var sent = await harness.Host!.ReadSentAsync(TestContext.Current.CancellationToken);
-        sent.Should().Contain("\"ui_frame_rejected\"");
-        sent.Should().Contain("No active session");
+        Assert.Contains("\"ui_frame_rejected\"", sent);
+        Assert.Contains("No active session", sent);
     }
 
     [Fact]
@@ -213,14 +211,13 @@ public sealed class PluginUiCapabilityTests
             new PluginUiFramePayload("open", "p1", "maieutics.view/maieutics/form", state.RootElement.Clone()),
             TestContext.Current.CancellationToken);
 
-        router.PlaneFor(session.ToString()).SnapshotLive().Should().ContainSingle()
-            .Which.TargetName.Should().Be("maieutics.view/maieutics/form");
-        var announcement = publisher.Published.Should().ContainSingle().Which;
-        announcement.Type.Should().Be("repl.display");
+        Assert.Equal("maieutics.view/maieutics/form", Assert.Single(router.PlaneFor(session.ToString()).SnapshotLive()).TargetName);
+        var announcement = Assert.Single(publisher.Published);
+        Assert.Equal("repl.display", announcement.Type);
         var view = announcement.Data.GetProperty("application/vnd.maieutics.view+json");
-        view.GetProperty("viewFamily").GetString().Should().Be("maieutics/form");
-        view.GetProperty("modelId").GetString().Should().Be("p1");
-        view.GetProperty("state").GetProperty("title").GetString().Should().Be("panel");
+        Assert.Equal("maieutics/form", view.GetProperty("viewFamily").GetString());
+        Assert.Equal("p1", view.GetProperty("modelId").GetString());
+        Assert.Equal("panel", view.GetProperty("state").GetProperty("title").GetString());
 
         // Without a live stream the open is rejected and the comm is closed again.
         publisher.Publishable = false;
@@ -232,8 +229,8 @@ public sealed class PluginUiCapabilityTests
             "plugin-1",
             new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form", null),
             TestContext.Current.CancellationToken);
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await act.Invoke(); });
         var live = router.PlaneFor(session.ToString()).SnapshotLive();
-        live.Should().ContainSingle().Which.CommId.Should().Be("p1", "the rejected open's comm is closed");
+        Assert.Equal("p1", Assert.Single(live).CommId);
     }
 }

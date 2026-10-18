@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Control;
 
 namespace Maieutics.Product.Tests;
@@ -11,15 +10,15 @@ public sealed class ReplControlCredentialRegistryTests
         var registry = new ReplControlCredentialRegistry();
         var credential = registry.Issue("session-1");
 
-        registry.TryResolve(credential, out var identity).Should().BeTrue();
-        identity.Should().Be("session-1");
+        Assert.True(registry.TryResolve(credential, out var identity));
+        Assert.Equal("session-1", identity);
     }
 
     [Fact]
     public void UnknownCredentialsDoNotResolve()
     {
         var registry = new ReplControlCredentialRegistry();
-        registry.TryResolve("not-issued", out _).Should().BeFalse();
+        Assert.False(registry.TryResolve("not-issued", out _));
     }
 
     [Fact]
@@ -28,7 +27,7 @@ public sealed class ReplControlCredentialRegistryTests
         var registry = new ReplControlCredentialRegistry();
         var first = registry.Issue("session-1");
         var second = registry.Issue("session-1");
-        first.Should().NotBe(second);
+        Assert.NotEqual(second, first);
     }
 
     [Fact]
@@ -40,8 +39,8 @@ public sealed class ReplControlCredentialRegistryTests
         registry.Issue("session-2");
 
         registry.Remove("session-1");
-        registry.TryResolve(first, out _).Should().BeFalse();
-        registry.TryResolve(second, out _).Should().BeFalse();
-        registry.TryResolve(registry.Issue("session-2"), out _).Should().BeTrue();
+        Assert.False(registry.TryResolve(first, out _));
+        Assert.False(registry.TryResolve(second, out _));
+        Assert.True(registry.TryResolve(registry.Issue("session-2"), out _));
     }
 }

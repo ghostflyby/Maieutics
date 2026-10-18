@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Frontend;
@@ -33,19 +32,19 @@ public sealed class FrontendWorkspaceBridgeTests
         var second = sockets.Announce("session-a", static (_, _) => Task.CompletedTask);
         var other = sockets.Announce("session-b", static (_, _) => Task.CompletedTask);
 
-        sockets.TryGetAuthority("session-a")!.SessionId.Should().Be("session-a");
-        sockets.TryGetAuthority(null)!.SessionId.Should().Be("session-a", "the process-wide authority is the earliest overall");
+        Assert.Equal("session-a", sockets.TryGetAuthority("session-a")!.SessionId);
+        Assert.Equal("session-a", sockets.TryGetAuthority(null)!.SessionId);
 
         sockets.Withdraw("session-a", first);
-        sockets.TryGetAuthority("session-a")!.SessionId.Should().Be("session-a", "the next-earliest takes over deterministically");
-        sockets.TryGetAuthority(null)!.SessionId.Should().Be("session-a");
+        Assert.Equal("session-a", sockets.TryGetAuthority("session-a")!.SessionId);
+        Assert.Equal("session-a", sockets.TryGetAuthority(null)!.SessionId);
 
         sockets.Withdraw("session-a", second);
-        sockets.TryGetAuthority("session-a").Should().BeNull();
-        sockets.TryGetAuthority(null)!.SessionId.Should().Be("session-b");
+        Assert.Null(sockets.TryGetAuthority("session-a"));
+        Assert.Equal("session-b", sockets.TryGetAuthority(null)!.SessionId);
 
         sockets.Withdraw("session-b", other);
-        sockets.TryGetAuthority(null).Should().BeNull();
+        Assert.Null(sockets.TryGetAuthority(null));
     }
 
     [Fact]
@@ -64,14 +63,12 @@ public sealed class FrontendWorkspaceBridgeTests
             return Task.CompletedTask;
         });
 
-        (await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken))
-            .Should().BeTrue();
-        received.Should().BeEquivalentTo(["first"], static options => options.WithStrictOrdering());
+        Assert.True((await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken)));
+        Assert.Equivalent(new[] { "first" }, received, strict: true);
 
         sockets.Withdraw("session-a", first);
-        (await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken))
-            .Should().BeFalse("a withdrawn registration is a lost authority, not a broadcast");
-        received.Should().ContainSingle("the surviving announcer is never asked for the pinned operation");
+        Assert.False((await sockets.TrySendToAsync(first, new FrontendEventFrame("ide.request"), TestContext.Current.CancellationToken)), "a withdrawn registration is a lost authority, not a broadcast");
+        Assert.Single(received);
     }
 
     [Fact]
@@ -82,12 +79,12 @@ public sealed class FrontendWorkspaceBridgeTests
         registry.Register(101, "repl-default");
         registry.RegisterOwner(101, ownerSessionId);
 
-        registry.TryGetOwnerSession(101, out var owner).Should().BeTrue();
-        owner.Should().Be(ownerSessionId, "the gates key on the agent session, not the REPL-local hello id");
-        registry.TryGetOwnerSession(202, out _).Should().BeFalse();
+        Assert.True(registry.TryGetOwnerSession(101, out var owner));
+        Assert.Equal(ownerSessionId, owner);
+        Assert.False(registry.TryGetOwnerSession(202, out _));
 
         registry.Unregister(101);
-        registry.TryGetOwnerSession(101, out _).Should().BeFalse("the owner mapping shares the child's lifetime");
+        Assert.False(registry.TryGetOwnerSession(101, out _), "the owner mapping shares the child's lifetime");
     }
 
     // ---------- bridge channel round trips ----------
@@ -103,9 +100,9 @@ public sealed class FrontendWorkspaceBridgeTests
         var channel = bridge.Acquire(BridgeHarness.SessionId)!;
         var text = await channel.ReadTextAsync(["a.cs"], 8_000_000, TestContext.Current.CancellationToken);
 
-        text.Should().Be("editor buffer state\n", "the IDE's text state is the authoritative answer");
-        harness.LastRequest!.Value.Method.Should().Be("maieutics/fs/local/read");
-        harness.LastRequest!.Value.PhysicalUri.Should().Be(new Uri(Path.Combine(harness.Root, "a.cs")).AbsoluteUri);
+        Assert.Equal("editor buffer state\n", text);
+        Assert.Equal("maieutics/fs/local/read", harness.LastRequest!.Value.Method);
+        Assert.Equal(new Uri(Path.Combine(harness.Root, "a.cs")).AbsoluteUri, harness.LastRequest!.Value.PhysicalUri);
     }
 
     [Fact]
@@ -118,14 +115,12 @@ public sealed class FrontendWorkspaceBridgeTests
         var channel = bridge.Acquire(BridgeHarness.SessionId)!;
 
         var listing = await channel.ListAsync([], 10, TestContext.Current.CancellationToken);
-        listing.Truncated.Should().BeFalse();
-        listing.Entries.Select(static entry => (entry.Name, entry.Kind)).Should().Contain(
-            [("sub", "directory")], "the fake frontend answers vscode.FileType-shaped kinds");
+        Assert.False(listing.Truncated);
+        Assert.All(new[] { ("sub", "directory") }, item => Assert.Contains(item, listing.Entries.Select(static entry => (entry.Name, entry.Kind))));
 
         Func<Task> missingList = async () =>
             await channel.ListAsync(["no-such-dir"], 10, TestContext.Current.CancellationToken);
-        (await missingList.Should().ThrowAsync<WorkspaceException>()).Which.Code
-            .Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await missingList.Invoke(); })).Code);
     }
 
     [Fact]
@@ -138,20 +133,17 @@ public sealed class FrontendWorkspaceBridgeTests
 
         // The write carries the hash of exactly the text the channel answered.
         await channel.WriteAsync(["doc.md"], "after\n", WorkspaceBridgeChannel.ContentHash("before\n"), false, TestContext.Current.CancellationToken);
-        (await File.ReadAllTextAsync(Path.Combine(harness.Root, "doc.md"), TestContext.Current.CancellationToken))
-            .Should().Be("after\n");
+        Assert.Equal("after\n", (await File.ReadAllTextAsync(Path.Combine(harness.Root, "doc.md"), TestContext.Current.CancellationToken)));
 
         // A precondition computed from a state the frontend never answered is a conflict.
         Func<Task> conflict = async () =>
             await channel.WriteAsync(["doc.md"], "again\n", WorkspaceBridgeChannel.ContentHash("stale\n"), false, TestContext.Current.CancellationToken);
-        (await conflict.Should().ThrowAsync<WorkspaceException>()).Which.Code
-            .Should().Be("workspace_write_conflict");
+        Assert.Equal("workspace_write_conflict", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await conflict.Invoke(); })).Code);
 
         // An exclusive create on an existing target fails exactly like the local create.
         Func<Task> exists = async () =>
             await channel.WriteAsync(["doc.md"], "new\n", null, true, TestContext.Current.CancellationToken);
-        (await exists.Should().ThrowAsync<WorkspaceException>()).Which.Code
-            .Should().Be("workspace_path_exists");
+        Assert.Equal("workspace_path_exists", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await exists.Invoke(); })).Code);
     }
 
     [Fact]
@@ -165,11 +157,10 @@ public sealed class FrontendWorkspaceBridgeTests
 
         Func<Task> failure = async () =>
             await channel.EnsureCleanAsync(["open.md"], TestContext.Current.CancellationToken);
-        (await failure.Should().ThrowAsync<WorkspaceException>()).Which.Code.Should().Be("ide_document_dirty",
-            "the dirty gate runs kernel-side before the frontend executes the write");
+        Assert.Equal("ide_document_dirty", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await failure.Invoke(); })).Code);
         Func<Task> clean = async () =>
             await channel.EnsureCleanAsync(["other.md"], TestContext.Current.CancellationToken);
-        (await clean.Should().NotThrowAsync("a clean document passes the gate")).Should().NotBeNull();
+        await clean.Invoke();
     }
 
     [Fact]
@@ -182,11 +173,9 @@ public sealed class FrontendWorkspaceBridgeTests
         var channel = bridge.Acquire(BridgeHarness.SessionId)!;
         Func<Task> failure = async () =>
             await channel.ReadTextAsync(["a.cs"], 8_000_000, TestContext.Current.CancellationToken);
-        (await failure.Should().ThrowAsync<AgentToolException>()).Which.Code
-            .Should().Be("workspace_bridge_inactive");
+        Assert.Equal("workspace_bridge_inactive", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await failure.Invoke(); })).Code);
 
-        bridge.Acquire(BridgeHarness.SessionId).Should().BeNull(
-            "a cohort that predates the local family returns the tools to local I/O, process-wide");
+        Assert.Null(bridge.Acquire(BridgeHarness.SessionId));
     }
 
     // ---------- coverage: the bridge serves only what the IDE's folders cover ----------
@@ -210,17 +199,13 @@ public sealed class FrontendWorkspaceBridgeTests
         var inside = (JsonElement)(await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/app/inside.cs"}"""),
             TestContext.Current.CancellationToken))!;
-        inside.GetProperty("text").GetString().Should().Be("inside buffer",
-            "a covered path forwards and answers the IDE's text state");
+        Assert.Equal("inside buffer", inside.GetProperty("text").GetString());
 
         var outside = (JsonElement)(await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/docs/outside.cs"}"""),
             TestContext.Current.CancellationToken))!;
-        outside.GetProperty("text").GetString().Should().Be("outside disk",
-            "an uncovered path falls back to the local channel");
-        harness.DiskFrontend.Requests.Should().NotContain(
-            request => request.Method == "maieutics/fs/local/read" && request.PhysicalUri.Contains("outside"),
-            "uncovered paths never reach the frontend");
+        Assert.Equal("outside disk", outside.GetProperty("text").GetString());
+        Assert.DoesNotContain(harness.DiskFrontend.Requests, request => request.Method == "maieutics/fs/local/read" && request.PhysicalUri.Contains("outside"));
     }
 
     [Fact]
@@ -242,11 +227,9 @@ public sealed class FrontendWorkspaceBridgeTests
         var operations = result.GetProperty("files").EnumerateArray()
             .Select(static entry => entry.GetProperty("operation").GetString())
             .ToList();
-        operations.Should().Equal(["updated", "created"], "both files apply, each through its own channel");
-        File.ReadAllText(Path.Combine(appFolder, "covered.txt")).Should().Be("covered two\n",
-            "the covered file went through the bridge (hash precondition, watchers)");
-        File.ReadAllText(Path.Combine(harness.Root, "docs", "local.txt")).Should().Be("patched locally\n",
-            "the uncovered file was served locally");
+        Assert.Equal(["updated", "created"], operations);
+        Assert.Equal("covered two\n", File.ReadAllText(Path.Combine(appFolder, "covered.txt")));
+        Assert.Equal("patched locally\n", File.ReadAllText(Path.Combine(harness.Root, "docs", "local.txt")));
     }
 
     [Fact]
@@ -265,13 +248,12 @@ public sealed class FrontendWorkspaceBridgeTests
         var uncovered = await Record.ExceptionAsync(async () => await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/docs/cell.ts"}"""),
             TestContext.Current.CancellationToken));
-        uncovered.Should().BeOfType<AgentToolException>().Which.Code.Should().Be("workspace_bridge_inactive",
-            "the coverage miss is the shim's per-call fallback signal, not an error");
+        Assert.Equal("workspace_bridge_inactive", Assert.IsType<AgentToolException>(uncovered).Code);
 
         var served = (JsonElement)(await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/app/cell.ts"}"""),
             TestContext.Current.CancellationToken))!;
-        served.GetProperty("content").GetString().Should().Be("served\n");
+        Assert.Equal("served\n", served.GetProperty("content").GetString());
     }
 
     // ---------- workspace tools under the bridge ----------
@@ -289,8 +271,7 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments("""{"uri":"workspace://local/a.cs"}"""),
             TestContext.Current.CancellationToken))!;
 
-        result.GetProperty("text").GetString().Should().Be("buffer one\nbuffer two\nbuffer three",
-            "the bridge answers the IDE's authoritative text state (read_text windows trim the final newline)");
+        Assert.Equal("buffer one\nbuffer two\nbuffer three", result.GetProperty("text").GetString());
     }
 
     [Fact]
@@ -310,32 +291,28 @@ public sealed class FrontendWorkspaceBridgeTests
             TestContext.Current.CancellationToken))!;
 
         var matches = result.GetProperty("matches");
-        matches.GetArrayLength().Should().Be(1);
+        Assert.Equal(1, matches.GetArrayLength());
         var match = matches[0];
-        match.GetProperty("uri").GetString().Should().Be("workspace://local/sub/a.cs",
-            "the kernel maps the answered relative path onto the workspace domain");
-        match.GetProperty("line").GetInt32().Should().Be(1);
-        match.GetProperty("column").GetInt32().Should().Be(7);
-        harness.DiskFrontend.Requests.Should().Contain(
-            request => request.Method == "maieutics/fs/local/search",
-            "a covered root is served by the frontend's provider scan");
+        Assert.Equal("workspace://local/sub/a.cs", match.GetProperty("uri").GetString());
+        Assert.Equal(1, match.GetProperty("line").GetInt32());
+        Assert.Equal(7, match.GetProperty("column").GetInt32());
+        Assert.Contains(harness.DiskFrontend.Requests, request => request.Method == "maieutics/fs/local/search");
 
         // The filter knobs ride the same request untouched.
         var filtered = (JsonElement)(await search.InvokeAsync(
             harness.ScriptArguments(
                 """{"query":"needle","include":["**/*.cs"],"exclude":["**/generated/**"],"respectIgnore":false}"""),
             TestContext.Current.CancellationToken))!;
-        filtered.GetProperty("matches").GetArrayLength().Should().BeGreaterThanOrEqualTo(0);
-        harness.LastRequest!.Value.Params.GetProperty("include").EnumerateArray()
-            .Select(static glob => glob.GetString()).Should().Equal(["**/*.cs"],
-            "the filter knobs ride the search request untouched");
-        harness.LastRequest!.Value.Params.GetProperty("respectIgnore").GetBoolean().Should().BeFalse();
+        Assert.True(filtered.GetProperty("matches").GetArrayLength() >= 0);
+        Assert.Equal(["**/*.cs"], harness.LastRequest!.Value.Params.GetProperty("include").EnumerateArray()
+            .Select(static glob => glob.GetString()));
+        Assert.False(harness.LastRequest!.Value.Params.GetProperty("respectIgnore").GetBoolean());
 
         // The regex path rides the same bridge contract.
         var regex = (JsonElement)(await search.InvokeAsync(
             harness.ScriptArguments("""{"query":"n[e]edle","regex":true}"""),
             TestContext.Current.CancellationToken))!;
-        regex.GetProperty("matches").GetArrayLength().Should().Be(1);
+        Assert.Equal(1, regex.GetProperty("matches").GetArrayLength());
     }
 
     [Fact]
@@ -359,26 +336,21 @@ public sealed class FrontendWorkspaceBridgeTests
         var matches = result.GetProperty("matches").EnumerateArray()
             .Select(static entry => entry.GetProperty("uri").GetString())
             .ToList();
-        matches.Should().Contain("workspace://local/keep.ts");
-        matches.Should().NotContain(uri => uri!.Contains("generated"),
-            "the local scan judges the same globs the frontend's fast search does");
-        result.GetProperty("skippedByFilter").GetInt32().Should().BeGreaterThanOrEqualTo(1);
+        Assert.Contains("workspace://local/keep.ts", matches);
+        Assert.DoesNotContain(matches, uri => uri!.Contains("generated"));
+        Assert.True(result.GetProperty("skippedByFilter").GetInt32() >= 1);
     }
 
     [Fact]
     public void SearchGlobsFollowTheGitignoreNamingRule()
     {
-        SearchGlobs.Passes("src/a.ts", "a.ts", ["**/*.ts"], null).Should().BeTrue();
-        SearchGlobs.Passes("src/a.js", "a.js", ["**/*.ts"], null).Should().BeFalse(
-            "include is a whitelist");
-        SearchGlobs.Passes("generated/x.ts", "x.ts", null, ["generated/**"]).Should().BeFalse();
-        SearchGlobs.Passes("src/gen/x.ts", "x.ts", null, ["generated/**"]).Should().BeTrue(
-            "exclude needs the /** tail to reach descendants");
-        SearchGlobs.Passes("a/node_modules/x.js", "x.js", null, ["node_modules"]).Should().BeFalse(
-            "a separator-free glob names a segment at any depth");
-        SearchGlobs.Passes("a/modules/x.js", "x.js", null, ["node_modules"]).Should().BeTrue();
-        SearchGlobs.Passes("anything.go", "anything.go", null, null).Should().BeTrue(
-            "no filters passes everything");
+        Assert.True(SearchGlobs.Passes("src/a.ts", "a.ts", ["**/*.ts"], null));
+        Assert.False(SearchGlobs.Passes("src/a.js", "a.js", ["**/*.ts"], null), "include is a whitelist");
+        Assert.False(SearchGlobs.Passes("generated/x.ts", "x.ts", null, ["generated/**"]));
+        Assert.True(SearchGlobs.Passes("src/gen/x.ts", "x.ts", null, ["generated/**"]), "exclude needs the /** tail to reach descendants");
+        Assert.False(SearchGlobs.Passes("a/node_modules/x.js", "x.js", null, ["node_modules"]), "a separator-free glob names a segment at any depth");
+        Assert.True(SearchGlobs.Passes("a/modules/x.js", "x.js", null, ["node_modules"]));
+        Assert.True(SearchGlobs.Passes("anything.go", "anything.go", null, null), "no filters passes everything");
     }
 
     [Fact]
@@ -403,14 +375,13 @@ public sealed class FrontendWorkspaceBridgeTests
         var result = (JsonElement)(await search.InvokeAsync(
             harness.ScriptArguments("""{"query":"needle"}"""),
             TestContext.Current.CancellationToken))!;
-        result.GetProperty("matches").GetArrayLength().Should().Be(1,
-            "a frontend predating the search method degrades this call to the local scan");
+        Assert.Equal(1, result.GetProperty("matches").GetArrayLength());
 
         // The degradation is per call: the rest of the bridge stays active.
         var buffered = (JsonElement)(await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/a.cs"}"""),
             TestContext.Current.CancellationToken))!;
-        buffered.GetProperty("text").GetString().Should().Be("buffer without the needle");
+        Assert.Equal("buffer without the needle", buffered.GetProperty("text").GetString());
     }
 
     [Fact]
@@ -429,11 +400,8 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments("""{"query":"needle","uri":"workspace://local/docs"}"""),
             TestContext.Current.CancellationToken))!;
 
-        result.GetProperty("matches").GetArrayLength().Should().Be(1,
-            "an uncovered root is scanned locally");
-        harness.DiskFrontend.Requests.Should().NotContain(
-            request => request.Method == "maieutics/fs/local/search",
-            "uncovered trees never reach the frontend");
+        Assert.Equal(1, result.GetProperty("matches").GetArrayLength());
+        Assert.DoesNotContain(harness.DiskFrontend.Requests, request => request.Method == "maieutics/fs/local/search");
     }
 
     [Fact]
@@ -449,24 +417,23 @@ public sealed class FrontendWorkspaceBridgeTests
         var created = (JsonElement)(await write.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/new.txt","content":"created\n"}"""),
             TestContext.Current.CancellationToken))!;
-        created.GetProperty("operation").GetString().Should().Be("created");
-        File.ReadAllText(Path.Combine(harness.Root, "new.txt")).Should().Be("created\n");
+        Assert.Equal("created", created.GetProperty("operation").GetString());
+        Assert.Equal("created\n", File.ReadAllText(Path.Combine(harness.Root, "new.txt")));
 
         var updated = (JsonElement)(await write.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/new.txt","content":"updated\n"}"""),
             TestContext.Current.CancellationToken))!;
-        updated.GetProperty("operation").GetString().Should().Be("updated");
-        updated.GetProperty("diff").ValueKind.Should().Be(JsonValueKind.Object,
-            "the kernel still computes the unified diff from the bridged before side");
-        File.ReadAllText(Path.Combine(harness.Root, "new.txt")).Should().Be("updated\n");
+        Assert.Equal("updated", updated.GetProperty("operation").GetString());
+        Assert.Equal(JsonValueKind.Object, updated.GetProperty("diff").ValueKind);
+        Assert.Equal("updated\n", File.ReadAllText(Path.Combine(harness.Root, "new.txt")));
 
         // The instruction-surface gate (ADR 0032) guards the bridged path with the
         // same posture: no policy allow, no write — before the bridge is engaged.
         var forbidden = await Record.ExceptionAsync(async () => await write.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/AGENTS.md","content":"no\n"}"""),
             TestContext.Current.CancellationToken));
-        forbidden.Should().BeOfType<AgentToolException>().Which.Code.Should().Be("instructions_write_forbidden");
-        File.Exists(Path.Combine(harness.Root, "AGENTS.md")).Should().BeFalse("the gated write never reached the frontend");
+        Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(forbidden).Code);
+        Assert.False(File.Exists(Path.Combine(harness.Root, "AGENTS.md")), "the gated write never reached the frontend");
     }
 
     [Fact]
@@ -481,8 +448,8 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments(
                 """{"uri":"workspace://local/code.cs","oldText":"int a = 1;","newText":"int a = 42;"}"""),
             TestContext.Current.CancellationToken))!;
-        edited.GetProperty("replacements").GetInt32().Should().Be(1);
-        File.ReadAllText(Path.Combine(harness.Root, "code.cs")).Should().Be("int a = 42;\nint b = 2;\n");
+        Assert.Equal(1, edited.GetProperty("replacements").GetInt32());
+        Assert.Equal("int a = 42;\nint b = 2;\n", File.ReadAllText(Path.Combine(harness.Root, "code.cs")));
 
         var patch = edit.Functions.Single(static function => function.Name == "apply_patch");
         var patched = (JsonElement)(await patch.InvokeAsync(
@@ -490,10 +457,9 @@ public sealed class FrontendWorkspaceBridgeTests
                 """{"patch":"*** Begin Patch\n*** Add File: patchnew.txt\n+patched\n*** Update File: code.cs\n@@\n-int b = 2;\n+int b = 3;\n*** Delete File: patchnew.txt\n*** End Patch\n"}"""),
             TestContext.Current.CancellationToken))!;
         var files = patched.GetProperty("files");
-        files.EnumerateArray().Select(static entry => entry.GetProperty("operation").GetString())
-            .Should().Equal(["created", "updated", "deleted"]);
-        File.ReadAllText(Path.Combine(harness.Root, "code.cs")).Should().Be("int a = 42;\nint b = 3;\n");
-        File.Exists(Path.Combine(harness.Root, "patchnew.txt")).Should().BeFalse();
+        Assert.Equal(["created", "updated", "deleted"], files.EnumerateArray().Select(static entry => entry.GetProperty("operation").GetString()));
+        Assert.Equal("int a = 42;\nint b = 3;\n", File.ReadAllText(Path.Combine(harness.Root, "code.cs")));
+        Assert.False(File.Exists(Path.Combine(harness.Root, "patchnew.txt")));
 
         // An exclusive bridged create on an existing target fails exactly like the
         // local path's exclusive create (workspace_path_exists).
@@ -501,7 +467,7 @@ public sealed class FrontendWorkspaceBridgeTests
             harness.ScriptArguments(
                 """{"patch":"*** Begin Patch\n*** Add File: code.cs\n+duplicate\n*** End Patch\n"}"""),
             TestContext.Current.CancellationToken));
-        exists.Should().BeOfType<AgentToolException>().Which.Code.Should().Be("workspace_path_exists");
+        Assert.Equal("workspace_path_exists", Assert.IsType<AgentToolException>(exists).Code);
     }
 
     // ---------- script tools ----------
@@ -518,13 +484,12 @@ public sealed class FrontendWorkspaceBridgeTests
         var content = (JsonElement)(await read.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/cell.ts"}"""),
             TestContext.Current.CancellationToken))!;
-        content.GetProperty("content").GetString().Should().Be("const x = 1;\n");
+        Assert.Equal("const x = 1;\n", content.GetProperty("content").GetString());
 
         var listing = (JsonElement)(await list.InvokeAsync(
             harness.ScriptArguments("""{"uri":"workspace://local/"}"""),
             TestContext.Current.CancellationToken))!;
-        listing.GetProperty("uri").GetString().Should().Be("workspace://local/",
-            "the shim addresses the workspace root itself for Deno.readDir(cwd)");
+        Assert.Equal("workspace://local/", listing.GetProperty("uri").GetString());
 
         var inactive = new WorkspaceBridgeFunctions(harness.Workspace, bridge: null);
         var fallback = await Record.ExceptionAsync(async () => await inactive.Functions
@@ -532,8 +497,7 @@ public sealed class FrontendWorkspaceBridgeTests
             .InvokeAsync(
                 harness.ScriptArguments("""{"uri":"workspace://local/cell.ts"}"""),
                 TestContext.Current.CancellationToken));
-        fallback.Should().BeOfType<AgentToolException>().Which.Code.Should().Be("workspace_bridge_inactive",
-            "the typed code is the shim's per-call fallback signal");
+        Assert.Equal("workspace_bridge_inactive", Assert.IsType<AgentToolException>(fallback).Code);
     }
 
     // ---------- harness ----------

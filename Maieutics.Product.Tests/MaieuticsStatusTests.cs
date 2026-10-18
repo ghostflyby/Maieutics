@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.Configuration;
@@ -47,17 +46,16 @@ public sealed class MaieuticsStatusTests
 
         var markdown = MaieuticsStatusRenderer.Render(snapshot);
 
-        markdown.Should()
-            .Contain("Configuration: version `7`")
-            .And.Contain("last reload `rejected`")
-            .And.Contain("profile `profile`")
-            .And.Contain("Capabilities: no model profiles")
-            .And.Contain("Workspace: fixed home")
-            .And.Contain("Plugins: `Exited`")
-            .And.Contain("`server`: `Reconnecting`")
-            .And.Contain("`default`: generation `4`, state `busy` (default)")
-            .And.NotContain("/secret/workspace")
-            .And.NotContain("/secret/repl");
+        Assert.Contains("Configuration: version `7`", markdown);
+        Assert.Contains("last reload `rejected`", markdown);
+        Assert.Contains("profile `profile`", markdown);
+        Assert.Contains("Capabilities: no model profiles", markdown);
+        Assert.Contains("Workspace: fixed home", markdown);
+        Assert.Contains("Plugins: `Exited`", markdown);
+        Assert.Contains("`server`: `Reconnecting`", markdown);
+        Assert.Contains("`default`: generation `4`, state `busy` (default)", markdown);
+        Assert.DoesNotContain("/secret/workspace", markdown);
+        Assert.DoesNotContain("/secret/repl", markdown);
     }
 
     [Fact]
@@ -86,13 +84,12 @@ public sealed class MaieuticsStatusTests
 
         var markdown = MaieuticsStatusRenderer.Render(snapshot);
 
-        markdown.Should()
-            .Contain("source `source`")
-            .And.Contain("model `model`")
-            .And.Contain("StreamingText")
-            .And.Contain("hosted `FileSearch, WebSearch`")
-            .And.Contain("potential `Shell, WebSearch`")
-            .And.Contain("(endpoint profile matched)");
+        Assert.Contains("source `source`", markdown);
+        Assert.Contains("model `model`", markdown);
+        Assert.Contains("StreamingText", markdown);
+        Assert.Contains("hosted `FileSearch, WebSearch`", markdown);
+        Assert.Contains("potential `Shell, WebSearch`", markdown);
+        Assert.Contains("(endpoint profile matched)", markdown);
     }
 
     [Fact]
@@ -131,11 +128,10 @@ public sealed class MaieuticsStatusTests
 
         var markdown = MaieuticsStatusRenderer.Render(snapshot);
 
-        markdown.Should()
-            .Contain("source `known`")
-            .And.Contain("(known vendor)")
-            .And.Contain("source `unknown`")
-            .And.Contain("(declared baseline)");
+        Assert.Contains("source `known`", markdown);
+        Assert.Contains("(known vendor)", markdown);
+        Assert.Contains("source `unknown`", markdown);
+        Assert.Contains("(declared baseline)", markdown);
     }
 
     [Fact]
@@ -158,8 +154,7 @@ public sealed class MaieuticsStatusTests
 
         var markdown = MaieuticsStatusRenderer.Render(snapshot);
 
-        markdown.Should()
-            .Contain("- Skills: `3` (workspace `2`, user `1`, diagnostics `4`)");
+        Assert.Contains("- Skills: `3` (workspace `2`, user `1`, diagnostics `4`)", markdown);
     }
 
     [Fact]
@@ -181,6 +176,6 @@ public sealed class MaieuticsStatusTests
 
         var markdown = MaieuticsStatusRenderer.Render(snapshot);
 
-        markdown.Should().NotContain("Skills:");
+        Assert.DoesNotContain("Skills:", markdown);
     }
 }

@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -24,16 +23,16 @@ public sealed class AgentTranscriptStoreTests
         await ReadEventsAsync(second, deadline.Token);
         await second.Completion.WaitAsync(deadline.Token);
 
-        store.Turns.Should().HaveCount(2);
-        store.Turns[0].RunId.Should().Be(first.Id);
-        store.Turns[1].RunId.Should().Be(second.Id);
-        store.Turns[0].Messages[0].Role.Should().Be(ChatRole.User);
-        store.Turns[0].Messages[0].Text.Should().Be("one");
-        store.Turns[0].Messages[^1].Role.Should().Be(ChatRole.Assistant);
-        store.Turns[0].Messages[^1].Text.Should().Be("Hello world");
-        store.Turns[1].Messages.Should().HaveCount(2);
-        store.Turns[1].Messages[0].Text.Should().Be("two");
-        store.Turns[1].Messages[^1].Text.Should().Be("Again!");
+        Assert.Equal(2, store.Turns.Count());
+        Assert.Equal(first.Id, store.Turns[0].RunId);
+        Assert.Equal(second.Id, store.Turns[1].RunId);
+        Assert.Equal(ChatRole.User, store.Turns[0].Messages[0].Role);
+        Assert.Equal("one", store.Turns[0].Messages[0].Text);
+        Assert.Equal(ChatRole.Assistant, store.Turns[0].Messages[^1].Role);
+        Assert.Equal("Hello world", store.Turns[0].Messages[^1].Text);
+        Assert.Equal(2, store.Turns[1].Messages.Count());
+        Assert.Equal("two", store.Turns[1].Messages[0].Text);
+        Assert.Equal("Again!", store.Turns[1].Messages[^1].Text);
     }
 
     [Fact(Timeout = 30_000)]
@@ -49,18 +48,17 @@ public sealed class AgentTranscriptStoreTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.Awaiting(static completion => completion.WaitAsync(TestContext.Current.CancellationToken))
-            .Should().ThrowAsync<InvalidOperationException>();
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((run.Completion).WaitAsync(TestContext.Current.CancellationToken)); });
         store.FailOnAppend = false;
 
-        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("again"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
-        (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text.Should().Be("second");
+        Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
 
-        store.Turns.Should().ContainSingle();
-        store.Turns[0].Messages[0].Text.Should().Be("again");
+        Assert.Single(store.Turns);
+        Assert.Equal("again", store.Turns[0].Messages[0].Text);
     }
 
     [Fact(Timeout = 30_000)]
@@ -78,8 +76,8 @@ public sealed class AgentTranscriptStoreTests
         await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
 
-        session.Id.Should().Be(sessionId);
-        store.SessionIds.Should().ContainSingle().Which.Should().Be(sessionId);
+        Assert.Equal(sessionId, session.Id);
+        Assert.Equal(sessionId, Assert.Single(store.SessionIds));
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)

@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -40,13 +39,14 @@ internal static class WorkspaceToolInvocations
 
     internal static AgentToolException ShouldFailure(ToolInvocation invocation)
     {
-        return invocation.Failure.Should().NotBeNull().And.BeOfType<AgentToolException>().Which;
+        Assert.NotNull(invocation.Failure);
+        return Assert.IsType<AgentToolException>(invocation.Failure);
     }
 
     internal static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> jsonTypeInfo)
     {
-        invocation.Failure.Should().BeNull();
-        var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
+        Assert.Null(invocation.Failure);
+        var result = Assert.IsType<JsonElement>(invocation.Result);
         return result.Deserialize(jsonTypeInfo)
                ?? throw new InvalidOperationException("The tool returned an empty JSON result.");
     }

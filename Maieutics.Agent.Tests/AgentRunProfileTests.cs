@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using FluentAssertions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Agent.Tests;
@@ -11,16 +10,12 @@ public sealed class AgentRunProfileTests
     {
         var id = new AgentModelProfileId("OpenAI_primary-1");
 
-        id.Value.Should().Be("OpenAI_primary-1");
-        id.ToString().Should().Be("OpenAI_primary-1");
-        FluentActions.Invoking(() => new AgentModelProfileId(""))
-            .Should().Throw<ArgumentException>();
-        FluentActions.Invoking(() => new AgentModelProfileId("-invalid"))
-            .Should().Throw<ArgumentException>();
-        FluentActions.Invoking(() => new AgentModelProfileId("contains space"))
-            .Should().Throw<ArgumentException>();
-        FluentActions.Invoking(() => new AgentModelProfileId(new string('a', 65)))
-            .Should().Throw<ArgumentException>();
+        Assert.Equal("OpenAI_primary-1", id.Value);
+        Assert.Equal("OpenAI_primary-1", id.ToString());
+        Assert.ThrowsAny<ArgumentException>(() => new AgentModelProfileId(""));
+        Assert.ThrowsAny<ArgumentException>(() => new AgentModelProfileId("-invalid"));
+        Assert.ThrowsAny<ArgumentException>(() => new AgentModelProfileId("contains space"));
+        Assert.ThrowsAny<ArgumentException>(() => new AgentModelProfileId(new string('a', 65)));
     }
 
     [Fact]
@@ -30,10 +25,9 @@ public sealed class AgentRunProfileTests
             new ScriptedChatClient((_, _) => StreamAsync("unused")),
             new AgentSessionOptions());
 
-        profile.ModelIdentity.Should().BeNull();
-        profile.Capabilities.Should().Be(
-            AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling);
-        profile.HostedCapabilities.Should().BeEmpty();
+        Assert.Null(profile.ModelIdentity);
+        Assert.Equal(AgentModelCapabilities.StreamingText | AgentModelCapabilities.FunctionCalling, profile.Capabilities);
+        Assert.Empty(profile.HostedCapabilities);
     }
 
     [Fact]
@@ -44,17 +38,16 @@ public sealed class AgentRunProfileTests
             new AgentSessionOptions(),
             hostedCapabilities: ["WebSearch", "FileSearch", "WebSearch"]);
 
-        profile.HostedCapabilities.Should().Equal(["FileSearch", "WebSearch"]);
+        Assert.Equal(["FileSearch", "WebSearch"], profile.HostedCapabilities);
     }
 
     [Fact]
     public void BlankHostedCapabilitiesAreRejected()
     {
-        FluentActions.Invoking(() => new AgentRunProfile(
+        Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
                 new ScriptedChatClient((_, _) => StreamAsync("unused")),
                 new AgentSessionOptions(),
-                hostedCapabilities: ["WebSearch", " "]))
-            .Should().Throw<ArgumentException>();
+                hostedCapabilities: ["WebSearch", " "]));
     }
 
     [Fact]
@@ -68,8 +61,8 @@ public sealed class AgentRunProfileTests
             tools: [function],
             hostedTools: [new HostedWebSearchTool()]);
 
-        profile.Tools.Should().ContainSingle().Which.Should().BeSameAs(function);
-        profile.HostedTools.Should().ContainSingle().Which.Should().BeOfType<HostedWebSearchTool>();
+        Assert.Same(function, Assert.Single(profile.Tools));
+        Assert.IsType<HostedWebSearchTool>(Assert.Single(profile.HostedTools));
     }
 
     [Fact]
@@ -79,12 +72,11 @@ public sealed class AgentRunProfileTests
         // would make the provider's tool choice ambiguous.
         var function = AIFunctionFactory.Create(() => "ok", "web_search");
 
-        FluentActions.Invoking(() => new AgentRunProfile(
+        Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
                 new ScriptedChatClient((_, _) => StreamAsync("unused")),
                 new AgentSessionOptions(),
                 tools: [function],
-                hostedTools: [new HostedWebSearchTool()]))
-            .Should().Throw<ArgumentException>();
+                hostedTools: [new HostedWebSearchTool()]));
     }
 
     [Fact]
@@ -92,17 +84,15 @@ public sealed class AgentRunProfileTests
     {
         var function = AIFunctionFactory.Create(() => "ok", "read_text");
 
-        FluentActions.Invoking(() => new AgentRunProfile(
+        Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
                 new ScriptedChatClient((_, _) => StreamAsync("unused")),
                 new AgentSessionOptions(),
-                hostedTools: [function]))
-            .Should().Throw<ArgumentException>();
+                hostedTools: [function]));
 
-        FluentActions.Invoking(() => new AgentRunProfile(
+        Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
                 new ScriptedChatClient((_, _) => StreamAsync("unused")),
                 new AgentSessionOptions(),
-                hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]))
-            .Should().Throw<ArgumentException>();
+                hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]));
     }
 
     [Fact(Timeout = 30_000)]
@@ -117,15 +107,12 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first question", deadline.Token);
         var result = await CompleteTurnAsync(session, "second question", deadline.Token);
 
-        client.Instructions.Should().Equal("static instructions", "static instructions");
-        client.Requests[1].Select(MessageTuple).Should().Equal(
-            (ChatRole.User, "first question"),
-            (ChatRole.Assistant, "first answer"),
-            (ChatRole.User, "second question"));
-        result.Transcript.Version.Should().Be(2);
-        result.Transcript.Turns.Should().HaveCount(2);
-        result.ModelIdentity.Should().BeNull();
-        result.Transcript.Turns.Should().OnlyContain(static turn => turn.ModelIdentity == null);
+        Assert.Equal(new string?[] { "static instructions", "static instructions" }, client.Instructions);
+        Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(MessageTuple));
+        Assert.Equal(2, result.Transcript.Version);
+        Assert.Equal(2, result.Transcript.Turns.Count());
+        Assert.Null(result.ModelIdentity);
+        Assert.All(result.Transcript.Turns, static turn => Assert.True(turn.ModelIdentity == null));
     }
 
     [Fact(Timeout = 30_000)]
@@ -141,15 +128,12 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first question", deadline.Token);
         var result = await CompleteTurnAsync(session, "second question", deadline.Token);
 
-        firstClient.Instructions.Should().Equal("first instructions");
-        secondClient.Instructions.Should().Equal("second instructions");
-        secondClient.Requests.Single().Select(MessageTuple).Should().Equal(
-            (ChatRole.User, "first question"),
-            (ChatRole.Assistant, "first answer"),
-            (ChatRole.User, "second question"));
-        firstLease.DisposeCount.Should().Be(1);
-        secondLease.DisposeCount.Should().Be(1);
-        result.Transcript.Turns.Should().HaveCount(2);
+        Assert.Equal(new string?[] { "first instructions" }, firstClient.Instructions);
+        Assert.Equal(new string?[] { "second instructions" }, secondClient.Instructions);
+        Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, secondClient.Requests.Single().Select(MessageTuple));
+        Assert.Equal(1, firstLease.DisposeCount);
+        Assert.Equal(1, secondLease.DisposeCount);
+        Assert.Equal(2, result.Transcript.Turns.Count());
     }
 
     [Fact(Timeout = 30_000)]
@@ -164,18 +148,16 @@ public sealed class AgentRunProfileTests
         var session = new AgentSession(provider);
 
         var pending = session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
-        pending.IsCompleted.Should().BeFalse();
-        await (Session: session, deadline.Token)
-            .Awaiting(static state => state.Session.StartTurnAsync(AgentTurn.FromText("second"), state.Token))
-            .Should().ThrowAsync<AgentTurnInProgressException>();
+        Assert.False(pending.IsCompleted);
+        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (((Session: session, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("second"), ((Session: session, deadline.Token)).Token)); });
 
         acquisition.SetResult(lease);
         await using var run = await pending.WaitAsync(deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
 
-        provider.AcquireCount.Should().Be(1);
-        lease.DisposeCount.Should().Be(1);
+        Assert.Equal(1, provider.AcquireCount);
+        Assert.Equal(1, lease.DisposeCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -195,14 +177,12 @@ public sealed class AgentRunProfileTests
         var pending = session.StartTurnAsync(AgentTurn.FromText("cancel"), cancellation.Token);
         cancellation.Cancel();
 
-        await pending
-            .Invoking(static task => task)
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((pending)); });
         var result = await CompleteTurnAsync(session, "next", deadline.Token);
 
-        result.AssistantMessage.Text.Should().Be("recovered");
-        provider.AcquireCount.Should().Be(2);
-        recoveredLease.DisposeCount.Should().Be(1);
+        Assert.Equal("recovered", result.AssistantMessage.Text);
+        Assert.Equal(2, provider.AcquireCount);
+        Assert.Equal(1, recoveredLease.DisposeCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -222,10 +202,10 @@ public sealed class AgentRunProfileTests
 
         var result = await CompleteTurnAsync(session, "question", deadline.Token);
 
-        result.ModelIdentity.Should().Be(identity);
-        result.Transcript.Turns.Should().ContainSingle();
-        result.Transcript.Turns[0].ModelIdentity.Should().Be(identity);
-        session.GetTranscriptSnapshot().Turns[0].ModelIdentity.Should().Be(identity);
+        Assert.Equal(identity, result.ModelIdentity);
+        Assert.Single(result.Transcript.Turns);
+        Assert.Equal(identity, result.Transcript.Turns[0].ModelIdentity);
+        Assert.Equal(identity, session.GetTranscriptSnapshot().Turns[0].ModelIdentity);
     }
 
     [Fact(Timeout = 30_000)]
@@ -243,15 +223,13 @@ public sealed class AgentRunProfileTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        var failure = (await run.Completion.WaitAsync(deadline.Token)
-            .Invoking(static task => task)
-            .Should().ThrowAsync<AgentModelCapabilityException>()).Which;
+        var failure = (await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
 
-        failure.RequiredCapability.Should().Be(AgentModelCapabilities.StreamingText);
-        failure.ModelIdentity.Should().Be(identity);
-        client.Requests.Should().BeEmpty();
-        lease.DisposeCount.Should().Be(1);
-        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(AgentModelCapabilities.StreamingText, failure.RequiredCapability);
+        Assert.Equal(identity, failure.ModelIdentity);
+        Assert.Empty(client.Requests);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
     }
 
     [Fact(Timeout = 30_000)]
@@ -271,15 +249,13 @@ public sealed class AgentRunProfileTests
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
-        var failure = (await run.Completion.WaitAsync(deadline.Token)
-            .Invoking(static task => task)
-            .Should().ThrowAsync<AgentModelCapabilityException>()).Which;
+        var failure = (await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await ((run.Completion.WaitAsync(deadline.Token))); }));
 
-        failure.RequiredCapability.Should().Be(AgentModelCapabilities.FunctionCalling);
-        failure.ModelIdentity.Should().Be(identity);
-        client.Requests.Should().BeEmpty();
-        lease.DisposeCount.Should().Be(1);
-        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Equal(AgentModelCapabilities.FunctionCalling, failure.RequiredCapability);
+        Assert.Equal(identity, failure.ModelIdentity);
+        Assert.Empty(client.Requests);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
     }
 
     [Fact(Timeout = 30_000)]
@@ -299,14 +275,14 @@ public sealed class AgentRunProfileTests
 
         var first = await CompleteTurnAsync(session, "use tool", deadline.Token);
 
-        first.AssistantMessage.Text.Should().Be("tool complete");
-        firstClient.Requests.Should().HaveCount(2);
-        nextClient.Requests.Should().BeEmpty();
-        provider.AcquireCount.Should().Be(1);
+        Assert.Equal("tool complete", first.AssistantMessage.Text);
+        Assert.Equal(2, firstClient.Requests.Count());
+        Assert.Empty(nextClient.Requests);
+        Assert.Equal(1, provider.AcquireCount);
 
         await CompleteTurnAsync(session, "next", deadline.Token);
-        nextClient.Requests.Should().ContainSingle();
-        provider.AcquireCount.Should().Be(2);
+        Assert.Single(nextClient.Requests);
+        Assert.Equal(2, provider.AcquireCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -336,10 +312,10 @@ public sealed class AgentRunProfileTests
         await CompleteTurnAsync(session, "first", deadline.Token);
         await CompleteTurnAsync(session, "second", deadline.Token);
 
-        firstClient.ToolNames.Should().AllSatisfy(static names => names.Should().Equal("first_tool"));
-        secondClient.ToolNames.Should().AllSatisfy(static names => names.Should().Equal("second_tool"));
-        firstLease.DisposeCount.Should().Be(1);
-        secondLease.DisposeCount.Should().Be(1);
+        Assert.All(firstClient.ToolNames, names => Assert.Equal(new string[] { "first_tool" }, names));
+        Assert.All(secondClient.ToolNames, names => Assert.Equal(new string[] { "second_tool" }, names));
+        Assert.Equal(1, firstLease.DisposeCount);
+        Assert.Equal(1, secondLease.DisposeCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -356,15 +332,13 @@ public sealed class AgentRunProfileTests
             new AgentSessionOptions { MaxInputCharacters = 10 }));
         var session = new AgentSession(new QueueProfileProvider(rejectedLease, acceptedLease));
 
-        await (Session: session, deadline.Token)
-            .Awaiting(static state => state.Session.StartTurnAsync(AgentTurn.FromText("four"), state.Token))
-            .Should().ThrowAsync<AgentInputLimitExceededException>();
+        await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (((Session: session, deadline.Token)).Session.StartTurnAsync(AgentTurn.FromText("four"), ((Session: session, deadline.Token)).Token)); });
 
-        rejectedLease.DisposeCount.Should().Be(1);
-        rejectedClient.Requests.Should().BeEmpty();
+        Assert.Equal(1, rejectedLease.DisposeCount);
+        Assert.Empty(rejectedClient.Requests);
         var result = await CompleteTurnAsync(session, "four", deadline.Token);
-        result.AssistantMessage.Text.Should().Be("accepted");
-        acceptedLease.DisposeCount.Should().Be(1);
+        Assert.Equal("accepted", result.AssistantMessage.Text);
+        Assert.Equal(1, acceptedLease.DisposeCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -381,8 +355,8 @@ public sealed class AgentRunProfileTests
         await ReadEventsAsync(run, deadline.Token);
         await lease.DisposeStarted.Task.WaitAsync(deadline.Token);
 
-        run.Completion.IsCompleted.Should().BeFalse();
-        lease.DisposeCount.Should().Be(1);
+        Assert.False(run.Completion.IsCompleted);
+        Assert.Equal(1, lease.DisposeCount);
 
         releaseLease.SetResult();
         await run.Completion.WaitAsync(deadline.Token);
@@ -402,16 +376,14 @@ public sealed class AgentRunProfileTests
         await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
         {
             await ReadEventsAsync(failed, deadline.Token);
-            await failed.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage("lease release failed");
+            var assertion1 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await ((failed.Completion.WaitAsync(deadline.Token))); });
+            Assert.Equal("lease release failed", assertion1.Message);
         }
 
-        session.GetTranscriptSnapshot().Turns.Should().BeEmpty();
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
         var recovered = await CompleteTurnAsync(session, "second", deadline.Token);
-        recovered.Transcript.Version.Should().Be(1);
-        recovered.Transcript.Turns.Should().ContainSingle();
+        Assert.Equal(1, recovered.Transcript.Version);
+        Assert.Single(recovered.Transcript.Turns);
     }
 
     [Fact(Timeout = 30_000)]
@@ -429,15 +401,13 @@ public sealed class AgentRunProfileTests
         await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
         {
             await ReadEventsAsync(failed, deadline.Token);
-            await failed.Completion.WaitAsync(deadline.Token)
-                .Invoking(static task => task)
-                .Should().ThrowAsync<AgentProviderException>();
+            await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await ((failed.Completion.WaitAsync(deadline.Token))); });
         }
 
-        failedLease.DisposeCount.Should().Be(1);
+        Assert.Equal(1, failedLease.DisposeCount);
         var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
-        recovered.AssistantMessage.Text.Should().Be("recovered");
-        recoveredLease.DisposeCount.Should().Be(1);
+        Assert.Equal("recovered", recovered.AssistantMessage.Text);
+        Assert.Equal(1, recoveredLease.DisposeCount);
     }
 
     [Fact(Timeout = 30_000)]
@@ -456,13 +426,11 @@ public sealed class AgentRunProfileTests
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("cancel"), deadline.Token);
         await providerStarted.Task.WaitAsync(deadline.Token);
         await run.CancelAsync(deadline.Token);
-        await run.Completion
-            .Invoking(static task => task)
-            .Should().ThrowAsync<OperationCanceledException>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((run.Completion)); });
 
-        canceledLease.DisposeCount.Should().Be(1);
+        Assert.Equal(1, canceledLease.DisposeCount);
         await CompleteTurnAsync(session, "next", deadline.Token);
-        nextLease.DisposeCount.Should().Be(1);
+        Assert.Equal(1, nextLease.DisposeCount);
     }
 
     private static AgentRunProfile CreateProfile(IChatClient client, string instructions)
@@ -487,9 +455,8 @@ public sealed class AgentRunProfileTests
 
         // The request carries both the local function (still invocable by the runtime) and the
         // provider-hosted tool (executed by the provider).
-        client.AllTools.Should().ContainSingle().Which.Should()
-            .Contain(tool => tool is HostedWebSearchTool);
-        client.ToolNames.Should().ContainSingle().Which.Should().Equal("read_text");
+        Assert.Contains(Assert.Single(client.AllTools), tool => tool is HostedWebSearchTool);
+        Assert.Equal(new string[] { "read_text" }, Assert.Single(client.ToolNames));
     }
 
     private sealed class SingleProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider

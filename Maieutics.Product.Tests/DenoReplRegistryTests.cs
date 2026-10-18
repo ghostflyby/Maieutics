@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
@@ -24,34 +23,23 @@ public sealed class DenoReplRegistryTests
 
         var functions = new DenoReplFunctions(registry).Functions;
 
-        functions.Select(static function => function.Name).Should().Equal(
-            "repl_execute",
-            "repl_create",
-            "repl_list",
-            "repl_restart",
-            "repl_close");
-        functions.Should().OnlyContain(static function =>
-            function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object");
-        SchemaProperties(functions.Single(static function => function.Name == "repl_execute"))
-            .Should().Equal("code", "sessionId");
-        functions.Single(static function => function.Name == "repl_execute")
+        Assert.Equal(new string[] { "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close" }, functions.Select(static function => function.Name));
+        Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
+            function.JsonSchema.GetProperty("type").GetString() == "object"));
+        Assert.Equal(new string[] { "code", "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_execute")));
+        Assert.Equal(new string?[] { "code" }, functions.Single(static function => function.Name == "repl_execute")
             .JsonSchema.GetProperty("required").EnumerateArray()
-            .Select(static value => value.GetString())
-            .Should().Equal("code");
-        SchemaProperties(functions.Single(static function => function.Name == "repl_create")).Should().BeEmpty();
-        SchemaProperties(functions.Single(static function => function.Name == "repl_list")).Should().BeEmpty();
-        SchemaProperties(functions.Single(static function => function.Name == "repl_restart"))
-            .Should().Equal("sessionId");
-        SchemaProperties(functions.Single(static function => function.Name == "repl_close"))
-            .Should().Equal("sessionId");
-        functions.Single(static function => function.Name == "repl_execute").Description.Should()
-            .Contain("private reasoning")
-            .And.Contain("Deno.jupyter.display")
-            .And.Contain("raw: true")
-            .And.Contain("display_id")
-            .And.Contain("update: true")
-            .And.Contain("text/plain");
+            .Select(static value => value.GetString()));
+        Assert.Empty(SchemaProperties(functions.Single(static function => function.Name == "repl_create")));
+        Assert.Empty(SchemaProperties(functions.Single(static function => function.Name == "repl_list")));
+        Assert.Equal(new string[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_restart")));
+        Assert.Equal(new string[] { "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_close")));
+        Assert.Contains("private reasoning", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("Deno.jupyter.display", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("raw: true", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("display_id", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("update: true", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("text/plain", functions.Single(static function => function.Name == "repl_execute").Description);
     }
 
     [Fact(Timeout = 30_000)]
@@ -75,37 +63,36 @@ public sealed class DenoReplRegistryTests
             var first = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
             var second = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
 
-            first.SessionId.Should().MatchRegex("^[0-9a-f]{32}$");
-            second.SessionId.Should().MatchRegex("^[0-9a-f]{32}$").And.NotBe(first.SessionId);
-            first.Cwd.Should().Be(firstRoot);
-            second.Cwd.Should().Be(firstRoot);
-            factory.Generations.Should().HaveCount(2);
-            factory.Starts.Select(static start => start.WorkingDirectory).Should().Equal(firstRoot, firstRoot);
-            registry.List(owner).Sessions.Should().HaveCount(2);
+            Assert.Matches("^[0-9a-f]{32}$", first.SessionId);
+            Assert.Matches("^[0-9a-f]{32}$", second.SessionId);
+            Assert.NotEqual(first.SessionId, second.SessionId);
+            Assert.Equal(firstRoot, first.Cwd);
+            Assert.Equal(firstRoot, second.Cwd);
+            Assert.Equal(2, factory.Generations.Count());
+            Assert.Equal(new string[] { firstRoot, firstRoot }, factory.Starts.Select(static start => start.WorkingDirectory));
+            Assert.Equal(2, registry.List(owner).Sessions.Count());
 
-            var limitFailure = await (Registry: registry, Owner: owner)
-                .Awaiting(static state => state.Registry.CreateAsync(
-                    state.Owner,
-                    TestContext.Current.CancellationToken))
-                .Should().ThrowAsync<AgentToolException>();
-            limitFailure.Which.Code.Should().Be("repl_session_limit");
+            var limitFailure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (((Registry: registry, Owner: owner)).Registry.CreateAsync(
+                    ((Registry: registry, Owner: owner)).Owner,
+                    TestContext.Current.CancellationToken)); });
+            Assert.Equal("repl_session_limit", limitFailure.Code);
 
             var restarted = await registry.RestartAsync(
                 owner,
                 first.SessionId,
                 TestContext.Current.CancellationToken);
-            restarted.Generation.Should().Be(2);
-            restarted.State.Should().Be("idle");
-            factory.Generations.Should().HaveCount(3);
-            factory.Generations[0].DisposeCount.Should().Be(1);
-            factory.Starts[^1].Should().Be((firstRoot, first.SessionId, 2));
+            Assert.Equal(2, restarted.Generation);
+            Assert.Equal("idle", restarted.State);
+            Assert.Equal(3, factory.Generations.Count());
+            Assert.Equal(1, factory.Generations[0].DisposeCount);
+            Assert.Equal((firstRoot, first.SessionId, 2), factory.Starts[^1]);
 
             var closed = await registry.CloseAsync(
                 owner,
                 second.SessionId,
                 TestContext.Current.CancellationToken);
-            closed.Should().Be(new DenoReplCloseResult(second.SessionId, true));
-            registry.List(owner).Sessions.Should().ContainSingle().Which.SessionId.Should().Be(first.SessionId);
+            Assert.Equal(new DenoReplCloseResult(second.SessionId, true), closed);
+            Assert.Equal(first.SessionId, Assert.Single(registry.List(owner).Sessions).SessionId);
         }
         finally
         {
@@ -129,24 +116,22 @@ public sealed class DenoReplRegistryTests
 
         try
         {
-            var failure = await (Registry: registry, Owner: owner)
-                .Awaiting(static state => state.Registry.CreateAsync(
-                    state.Owner,
-                    TestContext.Current.CancellationToken))
-                .Should().ThrowAsync<AgentToolException>();
-            failure.Which.Code.Should().Be("repl_start_failed");
+            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (((Registry: registry, Owner: owner)).Registry.CreateAsync(
+                    ((Registry: registry, Owner: owner)).Owner,
+                    TestContext.Current.CancellationToken)); });
+            Assert.Equal("repl_start_failed", failure.Code);
 
-            var faulted = registry.List(owner).Sessions.Should().ContainSingle().Subject;
-            faulted.State.Should().Be("faulted");
-            faulted.Generation.Should().Be(1);
+            var faulted = Assert.Single(registry.List(owner).Sessions);
+            Assert.Equal("faulted", faulted.State);
+            Assert.Equal(1, faulted.Generation);
 
             var restarted = await registry.RestartAsync(
                 owner,
                 faulted.SessionId,
                 TestContext.Current.CancellationToken);
-            restarted.Generation.Should().Be(2);
-            restarted.State.Should().Be("idle");
-            factory.Attempts.Should().Equal(1, 2);
+            Assert.Equal(2, restarted.Generation);
+            Assert.Equal("idle", restarted.State);
+            Assert.Equal(new int[] { 1, 2 }, factory.Attempts);
         }
         finally
         {
@@ -175,18 +160,18 @@ public sealed class DenoReplRegistryTests
             var first = registry.CloseAsync(owner, created.SessionId, TestContext.Current.CancellationToken);
             await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
 
-            registry.List(owner).Sessions.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            Assert.Equivalent(new
             {
                 created.SessionId,
                 State = "closing"
-            });
+            }, Assert.Single(registry.List(owner).Sessions));
             var second = registry.CloseAsync(owner, created.SessionId, TestContext.Current.CancellationToken);
-            second.IsCompleted.Should().BeFalse();
+            Assert.False(second.IsCompleted);
 
             generation.AllowDisposal.TrySetResult();
-            (await Task.WhenAll(first, second)).Should().OnlyContain(result => result.Closed);
-            registry.List(owner).Sessions.Should().BeEmpty();
-            generation.DisposeCount.Should().Be(1);
+            Assert.All((await Task.WhenAll(first, second)), result => Assert.True(result.Closed));
+            Assert.Empty(registry.List(owner).Sessions);
+            Assert.Equal(1, generation.DisposeCount);
         }
         finally
         {
@@ -215,11 +200,11 @@ public sealed class DenoReplRegistryTests
             var first = registry.DisposeAsync().AsTask();
             await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
             var second = registry.DisposeAsync().AsTask();
-            second.IsCompleted.Should().BeFalse();
+            Assert.False(second.IsCompleted);
 
             generation.AllowDisposal.TrySetResult();
             await Task.WhenAll(first, second);
-            generation.DisposeCount.Should().Be(1);
+            Assert.Equal(1, generation.DisposeCount);
         }
         finally
         {

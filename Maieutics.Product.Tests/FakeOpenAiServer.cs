@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using FluentAssertions;
 using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 
@@ -198,25 +197,26 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
 
     private void AssertRequest(HttpRequest request, int requestIndex)
     {
-        request.Method.Should().Be("POST");
-        request.Path.Should().Be(apiFlavor switch
+        Assert.Equal("POST", request.Method);
+        Assert.Equal(apiFlavor switch
         {
             OpenAiApiFlavor.Responses => "/v1/responses",
             OpenAiApiFlavor.ChatCompletions => "/v1/chat/completions",
             _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
-        });
-        request.Body.GetProperty("model").GetString().Should().Be(model);
-        request.Body.GetProperty("stream").GetBoolean().Should().BeTrue();
-        request.Body.GetProperty("store").GetBoolean().Should().BeFalse();
+        }, request.Path);
+        Assert.Equal(model, request.Body.GetProperty("model").GetString());
+        Assert.True(request.Body.GetProperty("stream").GetBoolean());
+        Assert.False(request.Body.GetProperty("store").GetBoolean());
         if (!toolFlow) return;
 
-        request.Body.GetProperty("tools").GetArrayLength().Should().BeGreaterThan(0);
-        request.Body.GetRawText().Should().Contain(toolName);
+        Assert.True(request.Body.GetProperty("tools").GetArrayLength() > 0);
+        Assert.Contains(toolName, request.Body.GetRawText());
         if (requestIndex > 0)
         {
-            request.Body.GetRawText().Should().Contain("status").And.Contain("ok");
+            Assert.Contains("status", request.Body.GetRawText());
+            Assert.Contains("ok", request.Body.GetRawText());
             if (expectedToolResultText is not null)
-                request.Body.GetRawText().Should().Contain(expectedToolResultText);
+                Assert.Contains(expectedToolResultText, request.Body.GetRawText());
         }
     }
 

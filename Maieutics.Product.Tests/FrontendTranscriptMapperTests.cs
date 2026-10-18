@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
@@ -20,11 +19,11 @@ public sealed class FrontendTranscriptMapperTests
     {
         var message = new ChatMessage(ChatRole.Assistant, [new TextContent("hello")]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("text");
-        part.Text.Should().Be("hello");
-        part.Value.Should().BeNull();
+        Assert.Equal("text", part.Kind);
+        Assert.Equal("hello", part.Text);
+        Assert.Null(part.Value);
     }
 
     [Fact]
@@ -41,7 +40,7 @@ public sealed class FrontendTranscriptMapperTests
         foreach (var (role, expected) in cases)
         {
             var message = new ChatMessage(role, [new TextContent("hi")]);
-            FrontendTranscriptMapper.ToMessage(message).Role.Should().Be(expected);
+            Assert.Equal(expected, FrontendTranscriptMapper.ToMessage(message).Role);
         }
     }
 
@@ -50,7 +49,7 @@ public sealed class FrontendTranscriptMapperTests
     {
         var message = new ChatMessage(new ChatRole("developer"), [new TextContent("hi")]);
 
-        FrontendTranscriptMapper.ToMessage(message).Role.Should().Be("developer");
+        Assert.Equal("developer", FrontendTranscriptMapper.ToMessage(message).Role);
     }
 
     [Fact]
@@ -67,7 +66,7 @@ public sealed class FrontendTranscriptMapperTests
         var parts = FrontendTranscriptMapper.ToMessage(message).Parts;
 
         // Never emit private chain-of-thought; usage rides the terminal run frame instead.
-        parts.Select(part => part.Kind).Should().Equal(["text"]);
+        Assert.Equal(["text"], parts.Select(part => part.Kind));
     }
 
     [Fact]
@@ -75,11 +74,11 @@ public sealed class FrontendTranscriptMapperTests
     {
         var message = new ChatMessage(ChatRole.Assistant, [new HostedFileContent("file-id")]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("unknown");
-        part.Text.Should().BeNull();
-        part.Value.Should().BeNull();
+        Assert.Equal("unknown", part.Kind);
+        Assert.Null(part.Text);
+        Assert.Null(part.Value);
     }
 
     [Fact]
@@ -89,11 +88,11 @@ public sealed class FrontendTranscriptMapperTests
             ChatRole.User,
             [new DataContent(Encoding.UTF8.GetBytes("{\"answer\":42}"), "application/json")]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("data");
-        part.Value.Should().NotBeNull();
-        part.Value!.Value.GetProperty("answer").GetInt32().Should().Be(42);
+        Assert.Equal("data", part.Kind);
+        Assert.NotNull(part.Value);
+        Assert.Equal(42, part.Value!.Value.GetProperty("answer").GetInt32());
     }
 
     [Fact]
@@ -103,10 +102,10 @@ public sealed class FrontendTranscriptMapperTests
             ChatRole.User,
             [new DataContent("not json"u8.ToArray(), "application/octet-stream")]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("data");
-        part.Value!.Value.GetString().Should().Be("not json");
+        Assert.Equal("data", part.Kind);
+        Assert.Equal("not json", part.Value!.Value.GetString());
     }
 
     [Fact]
@@ -121,13 +120,13 @@ public sealed class FrontendTranscriptMapperTests
             ChatRole.Assistant,
             [new FunctionCallContent("call-1", "workspace_read", arguments)]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("tool_call");
-        part.CallId.Should().Be("call-1");
-        part.Name.Should().Be("workspace_read");
-        part.Value!.Value.GetProperty("path").GetString().Should().Be("README.md");
-        part.Value!.Value.GetProperty("depth").GetInt32().Should().Be(2);
+        Assert.Equal("tool_call", part.Kind);
+        Assert.Equal("call-1", part.CallId);
+        Assert.Equal("workspace_read", part.Name);
+        Assert.Equal("README.md", part.Value!.Value.GetProperty("path").GetString());
+        Assert.Equal(2, part.Value!.Value.GetProperty("depth").GetInt32());
     }
 
     [Fact]
@@ -142,9 +141,9 @@ public sealed class FrontendTranscriptMapperTests
 
         foreach (var message in new[] { empty, absent })
         {
-            var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
-            part.Value!.Value.ValueKind.Should().Be(JsonValueKind.Object);
-            part.Value!.Value.EnumerateObject().Should().BeEmpty();
+            var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
+            Assert.Equal(JsonValueKind.Object, part.Value!.Value.ValueKind);
+            Assert.Empty(part.Value!.Value.EnumerateObject());
         }
     }
 
@@ -160,10 +159,10 @@ public sealed class FrontendTranscriptMapperTests
                 "workspace_read",
                 new Dictionary<string, object?> { ["callback"] = (Func<int>)(() => 42) })]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Value!.Value.ValueKind.Should().Be(JsonValueKind.Object);
-        part.Value!.Value.EnumerateObject().Should().BeEmpty();
+        Assert.Equal(JsonValueKind.Object, part.Value!.Value.ValueKind);
+        Assert.Empty(part.Value!.Value.EnumerateObject());
     }
 
     [Fact]
@@ -174,13 +173,13 @@ public sealed class FrontendTranscriptMapperTests
             [new FunctionResultContent("call-1", JsonSerializer.SerializeToElement((object?)new { status = "ok" }))]);
         var empty = new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-2", null)]);
 
-        var resultPart = FrontendTranscriptMapper.ToMessage(result).Parts.Should().ContainSingle().Which;
-        resultPart.Kind.Should().Be("tool_result");
-        resultPart.CallId.Should().Be("call-1");
-        resultPart.Value!.Value.GetProperty("status").GetString().Should().Be("ok");
+        var resultPart = Assert.Single(FrontendTranscriptMapper.ToMessage(result).Parts);
+        Assert.Equal("tool_result", resultPart.Kind);
+        Assert.Equal("call-1", resultPart.CallId);
+        Assert.Equal("ok", resultPart.Value!.Value.GetProperty("status").GetString());
 
-        var emptyPart = FrontendTranscriptMapper.ToMessage(empty).Parts.Should().ContainSingle().Which;
-        emptyPart.Value.Should().BeNull();
+        var emptyPart = Assert.Single(FrontendTranscriptMapper.ToMessage(empty).Parts);
+        Assert.Null(emptyPart.Value);
     }
 
     [Fact]
@@ -192,10 +191,10 @@ public sealed class FrontendTranscriptMapperTests
             ChatRole.Tool,
             [new FunctionResultContent("call-3", (Func<int>)(() => 42))]);
 
-        var part = FrontendTranscriptMapper.ToMessage(message).Parts.Should().ContainSingle().Which;
+        var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 
-        part.Kind.Should().Be("tool_result");
-        part.Value.Should().BeNull();
+        Assert.Equal("tool_result", part.Kind);
+        Assert.Null(part.Value);
     }
 
     [Fact]
@@ -203,9 +202,9 @@ public sealed class FrontendTranscriptMapperTests
     {
         var content = FrontendTranscriptMapper.ToProgressContent(new TextContent("working"));
 
-        content.Kind.Should().Be("text");
-        content.Text.Should().Be("working");
-        content.Value.Should().BeNull();
+        Assert.Equal("text", content.Kind);
+        Assert.Equal("working", content.Text);
+        Assert.Null(content.Value);
     }
 
     [Fact]
@@ -218,13 +217,13 @@ public sealed class FrontendTranscriptMapperTests
         var unknown = FrontendTranscriptMapper.ToProgressContent(
             new TextReasoningContent("private"));
 
-        structured.Kind.Should().Be("json");
-        structured.Value!.Value.GetArrayLength().Should().Be(2);
-        degraded.Kind.Should().Be("json");
-        degraded.Value!.Value.GetString().Should().Be("nan");
-        unknown.Kind.Should().Be("unknown");
-        unknown.Text.Should().BeNull();
-        unknown.Value.Should().BeNull();
+        Assert.Equal("json", structured.Kind);
+        Assert.Equal(2, structured.Value!.Value.GetArrayLength());
+        Assert.Equal("json", degraded.Kind);
+        Assert.Equal("nan", degraded.Value!.Value.GetString());
+        Assert.Equal("unknown", unknown.Kind);
+        Assert.Null(unknown.Text);
+        Assert.Null(unknown.Value);
     }
 
     [Fact]
@@ -254,19 +253,18 @@ public sealed class FrontendTranscriptMapperTests
 
         var wire = FrontendTranscriptMapper.ToTranscript(transcript);
 
-        wire.SessionId.Should().Be(sessionId.Value.ToString("N"));
-        wire.Version.Should().Be(7);
-        wire.Turns.Should().HaveCount(2);
-        wire.Turns[0].RunId.Should().Be(runId.Value.ToString("N"));
-        wire.Turns[0].Truncated.Should().BeTrue();
-        wire.Turns[0].Model.Should().NotBeNull();
-        wire.Turns[0].Model!.ProfileId.Should().Be("fast");
-        wire.Turns[0].Model!.Provider.Should().Be("OpenAI");
-        wire.Turns[0].Model!.Model.Should().Be("test-model");
-        wire.Turns[0].Messages.Select(message => message.Role)
-            .Should().Equal(["user", "assistant"]);
+        Assert.Equal(sessionId.Value.ToString("N"), wire.SessionId);
+        Assert.Equal(7, wire.Version);
+        Assert.Equal(2, wire.Turns.Count());
+        Assert.Equal(runId.Value.ToString("N"), wire.Turns[0].RunId);
+        Assert.True(wire.Turns[0].Truncated);
+        Assert.NotNull(wire.Turns[0].Model);
+        Assert.Equal("fast", wire.Turns[0].Model!.ProfileId);
+        Assert.Equal("OpenAI", wire.Turns[0].Model!.Provider);
+        Assert.Equal("test-model", wire.Turns[0].Model!.Model);
+        Assert.Equal(["user", "assistant"], wire.Turns[0].Messages.Select(message => message.Role));
         // A turn without an identity (legacy row) carries no model block.
-        wire.Turns[1].Model.Should().BeNull();
-        wire.Turns[1].Truncated.Should().BeFalse();
+        Assert.Null(wire.Turns[1].Model);
+        Assert.False(wire.Turns[1].Truncated);
     }
 }

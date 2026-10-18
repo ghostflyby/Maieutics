@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Frontend;
 using Maieutics.Skills;
 using Microsoft.Extensions.AI;
@@ -17,12 +16,8 @@ public sealed class FrontendSkillMarkersTests
         var split = FrontendSkillMarkers.Split(
             $"before {Reference} middle [tdd](skill://tdd) after");
 
-        split.Markers.Should().BeEquivalentTo(
-        [
-            new FrontendSkillMarkers.Marker("code-review", "code-review"),
-            new FrontendSkillMarkers.Marker("tdd", "tdd"),
-        ], options => options.WithStrictOrdering());
-        split.Remainder.Should().Be("before  middle  after");
+        Assert.Equivalent(new[] { new FrontendSkillMarkers.Marker("code-review", "code-review"), new FrontendSkillMarkers.Marker("tdd", "tdd") }, split.Markers, strict: true);
+        Assert.Equal("before  middle  after", split.Remainder);
     }
 
     [Fact]
@@ -31,8 +26,7 @@ public sealed class FrontendSkillMarkersTests
         var split = FrontendSkillMarkers.Split(
             "[按 code-review 执行](skill://code-review)");
 
-        split.Markers.Should().ContainSingle().Which.Should().Be(
-            new FrontendSkillMarkers.Marker("code-review", "按 code-review 执行"));
+        Assert.Equal(new FrontendSkillMarkers.Marker("code-review", "按 code-review 执行"), Assert.Single(split.Markers));
     }
 
     [Fact]
@@ -48,7 +42,7 @@ public sealed class FrontendSkillMarkersTests
             empty host tail: [x](skill://)
             """;
 
-        FrontendSkillMarkers.Split(text).Markers.Should().BeEmpty();
+        Assert.Empty(FrontendSkillMarkers.Split(text).Markers);
     }
 
     [Fact]
@@ -57,9 +51,9 @@ public sealed class FrontendSkillMarkersTests
         var split = FrontendSkillMarkers.Split(
             $"mention: \\{Reference} and real: {Reference}");
 
-        split.Markers.Should().ContainSingle().Which.Name.Should().Be("code-review");
-        split.Remainder.Should().Contain("[code-review](skill://code-review)")
-            .And.NotContain("\\[code-review](skill://code-review)");
+        Assert.Equal("code-review", Assert.Single(split.Markers).Name);
+        Assert.Contains("[code-review](skill://code-review)", split.Remainder);
+        Assert.DoesNotContain("\\[code-review](skill://code-review)", split.Remainder);
     }
 
     [Fact]
@@ -68,9 +62,9 @@ public sealed class FrontendSkillMarkersTests
         var split = FrontendSkillMarkers.Split(
             """\[see the code-review skill](skill://code-review) real: [x](skill://real)""");
 
-        split.Markers.Should().ContainSingle().Which.Name.Should().Be("real");
-        split.Remainder.Should().Contain("[see the code-review skill](skill://code-review)")
-            .And.NotContain("\\[see the code-review skill");
+        Assert.Equal("real", Assert.Single(split.Markers).Name);
+        Assert.Contains("[see the code-review skill](skill://code-review)", split.Remainder);
+        Assert.DoesNotContain("\\[see the code-review skill", split.Remainder);
     }
 
     [Fact]
@@ -78,8 +72,8 @@ public sealed class FrontendSkillMarkersTests
     {
         const string text = "$code-review and $100 and [x](https://example.com) and skill://bare";
         var split = FrontendSkillMarkers.Split(text);
-        split.Markers.Should().BeEmpty();
-        split.Remainder.Should().Be(text);
+        Assert.Empty(split.Markers);
+        Assert.Equal(text, split.Remainder);
     }
 }
 
@@ -135,10 +129,9 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         var parts = await FrontendSkillExpansion.ExpandAsync(
             provider, markers, TestContext.Current.CancellationToken);
 
-        parts.Should().ContainSingle().Which.Should().BeOfType<TextContent>()
-            .Which.Text.Should().Contain("[alpha](skill://alpha)")
-            .And.Contain("user explicitly selected")
-            .And.Contain("Alpha body.");
+        Assert.Contains("[alpha](skill://alpha)", Assert.IsType<TextContent>(Assert.Single(parts)).Text);
+        Assert.Contains("user explicitly selected", Assert.IsType<TextContent>(Assert.Single(parts)).Text);
+        Assert.Contains("Alpha body.", Assert.IsType<TextContent>(Assert.Single(parts)).Text);
     }
 
     [Fact]
@@ -151,8 +144,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
             [new FrontendSkillMarkers.Marker("absent", "absent")],
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.SkillUnknown);
+        Assert.Equal(FrontendErrors.SkillUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 
     [Fact]
@@ -173,7 +165,6 @@ public sealed class FrontendSkillExpansionTests : IDisposable
             ],
             TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<FrontendFailureException>())
-            .Which.Code.Should().Be(FrontendErrors.SkillBudgetExceeded);
+        Assert.Equal(FrontendErrors.SkillBudgetExceeded, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 }

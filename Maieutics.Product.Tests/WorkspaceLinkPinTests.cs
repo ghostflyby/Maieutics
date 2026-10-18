@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Execution;
 using static Maieutics.Product.Tests.WorkspaceToolInvocations;
 
@@ -44,15 +43,13 @@ public sealed class WorkspaceLinkPinTests
         var readFailure = ShouldFailure(await InvokeAsync(
             Function(functions, "read_text"),
             $$"""{"uri":"{{uri}}"}"""));
-        readFailure.Code.Should().Be("workspace_link_identity_changed",
-            "the pin must refuse the swapped-in directory, not read it");
+        Assert.Equal("workspace_link_identity_changed", readFailure.Code);
 
         var editFunctions = new WorkspaceEditFunctions(context);
         var writeFailure = ShouldFailure(await InvokeAsync(
             editFunctions.Functions.Single(function => function.Name == "write_text"),
             $$"""{"uri":"{{uri}}","content":"planted"}"""));
-        writeFailure.Code.Should().Be("workspace_link_identity_changed",
-            "writes traverse the same pinned hop as reads");
+        Assert.Equal("workspace_link_identity_changed", writeFailure.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -104,6 +101,6 @@ public sealed class WorkspaceLinkPinTests
                 Function(new WorkspaceFunctions(context), "read_text"),
                 """{"uri":"workspace://local/projects/project/marker.txt"}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        read.Text.Should().Be("replacement");
+        Assert.Equal("replacement", read.Text);
     }
 }

@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
@@ -45,19 +44,18 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         // Outgoing: the payload announced on the run stream is the wrapped ide.request
         // envelope, carries the physical file address, and the LSP 0-based position
         // (the kernel is the translation point).
-        invocation.Method.Should().Be("textDocument/hover");
+        Assert.Equal("textDocument/hover", invocation.Method);
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
-        outgoing.GetProperty("requestId").GetString().Should().StartWith("ide-");
-        outgoing.GetProperty("params").GetProperty("uri").GetString().Should().Be(
-            new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri);
-        outgoing.GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(40);
-        outgoing.GetProperty("params").GetProperty("position").GetProperty("character").GetInt32().Should().Be(6);
+        Assert.StartsWith("ide-", (outgoing.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+        Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri, outgoing.GetProperty("params").GetProperty("uri").GetString());
+        Assert.Equal(40, outgoing.GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
+        Assert.Equal(6, outgoing.GetProperty("params").GetProperty("position").GetProperty("character").GetInt32());
 
         // Incoming: results map back to 1-based positions; hover contents pass through.
         var result = invocation.Result;
-        result.GetProperty("contents").GetProperty("kind").GetString().Should().Be("markdown");
-        result.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32().Should().Be(41);
-        result.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32().Should().Be(7);
+        Assert.Equal("markdown", result.GetProperty("contents").GetProperty("kind").GetString());
+        Assert.Equal(41, result.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        Assert.Equal(7, result.GetProperty("range").GetProperty("start").GetProperty("character").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -82,10 +80,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             _ => IdeRequestAnswer.FromValue(definitionAnswer),
             cancellationToken);
 
-        invocation.Method.Should().Be("textDocument/definition");
+        Assert.Equal("textDocument/definition", invocation.Method);
         var location = invocation.Result[0];
-        location.GetProperty("uri").GetString().Should().Be("workspace://local/b.cs");
-        location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32().Should().Be(10);
+        Assert.Equal("workspace://local/b.cs", location.GetProperty("uri").GetString());
+        Assert.Equal(10, location.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -103,16 +101,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"uri":"workspace://local/a.cs","select":{"line":1}}""",
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken).AsTask();
-        (await timed.Should().ThrowAsync<AgentToolException>()).Which.Code.Should().Be("ide_timeout");
+        Assert.Equal("ide_timeout", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await timed.Invoke(); })).Code);
 
         // The answer endpoint is the only completion path, so the registry's idempotence
         // is the 404 contract: one answer completes, any repeat draws the typed 404 the
         // frontend absorbs.
         var registration = registry.Begin();
-        registry.TryComplete(registration.RequestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("1").RootElement.Clone()))
-            .Should().BeTrue();
-        registry.TryComplete(registration.RequestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("2").RootElement.Clone()))
-            .Should().BeFalse("a second answer for the same id is the endpoint's typed 404");
+        Assert.True(registry.TryComplete(registration.RequestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("1").RootElement.Clone())));
+        Assert.False(registry.TryComplete(registration.RequestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("2").RootElement.Clone())), "a second answer for the same id is the endpoint's typed 404");
     }
 
     [Fact(Timeout = 30_000)]
@@ -141,9 +137,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var requestId = payload.RootElement.GetProperty("ideRequest").GetProperty("requestId").GetString()!;
 
         cancelled.Cancel();
-        await invocation.Awaiting(static task => task).Should().ThrowAsync<OperationCanceledException>();
-        registry.TryComplete(requestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("1").RootElement.Clone()))
-            .Should().BeFalse("the cancelled tool call left no resumable request");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await ((invocation)); });
+        Assert.False(registry.TryComplete(requestId, IdeRequestAnswer.FromValue(JsonDocument.Parse("1").RootElement.Clone())), "the cancelled tool call left no resumable request");
     }
 
     [Fact(Timeout = 30_000)]
@@ -162,8 +157,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_unavailable");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_unavailable", invocation.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -182,8 +177,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"method":"textDocument/rename","parameters":{"kind":"rename"}}""",
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
-        rejected.Failure.Should().NotBeNull();
-        rejected.Failure!.Code.Should().Be("ide_method_unsupported");
+        Assert.NotNull(rejected.Failure);
+        Assert.Equal("ide_method_unsupported", rejected.Failure!.Code);
 
         var announced = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var invocation = escape.InvokeAsync(
@@ -198,14 +193,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var payload = JsonDocument.Parse(
             await announced.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(true));
         var envelope = payload.RootElement.GetProperty("ideRequest");
-        envelope.GetProperty("method").GetString().Should().Be("textDocument/foldingRange");
-        envelope.GetProperty("params").GetProperty("uri").GetString().Should().Be(
-            new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri);
-        envelope.GetProperty("params").GetProperty("startLine").GetInt32().Should().Be(
-            3,
-            "bare-number lines pass through as provider values per the tool contract");
-        (await invocation.Awaiting(static task => task).Should().ThrowAsync<AgentToolException>())
-            .Which.Code.Should().Be("ide_timeout");
+        Assert.Equal("textDocument/foldingRange", envelope.GetProperty("method").GetString());
+        Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri, envelope.GetProperty("params").GetProperty("uri").GetString());
+        Assert.Equal(3, envelope.GetProperty("params").GetProperty("startLine").GetInt32());
+        Assert.Equal("ide_timeout", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await ((invocation)); })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -233,16 +224,16 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             registry,
             _ => IdeRequestAnswer.FromValue(mixedAnswer),
             cancellationToken);
-        analyzed.Method.Should().Be("maieutics/problems");
+        Assert.Equal("maieutics/problems", analyzed.Method);
         var aggregate = JsonSerializer.Deserialize(
             analyzed.Result,
             IdeFunctionJsonContext.Default.WorkspaceDiagnosticsValue)!;
-        aggregate.Totals.Error.Should().Be(1);
-        aggregate.Totals.Hint.Should().Be(1);
-        aggregate.Files.Should().ContainSingle().Which.Uri.Should().Be("workspace://local/a.cs");
-        aggregate.UnmappedFiles.Should().Be(1, "the out-of-workspace document drops with a count");
-        aggregate.AnalyzedDocuments.Should().Be(7);
-        aggregate.Note.Should().BeNull();
+        Assert.Equal(1, aggregate.Totals.Error);
+        Assert.Equal(1, aggregate.Totals.Hint);
+        Assert.Equal("workspace://local/a.cs", Assert.Single(aggregate.Files).Uri);
+        Assert.Equal(1, aggregate.UnmappedFiles);
+        Assert.Equal(7, aggregate.AnalyzedDocuments);
+        Assert.Null(aggregate.Note);
 
         var unanalyzed = await InvokeWithAnswerAsync(
             diagnostics,
@@ -254,8 +245,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var empty = JsonSerializer.Deserialize(
             unanalyzed.Result,
             IdeFunctionJsonContext.Default.WorkspaceDiagnosticsValue)!;
-        empty.Totals.Error.Should().Be(0);
-        empty.Note.Should().NotBeNull("empty must not read as clean");
+        Assert.Equal(0, empty.Totals.Error);
+        Assert.NotNull(empty.Note);
 
         var filtered = await InvokeWithAnswerAsync(
             diagnostics,
@@ -272,8 +263,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var filteredValue = JsonSerializer.Deserialize(
             filtered.Result,
             IdeFunctionJsonContext.Default.WorkspaceDiagnosticsValue)!;
-        filteredValue.Totals.Warning.Should().Be(0, "minSeverity filters below the threshold");
-        filteredValue.Totals.Error.Should().Be(1);
+        Assert.Equal(0, filteredValue.Totals.Warning);
+        Assert.Equal(1, filteredValue.Totals.Error);
     }
 
     [Fact(Timeout = 30_000)]
@@ -292,9 +283,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"uri":"workspace://local/a.cs","select":{"line":1,"endLine":2}}""",
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
-        ranged.Failure.Should().NotBeNull();
-        ranged.Failure!.Code.Should().Be("ide_selector_unsupported",
-            "range selectors are a later stage; anchor and patch resolve since stage B");
+        Assert.NotNull(ranged.Failure);
+        Assert.Equal("ide_selector_unsupported", ranged.Failure!.Code);
 
         var zero = await InvokeAsync(
             hover,
@@ -302,8 +292,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"uri":"workspace://local/a.cs","select":{"line":0}}""",
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
-        zero.Failure.Should().NotBeNull();
-        zero.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(zero.Failure);
+        Assert.Equal("ide_invalid_arguments", zero.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -314,17 +304,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var snapshot = Workspace.Create(workspace.Path, workspace.Path).Capture();
         var root = Path.TrimEndingDirectorySeparator(workspace.Path);
 
-        snapshot.TryMapPhysicalToWorkspaceUri(root, out var rootUri).Should().BeTrue();
-        rootUri.Should().Be("workspace://local/");
-        snapshot.TryMapPhysicalToWorkspaceUri(Path.Combine(root, "a", "b.cs"), out var nested)
-            .Should().BeTrue();
-        nested.Should().Be("workspace://local/a/b.cs");
-        snapshot.TryMapPhysicalToWorkspaceUri(Path.Combine(root, "a b", "c d.cs"), out var spaces)
-            .Should().BeTrue();
-        spaces.Should().Be("workspace://local/a%20b/c%20d.cs");
-        snapshot.TryMapPhysicalToWorkspaceUri(Path.GetTempPath(), out _).Should().BeFalse();
-        snapshot.TryMapPhysicalToWorkspaceUri(root + "-sibling/file.cs", out _)
-            .Should().BeFalse("a path sharing the root's prefix but not its containment is outside");
+        Assert.True(snapshot.TryMapPhysicalToWorkspaceUri(root, out var rootUri));
+        Assert.Equal("workspace://local/", rootUri);
+        Assert.True(snapshot.TryMapPhysicalToWorkspaceUri(Path.Combine(root, "a", "b.cs"), out var nested));
+        Assert.Equal("workspace://local/a/b.cs", nested);
+        Assert.True(snapshot.TryMapPhysicalToWorkspaceUri(Path.Combine(root, "a b", "c d.cs"), out var spaces));
+        Assert.Equal("workspace://local/a%20b/c%20d.cs", spaces);
+        Assert.False(snapshot.TryMapPhysicalToWorkspaceUri(Path.GetTempPath(), out _));
+        Assert.False(snapshot.TryMapPhysicalToWorkspaceUri(root + "-sibling/file.cs", out _), "a path sharing the root's prefix but not its containment is outside");
     }
 
     // ---------- stage B: anchor and patch selectors ----------
@@ -349,9 +336,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken);
 
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
-        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(
-            1,
-            "the two-line anchor starts at 1-based line 2, which is LSP 0-based line 1");
+        Assert.Equal(1, outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -373,9 +358,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_selector_ambiguous");
-        invocation.Failure.Message.Should().Contain("line 1").And.Contain("line 3");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_selector_ambiguous", invocation.Failure!.Code);
+        Assert.Contains("line 1", invocation.Failure.Message);
+        Assert.Contains("line 3", invocation.Failure.Message);
     }
 
     [Fact(Timeout = 30_000)]
@@ -396,7 +382,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken);
 
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
-        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(2);
+        Assert.Equal(2, outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -416,8 +402,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_selector_no_match");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_selector_no_match", invocation.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -439,7 +425,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken);
 
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
-        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(1);
+        Assert.Equal(1, outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -461,7 +447,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken);
 
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement;
-        outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32().Should().Be(0);
+        Assert.Equal(0, outgoing.GetProperty("ideRequest").GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -482,9 +468,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_selector_path_mismatch");
-        invocation.Failure.Message.Should().Contain("other.cs");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_selector_path_mismatch", invocation.Failure!.Code);
+        Assert.Contains("other.cs", invocation.Failure.Message);
     }
 
     [Fact(Timeout = 30_000)]
@@ -504,8 +490,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_selector_patch_malformed");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_selector_patch_malformed", invocation.Failure!.Code);
     }
 
     // ---------- stage C: the write path ----------
@@ -581,21 +567,22 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             registry,
             (method, parameters) =>
             {
-                method.Should().Be("maieutics/dirty", "pre-validation asks the bridge before anything mutates");
+                Assert.Equal("maieutics/dirty", method);
                 var uris = parameters.GetProperty("uris").EnumerateArray()
                     .Select(static entry => entry.GetString()).ToList();
-                uris.Should().Contain(aPhysical).And.Contain(bPhysical);
+                Assert.Contains(aPhysical, uris);
+                Assert.Contains(bPhysical, uris);
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(
                     """{"entries":[{"uri":"a","dirty":false},{"uri":"b","dirty":false}]}""").RootElement.Clone());
             },
             cancellationToken);
 
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("ONE\ntwo\n");
-        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("xy\n");
+        Assert.Equal("ONE\ntwo\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
+        Assert.Equal("xy\n", File.ReadAllText(Path.Combine(workspace.Path, "b.cs")));
         var envelope = JsonSerializer.Deserialize(invocation.Result, IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
-        envelope.Status.Should().Be("applied");
-        envelope.Applied.Should().HaveCount(2);
-        envelope.Applied.Should().Contain(static entry => entry.Diff != null, "the gated write answers with unified diffs");
+        Assert.Equal("applied", envelope.Status);
+        Assert.Equal(2, envelope.Applied.Count());
+        Assert.Contains(envelope.Applied, static entry => entry.Diff != null);
     }
 
     [Fact(Timeout = 30_000)]
@@ -620,7 +607,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 registry,
                 (method, parameters) =>
                 {
-                    method.Should().Be("maieutics/dirty");
+                    Assert.Equal("maieutics/dirty", method);
                     var first = parameters.GetProperty("uris").EnumerateArray().First().GetString()!;
                     return IdeRequestAnswer.FromValue(JsonDocument.Parse(
                         "{\"entries\":[{\"uri\":\"" + first + "\",\"dirty\":true}]}").RootElement.Clone());
@@ -632,10 +619,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             failure = exception;
         }
 
-        failure.Should().NotBeNull();
-        failure.Code.Should().Be("ide_document_dirty");
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("one\n", "nothing changed");
-        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("x\n");
+        Assert.NotNull(failure);
+        Assert.Equal("ide_document_dirty", failure.Code);
+        Assert.Equal("one\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
+        Assert.Equal("x\n", File.ReadAllText(Path.Combine(workspace.Path, "b.cs")));
     }
 
     [Fact(Timeout = 30_000)]
@@ -656,11 +643,12 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             ContextArguments("{\"edit\":" + edit + "}", static (_, _) => ValueTask.CompletedTask),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_edit_rejected");
-        invocation.Failure.Message.Should().Contain("a.cs").And.Contain("99");
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("one\n", "pre-validation rejects before any mutation");
-        File.ReadAllText(Path.Combine(workspace.Path, "b.cs")).Should().Be("x\n");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_edit_rejected", invocation.Failure!.Code);
+        Assert.Contains("a.cs", invocation.Failure.Message);
+        Assert.Contains("99", invocation.Failure.Message);
+        Assert.Equal("one\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
+        Assert.Equal("x\n", File.ReadAllText(Path.Combine(workspace.Path, "b.cs")));
     }
 
     [Fact(Timeout = 30_000)]
@@ -686,18 +674,18 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                         """{"entries":[{"uri":"a","dirty":false}]}""").RootElement.Clone());
                 }
 
-                method.Should().Be("textDocument/formatting");
-                parameters.GetProperty("uri").GetString().Should().Be(aPhysical);
-                parameters.GetProperty("options").GetProperty("tabSize").GetInt32().Should().Be(4);
+                Assert.Equal("textDocument/formatting", method);
+                Assert.Equal(aPhysical, parameters.GetProperty("uri").GetString());
+                Assert.Equal(4, parameters.GetProperty("options").GetProperty("tabSize").GetInt32());
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(
                     """[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"x"}]""").RootElement.Clone());
             },
             cancellationToken);
 
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("x\n");
+        Assert.Equal("x\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
         var envelope = JsonSerializer.Deserialize(invocation.Result, IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
-        envelope.Status.Should().Be("applied");
-        envelope.Applied.Should().ContainSingle().Which.Diff.Should().NotBeNull();
+        Assert.Equal("applied", envelope.Status);
+        Assert.NotNull(Assert.Single(envelope.Applied).Diff);
     }
 
     [Fact(Timeout = 30_000)]
@@ -729,15 +717,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             },
             cancellationToken);
 
-        invocation.Method.Should().Be("textDocument/codeAction");
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("x\n", "code actions are data, never applied");
-        var action = invocation.Result.EnumerateArray().Should().ContainSingle().Which;
-        var edit = action.GetProperty("edit").GetProperty("changes").EnumerateObject().Should().ContainSingle().Which;
-        edit.Name.Should().Be("workspace://local/a.cs", "returned edit URIs translate back to the agent domain");
-        edit.Value.EnumerateArray().Should().ContainSingle().Which
-            .GetProperty("newText").GetString().Should().Be("y");
+        Assert.Equal("textDocument/codeAction", invocation.Method);
+        Assert.Equal("x\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
+        var action = Assert.Single(invocation.Result.EnumerateArray());
+        var edit = Assert.Single(action.GetProperty("edit").GetProperty("changes").EnumerateObject());
+        Assert.Equal("workspace://local/a.cs", edit.Name);
+        Assert.Equal("y", Assert.Single(edit.Value.EnumerateArray()).GetProperty("newText").GetString());
         var range = edit.Value.EnumerateArray().First().GetProperty("range");
-        range.GetProperty("start").GetProperty("line").GetInt32().Should().Be(1, "positions translate back to 1-based");
+        Assert.Equal(1, range.GetProperty("start").GetProperty("line").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -762,17 +749,17 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                     return IdeRequestAnswer.FromValue(JsonDocument.Parse("{\"entries\":[]}").RootElement.Clone());
                 }
 
-                parameters.GetProperty("newName").GetString().Should().Be("renamed");
+                Assert.Equal("renamed", parameters.GetProperty("newName").GetString());
                 var answer = "{\"changes\":{\"" + aPhysical +
                     "\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"newText\":\"renamed\"}]}}";
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
             },
             cancellationToken);
 
-        invocation.Method.Should().Be("textDocument/rename");
-        File.ReadAllText(Path.Combine(workspace.Path, "a.cs")).Should().Be("symbol\n", "rename returns data; ide_apply_edit writes");
+        Assert.Equal("textDocument/rename", invocation.Method);
+        Assert.Equal("symbol\n", File.ReadAllText(Path.Combine(workspace.Path, "a.cs")));
         var changes = invocation.Result.GetProperty("changes");
-        changes.EnumerateObject().Should().ContainSingle().Which.Name.Should().Be("workspace://local/a.cs");
+        Assert.Equal("workspace://local/a.cs", Assert.Single(changes.EnumerateObject()).Name);
     }
 
     // ---------- stage D: the script/plugin channel (direct push) ----------
@@ -819,16 +806,16 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 NoContextArguments("""{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}"""),
                 cancellationToken);
 
-            invocation.Failure.Should().BeNull();
-            var result = invocation.Result.Should().BeOfType<JsonElement>().Which;
-            result.GetArrayLength().Should().Be(1, "the hover answer is the provider's Hover[] shape");
+            Assert.Null(invocation.Failure);
+            var result = Assert.IsType<JsonElement>(invocation.Result);
+            Assert.Equal(1, result.GetArrayLength());
             var hover0 = result[0];
-            hover0.GetProperty("contents").GetProperty("kind").GetString().Should().Be("markdown");
-            var frame = frames.Should().ContainSingle().Which;
-            frame.Type.Should().Be("ide.request", "raw=" + frame.Data?.GetRawText());
-            frame.Data!.Value.GetProperty("requestId").GetString().Should().NotBeEmpty();
-            frame.Data!.Value.GetProperty("method").GetString().Should().Be("textDocument/hover");
-            frame.Sequence.Should().BeNull("direct pushes are unordered and not replayed");
+            Assert.Equal("markdown", hover0.GetProperty("contents").GetProperty("kind").GetString());
+            var frame = Assert.Single(frames);
+            Assert.Equal("ide.request", frame.Type);
+            Assert.NotEmpty((frame.Data!.Value.GetProperty("requestId").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
+            Assert.Equal("textDocument/hover", frame.Data!.Value.GetProperty("method").GetString());
+            Assert.Null(frame.Sequence);
         }
         finally
         {
@@ -851,8 +838,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             NoContextArguments("""{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}"""),
             cancellationToken);
 
-        invocation.Failure.Should().NotBeNull();
-        invocation.Failure!.Code.Should().Be("ide_unavailable");
+        Assert.NotNull(invocation.Failure);
+        Assert.Equal("ide_unavailable", invocation.Failure!.Code);
     }
 
     // ---------- stage E: virtual file systems ----------
@@ -907,10 +894,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 list,
                 NoContextArguments("{}"),
                 cancellationToken);
-            roots.Failure.Should().BeNull();
+            Assert.Null(roots.Failure);
             var rootValue = (JsonElement)roots.Result!;
-            rootValue.GetProperty("folders")[0].GetProperty("id").GetString().Should().Be("ab1");
-            rootValue.GetProperty("folders")[0].GetProperty("uri").GetString().Should().StartWith("file://");
+            Assert.Equal("ab1", rootValue.GetProperty("folders")[0].GetProperty("id").GetString());
+            Assert.StartsWith("file://", (rootValue.GetProperty("folders")[0].GetProperty("uri").GetString() ?? throw new InvalidOperationException("the assertion subject is null")));
 
             var read = Function(functions.Functions, "ide_fs_read");
             var invocation = await InvokeAsync(
@@ -918,12 +905,12 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 NoContextArguments("""{"uri":"idefs:///ab1/remote.ts","startLine":1,"maxLines":1}"""),
                 cancellationToken);
 
-            invocation.Failure.Should().BeNull();
+            Assert.Null(invocation.Failure);
             var value = (JsonElement)invocation.Result!;
-            value.GetProperty("uri").GetString().Should().Be("idefs:///ab1/remote.ts");
-            value.GetProperty("content").GetString().Should().Be("alpha", "the window returns only the first line");
-            value.GetProperty("nextStartLine").GetInt32().Should().Be(2, "one line remains");
-            seenFolderIds.Should().Contain("ab1");
+            Assert.Equal("idefs:///ab1/remote.ts", value.GetProperty("uri").GetString());
+            Assert.Equal("alpha", value.GetProperty("content").GetString());
+            Assert.Equal(2, value.GetProperty("nextStartLine").GetInt32());
+            Assert.Contains("ab1", seenFolderIds);
         }
         finally
         {
@@ -944,9 +931,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             read,
             NoContextArguments("{\"uri\":\"idefs:///ZZ9!/remote.ts\"}"),
             cancellationToken);
-        foreign.Failure.Should().NotBeNull();
-        foreign.Failure!.Code.Should().Be("ide_invalid_arguments",
-            "an id outside the [a-z0-9] token shape fails the kernel-side shape check");
+        Assert.NotNull(foreign.Failure);
+        Assert.Equal("ide_invalid_arguments", foreign.Failure!.Code);
 
         // A shape-valid id cannot be verified locally (resolution is the
         // frontend's duty), so it fails typed unavailable once the call
@@ -955,15 +941,15 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             read,
             NoContextArguments("{\"uri\":\"idefs:///zz9nope/remote.ts\"}"),
             cancellationToken);
-        shapeValid.Failure.Should().NotBeNull();
-        shapeValid.Failure!.Code.Should().Be("ide_unavailable");
+        Assert.NotNull(shapeValid.Failure);
+        Assert.Equal("ide_unavailable", shapeValid.Failure!.Code);
 
         var traversal = await InvokeAsync(
             read,
             NoContextArguments("{\"uri\":\"idefs:///ab1/../secret\"}"),
             cancellationToken);
-        traversal.Failure.Should().NotBeNull();
-        traversal.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(traversal.Failure);
+        Assert.Equal("ide_invalid_arguments", traversal.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -983,23 +969,22 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"matches":[{"path":"a.ts","line":2,"column":3,"preview":"the needle here"}],"truncated":true,"scannedBytes":42}""").RootElement.Clone()),
             cancellationToken);
 
-        invocation.Method.Should().Be("maieutics/fs/search");
+        Assert.Equal("maieutics/fs/search", invocation.Method);
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
-        outgoing.GetProperty("params").GetProperty("folderId").GetString().Should().Be("aaa1111");
-        outgoing.GetProperty("params").GetProperty("segments").EnumerateArray()
-            .Select(static segment => segment.GetString()).Should().Equal(["1", "src"]);
-        outgoing.GetProperty("params").GetProperty("regex").GetBoolean().Should().BeTrue();
-        outgoing.GetProperty("params").GetProperty("maximumMatches").GetInt32().Should().Be(200);
+        Assert.Equal("aaa1111", outgoing.GetProperty("params").GetProperty("folderId").GetString());
+        Assert.Equal(["1", "src"], outgoing.GetProperty("params").GetProperty("segments").EnumerateArray()
+            .Select(static segment => segment.GetString()));
+        Assert.True(outgoing.GetProperty("params").GetProperty("regex").GetBoolean());
+        Assert.Equal(200, outgoing.GetProperty("params").GetProperty("maximumMatches").GetInt32());
 
         var matches = invocation.Result.GetProperty("matches");
-        matches.GetArrayLength().Should().Be(1);
+        Assert.Equal(1, matches.GetArrayLength());
         var match = matches[0];
-        match.GetProperty("uri").GetString().Should().Be("idefs:///aaa1111/1/src/a.ts",
-            "the kernel maps the answered relative path onto the idefs domain");
-        match.GetProperty("line").GetInt32().Should().Be(2);
-        match.GetProperty("column").GetInt32().Should().Be(3);
-        invocation.Result.GetProperty("truncated").GetBoolean().Should().BeTrue();
-        invocation.Result.GetProperty("scannedBytes").GetInt64().Should().Be(42);
+        Assert.Equal("idefs:///aaa1111/1/src/a.ts", match.GetProperty("uri").GetString());
+        Assert.Equal(2, match.GetProperty("line").GetInt32());
+        Assert.Equal(3, match.GetProperty("column").GetInt32());
+        Assert.True(invocation.Result.GetProperty("truncated").GetBoolean());
+        Assert.Equal(42, invocation.Result.GetProperty("scannedBytes").GetInt64());
     }
 
     [Fact(Timeout = 30_000)]
@@ -1015,15 +1000,15 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             search,
             NoContextArguments("""{"uri":"idefs:///aaa1111","query":""}"""),
             cancellationToken);
-        empty.Failure.Should().NotBeNull();
-        empty.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(empty.Failure);
+        Assert.Equal("ide_invalid_arguments", empty.Failure!.Code);
 
         var over = await InvokeAsync(
             search,
             NoContextArguments("""{"uri":"idefs:///aaa1111","query":"x","regex":true,"maxResults":201}"""),
             cancellationToken);
-        over.Failure.Should().NotBeNull();
-        over.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(over.Failure);
+        Assert.Equal("ide_invalid_arguments", over.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -1048,15 +1033,15 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             start,
             NoContextArguments("{}"),
             cancellationToken);
-        neither.Failure.Should().NotBeNull();
-        neither.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(neither.Failure);
+        Assert.Equal("ide_invalid_arguments", neither.Failure!.Code);
 
         var both = await InvokeAsync(
             start,
             NoContextArguments(bothKinds),
             cancellationToken);
-        both.Failure.Should().NotBeNull();
-        both.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(both.Failure);
+        Assert.Equal("ide_invalid_arguments", both.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -1083,11 +1068,11 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"sessionId":"dbg-1","state":"running"}""").RootElement.Clone()),
             cancellationToken);
 
-        invocation.Method.Should().Be("maieutics/debug/start");
+        Assert.Equal("maieutics/debug/start", invocation.Method);
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
-        outgoing.GetProperty("params").GetProperty("launchName").GetString().Should().Be("probe");
-        outgoing.GetProperty("params").GetProperty("stopOnEntry").GetBoolean().Should().BeTrue();
-        invocation.Result.GetProperty("sessionId").GetString().Should().Be("dbg-1");
+        Assert.Equal("probe", outgoing.GetProperty("params").GetProperty("launchName").GetString());
+        Assert.True(outgoing.GetProperty("params").GetProperty("stopOnEntry").GetBoolean());
+        Assert.Equal("dbg-1", invocation.Result.GetProperty("sessionId").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -1114,15 +1099,15 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             static _ => IdeRequestAnswer.FromValue(JsonDocument.Parse(
                 """{"sessionId":"dbg-1","version":3,"state":"paused","reason":"breakpoint","threadId":5}""").RootElement.Clone()),
             cancellationToken);
-        invocation.Result.GetProperty("state").GetString().Should().Be("paused");
-        invocation.Result.GetProperty("threadId").GetInt32().Should().Be(5);
+        Assert.Equal("paused", invocation.Result.GetProperty("state").GetString());
+        Assert.Equal(5, invocation.Result.GetProperty("threadId").GetInt32());
 
         var badAction = await InvokeAsync(
             control,
             NoContextArguments("""{"sessionId":"dbg-1","action":"detonate"}"""),
             cancellationToken);
-        badAction.Failure.Should().NotBeNull();
-        badAction.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(badAction.Failure);
+        Assert.Equal("ide_invalid_arguments", badAction.Failure!.Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -1145,8 +1130,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             variables,
             NoContextArguments("""{"sessionId":"dbg-1"}"""),
             cancellationToken);
-        failure.Failure.Should().NotBeNull();
-        failure.Failure!.Code.Should().Be("ide_invalid_arguments");
+        Assert.NotNull(failure.Failure);
+        Assert.Equal("ide_invalid_arguments", failure.Failure!.Code);
     }
 
     /// <summary>The composed-host integration the debug tools need: the
@@ -1216,14 +1201,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             $"/v1/agent/ide/{requestId}",
             new { value = new { configs = new[] { new { name = "probe launch", type = "node", request = "launch" } } } },
             cancellationToken);
-        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, answered.StatusCode);
 
         await harness.WaitForTurnCommittedAsync(sessionId, cancellationToken, runId);
         var trailing = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
             cancellationToken);
-        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
+        Assert.Contains(trailing, frame => frame.GetProperty("type").GetString() == "tool.finished");
     }
 
     [Fact(Timeout = 30_000)]
@@ -1265,12 +1250,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 """{"breakpoints":[{"line":0},{"line":1},{"line":1}]}""").RootElement.Clone()),
             cancellationToken);
 
-        invocation.Method.Should().Be("maieutics/debug/breakpoints");
+        Assert.Equal("maieutics/debug/breakpoints", invocation.Method);
         var outgoing = JsonDocument.Parse(invocation.PayloadJson).RootElement.GetProperty("ideRequest");
-        outgoing.GetProperty("params").GetProperty("lines").EnumerateArray()
-            .Select(static line => line.GetInt32()).Should().Equal(
-                [1, 2, 2],
-                "the line stays, the anchor locates its block, the patch locates its hunk — all 1-based");
+        Assert.Equal([1, 2, 2], outgoing.GetProperty("params").GetProperty("lines").EnumerateArray()
+            .Select(static line => line.GetInt32()));
 
         // Anchors failing resolution fail typed at the true site, before
         // anything crosses to the frontend.
@@ -1279,8 +1262,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             NoContextArguments(
                 """{"sessionId":"dbg-1","uri":"workspace://local/src/app.ts","points":[{"anchor":["no such line"]}]}"""),
             cancellationToken);
-        missing.Failure.Should().NotBeNull();
-        missing.Failure!.Code.Should().Be("ide_selector_no_match");
+        Assert.NotNull(missing.Failure);
+        Assert.Equal("ide_selector_no_match", missing.Failure!.Code);
     }
 
     // ---------- endpoint + announcement (harness) ----------
@@ -1301,45 +1284,45 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             hanging: false);
 
         var unknown = await harness.Client.PostAsJsonAsync("/v1/agent/ide/ide-none", new { value = 1 }, cancellationToken);
-        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
 
         var registration = harness.IdeRequests.Begin();
         var both = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/ide/{registration.RequestId}",
             new { value = 1, error = new { code = "x", message = "y" } },
             cancellationToken);
-        both.StatusCode.Should().Be(HttpStatusCode.BadRequest, "the answer must carry exactly one side");
+        Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
 
         var neither = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/ide/{registration.RequestId}",
             new { },
             cancellationToken);
-        neither.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, neither.StatusCode);
 
         var answered = harness.IdeRequests.Begin();
         var post = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/ide/{answered.RequestId}",
             new { value = new { hover = "class C" } },
             cancellationToken);
-        post.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
         var answer = await answered.Completion;
-        answer.Value.Should().NotBeNull();
-        answer.Value!.Value.GetProperty("hover").GetString().Should().Be("class C");
+        Assert.NotNull(answer.Value);
+        Assert.Equal("class C", answer.Value!.Value.GetProperty("hover").GetString());
 
         var repeat = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/ide/{answered.RequestId}",
             new { value = 1 },
             cancellationToken);
-        repeat.StatusCode.Should().Be(HttpStatusCode.NotFound, "a second answer is a typed 404");
+        Assert.Equal(HttpStatusCode.NotFound, repeat.StatusCode);
 
         var failing = harness.IdeRequests.Begin();
         var errorPost = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/ide/{failing.RequestId}",
             new { error = new { code = "no_language_service", message = "not ready" } },
             cancellationToken);
-        errorPost.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, errorPost.StatusCode);
         var errorAnswer = await failing.Completion;
-        errorAnswer.ErrorCode.Should().Be("no_language_service");
+        Assert.Equal("no_language_service", errorAnswer.ErrorCode);
     }
 
     [Fact(Timeout = 120_000)]
@@ -1352,15 +1335,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         var gate = harness.IdeGate;
-        gate.HasIdeFrontend.Should().BeFalse("no socket announced yet");
+        Assert.False(gate.HasIdeFrontend, "no socket announced yet");
 
         var connection = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
         try
         {
             await WaitForAsync(() => gate.IsIdeFrontendConnected(sessionId), cancellationToken);
-            gate.HasIdeFrontend.Should().BeTrue();
-            harness.RuntimeConfiguration.ReservedToolNames.Should()
-                .Contain("ide_diagnostics", "the family reserves its names even while hidden");
+            Assert.True(gate.HasIdeFrontend);
+            Assert.Contains("ide_diagnostics", harness.RuntimeConfiguration.ReservedToolNames);
         }
         finally
         {
@@ -1368,14 +1350,14 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         }
 
         await WaitForAsync(() => !gate.IsIdeFrontendConnected(sessionId), cancellationToken);
-        gate.HasIdeFrontend.Should().BeFalse("the announcement lapses with the socket");
+        Assert.False(gate.HasIdeFrontend, "the announcement lapses with the socket");
 
         // A socket without the parameter never gates the family.
         var plain = await harness.OpenEventsAsync(sessionId, cancellationToken);
         try
         {
             await Task.Delay(200, cancellationToken).ConfigureAwait(true);
-            gate.IsIdeFrontendConnected(sessionId).Should().BeFalse();
+            Assert.False(gate.IsIdeFrontendConnected(sessionId));
         }
         finally
         {
@@ -1423,21 +1405,19 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                      content.TryGetProperty("value", out var value) &&
                      value.TryGetProperty("ideRequest", out _),
             cancellationToken);
-        leading.Should().Contain(frame =>
+        Assert.Contains(leading, frame =>
             frame.GetProperty("type").GetString() == "tool.started" &&
             frame.GetProperty("tool").GetString() == "ide_hover");
         var ideFrame = leading.Single(frame => frame.GetProperty("type").GetString() == "tool.progress");
         var ideRequest = ideFrame.GetProperty("content").GetProperty("value").GetProperty("ideRequest");
-        ideRequest.GetProperty("method").GetString().Should().Be("textDocument/hover");
-        ideFrame.GetProperty("runId").GetString().Should().Be(runId);
+        Assert.Equal("textDocument/hover", ideRequest.GetProperty("method").GetString());
+        Assert.Equal(runId, ideFrame.GetProperty("runId").GetString());
         var requestId = ideRequest.GetProperty("requestId").GetString() is { } announcedId
             ? announcedId
             : throw new InvalidOperationException("The tool.progress frame carried no requestId.");
-        requestId.Should().StartWith("ide-");
-        ideRequest.GetProperty("params").GetProperty("uri").GetString().Should().Be(
-            new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri);
-        ideRequest.GetProperty("params").GetProperty("position").GetProperty("line").GetInt32()
-            .Should().Be(0, "the kernel rewrites the 1-based selector to the LSP 0-based line");
+        Assert.StartsWith("ide-", requestId);
+        Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.cs")).AbsoluteUri, ideRequest.GetProperty("params").GetProperty("uri").GetString());
+        Assert.Equal(0, ideRequest.GetProperty("params").GetProperty("position").GetProperty("line").GetInt32());
 
         // Playing the frontend: the answer completes the pending request through the
         // real endpoint, the tool loop resumes toward the provider's final answer,
@@ -1447,7 +1427,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             $"/v1/agent/ide/{requestId}",
             new { value = new { contents = new { kind = "markdown", value = "class C" } } },
             cancellationToken);
-        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, answered.StatusCode);
 
         // Waiting for the commit first gives a failed run a named verdict (the run's
         // protocol code) instead of a bare socket-read timeout below.
@@ -1456,10 +1436,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
             cancellationToken);
-        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
-        trailing.Where(frame => frame.GetProperty("type").GetString() == "text.delta")
-            .Select(frame => frame.GetProperty("text").GetString())
-            .Should().Contain("tool-backed answer");
+        Assert.Contains(trailing, frame => frame.GetProperty("type").GetString() == "tool.finished");
+        Assert.Contains("tool-backed answer", trailing.Where(frame => frame.GetProperty("type").GetString() == "text.delta")
+            .Select(frame => frame.GetProperty("text").GetString()));
     }
 
     [Fact(Timeout = 120_000)]
@@ -1506,9 +1485,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var readFrames = await events.CollectUntilAsync(
             frame => IsIdeRequestMethod(frame, "maieutics/fs/local/read"), cancellationToken);
         var readRequest = readFrames[^1].GetProperty("data");
-        readRequest.GetProperty("params").GetProperty("uri").GetString().Should().Be(
-            new Uri(Path.Combine(workspace.Path, "a.txt")).AbsoluteUri,
-            "the kernel translates the workspace URI to the physical address (decision 4's authority)");
+        Assert.Equal(new Uri(Path.Combine(workspace.Path, "a.txt")).AbsoluteUri, readRequest.GetProperty("params").GetProperty("uri").GetString());
         await AnswerIdeRequestAsync(
             harness,
             readRequest.GetProperty("requestId").GetString()!,
@@ -1520,7 +1497,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
             cancellationToken);
-        trailing.Should().Contain(frame => frame.GetProperty("type").GetString() == "tool.finished");
+        Assert.Contains(trailing, frame => frame.GetProperty("type").GetString() == "tool.finished");
     }
 
     private static bool IsIdeRequestMethod(JsonElement frame, string method)
@@ -1547,7 +1524,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             $"/v1/agent/ide/{requestId}",
             new { value },
             cancellationToken);
-        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, answered.StatusCode);
     }
 
     // ---------- helpers ----------

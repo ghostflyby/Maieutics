@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
@@ -25,11 +24,11 @@ public sealed class FileLoggingTests : IDisposable
     [Fact]
     public void CreatingTheProviderCreatesTheLogDirectory()
     {
-        Directory.Exists(logDirectory).Should().BeFalse();
+        Assert.False(Directory.Exists(logDirectory));
 
         using var provider = new FileLoggerProvider(logDirectory);
 
-        Directory.Exists(logDirectory).Should().BeTrue();
+        Assert.True(Directory.Exists(logDirectory));
     }
 
     [Fact]
@@ -44,12 +43,8 @@ public sealed class FileLoggingTests : IDisposable
         provider.Dispose();
 
         var lines = File.ReadAllLines(LogFilePath);
-        lines.Single(line => line.Contains("Maieutics.Tests.First", StringComparison.Ordinal))
-            .Should().MatchRegex(
-                @"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Information\] Maieutics\.Tests\.First: first message$");
-        lines.Single(line => line.Contains("Maieutics.Tests.Second", StringComparison.Ordinal))
-            .Should().MatchRegex(
-                @"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Warning\] Maieutics\.Tests\.Second: second message$");
+        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Information\] Maieutics\.Tests\.First: first message$", lines.Single(line => line.Contains("Maieutics.Tests.First", StringComparison.Ordinal)));
+        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Warning\] Maieutics\.Tests\.Second: second message$", lines.Single(line => line.Contains("Maieutics.Tests.Second", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -62,10 +57,10 @@ public sealed class FileLoggingTests : IDisposable
         provider.Dispose();
 
         var lines = File.ReadAllLines(LogFilePath);
-        lines.Should().HaveCount(2);
-        lines[0].Should().MatchRegex(
-            @"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Error\] Maieutics\.Tests\.Errors: operation failed$");
-        lines[1].Should().Contain("InvalidOperationException").And.Contain("boom");
+        Assert.Equal(2, lines.Count());
+        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Error\] Maieutics\.Tests\.Errors: operation failed$", lines[0]);
+        Assert.Contains("InvalidOperationException", lines[1]);
+        Assert.Contains("boom", lines[1]);
     }
 
     [Fact]
@@ -82,10 +77,9 @@ public sealed class FileLoggingTests : IDisposable
         }
 
         var content = File.ReadAllText(LogFilePath);
-        content.Should().Contain("first write");
-        content.Should().Contain("second write");
-        content.IndexOf("first write", StringComparison.Ordinal)
-            .Should().BeLessThan(content.IndexOf("second write", StringComparison.Ordinal));
+        Assert.Contains("first write", content);
+        Assert.Contains("second write", content);
+        Assert.True(content.IndexOf("first write", StringComparison.Ordinal) < content.IndexOf("second write", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -94,8 +88,6 @@ public sealed class FileLoggingTests : IDisposable
         var provider = new FileLoggerProvider(logDirectory);
 
         provider.Dispose();
-
-        var second = () => provider.Dispose();
-        second.Should().NotThrow();
+        provider.Dispose();
     }
 }

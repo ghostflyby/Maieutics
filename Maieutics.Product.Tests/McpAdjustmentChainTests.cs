@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -98,14 +97,14 @@ public sealed class McpAdjustmentChainTests
         };
         var dropped = await chain.FoldCompositionAsync(view, TestContext.Current.CancellationToken);
 
-        dropped.Should().Contain("plugin:provider::main");
+        Assert.Contains("plugin:provider::main", dropped);
         // The provider adjuster's scope is empty (it has no dependencies) and is
         // skipped; "consumer" folds after "middle", whose drop removed the provider.
-        calls.Select(call => call.PluginId).Should().Equal("middle", "consumer");
-        calls.Where(call => call.PluginId == "middle").Select(call => call.ServerIds)
-            .Single().Should().Contain("plugin:provider::main");
-        calls.Where(call => call.PluginId == "consumer").Select(call => call.ServerIds)
-            .Single().Should().NotContain("plugin:provider::main");
+        Assert.Equal(new string[] { "middle", "consumer" }, calls.Select(call => call.PluginId));
+        Assert.Contains("plugin:provider::main", calls.Where(call => call.PluginId == "middle").Select(call => call.ServerIds)
+            .Single());
+        Assert.DoesNotContain("plugin:provider::main", calls.Where(call => call.PluginId == "consumer").Select(call => call.ServerIds)
+            .Single());
     }
 
     [Fact]
@@ -130,7 +129,7 @@ public sealed class McpAdjustmentChainTests
 
         // First fold fails with no previous result: the scope passes through.
         var first = await chain.FoldCompositionAsync(view, TestContext.Current.CancellationToken);
-        first.Should().BeEmpty();
+        Assert.Empty(first);
 
         // After one success, a later failure keeps the last-good drops active: the
         // removed server never resurrects because the adjuster hiccups.
@@ -138,7 +137,7 @@ public sealed class McpAdjustmentChainTests
         await chain.FoldCompositionAsync(view, TestContext.Current.CancellationToken);
         failing = true;
         var third = await chain.FoldCompositionAsync(view, TestContext.Current.CancellationToken);
-        third.Should().Contain("plugin:provider::main");
+        Assert.Contains("plugin:provider::main", third);
     }
 
     [Fact]
@@ -167,7 +166,9 @@ public sealed class McpAdjustmentChainTests
         };
         await chain.FoldCompositionAsync(view, TestContext.Current.CancellationToken);
 
-        seenServers.Should().NotBeNull().And.Contain("plugin:provider::main").And.NotContain("plugin:other::secret");
+        Assert.NotNull(seenServers);
+        Assert.Contains("plugin:provider::main", seenServers);
+        Assert.DoesNotContain("plugin:other::secret", seenServers);
     }
 
     [Fact]
@@ -204,12 +205,12 @@ public sealed class McpAdjustmentChainTests
             ]
             """);
         var adjusted = await chain.AdjustToolsAsync("plugin:provider::main", listing, TestContext.Current.CancellationToken);
-        adjusted.Should().NotBeNull();
-        adjusted.Value.EnumerateArray().Should().ContainSingle();
+        Assert.NotNull(adjusted);
+        Assert.Single(adjusted.Value.EnumerateArray());
         var tool = adjusted.Value[0];
-        tool.GetProperty("aliasOf").GetString().Should().Be("echo");
-        tool.GetProperty("name").GetString().Should().Be("echo_safe");
-        tool.GetProperty("description").GetString().Should().Be("Safe echo");
+        Assert.Equal("echo", tool.GetProperty("aliasOf").GetString());
+        Assert.Equal("echo_safe", tool.GetProperty("name").GetString());
+        Assert.Equal("Safe echo", tool.GetProperty("description").GetString());
     }
 
     [Fact]
@@ -220,7 +221,7 @@ public sealed class McpAdjustmentChainTests
 
         var listing = Json("""[{"name":"echo","inputSchema":{"type":"object"}}]""");
         var adjusted = await chain.AdjustToolsAsync("plugin:provider::main", listing, TestContext.Current.CancellationToken);
-        adjusted.Should().BeNull("a failed adjustment with no previous listing exposes nothing (fail-closed)");
+        Assert.Null(adjusted);
     }
 
     [Fact]
@@ -229,8 +230,8 @@ public sealed class McpAdjustmentChainTests
         var chain = CreateChain((_, _, _, _) => throw new InvalidOperationException("must not be invoked"));
         var listing = Json("""[{"name":"echo","inputSchema":{"type":"object"}}]""");
         var adjusted = await chain.AdjustToolsAsync("plugin:provider::main", listing, TestContext.Current.CancellationToken);
-        adjusted.Should().NotBeNull();
-        adjusted.Value.GetRawText().Should().Be(listing.GetRawText());
+        Assert.NotNull(adjusted);
+        Assert.Equal(listing.GetRawText(), adjusted.Value.GetRawText());
     }
 
     [Fact]
@@ -248,8 +249,7 @@ public sealed class McpAdjustmentChainTests
 
         var listing = Json("""[{"name":"echo","inputSchema":{"type":"object"}}]""");
         var adjusted = await chain.AdjustToolsAsync("plugin:provider::main", listing, TestContext.Current.CancellationToken);
-        adjusted.Should().NotBeNull();
-        adjusted.Value.EnumerateArray().Should().ContainSingle().Which
-            .GetProperty("name").GetString().Should().Be("echo_renamed");
+        Assert.NotNull(adjusted);
+        Assert.Equal("echo_renamed", Assert.Single(adjusted.Value.EnumerateArray()).GetProperty("name").GetString());
     }
 }

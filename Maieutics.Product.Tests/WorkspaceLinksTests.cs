@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using FluentAssertions;
 using Maieutics.Execution;
 using static Maieutics.Product.Tests.WorkspaceToolInvocations;
 
@@ -22,7 +21,7 @@ public sealed class WorkspaceLinksTests
     [InlineData("say \"hi\"", "say _hi_")]
     public void RegistrySanitizesNameCandidates(string candidate, string expected)
     {
-        WorkspaceLinkRegistry.SanitizeName(candidate).Should().Be(expected);
+        Assert.Equal(expected, WorkspaceLinkRegistry.SanitizeName(candidate));
     }
 
     [Fact(Timeout = 30_000)]
@@ -35,19 +34,18 @@ public sealed class WorkspaceLinksTests
         var registry = WorkspaceLinkRegistry.Load(workspace.Path);
 
         var firstName = registry.AllocateName(first, null);
-        firstName.Should().Be("shared-name");
+        Assert.Equal("shared-name", firstName);
         registry.CommitNew(new WorkspaceLinkRecord(firstName, first, null, DateTimeOffset.UtcNow));
 
         var secondName = registry.AllocateName(second, null);
-        secondName.Should().Be($"shared-name-{TargetHash(second, 6)}");
-        WorkspaceLinkRegistry.Load(workspace.Path).AllocateName(second, null)
-            .Should().Be(secondName, "allocation must be order- and instance-independent");
+        Assert.Equal($"shared-name-{TargetHash(second, 6)}", secondName);
+        Assert.Equal(secondName, WorkspaceLinkRegistry.Load(workspace.Path).AllocateName(second, null));
 
         var record = new WorkspaceLinkRecord(firstName, first, null, DateTimeOffset.UtcNow);
         registry.CommitNew(record);
         registry.Remove(firstName);
-        registry.AllocateName(first, null).Should().Be(firstName, "a retired name is reused for its own target");
-        registry.AllocateName(second, null).Should().NotBe("shared-name", "a retired name is never reused for a different target");
+        Assert.Equal(firstName, registry.AllocateName(first, null));
+        Assert.NotEqual("shared-name", registry.AllocateName(second, null));
     }
 
     [Fact(Timeout = 30_000)]
@@ -64,34 +62,32 @@ public sealed class WorkspaceLinksTests
 
         var versionBefore = context.Capture().Version;
         context.OpenLink(project, null);
-        context.Capture().Version.Should().Be(versionBefore + 1);
+        Assert.Equal(versionBefore + 1, context.Capture().Version);
 
-        Directory.Exists(Path.Combine(home.ProjectsRoot, "linked project"))
-            .Should().BeTrue("the physical link is created under projects/");
+        Assert.True(Directory.Exists(Path.Combine(home.ProjectsRoot, "linked project")), "the physical link is created under projects/");
 
         var snapshot = context.Capture();
         var resolved = snapshot.Resolve("workspace://local/projects/linked%20project/src/main.cs", false);
-        resolved.FullPath.Should().Be(Path.GetFullPath(source));
-        resolved.Uri.Should().Be("workspace://local/projects/linked%20project/src/main.cs");
+        Assert.Equal(Path.GetFullPath(source), resolved.FullPath);
+        Assert.Equal("workspace://local/projects/linked%20project/src/main.cs", resolved.Uri);
 
         var read = Result<ReadTextResult>(await InvokeAsync(
                 Function(functions, "read_text"),
                 """{"uri":"workspace://local/projects/linked%20project/src/main.cs"}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        read.Text.Should().Be("needle in project");
+        Assert.Equal("needle in project", read.Text);
 
         var search = Result<SearchTextResult>(await InvokeAsync(
                 Function(functions, "search_text"),
                 """{"query":"needle"}"""),
             WorkspaceJsonSerializerContext.Default.SearchTextResult);
-        search.Matches.Should().ContainSingle().Which.Uri
-            .Should().Be("workspace://local/projects/linked%20project/src/main.cs");
+        Assert.Equal("workspace://local/projects/linked%20project/src/main.cs", Assert.Single(search.Matches).Uri);
 
         var listed = Result<ListDirectoryResult>(await InvokeAsync(
                 Function(functions, "list_directory"),
                 """{"uri":"workspace://local/projects/linked%20project"}"""),
             WorkspaceJsonSerializerContext.Default.ListDirectoryResult);
-        listed.Entries.Should().ContainSingle().Which.Name.Should().Be("src");
+        Assert.Equal("src", Assert.Single(listed.Entries).Name);
     }
 
     [Fact(Timeout = 30_000)]
@@ -105,19 +101,15 @@ public sealed class WorkspaceLinksTests
 
         var first = context.OpenLink(project, null);
         var second = context.OpenLink(project, null);
-        second.Links.Should().NotBeNull();
-        (first.Links ?? throw new InvalidOperationException("missing links")).Records
-            .Should().ContainSingle().Which.Name.Should().Be("project");
-        (second.Links ?? throw new InvalidOperationException("missing links")).Records
-            .Should().ContainSingle("opening the same target twice is idempotent");
+        Assert.NotNull(second.Links);
+        Assert.Equal("project", Assert.Single((first.Links ?? throw new InvalidOperationException("missing links")).Records).Name);
+        Assert.Single((second.Links ?? throw new InvalidOperationException("missing links")).Records);
 
-        File.Exists(Path.Combine(workspace.Path, WorkspaceHome.StateDirectoryName, "registry.json"))
-            .Should().BeTrue("the registry is persisted inside the home state directory");
+        Assert.True(File.Exists(Path.Combine(workspace.Path, WorkspaceHome.StateDirectoryName, "registry.json")), "the registry is persisted inside the home state directory");
 
         Directory.Delete(Path.Combine(home.ProjectsRoot, "project"));
         WorkspaceHome.Ensure(workspace.Path, workspace.Path);
-        Directory.Exists(Path.Combine(home.ProjectsRoot, "project"))
-            .Should().BeTrue("startup remounts registered links whose target still exists");
+        Assert.True(Directory.Exists(Path.Combine(home.ProjectsRoot, "project")), "startup remounts registered links whose target still exists");
     }
 
     [Fact(Timeout = 30_000)]
@@ -134,34 +126,24 @@ public sealed class WorkspaceLinksTests
 
         var foreign = Path.Combine(workspace.Path, "foreign");
         ManagedWorkspaceLink.Create(foreign, workspace.ParentPath);
-        snapshot.Invoking(s => s.Resolve("workspace://local/foreign", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/foreign", false)).Code);
 
         var unregistered = Path.Combine(home.ProjectsRoot, "unregistered");
         ManagedWorkspaceLink.Create(unregistered, workspace.ParentPath);
-        snapshot.Invoking(s => s.Resolve("workspace://local/projects/unregistered", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed");
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/unregistered", false)).Code);
 
         var retargeted = Path.Combine(home.ProjectsRoot, "project");
         Directory.Delete(retargeted);
         ManagedWorkspaceLink.Create(retargeted, workspace.Path);
-        snapshot.Invoking(s => s.Resolve("workspace://local/projects/project/inner", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed", "a tampered link target fails validation");
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/project/inner", false)).Code);
 
-        snapshot.Invoking(s => s.Resolve("workspace://local/.maieutics/registry.json", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_path_denied");
+        Assert.Equal("workspace_path_denied", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/.maieutics/registry.json", false)).Code);
 
         Directory.Delete(retargeted);
         ManagedWorkspaceLink.Create(retargeted, project);
         var insideTarget = Path.Combine(project, "inner", "escape");
         ManagedWorkspaceLink.Create(insideTarget, workspace.Path);
-        snapshot.Invoking(s => s.Resolve("workspace://local/projects/project/inner/escape", false))
-            .Should().Throw<WorkspaceException>()
-            .Which.Code.Should().Be("workspace_symbolic_link_not_allowed", "the no-follow discipline continues inside the target");
+        Assert.Equal("workspace_symbolic_link_not_allowed", Assert.ThrowsAny<WorkspaceException>(() => (snapshot).Resolve("workspace://local/projects/project/inner/escape", false)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -176,19 +158,18 @@ public sealed class WorkspaceLinksTests
         context.OpenLink(project, null);
 
         var variables = (IPermissionVariableSource)context;
-        variables.GetVariable("workspace").Should().Be(home.HomePath);
-        variables.GetVariable("project.project").Should().Be(Path.GetFullPath(project));
-        variables.GetVariable("project.PROJECT").Should().Be(Path.GetFullPath(project), "names match case-insensitively");
-        variables.GetVariable("project.missing").Should().BeNull();
+        Assert.Equal(home.HomePath, variables.GetVariable("workspace"));
+        Assert.Equal(Path.GetFullPath(project), variables.GetVariable("project.project"));
+        Assert.Equal(Path.GetFullPath(project), variables.GetVariable("project.PROJECT"));
+        Assert.Null(variables.GetVariable("project.missing"));
 
         context.CloseLink("Project");
-        Directory.Exists(Path.Combine(home.ProjectsRoot, "Project")).Should().BeFalse();
-        File.Exists(marker).Should().BeTrue("closing a link never deletes the target");
-        variables.GetVariable("project.Project").Should().BeNull();
+        Assert.False(Directory.Exists(Path.Combine(home.ProjectsRoot, "Project")));
+        Assert.True(File.Exists(marker), "closing a link never deletes the target");
+        Assert.Null(variables.GetVariable("project.Project"));
 
         var reopened = context.OpenLink(project, null);
-        (reopened.Links ?? throw new InvalidOperationException("missing links")).Records
-            .Should().ContainSingle().Which.Name.Should().Be("Project", "the retired name is reused for its own target");
+        Assert.Equal("Project", Assert.Single((reopened.Links ?? throw new InvalidOperationException("missing links")).Records).Name);
     }
 
     [Fact(Timeout = 30_000)]
@@ -203,8 +184,7 @@ public sealed class WorkspaceLinksTests
         Workspace.Create(home).OpenLink(project, null);
 
         TemporaryWorkspace.DeleteTree(home.ProjectsRoot);
-        File.Exists(marker).Should().BeTrue(
-            "link-aware deletion of product-owned workspace state must not follow managed links");
+        Assert.True(File.Exists(marker), "link-aware deletion of product-owned workspace state must not follow managed links");
     }
 
     [Fact(Timeout = 30_000)]
@@ -215,21 +195,18 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(home);
 
-        context.Invoking(c => c.OpenLink(
+        Assert.ThrowsAny<DirectoryNotFoundException>(() => (context).OpenLink(
                 Path.Combine(workspace.ParentPath, "missing"),
-                null))
-            .Should().Throw<DirectoryNotFoundException>();
+                null));
 
         if (OperatingSystem.IsWindows())
         {
-            context.Invoking(c => c.OpenLink(@"\\server\share\project", null))
-                .Should().Throw<ArgumentException>()
-                .WithMessage("*workspace link target*");
+            var assertion42 = Assert.ThrowsAny<ArgumentException>(() => (context).OpenLink(@"\\server\share\project", null));
+            Assert.Matches("(?is)^.*workspace\\ link\\ target.*$", assertion42.Message);
         }
 
-        context.Invoking(c => c.OpenLink(workspace.Path, null))
-            .Should().Throw<ArgumentException>()
-            .WithMessage("*contain, or be contained by, the workspace home*");
+        var assertion43 = Assert.ThrowsAny<ArgumentException>(() => (context).OpenLink(workspace.Path, null));
+        Assert.Matches("(?is)^.*contain,\\ or\\ be\\ contained\\ by,\\ the\\ workspace\\ home.*$", assertion43.Message);
     }
 
     [Fact(Timeout = 30_000)]
@@ -249,25 +226,26 @@ public sealed class WorkspaceLinksTests
             $"%workspace open {project} as work",
             null,
             TestContext.Current.CancellationToken);
-        opened.Markdown.Should().Contain("fixed home").And.Contain("`work`");
+        Assert.Contains("fixed home", opened.Markdown);
+        Assert.Contains("`work`", opened.Markdown);
 
         var current = await executor.ExecuteAsync(
             "%workspace current",
             null,
             TestContext.Current.CancellationToken);
-        current.Markdown.Should().Contain("`work`").And.Contain(project);
+        Assert.Contains("`work`", current.Markdown);
+        Assert.Contains(project, current.Markdown);
 
         var closed = await executor.ExecuteAsync(
             "%workspace close work",
             null,
             TestContext.Current.CancellationToken);
-        closed.Markdown.Should().Contain("Projects: none");
+        Assert.Contains("Projects: none", closed.Markdown);
 
-        await executor.Awaiting(e => e.ExecuteAsync(
+        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () => { await ((executor).ExecuteAsync(
                 "%workspace use somewhere",
                 null,
-                TestContext.Current.CancellationToken))
-            .Should().ThrowAsync<Commands.MaieuticsCommandException>();
+                TestContext.Current.CancellationToken)); });
     }
 
     private static string TargetHash(string canonicalTarget, int characters)
@@ -295,12 +273,10 @@ public sealed class WorkspaceLinksTests
         // /var -> /private/var), which is not what this test is about.
         var canonical = WorkspaceHome.CanonicalizeTarget(viaAncestor);
         var expected = WorkspaceHome.CanonicalizeTarget(home.ProjectsRoot);
-        canonical.Should().Be(expected, "an ancestor link must not hide the physical location");
+        Assert.Equal(expected, canonical);
 
         var context = Workspace.Create(home);
-        FluentActions.Invoking(() => context.OpenLink(viaAncestor, null))
-            .Should().Throw<ArgumentException>(
-                "a target reached through a symlinked ancestor resolves inside the home");
+        Assert.ThrowsAny<ArgumentException>(() => context.OpenLink(viaAncestor, null));
     }
 
     [Fact]
@@ -310,10 +286,8 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var context = Workspace.Create(home);
 
-        FluentActions.Invoking(() => context.OpenLink(home.HomePath, null))
-            .Should().Throw<ArgumentException>("the home itself is not a project");
+        Assert.ThrowsAny<ArgumentException>(() => context.OpenLink(home.HomePath, null));
 
-        FluentActions.Invoking(() => context.OpenLink(workspace.ParentPath, null))
-            .Should().Throw<ArgumentException>("a directory containing the home is not a project");
+        Assert.ThrowsAny<ArgumentException>(() => context.OpenLink(workspace.ParentPath, null));
     }
 }

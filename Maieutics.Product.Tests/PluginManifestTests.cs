@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
@@ -40,21 +39,21 @@ public sealed class PluginManifestTests
             }
             """);
 
-        descriptor.Name.Should().Be("@maieutics/example");
-        descriptor.Isolation.Should().Be("auto");
-        descriptor.Dependencies.Should().Equal("base");
+        Assert.Equal("@maieutics/example", descriptor.Name);
+        Assert.Equal("auto", descriptor.Isolation);
+        Assert.Equal(new string[] { "base" }, descriptor.Dependencies);
         // Two entrypoints → two workers; the exports "./mcp" does not create a
         // worker on its own (exports only expose the API surface).
-        descriptor.Workers.Should().HaveCount(2);
-        descriptor.Workers[0].ExportName.Should().Be("main");
-        descriptor.Workers[0].EntryUrl.Should().StartWith("file://");
-        descriptor.Workers[0].EntryUrl.Should().EndWith("/mod.ts");
-        descriptor.Workers[1].ExportName.Should().Be("echo");
-        descriptor.Workers[1].EntryUrl.Should().EndWith("/src/echo.ts");
-        descriptor.Permissions.Read.AllowAll.Should().BeFalse();
-        descriptor.Permissions.Read.Values.Should().Equal("./");
-        descriptor.Permissions.Net.Values.Should().BeEmpty();
-        descriptor.Permissions.Write.AllowAll.Should().BeTrue();
+        Assert.Equal(2, descriptor.Workers.Count());
+        Assert.Equal("main", descriptor.Workers[0].ExportName);
+        Assert.StartsWith("file://", descriptor.Workers[0].EntryUrl);
+        Assert.EndsWith("/mod.ts", descriptor.Workers[0].EntryUrl);
+        Assert.Equal("echo", descriptor.Workers[1].ExportName);
+        Assert.EndsWith("/src/echo.ts", descriptor.Workers[1].EntryUrl);
+        Assert.False(descriptor.Permissions.Read.AllowAll);
+        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
+        Assert.Empty(descriptor.Permissions.Net.Values);
+        Assert.True(descriptor.Permissions.Write.AllowAll);
     }
 
     [Fact]
@@ -70,8 +69,8 @@ public sealed class PluginManifestTests
             """,
             null);
 
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("maieutics.json");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("maieutics.json", error);
     }
 
     [Fact]
@@ -89,7 +88,7 @@ public sealed class PluginManifestTests
             { "entrypoints": {} }
             """);
 
-        descriptor.Workers.Should().BeEmpty();
+        Assert.Empty(descriptor.Workers);
     }
 
     [Fact]
@@ -97,8 +96,8 @@ public sealed class PluginManifestTests
     {
         var directory = CreatePluginDirectory("{ not json", "{ not json");
 
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("maieutics.json");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("maieutics.json", error);
     }
 
     [Fact]
@@ -124,12 +123,12 @@ public sealed class PluginManifestTests
             { "entrypoints": { "worker": { "main": ["./mod.ts"] } } }
             """);
 
-        descriptor.Permissions.Read.AllowAll.Should().BeFalse();
-        descriptor.Permissions.Read.Values.Should().Equal("./");
-        descriptor.Permissions.Net.AllowAll.Should().BeFalse();
-        descriptor.Permissions.Net.Values.Should().BeEmpty();
-        descriptor.Permissions.Env.AllowAll.Should().BeFalse();
-        descriptor.Permissions.Env.Values.Should().BeEmpty();
+        Assert.False(descriptor.Permissions.Read.AllowAll);
+        Assert.Equal(new string[] { "./" }, descriptor.Permissions.Read.Values);
+        Assert.False(descriptor.Permissions.Net.AllowAll);
+        Assert.Empty(descriptor.Permissions.Net.Values);
+        Assert.False(descriptor.Permissions.Env.AllowAll);
+        Assert.Empty(descriptor.Permissions.Env.Values);
     }
 
     [Fact]
@@ -151,8 +150,8 @@ public sealed class PluginManifestTests
             }
             """);
 
-        descriptor.Workers.Should().HaveCount(1);
-        descriptor.Workers[0].ExportName.Should().Be("ok");
+        Assert.Single(descriptor.Workers);
+        Assert.Equal("ok", descriptor.Workers[0].ExportName);
     }
 
     [Fact]
@@ -175,8 +174,8 @@ public sealed class PluginManifestTests
             """);
 
         var targets = PluginManifest.ReadLocalImportTargets(directory).ToArray();
-        targets.Should().HaveCount(1);
-        targets[0].Should().Be(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")));
+        Assert.Single(targets);
+        Assert.Equal(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")), targets[0]);
     }
 
     [Fact]
@@ -199,11 +198,11 @@ public sealed class PluginManifestTests
             }
             """);
 
-        descriptor.Extensions.Should().ContainSingle();
-        descriptor.Extensions[0].Kind.Should().Be("McpDiscover");
-        descriptor.Extensions[0].Data.GetProperty("module")
-            .GetString().Should().Be("npm:@maieutics/probe-server");
-        descriptor.ExtensionDiagnostics.Should().BeEmpty();
+        Assert.Single(descriptor.Extensions);
+        Assert.Equal("McpDiscover", descriptor.Extensions[0].Kind);
+        Assert.Equal("npm:@maieutics/probe-server", descriptor.Extensions[0].Data.GetProperty("module")
+            .GetString());
+        Assert.Empty(descriptor.ExtensionDiagnostics);
     }
 
     [Fact]
@@ -229,9 +228,8 @@ public sealed class PluginManifestTests
 
         // Only catalogued kinds survive; the unknown kind degrades to a visible
         // diagnostic instead of being silently honored or failing the plugin.
-        descriptor.Extensions.Should().ContainSingle().Which.Kind.Should().Be("McpDiscover");
-        descriptor.ExtensionDiagnostics.Should().ContainSingle()
-            .Which.Should().Contain("FutureKind");
+        Assert.Equal("McpDiscover", Assert.Single(descriptor.Extensions).Kind);
+        Assert.Contains("FutureKind", Assert.Single(descriptor.ExtensionDiagnostics));
     }
 
     [Fact]
@@ -246,8 +244,8 @@ public sealed class PluginManifestTests
             """
             { "extensions": ["not", "an", "object"] }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("extensions");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("extensions", error);
 
         var directory2 = CreatePluginDirectory(
             """
@@ -256,8 +254,8 @@ public sealed class PluginManifestTests
             """
             { "extensions": { "McpDiscover": ["not-an-object"] } }
             """);
-        PluginManifest.TryLoad(directory2, out _, out var error2).Should().BeFalse();
-        error2.Should().Contain("entries must be objects");
+        Assert.False(PluginManifest.TryLoad(directory2, out _, out var error2));
+        Assert.Contains("entries must be objects", error2);
     }
 
     [Fact]
@@ -272,8 +270,8 @@ public sealed class PluginManifestTests
               "entrypoints": { "worker": { "maieutics.json": ["./mod.ts"] } }
             }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("reserved");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("reserved", error);
     }
 
     [Fact]
@@ -303,21 +301,21 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.Workers.Should().BeEmpty();
+        Assert.Empty(descriptor.Workers);
 
-        var entry = descriptor.DataEntries.Should().ContainSingle().Which;
-        entry.Name.Should().Be("mcp");
-        entry.Error.Should().BeNull();
-        entry.Data.Should().NotBeNull();
+        var entry = Assert.Single(descriptor.DataEntries);
+        Assert.Equal("mcp", entry.Name);
+        Assert.Null(entry.Error);
+        Assert.NotNull(entry.Data);
 
         var servers = descriptor.McpServers;
-        servers.Should().HaveCount(2);
-        var stdio = servers.Should().ContainSingle(s => s.Id == $"plugin:{Path.GetFileName(directory)}::probe").Subject;
-        stdio.Transport.Should().BeOfType<StdioMcpTransportDefinition>();
-        stdio.RootsEnabled.Should().BeTrue();
-        var http = servers.Should().ContainSingle(s => s.Id.EndsWith("::remote")).Subject;
-        http.Transport.Should().BeOfType<HttpMcpTransportDefinition>();
-        http.RootsEnabled.Should().BeFalse();
+        Assert.Equal(2, servers.Count());
+        var stdio = Assert.Single(servers, s => s.Id == $"plugin:{Path.GetFileName(directory)}::probe");
+        Assert.IsType<StdioMcpTransportDefinition>(stdio.Transport);
+        Assert.True(stdio.RootsEnabled);
+        var http = Assert.Single(servers, s => s.Id.EndsWith("::remote"));
+        Assert.IsType<HttpMcpTransportDefinition>(http.Transport);
+        Assert.False(http.RootsEnabled);
     }
 
     [Fact]
@@ -332,8 +330,9 @@ public sealed class PluginManifestTests
             """
             { "entrypoints": { "main": ["./mod.ts"] } }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("Unknown entrypoint section 'main'").And.Contain("'worker'");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("Unknown entrypoint section 'main'", error);
+        Assert.Contains("'worker'", error);
     }
 
     [Fact]
@@ -346,8 +345,9 @@ public sealed class PluginManifestTests
             """
             { "entrypoints": { "worker": { "main": "./mod.ts" } } }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("worker 'main'").And.Contain("script array");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("worker 'main'", error);
+        Assert.Contains("script array", error);
     }
 
     [Fact]
@@ -367,9 +367,9 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.DataEntries.Should().BeEmpty();
-        descriptor.McpServers.Should().BeEmpty();
-        descriptor.McpServersError.Should().BeNull();
+        Assert.Empty(descriptor.DataEntries);
+        Assert.Empty(descriptor.McpServers);
+        Assert.Null(descriptor.McpServersError);
     }
 
     [Fact]
@@ -382,8 +382,9 @@ public sealed class PluginManifestTests
             """
             { "entrypoints": { "mcp": ["deno"] } }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("catalogued data entry").And.Contain("string path");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("catalogued data entry", error);
+        Assert.Contains("string path", error);
     }
 
     [Fact]
@@ -399,8 +400,8 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.McpServers.Should().BeEmpty();
-        descriptor.McpServersError.Should().Contain("outside the plugin root");
+        Assert.Empty(descriptor.McpServers);
+        Assert.Contains("outside the plugin root", descriptor.McpServersError);
     }
 
     [Fact]
@@ -416,7 +417,7 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.McpServersError.Should().Contain("does not exist");
+        Assert.Contains("does not exist", descriptor.McpServersError);
     }
 
     [Fact]
@@ -436,12 +437,11 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        var entry = descriptor.DataEntries.Should().ContainSingle().Which;
-        entry.Name.Should().Be("catalog");
-        entry.Data.Should().NotBeNull();
-        descriptor.ExtensionDiagnostics.Should()
-            .Contain(d => d.Contains("data entry 'catalog'") && d.Contains("inert"));
-        descriptor.McpServers.Should().BeEmpty();
+        var entry = Assert.Single(descriptor.DataEntries);
+        Assert.Equal("catalog", entry.Name);
+        Assert.NotNull(entry.Data);
+        Assert.Contains(descriptor.ExtensionDiagnostics, d => d.Contains("data entry 'catalog'") && d.Contains("inert"));
+        Assert.Empty(descriptor.McpServers);
     }
 
     [Fact]
@@ -463,7 +463,7 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::declared");
+        Assert.EndsWith("::declared", Assert.Single(descriptor.McpServers).Id);
     }
 
     [Fact]
@@ -489,7 +489,7 @@ public sealed class PluginManifestTests
 
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.McpServers.Should().ContainSingle().Which.Id.Should().EndWith("::on");
+        Assert.EndsWith("::on", Assert.Single(descriptor.McpServers).Id);
     }
 
     [Fact]
@@ -508,8 +508,8 @@ public sealed class PluginManifestTests
         // the plugin loads, carries no servers, and reports the parse failure.
         if (!PluginManifest.TryLoad(directory, out var descriptor, out var error))
             throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
-        descriptor.McpServers.Should().BeEmpty();
-        descriptor.McpServersError.Should().Contain("Invalid JSON in 'servers.json'");
+        Assert.Empty(descriptor.McpServers);
+        Assert.Contains("Invalid JSON in 'servers.json'", descriptor.McpServersError);
     }
 
     [Fact]
@@ -541,24 +541,24 @@ public sealed class PluginManifestTests
                     out var error))
                 throw new InvalidOperationException($"Failed to load plugin manifest: {error}");
 
-            descriptor.Triggers.Should().HaveCount(3);
+            Assert.Equal(3, descriptor.Triggers.Count());
 
-            var watch = descriptor.Triggers.Should().ContainSingle(t => t.Name == "idea-port").Subject;
-            watch.Kind.Should().Be("watch");
-            watch.Action.Should().Be(PluginTriggerAction.Rediscover);
+            var watch = Assert.Single(descriptor.Triggers, t => t.Name == "idea-port");
+            Assert.Equal("watch", watch.Kind);
+            Assert.Equal(PluginTriggerAction.Rediscover, watch.Action);
             // Watch paths are kernel-expanded through the permission variable table.
-            watch.WatchPaths.Should().Equal("/Users/tester/Library/Caches/JetBrains/**");
-            watch.Depth.Should().Be(2);
+            Assert.Equal(new string[] { "/Users/tester/Library/Caches/JetBrains/**" }, watch.WatchPaths);
+            Assert.Equal(2, watch.Depth);
 
-            var cron = descriptor.Triggers.Should().ContainSingle(t => t.Name == "nightly").Subject;
-            cron.Kind.Should().Be("cron");
-            cron.Action.Should().Be(PluginTriggerAction.Event);
-            cron.CronExpression.Should().Be("0 3 * * *");
+            var cron = Assert.Single(descriptor.Triggers, t => t.Name == "nightly");
+            Assert.Equal("cron", cron.Kind);
+            Assert.Equal(PluginTriggerAction.Event, cron.Action);
+            Assert.Equal("0 3 * * *", cron.CronExpression);
 
-            var interval = descriptor.Triggers.Should().ContainSingle(t => t.Name == "poll").Subject;
-            interval.Kind.Should().Be("interval");
-            interval.Action.Should().Be(PluginTriggerAction.Event);
-            interval.IntervalSeconds.Should().Be(300);
+            var interval = Assert.Single(descriptor.Triggers, t => t.Name == "poll");
+            Assert.Equal("interval", interval.Kind);
+            Assert.Equal(PluginTriggerAction.Event, interval.Action);
+            Assert.Equal(300, interval.IntervalSeconds);
         }
         finally
         {
@@ -576,8 +576,8 @@ public sealed class PluginManifestTests
             """
             { "triggers": [{ "name": "bad", "kind": " Psychic", "action": "event" }] }
             """);
-        PluginManifest.TryLoad(directory, out _, out var error).Should().BeFalse();
-        error.Should().Contain("unknown kind");
+        Assert.False(PluginManifest.TryLoad(directory, out _, out var error));
+        Assert.Contains("unknown kind", error);
 
         var directory2 = CreatePluginDirectory(
             """
@@ -586,8 +586,8 @@ public sealed class PluginManifestTests
             """
             { "triggers": [{ "name": "bad", "kind": "cron", "expression": "0 3 * *" }] }
             """);
-        PluginManifest.TryLoad(directory2, out _, out var error2).Should().BeFalse();
-        error2.Should().Contain("5 fields");
+        Assert.False(PluginManifest.TryLoad(directory2, out _, out var error2));
+        Assert.Contains("5 fields", error2);
     }
 
     private sealed class ManifestVariableSource : Execution.IPermissionVariableSource
@@ -606,7 +606,7 @@ public sealed class PluginManifestTests
             """
             { "capabilities": ["tools.invoke"] }
             """);
-        descriptor.McpServers.Should().BeEmpty();
+        Assert.Empty(descriptor.McpServers);
     }
 
     [Fact]
@@ -629,8 +629,7 @@ public sealed class PluginManifestTests
 
         // Any spelling routes through the kind catalog; entries record the canonical
         // spelling every downstream comparison expects (manifest section order is kept).
-        descriptor.Extensions.Select(static entry => entry.Kind).Should().Equal(
-            SkillsContributionKind.ExtensionKind, McpDiscoverContributionKind.ExtensionKind);
+        Assert.Equal(new string[] { SkillsContributionKind.ExtensionKind, McpDiscoverContributionKind.ExtensionKind }, descriptor.Extensions.Select(static entry => entry.Kind));
     }
 
     [Fact]
@@ -651,8 +650,7 @@ public sealed class PluginManifestTests
             """{ "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }""");
         File.WriteAllText(Path.Combine(directory, "ui-form.json"), """{ "fields": [] }""");
 
-        PluginManifest.TryLoad(directory, out var descriptor, out var error)
-            .Should().BeTrue(error);
+        Assert.True(PluginManifest.TryLoad(directory, out var descriptor, out var error), error);
         var loaded = descriptor ?? throw new InvalidOperationException(error);
 
         // Data-entry names route exactly and record the declared spelling verbatim
@@ -661,13 +659,13 @@ public sealed class PluginManifestTests
         // silently activating its formerly inert interpretation). A misspelled known
         // name is unknown to the grammar: collected but inert, with the catalog
         // diagnostic, and it interprets nothing.
-        loaded.DataEntries.Select(static entry => entry.Name).Should().Equal("MCP", "UI");
-        loaded.McpServers.Should().BeEmpty();
-        loaded.UiForm.Should().BeNull();
-        loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+        Assert.Equal(new string[] { "MCP", "UI" }, loaded.DataEntries.Select(static entry => entry.Name));
+        Assert.Empty(loaded.McpServers);
+        Assert.Null(loaded.UiForm);
+        Assert.Contains(loaded.ExtensionDiagnostics, static diagnostic =>
             diagnostic.Contains("data entry 'MCP'", StringComparison.Ordinal) &&
             diagnostic.Contains(KnownDataEntryNamesText()));
-        loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+        Assert.Contains(loaded.ExtensionDiagnostics, static diagnostic =>
             diagnostic.Contains("data entry 'UI'", StringComparison.Ordinal));
     }
 
@@ -684,10 +682,10 @@ public sealed class PluginManifestTests
 
         // The catalog generates the name list, so a catalogued kind can no longer be
         // missing from it (the former text listed only 'mcp' while 'ui' existed).
-        descriptor.ExtensionDiagnostics.Should().Contain(diagnostic =>
+        Assert.Contains(descriptor.ExtensionDiagnostics, diagnostic =>
             diagnostic.Contains("data entry 'notices'") &&
             diagnostic.Contains(KnownDataEntryNamesText()));
-        KnownDataEntryNamesText().Should().Be("mcp, ui");
+        Assert.Equal("mcp, ui", KnownDataEntryNamesText());
     }
 
     [Fact]
@@ -701,39 +699,37 @@ public sealed class PluginManifestTests
             { "extensions": { "FutureKind": [{ "opaque": true }] } }
             """);
 
-        var diagnostic = descriptor.ExtensionDiagnostics.Should().ContainSingle().Which;
-        diagnostic.Should().Contain("FutureKind")
-            .And.Contain($"known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}");
-        diagnostic.Should().NotContain("recommended", "the catalog text drops the former hand-written case-advice sentence");
+        var diagnostic = Assert.Single(descriptor.ExtensionDiagnostics);
+        Assert.Contains("FutureKind", diagnostic);
+        Assert.Contains($"known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}", diagnostic);
+        Assert.DoesNotContain("recommended", diagnostic);
 
         // The known-kinds list is the extensions grammar's participation set, ending
         // exactly at it: data-entry-only kinds (whose names are not extensions kinds)
         // never join, while any newly catalogued extensions kind joins by claiming its
         // name — with or without a compute form.
-        diagnostic.Should().EndWith(
-            $"(known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}).");
+        Assert.EndsWith($"(known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}).", diagnostic);
     }
 
     [Fact]
     public void TheKindCatalogRoutesLookupsByTheirDeclaredNames()
     {
-        ContributionKindCatalog.ByExtensionKind("skills").Should().Be(SkillsContributionKind.Instance);
-        ContributionKindCatalog.ByExtensionKind("MCPDISCOVER").Should().Be(McpDiscoverContributionKind.Instance);
-        ContributionKindCatalog.ByExtensionKind("FutureKind").Should().BeNull();
+        Assert.Equal(SkillsContributionKind.Instance, ContributionKindCatalog.ByExtensionKind("skills"));
+        Assert.Equal(McpDiscoverContributionKind.Instance, ContributionKindCatalog.ByExtensionKind("MCPDISCOVER"));
+        Assert.Null(ContributionKindCatalog.ByExtensionKind("FutureKind"));
 
         // Data-entry names are exact-match (the extensions kinds' case-insensitivity
         // is not shared): a misspelled known name is unknown, keeping its recorded
         // spelling — and its fingerprint bytes — exactly as declared.
-        ContributionKindCatalog.ByDataEntryName("MCP").Should().BeNull();
-        ContributionKindCatalog.ByDataEntryName("mcp").Should().Be(McpDiscoverContributionKind.Instance);
-        ContributionKindCatalog.ByDataEntryName("ui").Should().Be(UiContributionKind.Instance);
-        ContributionKindCatalog.ByDataEntryName("notices").Should().BeNull();
-        ContributionKindCatalog.ByPublishCapability("skills.publish").Should().Be(SkillsContributionKind.Instance);
-        ContributionKindCatalog.ByPublishCapability("ui.models").Should().BeNull(
-            "the ui kind is a text-only catalog registration in B; its publish flow is untouched");
-        ContributionKindCatalog.CanonicalExtensionKind("SKILLS").Should().Be(SkillsContributionKind.ExtensionKind);
-        ContributionKindCatalog.CanonicalDataEntryName("MCP").Should().BeNull();
-        ContributionKindCatalog.CanonicalDataEntryName("mcp").Should().Be(McpDiscoverContributionKind.DataEntry);
+        Assert.Null(ContributionKindCatalog.ByDataEntryName("MCP"));
+        Assert.Equal(McpDiscoverContributionKind.Instance, ContributionKindCatalog.ByDataEntryName("mcp"));
+        Assert.Equal(UiContributionKind.Instance, ContributionKindCatalog.ByDataEntryName("ui"));
+        Assert.Null(ContributionKindCatalog.ByDataEntryName("notices"));
+        Assert.Equal(SkillsContributionKind.Instance, ContributionKindCatalog.ByPublishCapability("skills.publish"));
+        Assert.Null(ContributionKindCatalog.ByPublishCapability("ui.models"));
+        Assert.Equal(SkillsContributionKind.ExtensionKind, ContributionKindCatalog.CanonicalExtensionKind("SKILLS"));
+        Assert.Null(ContributionKindCatalog.CanonicalDataEntryName("MCP"));
+        Assert.Equal(McpDiscoverContributionKind.DataEntry, ContributionKindCatalog.CanonicalDataEntryName("mcp"));
     }
 
     private static string KnownDataEntryNamesText() =>
@@ -769,11 +765,10 @@ public sealed class PluginManifestTests
             new Dictionary<string, string>(StringComparer.Ordinal),
             name => name == "MAIEUTICS_TEST_SUB" ? "config" : null);
 
-        PluginManifest.TryLoad(directory, variables, out var descriptor, out var error)
-            .Should().BeTrue(error);
+        Assert.True(PluginManifest.TryLoad(directory, variables, out var descriptor, out var error), error);
         var loaded = descriptor ?? throw new InvalidOperationException(error);
-        loaded.McpServers.Should().ContainSingle("the expanded path collects from inside the plugin root");
-        loaded.McpServersError.Should().BeNull();
+        Assert.Single(loaded.McpServers);
+        Assert.Null(loaded.McpServersError);
     }
 
     [Fact]
@@ -793,12 +788,12 @@ public sealed class PluginManifestTests
         var variables = new VariableTable(
             new ManifestVariableSource(),
             new Dictionary<string, string>(StringComparer.Ordinal) { ["plugins"] = "/maieutics/plugins" });
-        PluginManifest.TryLoad(directory, variables, out var descriptor, out var error)
-            .Should().BeTrue(error);
+        Assert.True(PluginManifest.TryLoad(directory, variables, out var descriptor, out var error), error);
         var loaded = descriptor ?? throw new InvalidOperationException(error);
-        var entry = loaded.DataEntries.Should().ContainSingle().Which;
-        entry.Error.Should().NotBeNull().And.Contain("resolves outside the plugin root");
-        loaded.McpServers.Should().BeEmpty();
+        var entry = Assert.Single(loaded.DataEntries);
+        Assert.NotNull(entry.Error);
+        Assert.Contains("resolves outside the plugin root", entry.Error);
+        Assert.Empty(loaded.McpServers);
     }
 
     [Fact]
@@ -812,11 +807,11 @@ public sealed class PluginManifestTests
             { "entrypoints": { "mcp": "${env.MAIEUTICS_NO_SUCH_VAR}/mcp.json" } }
             """);
 
-        PluginManifest.TryLoad(directory, TestVariables(), out var descriptor, out var error)
-            .Should().BeTrue(error);
+        Assert.True(PluginManifest.TryLoad(directory, TestVariables(), out var descriptor, out var error), error);
         var loaded = descriptor ?? throw new InvalidOperationException(error);
-        var entry = loaded.DataEntries.Should().ContainSingle().Which;
-        entry.Error.Should().NotBeNull().And.Contain("cannot be expanded");
+        var entry = Assert.Single(loaded.DataEntries);
+        Assert.NotNull(entry.Error);
+        Assert.Contains("cannot be expanded", entry.Error);
     }
 
     [Fact]
@@ -830,8 +825,7 @@ public sealed class PluginManifestTests
             }
             """).RootElement;
 
-        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition)
-            .Should().BeTrue();
+        Assert.True(McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition));
 
         // The default path equals the former hardcoded values exactly: the metadata
         // defaults hash byte-for-byte identically (framework §5 timeout parity).
@@ -844,11 +838,11 @@ public sealed class PluginManifestTests
             TimeSpan.FromSeconds(30),
             true,
             true);
-        definition.Should().NotBeNull();
-        definition.Id.Should().Be("plugin:plugin-a::npm:@maieutics/probe-server");
-        definition.GenerationKey.Should().Be(expectedKey);
-        definition.InitializationTimeout.Should().Be(TimeSpan.FromSeconds(30));
-        definition.RequestTimeout.Should().Be(TimeSpan.FromMinutes(2));
+        Assert.NotNull(definition);
+        Assert.Equal("plugin:plugin-a::npm:@maieutics/probe-server", definition.Id);
+        Assert.Equal(expectedKey, definition.GenerationKey);
+        Assert.Equal(TimeSpan.FromSeconds(30), definition.InitializationTimeout);
+        Assert.Equal(TimeSpan.FromMinutes(2), definition.RequestTimeout);
     }
 
     [Fact]
@@ -867,14 +861,12 @@ public sealed class PluginManifestTests
             new Dictionary<string, string>(StringComparer.Ordinal),
             name => name == "MAIEUTICS_TEST_SUB" ? "tools" : null);
 
-        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, variables, out var definition)
-            .Should().BeTrue();
+        Assert.True(McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, variables, out var definition));
 
-        definition.Should().NotBeNull();
-        var stdio = definition.Transport.Should().BeOfType<StdioMcpTransportDefinition>().Which;
-        stdio.Command.Should().Be("tools/deno", "the transport's strings expand through the unified table");
-        definition.Id.Should().Be("plugin:plugin-a::${env.MAIEUTICS_TEST_MODULE}",
-            "the module slug is never interpolated");
+        Assert.NotNull(definition);
+        var stdio = Assert.IsType<StdioMcpTransportDefinition>(definition.Transport);
+        Assert.Equal("tools/deno", stdio.Command);
+        Assert.Equal("plugin:plugin-a::${env.MAIEUTICS_TEST_MODULE}", definition.Id);
 
         // The expanded command enters the generation key: a different environment
         // yields a different key and the coordinator rebuilds the generation (the
@@ -888,7 +880,7 @@ public sealed class PluginManifestTests
             TimeSpan.FromSeconds(30),
             true,
             true);
-        definition.GenerationKey.Should().Be(expandedKey);
+        Assert.Equal(expandedKey, definition.GenerationKey);
     }
 
     [Fact]
@@ -903,9 +895,8 @@ public sealed class PluginManifestTests
             }
             """).RootElement;
 
-        McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition)
-            .Should().BeFalse("an unresolvable variable fails the entry and the discovery branch degrades to its sticky path");
-        definition.Should().BeNull();
+        Assert.False(McpDiscoverContributionKind.TryToDefinition("plugin-a", entry, TestVariables(), out var definition), "an unresolvable variable fails the entry and the discovery branch degrades to its sticky path");
+        Assert.Null(definition);
     }
 
     [Fact]
@@ -932,21 +923,19 @@ public sealed class PluginManifestTests
             }
             """).RootElement;
 
-        McpDiscoverContributionKind.TryToDefinition("p", baseEntry, null, out var baseDefinition).Should().BeTrue();
-        McpDiscoverContributionKind.TryToDefinition("p", overriddenEntry, null, out var overridden).Should().BeTrue();
+        Assert.True(McpDiscoverContributionKind.TryToDefinition("p", baseEntry, null, out var baseDefinition));
+        Assert.True(McpDiscoverContributionKind.TryToDefinition("p", overriddenEntry, null, out var overridden));
         var baseLoaded = baseDefinition ?? throw new InvalidOperationException("the base entry must interpret");
         var overrideLoaded = overridden ?? throw new InvalidOperationException("the overridden entry must interpret");
 
         // Same server id, different generation key: exactly the input the
         // coordinator's generation-replacement check compares.
-        overrideLoaded.Id.Should().Be(baseLoaded.Id);
-        overrideLoaded.GenerationKey.Should().NotBe(baseLoaded.GenerationKey);
-        overrideLoaded.RequestTimeout.Should().Be(TimeSpan.FromMinutes(5));
-        overrideLoaded.InitializationTimeout.Should().Be(
-            TimeSpan.FromSeconds(30), "untouched members keep the metadata defaults");
+        Assert.Equal(baseLoaded.Id, overrideLoaded.Id);
+        Assert.NotEqual(baseLoaded.GenerationKey, overrideLoaded.GenerationKey);
+        Assert.Equal(TimeSpan.FromMinutes(5), overrideLoaded.RequestTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(30), overrideLoaded.InitializationTimeout);
 
-        McpDiscoverContributionKind.TryToDefinition("p", invalidEntry, null, out _)
-            .Should().BeFalse("an unknown timeout name is a strict-grammar violation");
+        Assert.False(McpDiscoverContributionKind.TryToDefinition("p", invalidEntry, null, out _), "an unknown timeout name is a strict-grammar violation");
     }
 
     [Fact]
@@ -972,35 +961,29 @@ public sealed class PluginManifestTests
         // The member's strict grammar covers its own shape: a present-but-non-object
         // member fails the entry instead of silently interpreting it on the default
         // timeouts (which would hide the declaration's real intent).
-        McpDiscoverContributionKind.TryToDefinition("p", stringEntry, null, out _)
-            .Should().BeFalse("a string timeouts member is a strict-grammar violation");
-        McpDiscoverContributionKind.TryToDefinition("p", arrayEntry, null, out _)
-            .Should().BeFalse("an array timeouts member is a strict-grammar violation");
+        Assert.False(McpDiscoverContributionKind.TryToDefinition("p", stringEntry, null, out _), "a string timeouts member is a strict-grammar violation");
+        Assert.False(McpDiscoverContributionKind.TryToDefinition("p", arrayEntry, null, out _), "an array timeouts member is a strict-grammar violation");
     }
 
     [Fact]
     public void TheKindMetadataTablesCarryTheParityKnobs()
     {
         var skills = SkillsContributionKind.Instance.Metadata;
-        skills.MaxDeclaredEntriesPerDeclaration.Should().Be(32);
-        skills.MaxComputedEntries.Should().Be(256);
-        skills.StickyPerSourceKey.Should().BeTrue();
-        skills.UsesKernelRetrySet.Should().BeTrue("never-succeeded-stays-new rides the kernel retry set");
-        skills.DefaultTimeouts.Should().BeNull();
-        skills.DeclarationInterpolation.Should().BeTrue("skills roots expand through the variable table");
+        Assert.Equal(32, skills.MaxDeclaredEntriesPerDeclaration);
+        Assert.Equal(256, skills.MaxComputedEntries);
+        Assert.True(skills.StickyPerSourceKey);
+        Assert.True(skills.UsesKernelRetrySet, "never-succeeded-stays-new rides the kernel retry set");
+        Assert.Null(skills.DefaultTimeouts);
+        Assert.True(skills.DeclarationInterpolation, "skills roots expand through the variable table");
 
         var mcp = McpDiscoverContributionKind.Instance.Metadata;
-        mcp.MaxDeclaredEntriesPerDeclaration.Should().BeNull("the extensions entry count stays unbounded today");
-        mcp.MaxComputedEntries.Should().BeNull("the worker-discovery array stays unbounded today");
-        mcp.StickyPerSourceKey.Should().BeTrue();
-        mcp.UsesKernelRetrySet.Should().BeFalse("MCP retries inside its revision engine");
+        Assert.Null(mcp.MaxDeclaredEntriesPerDeclaration);
+        Assert.Null(mcp.MaxComputedEntries);
+        Assert.True(mcp.StickyPerSourceKey);
+        Assert.False(mcp.UsesKernelRetrySet, "MCP retries inside its revision engine");
         // The defaults are the former fixed values byte-for-byte.
-        mcp.DefaultTimeouts.Should().Equal(
-            TimeSpan.FromSeconds(30),
-            TimeSpan.FromMinutes(2),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(30));
-        mcp.DeclarationInterpolation.Should().BeTrue("the data path joins the interpolation parity");
+        Assert.Equal(new TimeSpan[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30) }, mcp.DefaultTimeouts);
+        Assert.True(mcp.DeclarationInterpolation, "the data path joins the interpolation parity");
     }
 
     private static PluginDescriptor LoadPlugin(string denoJson, string? maieuticsJson)

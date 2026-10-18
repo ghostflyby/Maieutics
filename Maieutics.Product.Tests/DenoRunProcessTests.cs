@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using FluentAssertions;
 using Maieutics.DenoExecution;
 using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
@@ -47,9 +46,9 @@ public sealed class DenoRunProcessTests
 
         await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
-        process.ExitCode.Should().BeNull();
+        Assert.Null(process.ExitCode);
         await process.Completion.WaitAsync(deadline.Token);
-        process.ExitCode.Should().Be(7);
+        Assert.Equal(7, process.ExitCode);
     }
 
     [Fact(Timeout = 30_000)]
@@ -71,8 +70,8 @@ public sealed class DenoRunProcessTests
         await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger(), true);
 
         await process.Completion.WaitAsync(deadline.Token);
-        process.StandardError.Should().NotBeNull();
-        (await process.StandardError!.WaitAsync(deadline.Token)).Should().Contain("boom");
+        Assert.NotNull(process.StandardError);
+        Assert.Contains("boom", (await process.StandardError!.WaitAsync(deadline.Token)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -95,8 +94,8 @@ public sealed class DenoRunProcessTests
         await using var process = StartChild(startInfo, InternalDenoProcessKind.PluginHost, logger);
 
         await process.Completion.WaitAsync(deadline.Token);
-        process.ExitCode.Should().Be(0);
-        logger.Messages.Should().Contain(message =>
+        Assert.Equal(0, process.ExitCode);
+        Assert.Contains(logger.Messages, message =>
             message.Text.Contains("Plugin host", StringComparison.Ordinal) &&
             message.Text.Contains("stdout logging was truncated", StringComparison.Ordinal));
     }
@@ -121,9 +120,9 @@ public sealed class DenoRunProcessTests
 
         var firstStop = process.StopAsync();
         var secondStop = process.StopAsync();
-        secondStop.Should().BeSameAs(firstStop);
+        Assert.Same(firstStop, secondStop);
         await firstStop.WaitAsync(deadline.Token);
-        process.ExitCode.Should().NotBeNull();
+        Assert.NotNull(process.ExitCode);
     }
 
     [Fact(Timeout = 60_000)]
@@ -188,14 +187,14 @@ public sealed class DenoRunProcessTests
                 await Task.Delay(500, deadline.Token);
                 using (var grandchild = Process.GetProcessById(grandchildPid))
                 {
-                    grandchild.HasExited.Should().BeFalse("the test requires a live drain holder");
+                    Assert.False(grandchild.HasExited, "the test requires a live drain holder");
                 }
 
                 // Stop must return within the 2s budget even though the grandchild holds stdout.
                 var stopDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
                 await process.StopAsync().WaitAsync(deadline.Token);
-                DateTime.UtcNow.Should().BeBefore(stopDeadline, "stop must honor its total budget");
-                logger.Messages.Should().Contain(message =>
+                Assert.True(DateTime.UtcNow < stopDeadline);
+                Assert.Contains(logger.Messages, message =>
                     message.Text.Contains("abandoning its completion", StringComparison.Ordinal));
             }
             finally

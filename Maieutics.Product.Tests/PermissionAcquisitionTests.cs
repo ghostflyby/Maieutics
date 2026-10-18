@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Permissions;
@@ -18,8 +17,8 @@ public sealed class PermissionAcquisitionTests
 
         var policy = acquirer.Acquire(baseline);
 
-        policy.For(PermissionKind.Read).Allow.Should().Equal("/workspace");
-        policy.For(PermissionKind.Read).Deny.Should().BeEmpty();
+        Assert.Equal(new string[] { "/workspace" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Empty(policy.For(PermissionKind.Read).Deny);
     }
 
     [Fact]
@@ -36,9 +35,8 @@ public sealed class PermissionAcquisitionTests
         var policy = acquirer.Acquire(baseline, sessionId);
 
         // Lists append in layer order; the enforcer applies deny-wins over the merged lists.
-        policy.For(PermissionKind.Read).Allow.Should().Equal(
-            "/builtin", "/app-allow", "/workspace-allow", "/override-allow");
-        policy.For(PermissionKind.Read).Deny.Should().Equal("/app-deny");
+        Assert.Equal(new string[] { "/builtin", "/app-allow", "/workspace-allow", "/override-allow" }, policy.For(PermissionKind.Read).Allow);
+        Assert.Equal(new string[] { "/app-deny" }, policy.For(PermissionKind.Read).Deny);
     }
 
     [Fact]
@@ -51,11 +49,10 @@ public sealed class PermissionAcquisitionTests
         var source = new RegistryLayerSource(registry);
         var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
 
-        acquirer.Acquire(baseline, sessionId).For(PermissionKind.Net).Deny
-            .Should().Equal("evil.example.com:443");
+        Assert.Equal(new string[] { "evil.example.com:443" }, acquirer.Acquire(baseline, sessionId).For(PermissionKind.Net).Deny);
         // Another session (or no session) acquires without the override.
-        acquirer.Acquire(baseline).For(PermissionKind.Net).Deny.Should().BeEmpty();
-        acquirer.Acquire(baseline, AgentSessionId.Create()).For(PermissionKind.Net).Deny.Should().BeEmpty();
+        Assert.Empty(acquirer.Acquire(baseline).For(PermissionKind.Net).Deny);
+        Assert.Empty(acquirer.Acquire(baseline, AgentSessionId.Create()).For(PermissionKind.Net).Deny);
     }
 
     [Fact]
@@ -70,8 +67,8 @@ public sealed class PermissionAcquisitionTests
 
         var policy = acquirer.Acquire(baseline);
 
-        policy.For(PermissionKind.Env).AllowAll.Should().BeTrue();
-        policy.For(PermissionKind.Env).DenyAll.Should().BeTrue();
+        Assert.True(policy.For(PermissionKind.Env).AllowAll);
+        Assert.True(policy.For(PermissionKind.Env).DenyAll);
     }
 
     [Fact]
@@ -88,7 +85,7 @@ public sealed class PermissionAcquisitionTests
         // Variable expansion is pure string substitution; the pattern's own
         // separator is kept verbatim, so the expectation is a literal, not a
         // platform Path.Combine result.
-        policy.For(PermissionKind.Read).Allow.Should().Equal("/tmp/ws/notes");
+        Assert.Equal(new string[] { "/tmp/ws/notes" }, policy.For(PermissionKind.Read).Allow);
     }
 
     [Fact]
@@ -102,7 +99,8 @@ public sealed class PermissionAcquisitionTests
 
         var acquire = () => acquirer.Acquire(PermissionLayer.Empty);
 
-        acquire.Should().Throw<PermissionException>().WithMessage("*doesNotExist*");
+        var assertion28 = Assert.ThrowsAny<PermissionException>(() => acquire.Invoke());
+        Assert.Matches("(?is)^.*doesNotExist.*$", assertion28.Message);
     }
 
     [Fact]
@@ -115,14 +113,13 @@ public sealed class PermissionAcquisitionTests
         registry.Set(parent, layer);
         registry.RegisterChildScope(child, parent);
 
-        registry.TryGet(child).Should().BeSameAs(layer);
+        Assert.Same(layer, registry.TryGet(child));
 
         // The acquisition for the child scope composes the parent's override: a session-scoped
         // deny cannot be bypassed by delegating work to a child run (ADR 0030 decision 3).
         var source = new RegistryLayerSource(registry);
         var acquirer = new PermissionPolicyAcquirer(() => source, new NullVariableSource());
-        acquirer.Acquire(Layer("net", allow: ["localhost:80"]), child).For(PermissionKind.Net).Deny
-            .Should().Equal("evil.example.com:443");
+        Assert.Equal(new string[] { "evil.example.com:443" }, acquirer.Acquire(Layer("net", allow: ["localhost:80"]), child).For(PermissionKind.Net).Deny);
     }
 
     [Fact]
@@ -133,7 +130,7 @@ public sealed class PermissionAcquisitionTests
         var child = AgentSessionId.Create();
         registry.RegisterChildScope(child, parent);
 
-        registry.TryGet(child).Should().BeNull();
+        Assert.Null(registry.TryGet(child));
     }
 
     [Fact]
@@ -148,7 +145,7 @@ public sealed class PermissionAcquisitionTests
         registry.RegisterChildScope(child, parent);
         registry.RegisterChildScope(grandchild, child);
 
-        registry.TryGet(grandchild).Should().BeSameAs(layer);
+        Assert.Same(layer, registry.TryGet(grandchild));
     }
 
     [Fact]
@@ -163,7 +160,7 @@ public sealed class PermissionAcquisitionTests
         registry.Set(child, childLayer);
         registry.RegisterChildScope(child, parent);
 
-        registry.TryGet(child).Should().BeSameAs(childLayer);
+        Assert.Same(childLayer, registry.TryGet(child));
     }
 
     [Fact]
@@ -175,8 +172,8 @@ public sealed class PermissionAcquisitionTests
         registry.RegisterChildScope(first, second);
         registry.RegisterChildScope(second, first);
 
-        registry.TryGet(first).Should().BeNull();
-        registry.TryGet(second).Should().BeNull();
+        Assert.Null(registry.TryGet(first));
+        Assert.Null(registry.TryGet(second));
     }
 
     [Fact]
@@ -189,11 +186,11 @@ public sealed class PermissionAcquisitionTests
         registry.RegisterChildScope(child, parent);
         registry.ReleaseChildScope(child);
 
-        registry.TryGet(child).Should().BeNull();
+        Assert.Null(registry.TryGet(child));
         // Re-spawning a fresh child under the same parent registers cleanly again.
         var fresh = AgentSessionId.Create();
         registry.RegisterChildScope(fresh, parent);
-        registry.TryGet(fresh).Should().NotBeNull();
+        Assert.NotNull(registry.TryGet(fresh));
     }
 
     [Fact]
@@ -208,10 +205,10 @@ public sealed class PermissionAcquisitionTests
         for (var index = 0; index < 256; index++)
             registry.RegisterChildScope(AgentSessionId.Create(), parent);
 
-        registry.TryGet(firstChild).Should().BeNull();
+        Assert.Null(registry.TryGet(firstChild));
         var lastChild = AgentSessionId.Create();
         registry.RegisterChildScope(lastChild, parent);
-        registry.TryGet(lastChild).Should().NotBeNull();
+        Assert.NotNull(registry.TryGet(lastChild));
     }
 
     [Fact]
@@ -221,11 +218,11 @@ public sealed class PermissionAcquisitionTests
         var sessionId = AgentSessionId.Create();
         var layer = Layer("read", allow: ["/override"]);
 
-        registry.TryGet(sessionId).Should().BeNull();
+        Assert.Null(registry.TryGet(sessionId));
         registry.Set(sessionId, layer);
-        registry.TryGet(sessionId).Should().BeSameAs(layer);
+        Assert.Same(layer, registry.TryGet(sessionId));
         registry.Clear(sessionId);
-        registry.TryGet(sessionId).Should().BeNull();
+        Assert.Null(registry.TryGet(sessionId));
     }
 
     private static PermissionLayer Layer(

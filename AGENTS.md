@@ -250,7 +250,7 @@ When a scoped file references a skill, follow both. Do not duplicate a skill ver
 |---|---|
 | `.agents/skills/maieutics-agent-runtime/SKILL.md` | Sessions, runs, transcripts, tools, providers, profiles, capabilities, and frontend protocol semantics |
 | `.agents/skills/maieutics-structured-concurrency/SKILL.md` | Cancellation, channels, backpressure, owner loops, processes, and shutdown |
-| `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3, FluentAssertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |
+| `.agents/skills/maieutics-dotnet-testing/SKILL.md` | xUnit v3 assertions, deterministic integration tests, Deno, process tests, and NativeAOT verification |
 
 ## Change workflow
 

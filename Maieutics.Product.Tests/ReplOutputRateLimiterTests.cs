@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 
 namespace Maieutics.Product.Tests;
@@ -15,13 +14,13 @@ public sealed class ReplOutputRateLimiterTests
         var (limiter, clock) = CreateLimiter(new DenoReplOptions { MaxDisplayMessageRate = 1000 });
 
         for (var sequence = 0; sequence < 1000; sequence++)
-            limiter.TryReserve(Display("text/plain", "x")).Should().BeTrue();
-        limiter.TryReserve(Display("text/plain", "x")).Should().BeFalse();
+            Assert.True(limiter.TryReserve(Display("text/plain", "x")));
+        Assert.False(limiter.TryReserve(Display("text/plain", "x")));
 
         // The window slides: once the first sample is older than the window, a new display fits
         // again (the budget is per window, jupyter_server rate-limit semantics).
         clock.Advance(TimeSpan.FromSeconds(3));
-        limiter.TryReserve(Display("text/plain", "x")).Should().BeTrue();
+        Assert.True(limiter.TryReserve(Display("text/plain", "x")));
     }
 
     [Fact]
@@ -29,8 +28,8 @@ public sealed class ReplOutputRateLimiterTests
     {
         // A display carrying ~1 MB of native data reaches the 1 MB/s budget and is dropped.
         var (limiter, _) = CreateLimiter(new DenoReplOptions { MaxDisplayDataRate = 1_000_000 });
-        limiter.TryReserve(Display("text/plain", new string('x', 500_000))).Should().BeTrue();
-        limiter.TryReserve(Display("text/plain", new string('x', 500_000))).Should().BeFalse();
+        Assert.True(limiter.TryReserve(Display("text/plain", new string('x', 500_000))));
+        Assert.False(limiter.TryReserve(Display("text/plain", new string('x', 500_000))));
     }
 
     [Fact]
@@ -39,11 +38,11 @@ public sealed class ReplOutputRateLimiterTests
         // Two displays whose combined native data bytes reach the window budget; the second is
         // dropped, then the first sample expires and the budget recovers.
         var (limiter, clock) = CreateLimiter(new DenoReplOptions { MaxDisplayDataRate = 100 });
-        limiter.TryReserve(Display("text/plain", new string('x', 80))).Should().BeTrue();
-        limiter.TryReserve(Display("text/plain", new string('x', 80))).Should().BeFalse();
+        Assert.True(limiter.TryReserve(Display("text/plain", new string('x', 80))));
+        Assert.False(limiter.TryReserve(Display("text/plain", new string('x', 80))));
 
         clock.Advance(TimeSpan.FromSeconds(3));
-        limiter.TryReserve(Display("text/plain", new string('x', 80))).Should().BeTrue();
+        Assert.True(limiter.TryReserve(Display("text/plain", new string('x', 80))));
     }
 
     [Fact]
@@ -53,8 +52,8 @@ public sealed class ReplOutputRateLimiterTests
         // would fit the budget are dropped once the trailing buffer bytes are counted (binary
         // data is never counted as its base64 expansion).
         var (limiter, _) = CreateLimiter(new DenoReplOptions { MaxDisplayDataRate = 45 });
-        limiter.TryReserve(Display("image/png", null, new byte[8])).Should().BeTrue();
-        limiter.TryReserve(Display("image/png", null, new byte[8])).Should().BeFalse();
+        Assert.True(limiter.TryReserve(Display("image/png", null, new byte[8])));
+        Assert.False(limiter.TryReserve(Display("image/png", null, new byte[8])));
     }
 
     [Fact(Timeout = 15_000)]
@@ -72,7 +71,7 @@ public sealed class ReplOutputRateLimiterTests
             .ToArray();
         var accepted = await Task.WhenAll(reservations).WaitAsync(token);
 
-        accepted.Count(static value => value).Should().Be(100);
+        Assert.Equal(100, accepted.Count(static value => value));
     }
 
     [Fact]
@@ -82,12 +81,12 @@ public sealed class ReplOutputRateLimiterTests
         // clock advances deterministically. The monotonic source is not wall-clock time: the fake
         // timestamp is fed straight through.
         var (limiter, clock) = CreateLimiter(new DenoReplOptions { MaxDisplayMessageRate = 1 });
-        limiter.TryReserve(Display("text/plain", "x")).Should().BeTrue();
+        Assert.True(limiter.TryReserve(Display("text/plain", "x")));
 
         clock.Advance(TimeSpan.FromMilliseconds(500));
-        limiter.TryReserve(Display("text/plain", "x")).Should().BeFalse();
+        Assert.False(limiter.TryReserve(Display("text/plain", "x")));
         clock.Advance(TimeSpan.FromMilliseconds(2500));
-        limiter.TryReserve(Display("text/plain", "x")).Should().BeTrue();
+        Assert.True(limiter.TryReserve(Display("text/plain", "x")));
     }
 
     private static (ReplOutputRateLimiter Limiter, FakeClock Clock) CreateLimiter(DenoReplOptions options)

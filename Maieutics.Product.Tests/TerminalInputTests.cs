@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using XTerm;
@@ -12,14 +11,11 @@ public sealed class TerminalInputParserTests
     {
         var batch = TerminalInputBatchParser.Parse("t hello\n" + "t <script>alert('x')</script>\n" + "t tab\there");
 
-        batch.LineCount.Should().Be(3);
-        var text = batch.Operations.Select(static operation => operation.Should().BeOfType<TerminalTextOperation>().Which)
+        Assert.Equal(3, batch.LineCount);
+        var text = batch.Operations.Select(static operation => Assert.IsType<TerminalTextOperation>(operation))
             .ToArray();
-        text.Select(static operation => operation.Text).Should().Equal(
-            "hello",
-            "<script>alert('x')</script>",
-            "tab\there");
-        text.Select(static operation => operation.Line).Should().Equal(1, 2, 3);
+        Assert.Equal(new string[] { "hello", "<script>alert('x')</script>", "tab\there" }, text.Select(static operation => operation.Text));
+        Assert.Equal(new int[] { 1, 2, 3 }, text.Select(static operation => operation.Line));
     }
 
     [Fact]
@@ -27,21 +23,17 @@ public sealed class TerminalInputParserTests
     {
         var batch = TerminalInputBatchParser.Parse("k <Esc> <CR>\n" + "k 5<Down>\n" + "k <C-w> <C-j>");
 
-        batch.Operations.Should().HaveCount(3);
-        var first = batch.Operations[0].Should().BeOfType<TerminalKeysOperation>().Which;
-        first.Keys.Should().Equal(
-            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)),
-            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)));
+        Assert.Equal(3, batch.Operations.Count());
+        var first = Assert.IsType<TerminalKeysOperation>(batch.Operations[0]);
+        Assert.Equal(new TerminalKey[] { new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)) }, first.Keys);
 
-        var second = batch.Operations[1].Should().BeOfType<TerminalKeysOperation>().Which;
-        second.Keys.Should().ContainSingle().Which.Should().Be(new TerminalKey(
+        var second = Assert.IsType<TerminalKeysOperation>(batch.Operations[1]);
+        Assert.Equal(new TerminalKey(
             5,
-            new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None)));
+            new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None)), Assert.Single(second.Keys));
 
-        var third = batch.Operations[2].Should().BeOfType<TerminalKeysOperation>().Which;
-        third.Keys.Select(static key => key.Spec).Should().Equal(
-            new TerminalCharKey('w', TerminalKeyModifiers.Control),
-            new TerminalCharKey('j', TerminalKeyModifiers.Control));
+        var third = Assert.IsType<TerminalKeysOperation>(batch.Operations[2]);
+        Assert.Equal(new TerminalKeySpec[] { new TerminalCharKey('w', TerminalKeyModifiers.Control), new TerminalCharKey('j', TerminalKeyModifiers.Control) }, third.Keys.Select(static key => key.Spec));
     }
 
     [Theory]
@@ -51,8 +43,7 @@ public sealed class TerminalInputParserTests
     public void TextPayloadsRejectEscapeAndControlBytes(string line)
     {
         var failure = () => TerminalInputBatchParser.Parse(line);
-        failure.Should().Throw<AgentToolException>()
-            .Which.Code.Should().Be("terminal_invalid_input");
+        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(() => failure.Invoke()).Code);
     }
 
     [Theory]
@@ -71,15 +62,14 @@ public sealed class TerminalInputParserTests
     public void MalformedKeyLinesFailTheWholeBatch(string line)
     {
         var failure = () => TerminalInputBatchParser.Parse(line);
-        failure.Should().Throw<AgentToolException>()
-            .Which.Code.Should().Be("terminal_invalid_input");
+        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(() => failure.Invoke()).Code);
     }
 
     [Fact]
     public void TrailingNewlineDoesNotCreateAnErrorLine()
     {
         var batch = TerminalInputBatchParser.Parse("t hello\n");
-        batch.Operations.Should().ContainSingle().Which.Should().BeOfType<TerminalTextOperation>();
+        Assert.IsType<TerminalTextOperation>(Assert.Single(batch.Operations));
     }
 
     [Theory]
@@ -94,22 +84,19 @@ public sealed class TerminalInputParserTests
     public void ExtendedControlAndMetaTokensParse(string token, char character)
     {
         var batch = TerminalInputBatchParser.Parse($"k {token}");
-        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
+        var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
         var modifiers = token.StartsWith("<C-", StringComparison.Ordinal)
             ? TerminalKeyModifiers.Control
             : TerminalKeyModifiers.Alt;
-        keys.Keys.Should().ContainSingle().Which.Spec.Should().Be(new TerminalCharKey(character, modifiers));
+        Assert.Equal(new TerminalCharKey(character, modifiers), Assert.Single(keys.Keys).Spec);
     }
 
     [Fact]
     public void SpecialKeysAcceptModifiers()
     {
         var batch = TerminalInputBatchParser.Parse("k <S-Tab> <C-F1> <A-Up>");
-        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
-        keys.Keys.Should().Equal(
-            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)),
-            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)),
-            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)));
+        var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
+        Assert.Equal(new TerminalKey[] { new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)) }, keys.Keys);
     }
 
     [Theory]
@@ -118,18 +105,16 @@ public sealed class TerminalInputParserTests
     public void InsertNamesParseToTheInsertSpecialKey(string token)
     {
         var batch = TerminalInputBatchParser.Parse($"k {token}");
-        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
-        keys.Keys.Should().ContainSingle().Which.Spec.Should().Be(
-            new TerminalSpecialKey(TerminalKeyName.Insert, TerminalKeyModifiers.None));
+        var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
+        Assert.Equal(new TerminalSpecialKey(TerminalKeyName.Insert, TerminalKeyModifiers.None), Assert.Single(keys.Keys).Spec);
     }
 
     [Fact]
     public void CtrlSpaceParsesAsTheNulControlByte()
     {
         var batch = TerminalInputBatchParser.Parse("k <C-Space>");
-        var keys = batch.Operations.Single().Should().BeOfType<TerminalKeysOperation>().Which;
-        keys.Keys.Should().ContainSingle().Which.Spec.Should().Be(
-            new TerminalCharKey('@', TerminalKeyModifiers.Control));
+        var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
+        Assert.Equal(new TerminalCharKey('@', TerminalKeyModifiers.Control), Assert.Single(keys.Keys).Spec);
     }
 
     [Fact]
@@ -137,7 +122,7 @@ public sealed class TerminalInputParserTests
     {
         // A newline ends the line and is parsed as the next command; an embedded control byte is rejected.
         var batch = TerminalInputBatchParser.Parse("t first\nk <CR>\nt second");
-        batch.Operations.Should().HaveCount(3);
+        Assert.Equal(3, batch.Operations.Count());
     }
 }
 
@@ -157,7 +142,7 @@ public sealed class TerminalKeyEncoderTests
         var encoder = CreateEncoder(out _);
         var bytes = encoder.Encode([Key('c', TerminalKeyModifiers.Control)]);
 
-        bytes.Should().Equal(0x03);
+        Assert.Equal(new byte[] { (byte)(0x03) }, bytes);
     }
 
     [Theory]
@@ -173,7 +158,7 @@ public sealed class TerminalKeyEncoderTests
         var character = token[0];
         var bytes = encoder.Encode([Key(character, TerminalKeyModifiers.Control)]);
 
-        bytes.Should().Equal(expected);
+        Assert.Equal(new byte[] { expected }, bytes);
     }
 
     [Fact]
@@ -182,40 +167,40 @@ public sealed class TerminalKeyEncoderTests
         var encoder = CreateEncoder(out _);
         var bytes = encoder.Encode([Key('x', TerminalKeyModifiers.Alt)]);
 
-        bytes.Should().Equal(Esc.Concat("x"u8.ToArray()));
+        Assert.Equal(Esc.Concat("x"u8.ToArray()), bytes);
     }
 
     [Fact]
     public void EnterTabAndSpaceEncodeAsRawControlBytes()
     {
         var encoder = CreateEncoder(out _);
-        encoder.Encode([Special(TerminalKeyName.Enter)]).Should().Equal(0x0d);
-        encoder.Encode([Special(TerminalKeyName.Tab)]).Should().Equal(0x09);
-        encoder.Encode([Special(TerminalKeyName.Space)]).Should().Equal(0x20);
+        Assert.Equal(new byte[] { (byte)(0x0d) }, encoder.Encode([Special(TerminalKeyName.Enter)]));
+        Assert.Equal(new byte[] { (byte)(0x09) }, encoder.Encode([Special(TerminalKeyName.Tab)]));
+        Assert.Equal(new byte[] { (byte)(0x20) }, encoder.Encode([Special(TerminalKeyName.Space)]));
     }
 
     [Fact]
     public void InsertEncodesAsTheStandardEscapeSequence()
     {
         var encoder = CreateEncoder(out _);
-        encoder.Encode([Special(TerminalKeyName.Insert)]).Should().Equal(Esc.Concat("[2~"u8.ToArray()));
+        Assert.Equal(Esc.Concat("[2~"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Insert)]));
     }
 
     [Fact]
     public void EscapeEncodesAsItsOwnByte()
     {
         var encoder = CreateEncoder(out _);
-        encoder.Encode([Special(TerminalKeyName.Escape)]).Should().Equal(0x1b);
+        Assert.Equal(new byte[] { (byte)(0x1b) }, encoder.Encode([Special(TerminalKeyName.Escape)]));
     }
 
     [Fact]
     public void ArrowKeysFollowApplicationCursorMode()
     {
         var encoder = CreateEncoder(out var terminal);
-        encoder.Encode([Special(TerminalKeyName.Up)]).Should().Equal(Esc.Concat("[A"u8.ToArray()));
+        Assert.Equal(Esc.Concat("[A"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Up)]));
 
         terminal.ApplicationCursorKeys = true;
-        encoder.Encode([Special(TerminalKeyName.Up)]).Should().Equal(Esc.Concat("OA"u8.ToArray()));
+        Assert.Equal(Esc.Concat("OA"u8.ToArray()), encoder.Encode([Special(TerminalKeyName.Up)]));
     }
 
     [Fact]
@@ -224,12 +209,12 @@ public sealed class TerminalKeyEncoderTests
         var encoder = CreateEncoder(out _);
         var bytes = encoder.Encode([new TerminalKey(5, new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None))]);
 
-        bytes.Should().HaveCount(5 * 3);
-        bytes.Should().Equal(Esc.Concat("[B"u8.ToArray())
+        Assert.Equal(5 * 3, bytes.Count());
+        Assert.Equal(Esc.Concat("[B"u8.ToArray())
             .Concat(Esc.Concat("[B"u8.ToArray()))
             .Concat(Esc.Concat("[B"u8.ToArray()))
             .Concat(Esc.Concat("[B"u8.ToArray()))
-            .Concat(Esc.Concat("[B"u8.ToArray())));
+            .Concat(Esc.Concat("[B"u8.ToArray())), bytes);
     }
 
     [Fact]
@@ -240,7 +225,7 @@ public sealed class TerminalKeyEncoderTests
             null,
             new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Control))]);
 
-        bytes.Should().Equal(Esc.Concat("[1;5A"u8.ToArray()));
+        Assert.Equal(Esc.Concat("[1;5A"u8.ToArray()), bytes);
     }
 
     [Fact]
@@ -255,7 +240,7 @@ public sealed class TerminalKeyEncoderTests
         ]);
 
         // The ESC of the meta 'x' must not be split from its payload by the surrounding keys.
-        bytes.Should().Equal(0x1b, 0x1b, (byte)'x', 0x0d);
+        Assert.Equal(new byte[] { (byte)(0x1b), (byte)(0x1b), (byte)'x', (byte)(0x0d) }, bytes);
     }
 
     private static TerminalKey Special(TerminalKeyName name)

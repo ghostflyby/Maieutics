@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
@@ -59,32 +58,25 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         var root = CreateGoldenPluginRoot();
         try
         {
-            PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
-                .Should().BeTrue(error);
+            Assert.True(PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error), error);
             var loaded = descriptor ?? throw new InvalidOperationException(error);
 
             // The collection invariants beneath the extensions/data fingerprint
             // domains, pinned structurally so a silent inclusion flip cannot hide
             // behind an unchanged-looking hash.
-            descriptor.Extensions.Select(static entry => entry.Kind).Should().Equal(
-                McpDiscoverContributionKind.ExtensionKind, SkillsContributionKind.ExtensionKind);
-            descriptor.ExtensionDiagnostics.Should().Contain(diagnostic =>
+            Assert.Equal(new string[] { McpDiscoverContributionKind.ExtensionKind, SkillsContributionKind.ExtensionKind }, descriptor.Extensions.Select(static entry => entry.Kind));
+            Assert.Contains(descriptor.ExtensionDiagnostics, diagnostic =>
                 diagnostic.Contains("unknown-extension", StringComparison.Ordinal));
-            descriptor.DataEntries.Select(static entry => entry.Name).Should().BeEquivalentTo(
-                ["mcp", "notices", "broken"],
-                static options => options.WithoutStrictOrdering());
-            descriptor.DataEntries.Single(static entry => entry.Name == "notices").Error
-                .Should().BeNull("an unknown data name is still collected");
-            descriptor.DataEntries.Single(static entry => entry.Name == "broken").Error
-                .Should().NotBeNull();
-            descriptor.McpServersError.Should().BeNull();
-            descriptor.McpServers.Should().ContainSingle();
-            descriptor.Triggers.Should().HaveCount(3);
-            descriptor.Triggers.Single(static trigger => trigger.Kind == "watch").WatchPaths
-                .Single().Should().Contain("watched", "watch paths enter the fingerprint expanded");
+            Assert.Equivalent(new[] { "mcp", "notices", "broken" }, descriptor.DataEntries.Select(static entry => entry.Name));
+            Assert.Null(descriptor.DataEntries.Single(static entry => entry.Name == "notices").Error);
+            Assert.NotNull(descriptor.DataEntries.Single(static entry => entry.Name == "broken").Error);
+            Assert.Null(descriptor.McpServersError);
+            Assert.Single(descriptor.McpServers);
+            Assert.Equal(3, descriptor.Triggers.Count());
+            Assert.Contains("watched", descriptor.Triggers.Single(static trigger => trigger.Kind == "watch").WatchPaths
+                .Single());
 
-            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
-                .Should().Be(FullSurfaceFingerprint);
+            Assert.Equal(FullSurfaceFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root)));
         }
         finally
         {
@@ -98,8 +90,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         var root = CreateGoldenPluginRoot();
         try
         {
-            PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
-                .Should().BeTrue(error);
+            Assert.True(PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error), error);
             var golden = PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(
                 descriptor ?? throw new InvalidOperationException(error), root));
 
@@ -127,11 +118,10 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                     {"name":"nightly","kind":"cron","expression":"0 3 * * *","action":"event"}]}
                 """);
 
-            PluginManifest.TryLoad(root, GoldenVariables(), out var reformatted, out error)
-                .Should().BeTrue(error);
-            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(
-                reformatted ?? throw new InvalidOperationException(error), root)).Should().Be(golden);
-            golden.Should().Be(FullSurfaceFingerprint);
+            Assert.True(PluginManifest.TryLoad(root, GoldenVariables(), out var reformatted, out error), error);
+            Assert.Equal(golden, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(
+                reformatted ?? throw new InvalidOperationException(error), root)));
+            Assert.Equal(FullSurfaceFingerprint, golden);
         }
         finally
         {
@@ -182,16 +172,15 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                 }
                 """);
 
-            PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
-                .Should().BeTrue(error);
+            Assert.True(PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error), error);
             var loaded = descriptor ?? throw new InvalidOperationException(error);
 
             // Post-C: the expansion fails (unknown variable) with the expansion error
             // text — not the former does-not-exist text.
             var unresolved = loaded.DataEntries.Single(static entry => entry.Name == "unresolved");
-            unresolved.Error.Should().NotBeNull().And.Contain("cannot be expanded");
-            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
-                .Should().Be(LiteralVariablePathFingerprint, "the data domain hashes the new expansion error text");
+            Assert.NotNull(unresolved.Error);
+            Assert.Contains("cannot be expanded", unresolved.Error);
+            Assert.Equal(LiteralVariablePathFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root)));
 
             // Pre-C reconstruction: the same surface with the former collection
             // outcome (the literal path probed as a file). Its fingerprint must equal
@@ -205,10 +194,8 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                             $"The data entry file '{LiteralVariablePath}' does not exist.")
                         : entry)]
             };
-            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(preC, root))
-                .Should().Be(PreCLiteralVariablePathFingerprint);
-            PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root))
-                .Should().NotBe(PreCLiteralVariablePathFingerprint, "the flip is real, both sides pinned");
+            Assert.Equal(PreCLiteralVariablePathFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(preC, root)));
+            Assert.NotEqual(PreCLiteralVariablePathFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root)));
         }
         finally
         {
@@ -232,21 +219,20 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                 Path.Combine(root, "mcp.json"),
                 """{ "mcpServers": { "probe": { "command": "deno", "args": ["info"] } } }""");
 
-            PluginManifest.TryLoad(root, out var descriptor, out var error)
-                .Should().BeTrue(error);
+            Assert.True(PluginManifest.TryLoad(root, out var descriptor, out var error), error);
             var loaded = descriptor ?? throw new InvalidOperationException(error);
 
             // Verbatim, collected, inert: the data domain hashes the declared spelling
             // and the file's canonical JSON, and no mcp-domain servers appear — the
             // declaration is unknown to the exact-match grammar, not re-spelled into it.
-            var entry = loaded.DataEntries.Should().ContainSingle().Which;
-            entry.Name.Should().Be("Mcp", "the declared spelling is recorded verbatim");
-            entry.Error.Should().BeNull("the file is collected normally");
-            loaded.McpServers.Should().BeEmpty("a misspelled known name is inert");
-            loaded.ExtensionDiagnostics.Should().Contain(static diagnostic =>
+            var entry = Assert.Single(loaded.DataEntries);
+            Assert.Equal("Mcp", entry.Name);
+            Assert.Null(entry.Error);
+            Assert.Empty(loaded.McpServers);
+            Assert.Contains(loaded.ExtensionDiagnostics, static diagnostic =>
                 diagnostic.Contains("data entry 'Mcp'", StringComparison.Ordinal));
 
-            PluginDeclarationFingerprint.Compute(loaded).Should().Be(MisspelledDataNameFingerprint);
+            Assert.Equal(MisspelledDataNameFingerprint, PluginDeclarationFingerprint.Compute(loaded));
         }
         finally
         {
@@ -267,11 +253,10 @@ public sealed class PluginDeclarationFingerprintGoldenTests
                 Path.Combine(root, "maieutics.json"),
                 """{ "isolation": "auto", "entrypoints": {} }""");
 
-            PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error)
-                .Should().BeTrue(error);
+            Assert.True(PluginManifest.TryLoad(root, GoldenVariables(), out var descriptor, out var error), error);
             var minimal = descriptor ?? throw new InvalidOperationException(error);
-            PluginDeclarationFingerprint.IsApprovalExempt(minimal).Should().BeTrue();
-            PluginDeclarationFingerprint.Compute(minimal).Should().Be(MinimalSurfaceFingerprint);
+            Assert.True(PluginDeclarationFingerprint.IsApprovalExempt(minimal));
+            Assert.Equal(MinimalSurfaceFingerprint, PluginDeclarationFingerprint.Compute(minimal));
         }
         finally
         {

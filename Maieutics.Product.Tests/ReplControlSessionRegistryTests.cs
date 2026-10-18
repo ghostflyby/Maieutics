@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Control;
 
 namespace Maieutics.Product.Tests;
@@ -9,14 +8,14 @@ public sealed class ReplControlSessionRegistryTests
     public void RegisterAndUnregisterRoundTrip()
     {
         var registry = new ReplControlSessionRegistry();
-        registry.TryGetSession(42, out _).Should().BeFalse();
+        Assert.False(registry.TryGetSession(42, out _));
 
         registry.Register(42, "session-a");
-        registry.TryGetSession(42, out var sessionId).Should().BeTrue();
-        sessionId.Should().Be("session-a");
+        Assert.True(registry.TryGetSession(42, out var sessionId));
+        Assert.Equal("session-a", sessionId);
 
         registry.Unregister(42);
-        registry.TryGetSession(42, out _).Should().BeFalse();
+        Assert.False(registry.TryGetSession(42, out _));
     }
 
     [Fact]
@@ -26,14 +25,14 @@ public sealed class ReplControlSessionRegistryTests
         registry.Register(42, "session-a");
         registry.Register(42, "session-b");
 
-        registry.TryGetSession(42, out var sessionId).Should().BeTrue();
-        sessionId.Should().Be("session-b");
+        Assert.True(registry.TryGetSession(42, out var sessionId));
+        Assert.Equal("session-b", sessionId);
     }
 
     [Fact]
     public void RejectsInvalidRegistration()
     {
         var registry = new ReplControlSessionRegistry();
-        registry.Invoking(r => r.Register(0, "session")).Should().Throw<ArgumentOutOfRangeException>();
+        Assert.ThrowsAny<ArgumentOutOfRangeException>(() => (registry).Register(0, "session"));
     }
 }

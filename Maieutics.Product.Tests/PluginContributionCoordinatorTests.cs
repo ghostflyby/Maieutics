@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,10 +28,10 @@ public sealed class PluginContributionCoordinatorTests
             []));
         await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
 
-        wide.Frames.Should().HaveCount(1, "the RegistryWide kind receives every frame");
-        wide.Frames[0].Registrations.Should().ContainSingle("the snapshot is delivered unfiltered");
-        wide.Guarded[0].Should().BeFalse("the registry frame's plain branch publishes unguarded");
-        perPlugin.Invocations.Should().BeEmpty("an unchanged frame takes zero action");
+        Assert.Single(wide.Frames);
+        Assert.Single(wide.Frames[0].Registrations);
+        Assert.False(wide.Guarded[0], "the registry frame's plain branch publishes unguarded");
+        Assert.Empty(perPlugin.Invocations);
     }
 
     [Fact]
@@ -50,7 +49,7 @@ public sealed class PluginContributionCoordinatorTests
             ["p1", "p2"]));
 
         await skills.WaitUntilAsync(() => skills.Invocations.Contains("p1") && skills.Invocations.Contains("p2"));
-        wide.Frames.Should().ContainSingle("the RegistryWide kind publishes before scheduling");
+        Assert.Single(wide.Frames);
         skills.ReleasePass();
         await skills.WaitUntilAsync(() => skills.ActivePasses == 0);
     }
@@ -76,10 +75,9 @@ public sealed class PluginContributionCoordinatorTests
         await skills.WaitUntilAsync(() => skills.ActivePasses == 1);
         skills.ReleasePass();
         await skills.WaitUntilAsync(() => skills.ActivePasses == 0);
-        skills.Invocations.Count(request => request == "p")
-            .Should().Be(2, "two coalesced events produce exactly one follow-up pass");
+        Assert.Equal(2, skills.Invocations.Count(request => request == "p"));
         await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
-        skills.Invocations.Count(request => request == "p").Should().Be(2, "no further pass may start");
+        Assert.Equal(2, skills.Invocations.Count(request => request == "p"));
     }
 
     [Fact]
@@ -108,34 +106,27 @@ public sealed class PluginContributionCoordinatorTests
 
         // A mark requires the frame's epoch to reach baseline+1.
         coordinator.MarkReloadForce("p");
-        coordinator.DrainReloadForces(new Dictionary<string, int>())
-            .Should().BeEmpty("a frame without the plugin's epoch must not drain the mark");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 1 })
-            .Should().ContainSingle("the epoch proves the worker was replaced");
+        Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int>()));
+        Assert.Single(coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 1 }));
 
         // Back-to-back marks raise the requirement past each epoch bump.
         coordinator.MarkReloadForce("p");
         coordinator.MarkReloadForce("p");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 1 })
-            .Should().BeEmpty("the raised requirement outlives the first epoch bump");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 2 })
-            .Should().BeEmpty("the second mark raised the requirement again");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 3 })
-            .Should().ContainSingle("the newest requirement is eventually proven");
+        Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 1 }));
+        Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 2 }));
+        Assert.Single(coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 3 }));
 
         // An epoch that went backwards means a fresh host process: the mark drains.
         coordinator.MarkReloadForce("p");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 0 })
-            .Should().ContainSingle("a regressed epoch proves an all-fresh host");
+        Assert.Single(coordinator.DrainReloadForces(new Dictionary<string, int> { ["p"] = 0 }));
 
         // A host that predates epochs offers its frame as the best completion signal.
         coordinator.MarkReloadForce("p");
-        coordinator.DrainReloadForces(null).Should().ContainSingle("null epochs drain every mark");
+        Assert.Single(coordinator.DrainReloadForces(null));
 
         // An unrelated plugin's epoch bump drains nothing.
         coordinator.MarkReloadForce("p");
-        coordinator.DrainReloadForces(new Dictionary<string, int> { ["other"] = 5 })
-            .Should().BeEmpty();
+        Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int> { ["other"] = 5 }));
     }
 
     [Fact]
@@ -146,16 +137,15 @@ public sealed class PluginContributionCoordinatorTests
         coordinator.SetRetryPending("Skills", "p1", pending: true);
         coordinator.SetRetryPending("Skills", "p2", pending: true);
         coordinator.SetRetryPending("Other", "p1", pending: true);
-        coordinator.RetrySnapshot("Skills").Should().BeEquivalentTo(["p1", "p2"]);
-        coordinator.RetrySnapshot("Other").Should().ContainSingle("retry sets are per kind");
+        Assert.Equivalent(new[] { "p1", "p2" }, coordinator.RetrySnapshot("Skills"));
+        Assert.Single(coordinator.RetrySnapshot("Other"));
         coordinator.SetRetryPending("Skills", "p1", pending: false);
-        coordinator.RetrySnapshot("Skills").Should().ContainSingle("the first successful pass clears the flag");
+        Assert.Single(coordinator.RetrySnapshot("Skills"));
 
         coordinator.MarkReloadForce("p1");
         coordinator.Reset();
-        coordinator.RetrySnapshot("Skills").Should().BeEmpty("no retry survives a generation swap");
-        coordinator.DrainReloadForces(new Dictionary<string, int>())
-            .Should().BeEmpty("no deferred force survives a generation swap");
+        Assert.Empty(coordinator.RetrySnapshot("Skills"));
+        Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int>()));
     }
 
     [Fact]
@@ -178,17 +168,17 @@ public sealed class PluginContributionCoordinatorTests
             snapshot,
             ContributionFrameInput.NoForcedPlugins,
             []));
-        wide.Frames.Should().ContainSingle();
-        wide.Frames[0].Registrations.Should().HaveCount(2, "the full snapshot is delivered verbatim");
-        wide.Guarded[0].Should().BeTrue("approval publishes take the disposed-coordinator guard");
+        Assert.Single(wide.Frames);
+        Assert.Equal(2, wide.Frames[0].Registrations.Count());
+        Assert.True(wide.Guarded[0], "approval publishes take the disposed-coordinator guard");
         await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
-        skills.Invocations.Should().BeEmpty("the approval's RegistryWide half schedules no passes");
-        other.Invocations.Should().BeEmpty();
+        Assert.Empty(skills.Invocations);
+        Assert.Empty(other.Invocations);
 
         skills.HoldPasses();
         coordinator.ReconcilePlugins("Skills", ["p2"]);
         await skills.WaitUntilAsync(() => skills.ActivePasses == 1);
-        other.Invocations.Should().BeEmpty("only the named kind schedules");
+        Assert.Empty(other.Invocations);
         skills.ReleasePass();
         await skills.WaitUntilAsync(() => skills.ActivePasses == 0);
     }
@@ -205,8 +195,8 @@ public sealed class PluginContributionCoordinatorTests
             [new PluginRegistration("p1", "e1", "McpDiscover")],
             ContributionFrameInput.NoForcedPlugins,
             ["p1"]));
-        wide.Frames.Should().ContainSingle("the seed publishes the initial snapshot");
-        wide.Guarded[0].Should().BeTrue("the start seed takes the disposed-coordinator guard");
+        Assert.Single(wide.Frames);
+        Assert.True(wide.Guarded[0], "the start seed takes the disposed-coordinator guard");
     }
 
     [Fact]
@@ -225,11 +215,10 @@ public sealed class PluginContributionCoordinatorTests
             ["joined"] = ["e1"],
         };
 
-        ContributionCoordinator.DiffExportSets(before, after)
-            .Should().BeEquivalentTo(["changed", "joined", "gone"]);
+        Assert.Equivalent(new[] { "changed", "joined", "gone" }, ContributionCoordinator.DiffExportSets(before, after));
 
         // An identical rebuild reports nothing — the unchanged-frame zero action.
-        ContributionCoordinator.DiffExportSets(before, before).Should().BeEmpty();
+        Assert.Empty(ContributionCoordinator.DiffExportSets(before, before));
     }
 
     [Fact]
@@ -245,9 +234,9 @@ public sealed class PluginContributionCoordinatorTests
             },
             "Skills");
 
-        sets.Should().HaveCount(2);
-        sets["p1"].Should().BeEquivalentTo(["e1", "e2"], "other extension points do not join the kind's sets");
-        sets["p2"].Should().BeEquivalentTo(["e1"]);
+        Assert.Equal(2, sets.Count());
+        Assert.Equivalent(new[] { "e1", "e2" }, sets["p1"]);
+        Assert.Equivalent(new[] { "e1" }, sets["p2"]);
     }
 
     // —— Slot table ——
@@ -261,7 +250,7 @@ public sealed class PluginContributionCoordinatorTests
         table.SetPublished("p", Part("pub"));
         table.SetDeclared("p", Part("decl"));
 
-        Names(table.Compose("p")).Should().ContainInOrder("decl", "e2", "e1", "pub");
+        AssertContainsInOrder(Names(table.Compose("p")), "decl", "e2", "e1", "pub");
     }
 
     [Fact]
@@ -281,20 +270,34 @@ public sealed class PluginContributionCoordinatorTests
         reference[Key("p", "e2")] = "e2";
         table.SetGenerated("p", Key("p", "e1"), Part("e1-v2"));
         reference[Key("p", "e1")] = "e1-v2";
-        Names(table.Compose("p")).Should().ContainInOrder(ReferenceOrder(reference));
+        AssertContainsInOrder(Names(table.Compose("p")), ReferenceOrder(reference));
         // An upsert keeps the key's position and takes the new value.
-        Names(table.Compose("p")).Should().ContainInOrder("e1-v2", "e2");
+        AssertContainsInOrder(Names(table.Compose("p")), "e1-v2", "e2");
 
         table.MarkSlotHeld("p");
-        table.Remove("p").Should().BeTrue();
+        Assert.True(table.Remove("p"));
         reference.Remove(Key("p", "e1"));
         reference.Remove(Key("p", "e2"));
         table.SetGenerated("p", Key("p", "e2"), Part("e2"));
         reference[Key("p", "e2")] = "e2";
         table.SetGenerated("p", Key("p", "e1"), Part("e1"));
         reference[Key("p", "e1")] = "e1";
-        Names(table.Compose("p")).Should().ContainInOrder(ReferenceOrder(reference));
-        Names(table.Compose("p")).Should().NotContain("e1-v2", "the removed plugin's parts went with it");
+        AssertContainsInOrder(Names(table.Compose("p")), ReferenceOrder(reference));
+        Assert.DoesNotContain("e1-v2", Names(table.Compose("p")));
+    }
+
+    /// <summary>Subsequence assertion: the expected names appear in this order, but the
+    /// actual composition may carry additional entries in between.</summary>
+    private static void AssertContainsInOrder(IReadOnlyList<string> actual, params string[] expected) =>
+        AssertContainsInOrder(actual, (IReadOnlyList<string>)expected);
+
+    private static void AssertContainsInOrder(IReadOnlyList<string> actual, IReadOnlyList<string> expected)
+    {
+        var position = 0;
+        foreach (var item in actual)
+            if (position < expected.Count && string.Equals(item, expected[position], StringComparison.Ordinal))
+                position++;
+        Assert.Equal(expected.Count, position);
     }
 
     private static IReadOnlyList<string> ReferenceOrder(Dictionary<SlotSourceKey, string> reference) =>
@@ -306,13 +309,13 @@ public sealed class PluginContributionCoordinatorTests
         var table = new ContributionSlotTable("Skills");
         table.SetPublished("p", Part("pub"));
         table.MarkSlotHeld("p");
-        table.HoldsFace("p").Should().BeTrue("a held slot is a face even with only a published part");
+        Assert.True(table.HoldsFace("p"), "a held slot is a face even with only a published part");
 
-        table.Remove("p").Should().BeTrue();
-        table.HoldsFace("p").Should().BeFalse();
-        table.Compose("p").Should().BeEmpty("the revoked publish-only plugin loses its published part");
+        Assert.True(table.Remove("p"));
+        Assert.False(table.HoldsFace("p"));
+        Assert.Empty(table.Compose("p"));
 
-        table.Remove("p").Should().BeFalse("removing an absent slot is a no-op");
+        Assert.False(table.Remove("p"), "removing an absent slot is a no-op");
     }
 
     [Fact]
@@ -322,17 +325,17 @@ public sealed class PluginContributionCoordinatorTests
 
         // A pass wrote a sticky part but its commit was declined: no slot presence.
         table.SetGenerated("p", Key("p", "e1"), Part("e1"));
-        table.HoldsFace("p").Should().BeFalse();
+        Assert.False(table.HoldsFace("p"));
 
         // Slot removal keyed on presence does nothing — the orphan stays for a later
         // successful pass to compose (the former early return before any mutation).
-        table.Remove("p").Should().BeFalse();
-        Names(table.Compose("p")).Should().ContainSingle("the sticky orphan survives");
+        Assert.False(table.Remove("p"));
+        Assert.Single(Names(table.Compose("p")));
 
         // A later successful pass commits and composes the orphan.
         table.SetDeclared("p", Part("decl"));
         table.MarkSlotHeld("p");
-        Names(table.Compose("p")).Should().ContainInOrder("decl", "e1");
+        AssertContainsInOrder(Names(table.Compose("p")), "decl", "e1");
     }
 
     [Fact]
@@ -343,9 +346,9 @@ public sealed class PluginContributionCoordinatorTests
         table.MarkSlotHeld("p1");
         table.SetGenerated("p2", Key("p2", "e1"), Part("e1"));
 
-        table.ClearAll().Should().ContainSingle().Which.Should().Be("p1");
-        table.HoldsFace("p1").Should().BeFalse();
-        table.Compose("p2").Should().BeEmpty("the generated bag dies with the manager");
+        Assert.Equal("p1", Assert.Single(table.ClearAll()));
+        Assert.False(table.HoldsFace("p1"));
+        Assert.Empty(table.Compose("p2"));
     }
 
     // —— MCP delivery adapter ——
@@ -382,15 +385,13 @@ public sealed class PluginContributionCoordinatorTests
         {
             lock (discovered) return discovered.Count == 1;
         });
-        lock (discovered) discovered[0].Should().Be(
-            new PluginRegistration("p1", "e1", "McpDiscover"),
-            "the adapter filters the kind's own subset from the full snapshot");
+        lock (discovered) Assert.Equal(new PluginRegistration("p1", "e1", "McpDiscover"), discovered[0]);
 
         // The registration-level diff stays inside the consumer engine: an unchanged
         // frame re-publishes but invokes no discovery.
         adapter.PublishFrame(frame, guardDisposed: true);
         await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
-        lock (discovered) discovered.Count.Should().Be(1, "an unchanged registration is differentially skipped");
+        lock (discovered) Assert.Single(discovered);
 
         // The forced form re-runs the plugin's discovery over unchanged records.
         adapter.PublishFrame(
@@ -423,12 +424,11 @@ public sealed class PluginContributionCoordinatorTests
 
         // Guarded publishes (seed, approval, trigger, forced frames) skip a disposed
         // coordinator as a typed non-event — the fresh generation republishes at start.
-        var publish = () => adapter.PublishFrame(frame, guardDisposed: true);
-        publish.Should().NotThrow();
+        adapter.PublishFrame(frame, guardDisposed: true);
 
         // The registry frame's plain branch publishes unguarded: the disposal surfaces.
         var unguarded = () => adapter.PublishFrame(frame, guardDisposed: false);
-        unguarded.Should().Throw<ObjectDisposedException>();
+        Assert.ThrowsAny<ObjectDisposedException>(() => unguarded.Invoke());
     }
 
     [Fact]
@@ -464,9 +464,9 @@ public sealed class PluginContributionCoordinatorTests
         }, TestContext.Current.CancellationToken));
 
         await Task.WhenAll(readers.Concat(writers));
-        adapter.HoldsFace("p1").Should().BeTrue("the last frame's snapshot is the face view");
-        adapter.HoldsFace("p2").Should().BeTrue();
-        adapter.HoldsFace("p3").Should().BeFalse();
+        Assert.True(adapter.HoldsFace("p1"), "the last frame's snapshot is the face view");
+        Assert.True(adapter.HoldsFace("p2"));
+        Assert.False(adapter.HoldsFace("p3"));
     }
 
     private static SlotSourceKey Key(string pluginId, string export) =>

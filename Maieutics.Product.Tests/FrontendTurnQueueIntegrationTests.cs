@@ -4,7 +4,6 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
 
@@ -51,11 +50,11 @@ public sealed class FrontendTurnQueueIntegrationTests
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue), deadline.Token);
         await ReleaseOneAsync(provider, deadline.Token);
         var afterFirst = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        afterFirst.Should().Equal(["direct question", "queued one"]);
+        Assert.Equal(["direct question", "queued one"], afterFirst);
 
         await ReleaseOneAsync(provider, deadline.Token);
         var afterSecond = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
-        afterSecond.Should().Equal(["direct question", "queued one", "queued two"]);
+        Assert.Equal(["direct question", "queued one", "queued two"], afterSecond);
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -74,22 +73,19 @@ public sealed class FrontendTurnQueueIntegrationTests
         await using var provider = new GatedOpenAiServer();
         var first = provider.ParkForTest();
         var second = provider.ParkForTest();
-        provider.ParkedRequests.Should().Be(2);
+        Assert.Equal(2, provider.ParkedRequests);
 
         provider.ReleaseNext();
-        first.Task.IsCompleted.Should().BeTrue("the oldest awaiting request is the one released");
-        provider.ParkedRequests.Should().Be(
-            1,
-            "a released request is no longer awaiting release, and must not be re-reported");
+        Assert.True(first.Task.IsCompleted, "the oldest awaiting request is the one released");
+        Assert.Equal(1, provider.ParkedRequests);
 
         provider.ReleaseNext();
-        second.Task.IsCompleted.Should().BeTrue(
-            "the second release must reach the request that is still parked instead of "
+        Assert.True(second.Task.IsCompleted, "the second release must reach the request that is still parked instead of "
             + "completing an already-released entry again");
-        provider.ParkedRequests.Should().Be(0);
+        Assert.Equal(0, provider.ParkedRequests);
 
         provider.ReleaseAll();
-        provider.ParkedRequests.Should().Be(0);
+        Assert.Equal(0, provider.ParkedRequests);
     }
 
     [Fact(Timeout = 120_000)]
@@ -109,9 +105,9 @@ public sealed class FrontendTurnQueueIntegrationTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "direct second" },
             deadline.Token);
-        direct.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.Conflict, direct.StatusCode);
         var error = await direct.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("agent_busy");
+        Assert.Equal("agent_busy", error.GetProperty("code").GetString());
 
         // The direct run completes first; the queue item the worker submits after it
         // settles next (each gated provider request parks until its own release).
@@ -119,7 +115,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue), deadline.Token);
         await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        texts.Should().Equal(["direct question", "queued one"]);
+        Assert.Equal(["direct question", "queued one"], texts);
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -133,10 +129,10 @@ public sealed class FrontendTurnQueueIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         var empty = await GetQueueAsync(harness, sessionId, deadline.Token);
-        empty.GetProperty("sessionId").GetString().Should().Be(sessionId);
-        empty.GetProperty("capacity").GetInt32().Should().Be(64);
-        HasRunningItem(empty).Should().BeFalse();
-        ItemIds(empty).Should().BeEmpty();
+        Assert.Equal(sessionId, empty.GetProperty("sessionId").GetString());
+        Assert.Equal(64, empty.GetProperty("capacity").GetInt32());
+        Assert.False(HasRunningItem(empty));
+        Assert.Empty(ItemIds(empty));
 
         await harness.SubmitTurnAsync(sessionId, "direct question", deadline.Token);
         await provider.WaitForParkedAsync(1, deadline.Token);
@@ -151,16 +147,15 @@ public sealed class FrontendTurnQueueIntegrationTests
             deadline.Token);
         var queued = await GetQueueAsync(harness, sessionId, deadline.Token);
         var items = queued.GetProperty("items").EnumerateArray().ToArray();
-        items[0].GetProperty("text").GetString().Should().Be("queued two");
-        DateTimeOffset.Parse(items[0].GetProperty("enqueuedAt").GetString()!, CultureInfo.InvariantCulture)
-            .Should().BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+        Assert.Equal("queued two", items[0].GetProperty("text").GetString());
+        Assert.Equal(DateTimeOffset.UtcNow, DateTimeOffset.Parse(items[0].GetProperty("enqueuedAt").GetString()!, CultureInfo.InvariantCulture), TimeSpan.FromMinutes(1));
 
         // The first queued item runs with its run id once the direct run settles.
         await ReleaseOneAsync(provider, deadline.Token);
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[0]), deadline.Token);
         var running = await GetQueueAsync(harness, sessionId, deadline.Token);
-        running.GetProperty("running").GetProperty("runId").GetString()!.Should().HaveLength(32);
-        ItemIds(running).Should().Equal([ids[1]]);
+        Assert.Equal(32, running.GetProperty("running").GetProperty("runId").GetString()!.Length);
+        Assert.Equal([ids[1]], ItemIds(running));
 
         // The second item runs after the first settles; then the queue drains.
         await ReleaseOneAsync(provider, deadline.Token);
@@ -190,10 +185,10 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // The worker dequeues the head as soon as it is enqueued (it then waits out the
         // direct run), so the deterministic removal target is a pending tail item.
-        (await harness.Client.DeleteAsync(
+        Assert.Equal(HttpStatusCode.NoContent, (await harness.Client.DeleteAsync(
                 $"/v1/agent/sessions/{sessionId}/queue/{ids[2]}",
                 deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+            .StatusCode);
 
         // The direct run settles and the dequeued head starts; the deleted tail is gone
         // from the pending order and never runs.
@@ -208,31 +203,31 @@ public sealed class FrontendTurnQueueIntegrationTests
         var running = await harness.Client.DeleteAsync(
             $"/v1/agent/sessions/{sessionId}/queue/{ids[0]}",
             deadline.Token);
-        running.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.Conflict, running.StatusCode);
         var runningError = await running.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        runningError.GetProperty("code").GetString().Should().Be("item_running");
+        Assert.Equal("item_running", runningError.GetProperty("code").GetString());
 
         var unknown = await harness.Client.DeleteAsync(
             $"/v1/agent/sessions/{sessionId}/queue/{Guid.NewGuid():N}",
             deadline.Token);
-        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
         var unknownError = await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        unknownError.GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal("not_found", unknownError.GetProperty("code").GetString());
 
         // The pending successor is removable too; neither deleted item ever ran.
-        (await harness.Client.DeleteAsync(
+        Assert.Equal(HttpStatusCode.NoContent, (await harness.Client.DeleteAsync(
                 $"/v1/agent/sessions/{sessionId}/queue/{ids[1]}",
                 deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+            .StatusCode);
         await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        texts.Should().Equal(["direct question", "queued one"]);
+        Assert.Equal(["direct question", "queued one"], texts);
 
         // An unknown session is the usual typed 404.
         var missing = await harness.Client.DeleteAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/queue",
             deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -257,20 +252,20 @@ public sealed class FrontendTurnQueueIntegrationTests
         Trace("first item running");
 
         // Clear removes the pending items only; the running item is untouched.
-        (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        Assert.Equal(HttpStatusCode.NoContent, (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
+            .StatusCode);
         var cleared = await GetQueueAsync(harness, sessionId, deadline.Token);
-        HasRunningItem(cleared, ids[0]).Should().BeTrue();
-        ItemIds(cleared).Should().BeEmpty();
+        Assert.True(HasRunningItem(cleared, ids[0]));
+        Assert.Empty(ItemIds(cleared));
         Trace("queue cleared");
 
         await ReleaseOneAsync(provider, deadline.Token);
         Trace("released first item");
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        texts.Should().Equal(["direct question", "queued one"]);
+        Assert.Equal(["direct question", "queued one"], texts);
         Trace("two turns committed");
-        (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        Assert.Equal(HttpStatusCode.NoContent, (await harness.Client.DeleteAsync($"/v1/agent/sessions/{sessionId}/queue", deadline.Token))
+            .StatusCode);
         Trace("no-op clear ok");
         await EnqueueAsync(harness, sessionId, deadline.Token, "queued after clear");
         Trace("fresh enqueued");
@@ -281,7 +276,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // runs to completion and the transcript keeps its committed order.
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
         var afterRestart = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
-        afterRestart.Should().Equal(["direct question", "queued one", "queued after clear"]);
+        Assert.Equal(["direct question", "queued one", "queued after clear"], afterRestart);
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -296,7 +291,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         var full = Enumerable.Range(0, 64).Select(index => $"queued {index}").ToArray();
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, full);
-        ids.Should().HaveCount(64);
+        Assert.Equal(64, ids.Count());
 
         // The first item is running, so 63 are pending: a two-item batch would exceed
         // the capacity and is rejected whole.
@@ -309,19 +304,19 @@ public sealed class FrontendTurnQueueIntegrationTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text = "one over" }, new { text = "two over" } } },
             deadline.Token);
-        over.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.Conflict, over.StatusCode);
         var error = await over.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        error.GetProperty("code").GetString().Should().Be("queue_full");
-        ItemIds(await GetQueueAsync(harness, sessionId, deadline.Token)).Should().HaveCount(63);
+        Assert.Equal("queue_full", error.GetProperty("code").GetString());
+        Assert.Equal(63, ItemIds(await GetQueueAsync(harness, sessionId, deadline.Token)).Count());
 
         // A batch above the request shape itself is a typed 400 before the capacity check.
         var oversizedBatch = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = Enumerable.Range(0, 65).Select(index => new { text = $"x{index}" }) },
             deadline.Token);
-        oversizedBatch.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, oversizedBatch.StatusCode);
         var batchError = await oversizedBatch.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        batchError.GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal("invalid_request", batchError.GetProperty("code").GetString());
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -338,47 +333,47 @@ public sealed class FrontendTurnQueueIntegrationTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text = "%status" } } },
             deadline.Token);
-        command.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, command.StatusCode);
         var commandError = await command.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
-        commandError.GetProperty("code").GetString().Should().Be("invalid_request");
-        commandError.GetProperty("message").GetString().Should().Contain("turn endpoint");
+        Assert.Equal("invalid_request", commandError.GetProperty("code").GetString());
+        Assert.Contains("turn endpoint", commandError.GetProperty("message").GetString());
 
         var empty = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text = "   " } } },
             deadline.Token);
-        empty.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await empty.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("invalid_request");
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+        Assert.Equal("invalid_request", (await empty.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
 
         var none = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = Array.Empty<object>() },
             deadline.Token);
-        none.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, none.StatusCode);
 
         var oversized = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text = new string('x', 32_001) } } },
             deadline.Token);
-        oversized.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await oversized.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("agent_input_too_large");
+        Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
+        Assert.Equal("agent_input_too_large", (await oversized.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
 
         var missing = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/queue",
             new { items = new[] { new { text = "hello" } } },
             deadline.Token);
-        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        (await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-            .GetProperty("code").GetString().Should().Be("not_found");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        Assert.Equal("not_found", (await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            .GetProperty("code").GetString());
 
         // The snapshot route mirrors the other session-addressed routes' typed 404.
-        (await harness.Client.GetAsync($"/v1/agent/sessions/{Guid.NewGuid():N}/queue", deadline.Token))
-            .StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, (await harness.Client.GetAsync($"/v1/agent/sessions/{Guid.NewGuid():N}/queue", deadline.Token))
+            .StatusCode);
 
         // Nothing from the rejected batches was enqueued.
-        ItemIds(await GetQueueAsync(harness, sessionId, deadline.Token)).Should().BeEmpty();
+        Assert.Empty(ItemIds(await GetQueueAsync(harness, sessionId, deadline.Token)));
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -396,13 +391,13 @@ public sealed class FrontendTurnQueueIntegrationTests
         Trace("session resolved");
 
         await using var first = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        (await first.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Assert.Equal("hello", (await first.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString());
         Trace("first socket hello");
 
         // The worker starts the first item immediately, so the socket's wake observes the
         // first stable state: the dequeued head running and the rest pending in order.
         var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
-        ids.Should().HaveCount(2);
+        Assert.Equal(2, ids.Count());
         Trace($"enqueued {string.Join(",", ids)}");
         var firstRunning = await CollectQueueFrameUntilAsync(
             first,
@@ -410,13 +405,13 @@ public sealed class FrontendTurnQueueIntegrationTests
             deadline.Token);
         Trace("first socket saw running state");
         // Frame items carry ids only; the text lives in the GET snapshot.
-        firstRunning.GetProperty("items")[0].TryGetProperty("text", out _).Should().BeFalse();
+        Assert.False(firstRunning.GetProperty("items")[0].TryGetProperty("text", out _));
 
         // A second socket opened later receives the current state right after hello —
         // the queue wake is raced before the announced run's serving — and then serves
         // the running stream like the first socket does.
         await using var second = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        (await second.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Assert.Equal("hello", (await second.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString());
         Trace("second socket hello");
         await CollectQueueFrameUntilAsync(
             second,
@@ -463,7 +458,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // A socket that opens after the queue drained receives the (empty) current state
         // right after its run replay, without any further mutation.
         await using var third = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        (await third.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Assert.Equal("hello", (await third.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString());
         Trace("third socket hello");
         await CollectQueueFrameUntilAsync(third, queue => !HasRunningItem(queue), deadline.Token);
         Trace("third socket saw drained state");
@@ -490,7 +485,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
         await using var socket = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        (await socket.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString().Should().Be("hello");
+        Assert.Equal("hello", (await socket.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString());
 
         // Hold the worker between the submission handshake and the Running publish, so
         // the enqueue's dequeue frame (running=none) is already flushed and the socket
@@ -510,8 +505,7 @@ public sealed class FrontendTurnQueueIntegrationTests
                 socket,
                 queue => HasRunningItem(queue, ids[0]),
                 deadline.Token);
-            running.GetProperty("running").Should().NotBeNull(
-                "the running transition reaches a serving client while the run is parked, not after it settles");
+            Assert.True(running.TryGetProperty("running", out _));
 
             await ReleaseOneAsync(provider, deadline.Token);
             await WaitForUserTextsAsync(harness, sessionId, 1, deadline.Token);
@@ -552,7 +546,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, ids[1]), deadline.Token);
         await ReleaseOneAsync(provider, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 3, deadline.Token);
-        texts.Should().Equal(["direct question", "queued one", "queued two"]);
+        Assert.Equal(["direct question", "queued one", "queued two"], texts);
 
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
     }
@@ -584,14 +578,14 @@ public sealed class FrontendTurnQueueIntegrationTests
         // The worker has dequeued, is waiting out the parked direct run, and the queue is
         // legitimately empty from the API's point of view.
         var observed = await GetQueueAsync(harness, sessionId, deadline.Token);
-        ItemIds(observed).Should().BeEmpty();
-        HasRunningItem(observed).Should().BeFalse();
+        Assert.Empty(ItemIds(observed));
+        Assert.False(HasRunningItem(observed));
 
         // The drain must still converge: it keeps releasing as each run reaches the gate.
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
 
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        texts.Should().Equal(["direct question", "queued one"]);
+        Assert.Equal(["direct question", "queued one"], texts);
     }
 
     [Fact(Timeout = 120_000)]
@@ -606,17 +600,17 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         // No queue work: no pin. The lease is acquired synchronously with the enqueue
         // commit, so a session with queued work is pinned from that moment.
-        manager.IsPinned(addressed).Should().BeFalse();
+        Assert.False(manager.IsPinned(addressed));
         await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
-        manager.IsPinned(addressed).Should().BeTrue();
+        Assert.True(manager.IsPinned(addressed));
 
         // The queue drains (the drain loop releases each gated run as the worker
         // submits it) and the lease is released with the drain, deterministically
         // before the snapshot can report the drained state.
         await DrainQueueAsync(harness, provider, sessionId, deadline.Token);
         var texts = await WaitForUserTextsAsync(harness, sessionId, 2, deadline.Token);
-        texts.Should().Equal(["queued one", "queued two"]);
-        manager.IsPinned(addressed).Should().BeFalse();
+        Assert.Equal(["queued one", "queued two"], texts);
+        Assert.False(manager.IsPinned(addressed));
     }
 
     private static async Task<Harness> StartHarnessAsync(CancellationToken cancellationToken, GatedOpenAiServer provider)
@@ -648,7 +642,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var response = await harness.Client
             .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
             .ConfigureAwait(false);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
     }
 
@@ -692,17 +686,17 @@ public sealed class FrontendTurnQueueIntegrationTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = texts.Select(text => new { text }) },
             cancellationToken).ConfigureAwait(false);
-        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         var items = body.GetProperty("items").EnumerateArray().ToArray();
-        items.Should().HaveCount(texts.Length);
+        Assert.Equal(texts.Length, items.Count());
         var ids = new string[items.Length];
         var firstPosition = items[0].GetProperty("position").GetInt32();
         for (var index = 0; index < items.Length; index++)
         {
             // Positions are 1-based pending indices in run order: a batch enqueued behind
             // work that is still queued continues after it, so only the offsets are fixed.
-            items[index].GetProperty("position").GetInt32().Should().Be(firstPosition + index);
+            Assert.Equal(firstPosition + index, items[index].GetProperty("position").GetInt32());
             ids[index] = items[index].GetProperty("id").GetString()!;
         }
 
@@ -904,7 +898,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         var probe = provider.ParkForTest();
         provider.ReleaseNext();
         await probe.Task.WaitAsync(wait.Token);
-        probe.Task.IsCompleted.Should().BeTrue();
+        Assert.True(probe.Task.IsCompleted);
     }
 
     /// <summary>A chat-completions SSE server whose responses are gated one request at a

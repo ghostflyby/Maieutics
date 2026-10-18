@@ -4,7 +4,6 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Execution;
@@ -31,12 +30,12 @@ public sealed class ResourceReadToolTests
                 readText,
                 """{"uri":"notes://team/idea","startLine":2,"maxLines":2}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        result.Uri.Should().Be("notes://team/idea");
-        result.StartLine.Should().Be(2);
-        result.EndLine.Should().Be(3);
-        result.Text.Should().Be("second\nthird");
-        result.Truncated.Should().BeFalse();
-        result.NextStartLine.Should().BeNull();
+        Assert.Equal("notes://team/idea", result.Uri);
+        Assert.Equal(2, result.StartLine);
+        Assert.Equal(3, result.EndLine);
+        Assert.Equal("second\nthird", result.Text);
+        Assert.False(result.Truncated);
+        Assert.Null(result.NextStartLine);
     }
 
     [Fact]
@@ -57,13 +56,13 @@ public sealed class ResourceReadToolTests
                 Function(functions, "read_text"),
                 """{"uri":"workspace://local/a.txt"}"""),
             WorkspaceJsonSerializerContext.Default.ReadTextResult);
-        result.Uri.Should().Be("workspace://local/a.txt");
-        result.Text.Should().Be("first\nsecond\nthird");
+        Assert.Equal("workspace://local/a.txt", result.Uri);
+        Assert.Equal("first\nsecond\nthird", result.Text);
 
         var missing = await InvokeAsync(
             Function(functions, "read_text"),
             """{"uri":"workspace://local/absent.txt"}""");
-        ShouldFailure(missing).Code.Should().Be("workspace_path_not_found");
+        Assert.Equal("workspace_path_not_found", ShouldFailure(missing).Code);
     }
 
     [Fact]
@@ -77,13 +76,13 @@ public sealed class ResourceReadToolTests
         var readText = Function(functions, "read_text");
 
         var unknown = await InvokeAsync(readText, """{"uri":"mystery://a/b"}""");
-        ShouldFailure(unknown).Code.Should().Be("resource_unknown_scheme");
+        Assert.Equal("resource_unknown_scheme", ShouldFailure(unknown).Code);
 
         var invalid = await InvokeAsync(readText, """{"uri":"notes://a/b#frag"}""");
-        ShouldFailure(invalid).Code.Should().Be("resource_invalid_uri");
+        Assert.Equal("resource_invalid_uri", ShouldFailure(invalid).Code);
 
         var relative = await InvokeAsync(readText, """{"uri":"just/a/path"}""");
-        ShouldFailure(relative).Code.Should().Be("resource_invalid_uri");
+        Assert.Equal("resource_invalid_uri", ShouldFailure(relative).Code);
     }
 
     [Fact]
@@ -92,10 +91,10 @@ public sealed class ResourceReadToolTests
         using var workspace = TemporaryWorkspace.Create();
         var functions = CreateFunctions(workspace.Path);
         var description = Function(functions, "read_text").Description;
-        description.Should().NotBeNull();
+        Assert.NotNull(description);
 
         var check = () => Function(functions, "list_resources");
-        check.Should().Throw<InvalidOperationException>("the tool does not exist without a registry");
+        Assert.ThrowsAny<InvalidOperationException>(() => check.Invoke());
     }
 
     [Fact]
@@ -120,10 +119,10 @@ public sealed class ResourceReadToolTests
                 functions.Functions.Single(),
                 "{}"),
             ResourceJsonSerializerContext.Default.ResourceCatalogResult);
-        result.Resources.Should().HaveCount(3);
-        result.Resources.Should().Contain(entry => entry.Kind == "resource" && entry.Uri == "notes://a");
-        result.Resources.Should().Contain(entry => entry.Kind == "template" && entry.Template == "notes://b/{id}");
-        result.Conflicts.Should().ContainSingle().Which.ProviderId.Should().Be("shadowed");
+        Assert.Equal(3, result.Resources.Count());
+        Assert.Contains(result.Resources, entry => entry.Kind == "resource" && entry.Uri == "notes://a");
+        Assert.Contains(result.Resources, entry => entry.Kind == "template" && entry.Template == "notes://b/{id}");
+        Assert.Equal("shadowed", Assert.Single(result.Conflicts).ProviderId);
     }
 
     [Fact]
@@ -152,19 +151,19 @@ public sealed class ResourceReadToolTests
         var ok = await client.GetAsync(
             $"http://localhost/v1/resource?uri={Uri.EscapeDataString("notes://team/idea")}",
             cts.Token);
-        ok.StatusCode.Should().Be(HttpStatusCode.OK);
-        ok.Content.Headers.ContentType?.MediaType.Should().Be("text/plain");
-        (await ok.Content.ReadAsStringAsync(cts.Token)).Should().Be("first\nsecond\nthird\n");
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("text/plain", ok.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("first\nsecond\nthird\n", (await ok.Content.ReadAsStringAsync(cts.Token)));
 
         var unknown = await client.GetAsync(
             $"http://localhost/v1/resource?uri={Uri.EscapeDataString("mystery://a/b")}",
             cts.Token);
-        unknown.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
         using var document = JsonDocument.Parse(await unknown.Content.ReadAsStringAsync(cts.Token));
-        document.RootElement.GetProperty("code").GetString().Should().Be("resource_unknown_scheme");
+        Assert.Equal("resource_unknown_scheme", document.RootElement.GetProperty("code").GetString());
 
         var missingParameter = await client.GetAsync("http://localhost/v1/resource", cts.Token);
-        missingParameter.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, missingParameter.StatusCode);
     }
 
     /// <summary>Speaks HTTP over the control channel's unix socket exactly like a
@@ -196,7 +195,7 @@ public sealed class ResourceReadToolTests
         var binary = await InvokeAsync(
             readText,
             """{"uri":"notes://team/binary"}""");
-        ShouldFailure(binary).Code.Should().Be("workspace_binary_file");
+        Assert.Equal("workspace_binary_file", ShouldFailure(binary).Code);
     }
 
     private static WorkspaceFunctions CreateFunctions(string root, ResourceRegistry? registry = null)
@@ -236,13 +235,13 @@ public sealed class ResourceReadToolTests
 
     private static T Result<T>(ToolInvocation invocation, JsonTypeInfo<T> typeInfo)
     {
-        invocation.Succeeded.Should().BeTrue();
+        Assert.True(invocation.Succeeded);
         return invocation.Result!.Value.Deserialize(typeInfo)!;
     }
 
     private static (string Code, string Message) ShouldFailure(ToolInvocation invocation)
     {
-        invocation.Succeeded.Should().BeFalse();
+        Assert.False(invocation.Succeeded);
         return (
             invocation.Result!.Value.GetProperty("code").GetString()!,
             invocation.Result.Value.GetProperty("message").GetString()!);

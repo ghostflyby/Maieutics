@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using FluentAssertions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging;
 
@@ -43,19 +42,19 @@ public sealed class PluginHostProcessTests
                 logger);
 
             await process.Completion.WaitAsync(deadline.Token);
-            process.ExitCode.Should().Be(0);
+            Assert.Equal(0, process.ExitCode);
             var firstStop = process.StopAsync();
             var secondStop = process.StopAsync();
-            secondStop.Should().BeSameAs(firstStop);
+            Assert.Same(firstStop, secondStop);
             await firstStop.WaitAsync(deadline.Token);
 
             var debug = logger.Messages.Where(static message => message.Level == LogLevel.Debug).ToArray();
-            debug.Should().Contain(message =>
+            Assert.Contains(debug, message =>
                 message.Text.Contains("stdout logging was truncated", StringComparison.Ordinal));
-            debug.Should().Contain(message =>
+            Assert.Contains(debug, message =>
                 message.Text.Contains("stderr logging was truncated", StringComparison.Ordinal));
-            debug.Max(static message => message.Text.Length).Should().BeLessThan(5000);
-            debug.Should().HaveCountLessThanOrEqualTo(20);
+            Assert.True(debug.Max(static message => message.Text.Length) < 5000);
+            Assert.True(debug.Count() <= 20);
         }
         finally
         {

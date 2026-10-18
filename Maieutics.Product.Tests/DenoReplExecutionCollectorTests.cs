@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.DenoRepl;
 
 namespace Maieutics.Product.Tests;
@@ -46,7 +45,7 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Should().BeEquivalentTo(new
+        Assert.Equivalent(new
         {
             SessionId = "default",
             Generation = 3,
@@ -70,16 +69,16 @@ public sealed class DenoReplExecutionCollectorTests
                 }),
             Truncated = false,
             OmittedBytes = 0
-        });
-        result.Outputs.Select(static output => output.Kind).Should().Equal("stdout", "stderr", "result");
-        result.Outputs[0].Text.Should().Be("private stdout");
-        result.Outputs[1].Text.Should().Be("shared stderr");
-        result.Outputs[2].Value?.GetInt32().Should().Be(42);
-        sink.Displays.Should().Equal("visible display");
-        sink.Updates.Should().ContainSingle().Which.Text.Should().Be("visible update");
-        sink.Clears.Should().Equal(true);
-        sink.Stderr.Should().Equal("shared stderr");
-        connection.InputReplies.Should().ContainSingle().Which.Should().Be((input, "Ada"));
+        }, result);
+        Assert.Equal(new string[] { "stdout", "stderr", "result" }, result.Outputs.Select(static output => output.Kind));
+        Assert.Equal("private stdout", result.Outputs[0].Text);
+        Assert.Equal("shared stderr", result.Outputs[1].Text);
+        Assert.Equal(42, result.Outputs[2].Value?.GetInt32());
+        Assert.Equal(new string[] { "visible display" }, sink.Displays);
+        Assert.Equal("visible update", Assert.Single(sink.Updates).Text);
+        Assert.Equal(new bool[] { true }, sink.Clears);
+        Assert.Equal(new string[] { "shared stderr" }, sink.Stderr);
+        Assert.Equal((input, "Ada"), Assert.Single(connection.InputReplies));
     }
 
     [Fact(Timeout = 15_000)]
@@ -115,10 +114,10 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Outputs.Should().BeEmpty();
-        sink.Displays.Should().BeEmpty();
-        result.Presentation.SkippedCount.Should().Be(0);
-        result.Presentation.Digests.Should().BeEmpty();
+        Assert.Empty(result.Outputs);
+        Assert.Empty(sink.Displays);
+        Assert.Equal(0, result.Presentation.SkippedCount);
+        Assert.Empty(result.Presentation.Digests);
     }
 
     [Fact(Timeout = 15_000)]
@@ -159,22 +158,22 @@ public sealed class DenoReplExecutionCollectorTests
             TestContext.Current.CancellationToken);
 
         // The bundle carries an object reference, never base64 (invariant 26).
-        sink.BinaryDisplays.Should().ContainSingle();
+        Assert.Single(sink.BinaryDisplays);
         var reference = sink.BinaryDisplays.Single().Data["image/png"];
-        reference.ValueKind.Should().Be(JsonValueKind.Object);
+        Assert.Equal(JsonValueKind.Object, reference.ValueKind);
         var url = reference.GetProperty("$object").GetString()!;
-        url.Should().StartWith("/v1/objects/");
-        reference.GetProperty("byteLength").GetInt64().Should().Be(png.Length);
+        Assert.StartsWith("/v1/objects/", url);
+        Assert.Equal(png.Length, reference.GetProperty("byteLength").GetInt64());
         // The referenced bytes are exactly the display payload.
-        objectStore.Get(url).Should().Equal(png);
+        Assert.Equal(png, objectStore.Get(url));
         // The binary mime lists in the digest but never produces a preview.
-        result.Presentation.Digests.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        Assert.Equivalent(new
         {
             MediaTypes = new[] { "image/png", "text/plain" },
             Preview = "binary display",
             DisplayId = null as string,
             IsUpdate = false
-        });
+        }, Assert.Single(result.Presentation.Digests));
     }
 
     [Fact(Timeout = 15_000)]
@@ -216,12 +215,12 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
-        digest.MediaTypes.Should().Equal("image/png");
-        digest.Preview.Should().BeNull();
+        var digest = Assert.Single(result.Presentation.Digests);
+        Assert.Equal(new string[] { "image/png" }, digest.MediaTypes);
+        Assert.Null(digest.Preview);
         var reference = sink.BinaryDisplays.Single().Data["image/png"];
         var url = reference.GetProperty("$object").GetString()!;
-        objectStore.Get(url).Should().Equal(png);
+        Assert.Equal(png, objectStore.Get(url));
     }
 
     [Fact(Timeout = 15_000)]
@@ -258,9 +257,9 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
-        digest.Preview.Should().Be("plain text");
-        digest.MediaTypes.Should().Equal("text/html", "application/vnd.vega.v5+json", "text/plain");
+        var digest = Assert.Single(result.Presentation.Digests);
+        Assert.Equal("plain text", digest.Preview);
+        Assert.Equal(new string[] { "text/html", "application/vnd.vega.v5+json", "text/plain" }, digest.MediaTypes);
     }
 
     [Fact(Timeout = 15_000)]
@@ -313,8 +312,7 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.Digests.Select(static digest => digest.Preview).Should()
-            .Equal("""{"width":200}""", "# title", null);
+        Assert.Equal(new string?[] { """{"width":200}""", "# title", null }, result.Presentation.Digests.Select(static digest => digest.Preview));
     }
 
     [Fact(Timeout = 15_000)]
@@ -348,10 +346,10 @@ public sealed class DenoReplExecutionCollectorTests
             execution.Execution,
             output,
             TestContext.Current.CancellationToken);
-        var digest = result.Presentation.Digests.Should().ContainSingle().Which;
-        digest.Preview.Should().HaveLength(16);
-        digest.Preview.Should().Be(new string('x', 16));
-        result.Presentation.DigestTruncated.Should().BeFalse();
+        var digest = Assert.Single(result.Presentation.Digests);
+        Assert.Equal(16, (digest.Preview ?? throw new InvalidOperationException("the assertion subject is null")).Length);
+        Assert.Equal(new string('x', 16), digest.Preview);
+        Assert.False(result.Presentation.DigestTruncated);
     }
 
     [Fact(Timeout = 15_000)]
@@ -387,11 +385,11 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.DigestTruncated.Should().BeTrue();
-        result.Presentation.Digests.Should().NotBeEmpty();
+        Assert.True(result.Presentation.DigestTruncated);
+        Assert.NotEmpty(result.Presentation.Digests);
         // The display presentation is independent of the digest budget: every display still shows.
-        sink.Displays.Should().HaveCount(5);
-        result.Presentation.SkippedCount.Should().Be(0);
+        Assert.Equal(5, sink.Displays.Count());
+        Assert.Equal(0, result.Presentation.SkippedCount);
     }
 
     [Fact(Timeout = 15_000)]
@@ -436,15 +434,15 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.Digests.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        Assert.Equivalent(new
         {
             MediaTypes = new[] { "text/html", "text/plain" },
             Preview = "updated",
             DisplayId = "tracked",
             IsUpdate = true
-        });
-        result.Presentation.DisplayCount.Should().Be(1);
-        result.Presentation.UpdateCount.Should().Be(1);
+        }, Assert.Single(result.Presentation.Digests));
+        Assert.Equal(1, result.Presentation.DisplayCount);
+        Assert.Equal(1, result.Presentation.UpdateCount);
     }
 
     [Fact(Timeout = 15_000)]
@@ -479,11 +477,11 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.UpdateCount.Should().Be(0);
-        result.Presentation.DisplaySkippedCount.Should().Be(1);
-        result.Presentation.SkippedCount.Should().Be(1);
-        result.Presentation.Digests.Should().BeEmpty();
-        sink.Updates.Should().BeEmpty();
+        Assert.Equal(0, result.Presentation.UpdateCount);
+        Assert.Equal(1, result.Presentation.DisplaySkippedCount);
+        Assert.Equal(1, result.Presentation.SkippedCount);
+        Assert.Empty(result.Presentation.Digests);
+        Assert.Empty(sink.Updates);
     }
 
     [Fact(Timeout = 15_000)]
@@ -518,11 +516,10 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        sink.Displays.Should().BeEmpty();
-        result.Presentation.BundleSkippedCount.Should().Be(1);
-        result.Presentation.SkippedCount.Should().Be(1);
-        result.Presentation.Digests.Should().ContainSingle().Which.Preview.Should()
-            .HaveLength(200);
+        Assert.Empty(sink.Displays);
+        Assert.Equal(1, result.Presentation.BundleSkippedCount);
+        Assert.Equal(1, result.Presentation.SkippedCount);
+        Assert.Equal(200, (Assert.Single(result.Presentation.Digests).Preview ?? throw new InvalidOperationException("the assertion subject is null")).Length);
     }
 
     [Theory(Timeout = 15_000)]
@@ -553,21 +550,21 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.ExecutionStatus.Should().Be(expectedStatus);
+        Assert.Equal(expectedStatus, result.ExecutionStatus);
         if (cancelled)
         {
-            result.Outputs.Should().BeEmpty();
-            sink.Errors.Should().BeEmpty();
+            Assert.Empty(result.Outputs);
+            Assert.Empty(sink.Errors);
         }
         else
         {
-            result.Outputs.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            Assert.Equivalent(new
             {
                 Kind = "error",
                 Text = "bad value",
                 Name = "TypeError"
-            });
-            sink.Errors.Should().Equal(("TypeError", "bad value"));
+            }, Assert.Single(result.Outputs));
+            Assert.Equal(new (string Name, string Value)[] { ("TypeError", "bad value") }, sink.Errors);
         }
     }
 
@@ -606,9 +603,9 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Truncated.Should().BeTrue();
-        result.OmittedBytes.Should().BeGreaterThan(0);
-        sink.Displays.Should().Equal("after truncation");
+        Assert.True(result.Truncated);
+        Assert.True(result.OmittedBytes > 0);
+        Assert.Equal(new string[] { "after truncation" }, sink.Displays);
     }
 
     [Fact(Timeout = 15_000)]
@@ -632,14 +629,14 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Outputs.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+        Assert.Equivalent(new
         {
             Kind = "result",
             MediaType = "text/plain"
-        });
-        result.Outputs[0].Text.Should().HaveLength(64);
-        result.Truncated.Should().BeTrue();
-        result.OmittedBytes.Should().BeGreaterThan(0);
+        }, Assert.Single(result.Outputs));
+        Assert.Equal(64, (result.Outputs[0].Text ?? throw new InvalidOperationException("the assertion subject is null")).Length);
+        Assert.True(result.Truncated);
+        Assert.True(result.OmittedBytes > 0);
     }
 
     [Fact(Timeout = 15_000)]
@@ -672,7 +669,7 @@ public sealed class DenoReplExecutionCollectorTests
             output,
             TestContext.Current.CancellationToken);
 
-        result.Presentation.Should().BeEquivalentTo(new DenoReplPresentationResult(
+        Assert.Equivalent(new DenoReplPresentationResult(
             1,
             0,
             0,
@@ -680,11 +677,11 @@ public sealed class DenoReplExecutionCollectorTests
             BundleSkippedCount: 0,
             DisplaySkippedCount: 2,
             DigestTruncated: false,
-            Digests: new[] { new DenoReplDisplayDigest(new[] { "text/plain" }, "display") }));
-        result.Outputs.Should().ContainSingle().Which.Text.Should().Be("still modeled");
-        sink.Displays.Should().ContainSingle();
-        sink.Clears.Should().BeEmpty();
-        sink.Stderr.Should().BeEmpty();
+            Digests: new[] { new DenoReplDisplayDigest(new[] { "text/plain" }, "display") }), result.Presentation);
+        Assert.Equal("still modeled", Assert.Single(result.Outputs).Text);
+        Assert.Single(sink.Displays);
+        Assert.Empty(sink.Clears);
+        Assert.Empty(sink.Stderr);
     }
 
     [Fact(Timeout = 15_000)]
@@ -725,13 +722,13 @@ public sealed class DenoReplExecutionCollectorTests
         // The first display fits the budget; the second is rate-limited: it is not presented and
         // has no digest entry. The skip counts on the model result, and later frames (stdout)
         // still present in order.
-        result.Presentation.RateSkippedCount.Should().Be(1);
-        result.Presentation.DisplayCount.Should().Be(1);
-        result.Presentation.SkippedCount.Should().Be(1);
-        result.Presentation.Digests.Should().ContainSingle();
-        result.Outputs.Should().ContainSingle().Which.Text.Should().Be("still ordered");
-        sink.Displays.Should().ContainSingle();
-        sink.BinaryDisplays.Should().ContainSingle();
+        Assert.Equal(1, result.Presentation.RateSkippedCount);
+        Assert.Equal(1, result.Presentation.DisplayCount);
+        Assert.Equal(1, result.Presentation.SkippedCount);
+        Assert.Single(result.Presentation.Digests);
+        Assert.Equal("still ordered", Assert.Single(result.Outputs).Text);
+        Assert.Single(sink.Displays);
+        Assert.Single(sink.BinaryDisplays);
     }
 
     private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement element)

@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Persistence;
 using Microsoft.Extensions.AI;
@@ -47,18 +46,17 @@ public sealed class AgentObjectViewTests : IDisposable
         // degradation contract is an empty view, never a failed repair.
         if (!SymlinksSupported(agentRoot))
         {
-            ensured.Should().Be(0);
+            Assert.Equal(0, ensured);
             return;
         }
 
-        ensured.Should().Be(1);
+        Assert.Equal(1, ensured);
         var linkPath = Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects", ingested.Sha256);
-        File.Exists(linkPath).Should().BeTrue();
-        File.ReadAllText(linkPath).Should().Be("inspectable bytes");
-        Path.GetFileName(File.ResolveLinkTarget(linkPath, returnFinalTarget: false)!.FullName)
-            .Should().Be(ingested.Sha256);
+        Assert.True(File.Exists(linkPath));
+        Assert.Equal("inspectable bytes", File.ReadAllText(linkPath));
+        Assert.Equal(ingested.Sha256, Path.GetFileName(File.ResolveLinkTarget(linkPath, returnFinalTarget: false)!.FullName));
 
-        AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]).Should().Be(1);
+        Assert.Equal(1, AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]));
     }
 
     [Fact]
@@ -72,9 +70,8 @@ public sealed class AgentObjectViewTests : IDisposable
             SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(agentRoot, "families"), sessionId));
         store.AppendTurn(sessionId, Turn(sessionId, missing), [missing]);
 
-        AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]).Should().Be(0);
-        Directory.Exists(Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects"))
-            .Should().BeFalse();
+        Assert.Equal(0, AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]));
+        Assert.False(Directory.Exists(Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects")));
     }
 
     /// <summary>Probes whether this environment may create symlinks at all (Windows needs

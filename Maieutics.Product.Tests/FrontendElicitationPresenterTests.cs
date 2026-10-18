@@ -1,5 +1,4 @@
 using System.Text.Json;
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
@@ -61,22 +60,22 @@ public sealed class FrontendElicitationPresenterTests
         // The frame is published synchronously before the await.
         await Task.Delay(50, deadline.Token);
         // This request carries no schema, so only the input.request frame is published.
-        publisher.Published.Should().ContainSingle();
+        Assert.Single(publisher.Published);
         var (publishedSession, type, data) = publisher.Published.Single();
-        publishedSession.Value.Should().Be(session.Value);
-        type.Should().Be("input.request");
+        Assert.Equal(session.Value, publishedSession.Value);
+        Assert.Equal("input.request", type);
         var payload = JsonSerializer.Deserialize<JsonElement>(data.GetRawText());
-        payload.GetProperty("prompt").GetString().Should().Be("msg");
-        payload.GetProperty("serverId").GetString().Should().Be(session.Value.ToString("N"));
+        Assert.Equal("msg", payload.GetProperty("prompt").GetString());
+        Assert.Equal(session.Value.ToString("N"), payload.GetProperty("serverId").GetString());
 
-        presenter.TryCompleteInput(
+        Assert.True(presenter.TryCompleteInput(
             payload.GetProperty("requestId").GetString()!,
             null,
-            """{"token":"t0k"}""").Should().BeTrue();
+            """{"token":"t0k"}"""));
 
         var answer = await wait;
-        answer.Action.Should().Be("accept");
-        answer.ContentJson.Should().Be("""{"token":"t0k"}""");
+        Assert.Equal("accept", answer.Action);
+        Assert.Equal("""{"token":"t0k"}""", answer.ContentJson);
     }
 
     [Fact]
@@ -93,12 +92,12 @@ public sealed class FrontendElicitationPresenterTests
                 publisher.Published.Single(frame => frame.Type == "input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;
 
-        presenter.TryCompleteInput(requestId, "decline", "").Should().BeTrue();
+        Assert.True(presenter.TryCompleteInput(requestId, "decline", ""));
 
         var answer = await wait;
-        answer.Action.Should().Be("decline");
-        answer.ContentJson.Should().BeNull();
-        presenter.TryCompleteInput(requestId, "accept", "{}").Should().BeFalse();
+        Assert.Equal("decline", answer.Action);
+        Assert.Null(answer.ContentJson);
+        Assert.False(presenter.TryCompleteInput(requestId, "accept", "{}"));
     }
 
     [Fact]
@@ -115,11 +114,11 @@ public sealed class FrontendElicitationPresenterTests
                 publisher.Published.Single(frame => frame.Type == "input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;
 
-        presenter.TryCompleteInput(requestId, null, "just text").Should().BeTrue();
+        Assert.True(presenter.TryCompleteInput(requestId, null, "just text"));
 
         var answer = await wait;
-        answer.Action.Should().Be("cancel");
-        answer.ContentJson.Should().BeNull();
+        Assert.Equal("cancel", answer.Action);
+        Assert.Null(answer.ContentJson);
     }
 
     [Fact]
@@ -129,6 +128,6 @@ public sealed class FrontendElicitationPresenterTests
 
         var answer = await presenter.PresentAsync(BuildRequest(), TestContext.Current.CancellationToken);
 
-        answer.Action.Should().Be("cancel");
+        Assert.Equal("cancel", answer.Action);
     }
 }

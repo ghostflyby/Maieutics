@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Execution;
 
 namespace Maieutics.Product.Tests;
@@ -24,19 +23,19 @@ public sealed class GitDiffParserTests
             +added tail
             """);
 
-        var file = document.Files.Should().ContainSingle().Which;
-        file.OldPath.Should().Be("src/app.ts");
-        file.NewPath.Should().Be("src/app.ts");
-        file.Binary.Should().BeFalse();
-        var hunk = file.Hunks.Should().ContainSingle().Which;
-        hunk.OldStart.Should().Be(1);
-        hunk.Lines.Should().HaveCount(5);
-        hunk.PreImageCount.Should().Be(3, "the context and removed lines are the pre-image");
-        hunk.Lines[0].Origin.Should().Be(' ');
-        hunk.Lines[1].Origin.Should().Be('-');
-        hunk.Lines[1].Text.Should().Be("removed line");
-        hunk.Lines[2].Origin.Should().Be('+');
-        hunk.Lines[4].Text.Should().Be("added tail");
+        var file = Assert.Single(document.Files);
+        Assert.Equal("src/app.ts", file.OldPath);
+        Assert.Equal("src/app.ts", file.NewPath);
+        Assert.False(file.Binary);
+        var hunk = Assert.Single(file.Hunks);
+        Assert.Equal(1, hunk.OldStart);
+        Assert.Equal(5, hunk.Lines.Count());
+        Assert.Equal(3, hunk.PreImageCount);
+        Assert.Equal(' ', hunk.Lines[0].Origin);
+        Assert.Equal('-', hunk.Lines[1].Origin);
+        Assert.Equal("removed line", hunk.Lines[1].Text);
+        Assert.Equal('+', hunk.Lines[2].Origin);
+        Assert.Equal("added tail", hunk.Lines[4].Text);
     }
 
     [Fact]
@@ -58,9 +57,9 @@ public sealed class GitDiffParserTests
             +y
             """);
 
-        document.Files.Should().HaveCount(2);
-        document.Files[0].NewPath.Should().Be("one.txt");
-        document.Files[1].Hunks.Should().ContainSingle().Which.OldStart.Should().Be(3);
+        Assert.Equal(2, document.Files.Count());
+        Assert.Equal("one.txt", document.Files[0].NewPath);
+        Assert.Equal(3, Assert.Single(document.Files[1].Hunks).OldStart);
     }
 
     [Fact]
@@ -83,10 +82,10 @@ public sealed class GitDiffParserTests
             -bye
             """);
 
-        document.Files.Should().HaveCount(2);
-        document.Files[0].OldPath.Should().BeNull("a created file has no old side");
-        document.Files[0].Hunks.Should().ContainSingle().Which.PreImageCount.Should().Be(0);
-        document.Files[1].NewPath.Should().BeNull("a deleted file has no new side");
+        Assert.Equal(2, document.Files.Count());
+        Assert.Null(document.Files[0].OldPath);
+        Assert.Equal(0, Assert.Single(document.Files[0].Hunks).PreImageCount);
+        Assert.Null(document.Files[1].NewPath);
     }
 
     [Fact]
@@ -100,10 +99,10 @@ public sealed class GitDiffParserTests
             rename to new-name.ts
             """);
 
-        var file = document.Files.Should().ContainSingle().Which;
-        file.OldPath.Should().Be("old-name.ts");
-        file.NewPath.Should().Be("new-name.ts");
-        file.Hunks.Should().BeEmpty();
+        var file = Assert.Single(document.Files);
+        Assert.Equal("old-name.ts", file.OldPath);
+        Assert.Equal("new-name.ts", file.NewPath);
+        Assert.Empty(file.Hunks);
     }
 
     [Fact]
@@ -116,9 +115,9 @@ public sealed class GitDiffParserTests
             Binary files a/logo.png and b/logo.png differ
             """);
 
-        var file = document.Files.Should().ContainSingle().Which;
-        file.Binary.Should().BeTrue();
-        file.Hunks.Should().BeEmpty();
+        var file = Assert.Single(document.Files);
+        Assert.True(file.Binary);
+        Assert.Empty(file.Hunks);
     }
 
     [Fact]
@@ -135,41 +134,36 @@ public sealed class GitDiffParserTests
             \ No newline at end of file
             """);
 
-        var hunk = document.Files.Should().ContainSingle().Which.Hunks.Should().ContainSingle().Which;
-        hunk.Lines.Should().HaveCount(2, "the no-newline markers are formatting, not lines");
-        hunk.PreImageCount.Should().Be(1);
+        var hunk = Assert.Single(Assert.Single(document.Files).Hunks);
+        Assert.Equal(2, hunk.Lines.Count());
+        Assert.Equal(1, hunk.PreImageCount);
     }
 
     [Fact]
     public void MalformedDiffsWithTypedFailures()
     {
-        FluentActions.Invoking(() => GitDiffParser.Parse("not a diff at all"))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentActions.Invoking(() => GitDiffParser.Parse(
+        Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse("not a diff at all")).Code);
+        Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 @@ -1 +1 @@
                 -old
-                """))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentActions.Invoking(() => GitDiffParser.Parse(
+                """)).Code);
+        Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ -1 +1 @@
                 -old
-                """))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentActions.Invoking(() => GitDiffParser.Parse(
+                """)).Code);
+        Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
                 """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ not-a-header @@
                 -old
-                """))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
-        FluentActions.Invoking(() => GitDiffParser.Parse(string.Empty))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_malformed");
+                """)).Code);
+        Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(string.Empty)).Code);
     }
 
     [Fact]
@@ -177,8 +171,7 @@ public sealed class GitDiffParserTests
     {
         var lines = new System.Text.StringBuilder();
         for (var i = 0; i <= GitDiffParser.MaxDiffLines; i++) lines.AppendLine("decoration");
-        FluentActions.Invoking(() => GitDiffParser.Parse(lines.ToString()))
-            .Should().Throw<WorkspaceException>().Which.Code.Should().Be("ide_selector_patch_too_large");
+        Assert.Equal("ide_selector_patch_too_large", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(lines.ToString())).Code);
     }
 
     [Fact]
@@ -193,8 +186,8 @@ public sealed class GitDiffParserTests
             +after
             """);
 
-        var hunk = document.Files.Should().ContainSingle().Which.Hunks.Should().ContainSingle().Which;
-        hunk.OldStart.Should().Be(2, "a bare '-n' header means one line at n");
-        hunk.Lines.Select(static line => line.Origin).Should().Equal('-', '+');
+        var hunk = Assert.Single(Assert.Single(document.Files).Hunks);
+        Assert.Equal(2, hunk.OldStart);
+        Assert.Equal(new char[] { '-', '+' }, hunk.Lines.Select(static line => line.Origin));
     }
 }

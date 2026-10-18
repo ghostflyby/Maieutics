@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -88,11 +87,10 @@ public sealed class ReplControlChannelIntegrationTests
                     "await globalThis.maieutics.health()",
                     AgentToolCallId.Create(),
                     timeout.Token);
-                result.ExecutionStatus.Should().Be("ok");
-                result.Outputs
+                Assert.Equal("ok", result.ExecutionStatus);
+                Assert.Contains("ok", result.Outputs
                     .Where(static item => item is { Kind: "result", Value: not null })
-                    .Select(static item => item.Value?.GetString())
-                    .Should().Contain("ok");
+                    .Select(static item => item.Value?.GetString()));
             }
         }
     }
@@ -147,8 +145,7 @@ public sealed class ReplControlChannelIntegrationTests
                 {
                 }
                 var terminal = await execution.Completion.WaitAsync(timeout.Token);
-                terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetString()
-                    .Should().Contain("control-ok");
+                Assert.Contains("control-ok", Assert.IsType<ReplEvalResultTerminal>(terminal).Value?.GetString());
             }
         }
 
@@ -207,16 +204,14 @@ public sealed class ReplControlChannelIntegrationTests
                     received.Add(item.GetType().Name);
                     if (item is ReplEvalInputRequestEvent input)
                     {
-                        input.Prompt.Should().Be("Name: ");
+                        Assert.Equal("Name: ", input.Prompt);
                         await generation.Connection.ReplyInputAsync(input, "Ada", timeout.Token);
                     }
                 }
 
-                received.Should().Equal(
-                    nameof(ReplEvalInputRequestEvent));
+                Assert.Equal(new string[] { nameof(ReplEvalInputRequestEvent) }, received);
                 var terminal = await execution.Completion.WaitAsync(timeout.Token);
-                terminal.Should().BeOfType<ReplEvalResultTerminal>().Which.Value?.GetString()
-                    .Should().Be("Ada");
+                Assert.Equal("Ada", Assert.IsType<ReplEvalResultTerminal>(terminal).Value?.GetString());
             }
         }
 

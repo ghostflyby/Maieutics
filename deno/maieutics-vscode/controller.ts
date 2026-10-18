@@ -1793,11 +1793,18 @@ async function executeIdeDebug(
       const lines = Array.isArray(params.lines)
         ? (params.lines as unknown[]).filter((v): v is number => typeof v === "number" && v >= 1)
         : [];
+      // The kernel contract is 1-based; DAP is 0-based — the bridge converts
+      // both ways so the model's breakpoint lines match the source view.
       const result = await session.customRequest("setBreakpoints", {
         source: { path: vscode.Uri.parse(uriText, true) },
-        breakpoints: lines.map((line) => ({ line })),
-      }) as { breakpoints?: Array<Record<string, unknown>> };
-      return { breakpoints: result.breakpoints ?? [] };
+        breakpoints: lines.map((line) => ({ line: line - 1 })),
+      }) as { breakpoints?: Array<{ line?: number; verified?: boolean }> };
+      return {
+        breakpoints: (result.breakpoints ?? []).map((breakpoint) => ({
+          ...breakpoint,
+          ...(typeof breakpoint.line === "number" ? { line: breakpoint.line + 1 } : {}),
+        })),
+      };
     }
 
     case "maieutics/debug/control": {

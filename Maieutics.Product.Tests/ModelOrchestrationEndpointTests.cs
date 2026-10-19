@@ -239,12 +239,8 @@ public sealed class ModelOrchestrationEndpointTests
         return new Harness(application, host, manager, overrides, buffer, terminals, terminalProcess);
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
+        TestDeadlines.Create(cancellationToken);
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(string text)
     {

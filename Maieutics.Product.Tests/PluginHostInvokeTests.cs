@@ -442,12 +442,11 @@ public sealed class PluginHostInvokeTests
     /// simulated socket.</summary>
     internal static async Task<HostHarness> CreateHarnessAsync(CancellationToken cancellationToken)
     {
-        var fakeDenoPath = CreateFakeDenoExecutable();
         var manager = new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-host-invoke-{Guid.NewGuid():N}"),
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = fakeDenoPath },
+            new DenoReplOptions { Executable = FakeDenoExecutable.Path },
             new PluginHostModule(),
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
@@ -464,52 +463,28 @@ public sealed class PluginHostInvokeTests
         await attached.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
         Assert.True(manager.GetStatus().ControlConnected);
 
-        var harness = new HostHarness(fakeSocket, manager, fakeDenoPath);
+        var harness = new HostHarness(fakeSocket, manager);
         // Keep the attach loop referenced so the fake socket is read until the harness disposes it.
         _ = attach;
         return harness;
     }
 
-    /// <summary>Creates a fake deno executable (an immediate-exit shell script) so the manager's
-    /// real host process never connects to the control socket and races the simulated host.</summary>
-    private static string CreateFakeDenoExecutable()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
-
     internal sealed class HostHarness : IAsyncDisposable
     {
-        internal HostHarness(FakeHostWebSocket host, PluginHostManager manager, string fakeDenoPath)
+        internal HostHarness(FakeHostWebSocket host, PluginHostManager manager)
         {
             Host = host;
             Manager = manager;
-            this.fakeDenoPath = fakeDenoPath;
         }
 
         internal FakeHostWebSocket Host { get; }
 
         internal PluginHostManager Manager { get; }
 
-        private readonly string fakeDenoPath;
-
         public async ValueTask DisposeAsync()
         {
             Host?.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
-            try
-            {
-                File.Delete(fakeDenoPath);
-            }
-            catch (IOException)
-            {
-                // Best-effort temp cleanup.
-            }
         }
     }
 

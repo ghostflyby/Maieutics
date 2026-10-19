@@ -12,7 +12,7 @@ internal static class TempDirectoryCleanup
 
     public static async Task DeleteWithRetryAsync(string path, CancellationToken cancellationToken)
     {
-        var deadline = Environment.TickCount64 + Budget.Ticks / TimeSpan.TicksPerMillisecond;
+        var deadline = Environment.TickCount64 + (long)Budget.TotalMilliseconds;
         while (true)
         {
             try
@@ -31,5 +31,17 @@ internal static class TempDirectoryCleanup
                 await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>Teardown form: the retry budget is independent of the test's cancellation
+    /// token. After an xUnit timeout that token is already canceled; passing it here would
+    /// abort the cleanup and leak the tree, so teardown always gets its own bounded budget
+    /// instead of the token of the test that just failed.</summary>
+    public static async Task DeleteWithRetryAsync(string path)
+    {
+        // The source must outlive the whole retry loop, so await inside the using scope
+        // rather than returning the inner task.
+        using var cleanup = new CancellationTokenSource(Budget + TimeSpan.FromSeconds(5));
+        await DeleteWithRetryAsync(path, cleanup.Token).ConfigureAwait(false);
     }
 }

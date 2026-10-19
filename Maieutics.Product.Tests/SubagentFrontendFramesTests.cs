@@ -269,12 +269,8 @@ public sealed class SubagentFrontendFramesTests
             ]);
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
+        TestDeadlines.Create(cancellationToken);
 
     private sealed class ScriptedChatClient(
         params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)

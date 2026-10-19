@@ -111,12 +111,7 @@ public sealed class FrontendProcessSmokeTests
 
     private static CancellationTokenSource CreateDeadline(
         CancellationToken cancellationToken,
-        TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 
     private static async Task<JsonElement> WaitForTranscriptTurnAsync(
         HttpClient client,

@@ -272,12 +272,9 @@ public sealed class FrontendCommIntegrationTests
         using var connection = await ConnectCommsAsync(harness, sessionId, deadline.Token);
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 
     private static ReplCommMessage Open(string commId, string targetName, object? state)
     {

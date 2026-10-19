@@ -585,7 +585,7 @@ public sealed class PluginDeclarativeExtensionsTests
             root,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
+            new DenoReplOptions { Executable = FakeDenoExecutable.Path },
             new PluginHostModule(),
             new ReplControlSessionRegistry(),
             loggerFactory?.CreateLogger<PluginHostManager>() ?? NullLogger<PluginHostManager>.Instance,
@@ -598,8 +598,10 @@ public sealed class PluginDeclarativeExtensionsTests
     /// <c>mcp.json</c> data file (ADR 0033).</summary>
     private static string CreateMcpDataFilePluginsRoot(string pluginName)
     {
-        var root = Path.Combine(Path.GetTempPath(), pluginName);
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        // Unique suffix: these classes run in parallel collections, and a fixed path would
+        // let one run delete another run's live tree. The plugin id is the directory name,
+        // so callers derive it from the returned path.
+        var root = Path.Combine(Path.GetTempPath(), $"{pluginName}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
             Path.Combine(root, "deno.json"),
@@ -644,8 +646,10 @@ public sealed class PluginDeclarativeExtensionsTests
     {
         // The kernel-side plugin id is the plugins-root-relative directory name
         // (the same id the host relay asserts), not the deno.json package name.
-        var root = Path.Combine(Path.GetTempPath(), pluginName);
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        // Unique suffix: these classes run in parallel collections, and a fixed path would
+        // let one run delete another run's live tree. The plugin id is the directory name,
+        // so callers derive it from the returned path.
+        var root = Path.Combine(Path.GetTempPath(), $"{pluginName}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
             Path.Combine(root, "deno.json"),
@@ -783,14 +787,4 @@ public sealed class PluginDeclarativeExtensionsTests
         }
     }
 
-    private static string CreateFakeDenoExecutable()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
 }

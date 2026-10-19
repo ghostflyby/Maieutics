@@ -623,12 +623,9 @@ public sealed class FrontendTurnQueueIntegrationTests
                 StringComparison.Ordinal));
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 
     private static async Task<JsonElement> GetQueueAsync(
         Harness harness,

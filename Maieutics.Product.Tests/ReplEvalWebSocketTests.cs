@@ -283,12 +283,8 @@ public sealed class ReplEvalWebSocketTests
         return Encoding.UTF8.GetString(ReplEvalProtocol.Serialize(envelope));
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
+        TestDeadlines.Create(cancellationToken);
 
     private sealed class TestWebSocket : WebSocket
     {

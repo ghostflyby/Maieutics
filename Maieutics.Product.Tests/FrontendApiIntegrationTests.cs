@@ -1226,26 +1226,11 @@ public sealed class FrontendApiIntegrationTests
 
     /// <summary>Deletes a temporary directory, retrying with an asynchronous backoff:
     /// the lock holder (watcher, exiting child) has no completion signal, so the
-    /// retry waits by delay — asynchronously, never blocking a pool thread.</summary>
-    private static async Task DeleteDirectoryWithRetryAsync(string path)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                Directory.Delete(path, true);
-                return;
-            }
-            catch (IOException) when (attempt < 10)
-            {
-                await Task.Delay(200 * (attempt + 1), TestContext.Current.CancellationToken);
-            }
-            catch (UnauthorizedAccessException) when (attempt < 10)
-            {
-                await Task.Delay(200 * (attempt + 1), TestContext.Current.CancellationToken);
-            }
-        }
-    }
+    /// retry waits by delay — asynchronously, never blocking a pool thread. Teardown gets
+    /// its own budget, not the test token: after a timeout that token is canceled and
+    /// would abort cleanup and leak the tree.</summary>
+    private static Task DeleteDirectoryWithRetryAsync(string path) =>
+        TempDirectoryCleanup.DeleteWithRetryAsync(path);
 
     [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedPerSessionWithLazyResolve()
@@ -1508,12 +1493,9 @@ public sealed class FrontendApiIntegrationTests
     }
 
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 
     private static async Task<FrontendHarness> StartHostAsync(CancellationToken cancellationToken)
     {

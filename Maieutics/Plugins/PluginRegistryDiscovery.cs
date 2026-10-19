@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Maieutics.DenoExecution;
 
 namespace Maieutics.Plugins;
 
@@ -273,6 +274,9 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add("info");
         startInfo.ArgumentList.Add("--json");
         startInfo.ArgumentList.Add(specifier);
+        // Discovery runs before the plugin host takes its own slot, so this probe carries
+        // its own lease; the suite's process budget would otherwise miss every `deno info`.
+        using var slot = await InternalDenoProcessGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
         var stdout = await ReadOutputAsync(process, TimeSpan.FromSeconds(120), cancellationToken).ConfigureAwait(false);
@@ -309,6 +313,7 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add("info");
         startInfo.ArgumentList.Add("--json");
         startInfo.ArgumentList.Add(url);
+        using var slot = await InternalDenoProcessGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
         var stdout = await ReadOutputAsync(process, TimeSpan.FromSeconds(60), cancellationToken).ConfigureAwait(false);

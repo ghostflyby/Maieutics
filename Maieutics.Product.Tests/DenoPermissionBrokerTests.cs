@@ -304,14 +304,15 @@ public sealed class DenoPermissionBrokerTests
         startInfo.ArgumentList.Add("--no-prompt");
         startInfo.Environment["DENO_PERMISSION_BROKER_PATH"] = broker.Address;
         startInfo.ArgumentList.Add(scriptPath);
-        using var process = Process.Start(startInfo)
-                            ?? throw new InvalidOperationException("The deno probe could not be started.");
+        await using var child = await TestChildProcess.StartAsync(startInfo, cancellationToken)
+            .ConfigureAwait(false);
+        var process = child.Raw;
         if (register) broker.RegisterPolicy(process.Id, policy);
         try
         {
             // Drain both pipes concurrently: completing the stdout read before starting the
-            // stderr read can deadlock once the child fills the stderr buffer. A cancelled or
-            // failed drain still kills the tree so no probe child outlives the test.
+            // stderr read can deadlock once the child fills the stderr buffer. Disposal kills
+            // the tree, so no probe child outlives the test.
             var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
             var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
             var outputs = await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
@@ -320,15 +321,6 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            try
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // The process already exited.
-            }
-
             if (register) broker.UnregisterProcess(process.Id);
         }
     }

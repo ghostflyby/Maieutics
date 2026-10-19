@@ -11,7 +11,7 @@ public sealed class DenoRunProcessTests
     private static readonly DenoPermissionBroker SharedBroker =
         DenoPermissionBroker.Create(new NullLogger());
 
-    private static DenoRunProcess StartChild(
+    private static async Task<DenoRunProcess> StartChildAsync(
         ProcessStartInfo startInfo,
         InternalDenoProcessKind kind,
         ILogger logger,
@@ -19,13 +19,26 @@ public sealed class DenoRunProcessTests
     {
         // The process tests exercise drain/stop/exit observation, not permissions; the broker is
         // required by the launch surface, so reuse one class-level broker with the empty policy.
-        return DenoRunProcess.Start(
-            startInfo,
-            kind,
-            logger,
-            SharedBroker,
-            EffectivePolicy.Default,
-            captureStandardError);
+        // These starts bypass the production adapters, so the suite's process budget is taken
+        // here; DenoRunProcess releases the slot when the child's completion settles.
+        var slot = await TestChildProcessGate.AcquireAsync(TestContext.Current.CancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            return DenoRunProcess.Start(
+                startInfo,
+                kind,
+                logger,
+                SharedBroker,
+                EffectivePolicy.Default,
+                captureStandardError,
+                slot: slot);
+        }
+        catch
+        {
+            slot.Dispose();
+            throw;
+        }
     }
 
     [Fact(Timeout = 30_000)]
@@ -44,7 +57,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("console.log('ready'); Deno.exit(7)");
 
-        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
+        await using var process = await StartChildAsync(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
         Assert.Null(process.ExitCode);
         await process.Completion.WaitAsync(deadline.Token);
@@ -67,7 +80,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("console.error('boom')");
 
-        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger(), true);
+        await using var process = await StartChildAsync(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger(), true);
 
         await process.Completion.WaitAsync(deadline.Token);
         Assert.NotNull(process.StandardError);
@@ -91,7 +104,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("for (let i = 0; i < 200_000; i++) console.log('payload-' + i)");
         var logger = new CollectingLogger();
 
-        await using var process = StartChild(startInfo, InternalDenoProcessKind.PluginHost, logger);
+        await using var process = await StartChildAsync(startInfo, InternalDenoProcessKind.PluginHost, logger);
 
         await process.Completion.WaitAsync(deadline.Token);
         Assert.Equal(0, process.ExitCode);
@@ -116,7 +129,7 @@ public sealed class DenoRunProcessTests
         startInfo.ArgumentList.Add("eval");
         startInfo.ArgumentList.Add("await new Promise(() => {})");
 
-        await using var process = StartChild(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
+        await using var process = await StartChildAsync(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
         var firstStop = process.StopAsync();
         var secondStop = process.StopAsync();
@@ -165,7 +178,8 @@ public sealed class DenoRunProcessTests
                 logger,
                 SharedBroker,
                 EffectivePolicy.Default,
-                stopBudget: TimeSpan.FromSeconds(2));
+                stopBudget: TimeSpan.FromSeconds(2),
+                slot: await TestChildProcessGate.AcquireAsync(deadline.Token));
 
             try
             {

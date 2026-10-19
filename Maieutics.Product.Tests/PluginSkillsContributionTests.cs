@@ -1,12 +1,14 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Threading.Channels;
+using Maieutics;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Skills;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
@@ -86,6 +88,21 @@ public sealed class PluginSkillsContributionTests : IDisposable
             new Dictionary<string, string>(StringComparer.Ordinal),
             name => environment.GetValueOrDefault(name));
 
+    /// <summary>CI diagnosis: when MAIEUTICS_LOG_DIR is set (CI sets it and uploads the
+    /// directory on failure), the managers under test log their reload and approval
+    /// chains to the shared maieutics-{pid}.log instead of running silent. Locally the
+    /// factory stays null and the managers keep the NullLogger.</summary>
+    private static readonly ILoggerFactory? ManagerLoggerFactory = CreateManagerLoggerFactory();
+
+    private static ILoggerFactory? CreateManagerLoggerFactory()
+    {
+        var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
+        if (string.IsNullOrEmpty(logDirectory)) return null;
+        return LoggerFactory.Create(builder => builder
+            .SetMinimumLevel(LogLevel.Debug)
+            .AddProvider(new FileLoggerProvider(logDirectory)));
+    }
+
     private static PluginHostManager CreateManager(
         string root,
         TimeProvider clock,
@@ -93,6 +110,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
         VariableTable variables,
         string? approvalsPath)
     {
+        var loggerFactory = ManagerLoggerFactory;
         return new PluginHostManager(
             root,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
@@ -100,8 +118,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
             new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
             new PluginHostModule(),
             new ReplControlSessionRegistry(),
-            NullLogger<PluginHostManager>.Instance,
-            NullLoggerFactory.Instance,
+            loggerFactory?.CreateLogger<PluginHostManager>() ?? NullLogger<PluginHostManager>.Instance,
+            loggerFactory ?? NullLoggerFactory.Instance,
             clock,
             pluginApprovalsPath: approvalsPath,
             skillCatalog: catalog,

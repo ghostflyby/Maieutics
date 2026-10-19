@@ -125,6 +125,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private readonly List<FileSystemWatcher> watchers = [];
     private readonly Action<SkillCatalogSnapshot>? onProgressiveCommit;
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
+    private TaskCompletionSource snapshotPublished = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int rebuildCount;
     private bool disposed;
 
@@ -178,6 +179,21 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// <summary>The latest merged snapshot. Cheap to read; freshness is per-run by
     /// construction (ADR 0039 decision 5).</summary>
     internal SkillCatalogSnapshot Current => current;
+
+    /// <summary>Completes when the next snapshot publication after this call lands,
+    /// so callers can await a catalog change signal instead of polling
+    /// <see cref="Current"/>; no publication ever completes a stale wait. After
+    /// disposal no publication ever arrives: a task already returned stays
+    /// incomplete forever, and new calls throw <see cref="ObjectDisposedException"/>
+    /// — bounded callers are expected to carry their own deadline.</summary>
+    internal Task WaitForNextSnapshotAsync()
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            return snapshotPublished.Task;
+        }
+    }
 
     /// <summary>How many times the merged snapshot has been rebuilt — the observable the
     /// debounce tests assert on (a write burst must collapse to few rebuilds).</summary>
@@ -692,6 +708,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
             .OrderBy(static skill => skill.Name, StringComparer.Ordinal)
             .ToImmutableArray();
         current = new SkillCatalogSnapshot(skills, diagnostics.ToImmutable());
+        var published = snapshotPublished;
+        snapshotPublished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        published.TrySetResult();
         logger.LogInformation(
             "Skill catalog: {Count} skills ({Workspace} workspace, {User} user), {Diagnostics} diagnostics.",
             skills.Length,

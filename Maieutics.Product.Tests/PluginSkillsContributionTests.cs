@@ -18,6 +18,12 @@ namespace Maieutics.Product.Tests;
 public sealed class PluginSkillsContributionTests : IDisposable
 {
     private const int Deadline = 60_000;
+    private static readonly TimeSpan CatalogWaitBudget = TimeSpan.FromSeconds(15);
+
+    /// <summary>Observation window for negative assertions ("nothing else happens"):
+    /// long enough for same-tick async work to surface, short enough to keep the
+    /// suite's real-time cost negligible.</summary>
+    private static readonly TimeSpan NegativeWindow = TimeSpan.FromMilliseconds(300);
 
     private readonly string workspaceRoot =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-plugin-ws-{Guid.NewGuid():N}");
@@ -108,16 +114,59 @@ public sealed class PluginSkillsContributionTests : IDisposable
         Func<SkillCatalogSnapshot, bool> predicate,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-        while (DateTime.UtcNow < deadline)
+        // Subscribe before the first predicate read: a publication landing after the
+        // check completes the held wait, so no publication can fall into the gap
+        // between checking and subscribing (which would idle out the whole budget).
+        var changed = catalog.WaitForNextSnapshotAsync();
+        while (!predicate(catalog.Current))
         {
-            if (predicate(catalog.Current)) return;
-            await Task.Delay(20, cancellationToken);
+            try
+            {
+                await changed.WaitAsync(CatalogWaitBudget, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                break;
+            }
+
+            changed = catalog.WaitForNextSnapshotAsync();
         }
 
-        Assert.Fail(
-            $"The skill catalog did not reach the expected state within 15s " +
-            $"(currently {catalog.Current.Skills.Length} skills, {catalog.Current.Diagnostics.Length} diagnostics).");
+        if (!predicate(catalog.Current))
+            Assert.Fail(
+                $"The skill catalog did not reach the expected state within 15s " +
+                $"(currently {catalog.Current.Skills.Length} skills, {catalog.Current.Diagnostics.Length} diagnostics).");
+    }
+
+    /// <summary>Gives one bounded publication window for anything still in flight to
+    /// land (or not land) before a negative assertion re-checks its invariant on
+    /// <see cref="SkillCatalog.Current"/>: the wait is the catalog's own publish
+    /// signal bounded by the window, never a fixed sleep.</summary>
+    private static async Task AwaitCatalogQuietAsync(
+        SkillCatalog catalog,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await catalog.WaitForNextSnapshotAsync()
+                .WaitAsync(NegativeWindow, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // No publication within the window: the invariant check below runs on the
+            // unchanged snapshot, which is the expected outcome for a negative assert.
+        }
+    }
+
+    /// <summary>Negative assertion for the invoke stream: no further Skills invoke may
+    /// arrive within the observation window.</summary>
+    private static async Task AssertNoFurtherSkillInvokeAsync(
+        FakeHostWebSocket fakeSocket,
+        CancellationToken cancellationToken)
+    {
+        Assert.False(
+            await fakeSocket.TryAwaitNextSkillInvokeAsync(NegativeWindow, cancellationToken).ConfigureAwait(false),
+            "The plugin host issued an unexpected further skill invoke within the observation window.");
     }
 
     [Fact(Timeout = Deadline)]
@@ -242,7 +291,13 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 catalog,
                 snapshot => snapshot.Skills.Any(skill => skill.Name == "beta"),
                 TestContext.Current.CancellationToken);
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            // The ungranted sibling publishes its read-grant diagnostic through its own
+            // contribution, which need not coincide with the granted plugin's snapshot.
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Diagnostics.Any(diagnostic =>
+                    diagnostic.Contains("not covered by a read grant")),
+                TestContext.Current.CancellationToken);
 
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "beta");
             Assert.Equal(SkillSource.PluginDeclared, skill.Source);
@@ -279,7 +334,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
         {
             await manager.StartAsync(TestContext.Current.CancellationToken);
             await manager.WaitUntilReadyAsync(TestContext.Current.CancellationToken);
-            await Task.Delay(500, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
 
             Assert.Empty(catalog.Current.Skills);
         }
@@ -367,7 +422,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             manager.HandleHostMessage(PluginTriggerFrame(pluginId));
             var secondInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             fakeSocket.ReplyError(manager, secondInvoke, "generator_broken", "the worker failed");
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
 
             Assert.Contains(catalog.Current.Skills, skill => skill.Name == "gen-skill");
         }
@@ -452,7 +507,10 @@ public sealed class PluginSkillsContributionTests : IDisposable
             Assert.DoesNotContain(catalog.Current.Skills, skill => skill.Name == "published-one");
 
             manager.HandleHostMessage(SkillsPublishFrame(pluginId, "[]"));
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AwaitCatalogAsync(
+                catalog,
+                snapshot => snapshot.Skills.All(skill => skill.Name != "published-two"),
+                TestContext.Current.CancellationToken);
             Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
             Assert.DoesNotContain(catalog.Current.Skills, skill => skill.Name == "published-two");
 
@@ -468,7 +526,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 TestContext.Current.CancellationToken);
             manager.HandleHostMessage(
                 SkillsRegistryFrame((pluginId, "./mod.ts")));
-            await Task.Delay(500, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
             Assert.Contains(catalog.Current.Skills, skill => skill.Name == "declared");
             Assert.Contains(catalog.Current.Skills, skill => skill.Name == "published-three");
         }
@@ -525,7 +583,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
             var reply = await fakeSocket.ReadAsync(TestContext.Current.CancellationToken);
             Assert.Contains("capability_denied", reply);
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
             Assert.Empty(catalog.Current.Skills);
         }
         finally
@@ -697,7 +755,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             // identical to the previous frame's takes zero action — the generator is
             // not re-invoked and the contribution stays as committed.
             manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
-            await Task.Delay(500, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
             Assert.Contains(catalog.Current.Skills, skill => skill.Name == "gen-skill");
         }
@@ -750,14 +808,14 @@ public sealed class PluginSkillsContributionTests : IDisposable
             await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), "export const Skills = {};\n// edited\n", TestContext.Current.CancellationToken);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // A frame carrying epochs but no bump for the plugin (another plugin's
             // reload completing, a mount-table change) must not drain the mark.
             manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
                 new Dictionary<string, int>(), (pluginId, "./mod.ts")));
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             // The post-reload frame reports the plugin's epoch: the forced re-invoke
@@ -832,7 +890,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
                 """, TestContext.Current.CancellationToken);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
@@ -881,7 +939,8 @@ public sealed class PluginSkillsContributionTests : IDisposable
             manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
             var invoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             fakeSocket.ReplyError(manager, invoke, "generator_busy", "a transient failure");
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
             Assert.Empty(catalog.Current.Skills);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
@@ -904,7 +963,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             // A fully successful pass clears the retry flag: a further unchanged frame
             // invokes nothing.
             manager.HandleHostMessage(SkillsRegistryFrame((pluginId, "./mod.ts")));
-            await Task.Delay(500, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
             Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }
         finally
@@ -937,7 +996,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             var attach = manager.AttachHostAsync(fakeSocket, TestContext.Current.CancellationToken);
             await attached.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             _ = attach;
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
             Assert.Empty(catalog.Current.Skills);
 
             // The runtime approval activates the plugin: the host upserts the worker and
@@ -1080,7 +1139,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             var triggerInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
             Assert.Equal("alpha", PluginIdOf(triggerInvoke));
             fakeSocket.Reply(manager, triggerInvoke, """{"value":[]}""");
-            await Task.Delay(300, TestContext.Current.CancellationToken);
+            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
 
             Assert.Equal(2, fakeSocket.SkillInvokesBy("alpha"));
             Assert.Equal(1, fakeSocket.SkillInvokesBy("beta"));
@@ -1349,27 +1408,93 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         public async Task<string> ReadSkillInvokeAsync(CancellationToken cancellationToken)
         {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-            while (DateTime.UtcNow < deadline)
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var deadline = Task.Delay(TimeSpan.FromSeconds(15), linked.Token);
+            while (true)
             {
-                if (sent.Reader.TryRead(out var message) && message.Contains("\"Skills\"", StringComparison.Ordinal))
-                    return message;
-                await Task.Delay(20, cancellationToken);
+                var message = await ReadNextAsync(
+                    deadline,
+                    linked,
+                    cancellationToken,
+                    "No Skills host.invoke envelope arrived.").ConfigureAwait(false);
+                if (message.Contains("\"Skills\"", StringComparison.Ordinal)) return message;
             }
-
-            throw new TimeoutException("No Skills host.invoke envelope arrived.");
         }
 
         public async Task<string> ReadAsync(CancellationToken cancellationToken)
         {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-            while (DateTime.UtcNow < deadline)
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var deadline = Task.Delay(TimeSpan.FromSeconds(15), linked.Token);
+            return await ReadNextAsync(
+                deadline,
+                linked,
+                cancellationToken,
+                "No host envelope arrived.").ConfigureAwait(false);
+        }
+
+        /// <summary>Awaits one bounded window for the next outbound Skills invoke and
+        /// reports whether one arrived — the negative-assertion probe for "the manager
+        /// must not invoke anything further". Non-invoke messages are consumed and
+        /// skipped, mirroring <see cref="ReadSkillInvokeAsync"/>. On window expiry the
+        /// in-flight read is canceled and observed: a left-behind read would linger as
+        /// a zombie channel reader and consume the very next message the caller's
+        /// subsequent <see cref="ReadSkillInvokeAsync"/> is owed. A message racing the
+        /// expiry boundary may be consumed and reported as quiet — boundary arrivals
+        /// count as quiet is the chosen, stable semantics.</summary>
+        public async Task<bool> TryAwaitNextSkillInvokeAsync(
+            TimeSpan window,
+            CancellationToken cancellationToken)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var deadline = Task.Delay(window, linked.Token);
+            while (true)
             {
-                if (sent.Reader.TryRead(out var message)) return message;
-                await Task.Delay(20, cancellationToken);
+                var read = sent.Reader.ReadAsync(linked.Token).AsTask();
+                var completed = await Task.WhenAny(read, deadline).ConfigureAwait(false);
+                if (completed != read)
+                {
+                    linked.Cancel();
+                    try
+                    {
+                        await read.ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    return false;
+                }
+
+                var message = await read.ConfigureAwait(false);
+                if (message.Contains("\"Skills\"", StringComparison.Ordinal)) return true;
+            }
+        }
+
+        private async Task<string> ReadNextAsync(
+            Task deadline,
+            CancellationTokenSource linked,
+            CancellationToken cancellationToken,
+            string timeoutMessage)
+        {
+            var read = sent.Reader.ReadAsync(linked.Token).AsTask();
+            var completed = await Task.WhenAny(read, deadline).ConfigureAwait(false);
+            if (completed != read)
+            {
+                // Deadline won: cancel and observe the in-flight read so no zombie
+                // channel reader survives (see TryAwaitNextSkillInvokeAsync).
+                linked.Cancel();
+                try
+                {
+                    await read.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                throw new TimeoutException(timeoutMessage);
             }
 
-            throw new TimeoutException("No host envelope arrived.");
+            return await read.ConfigureAwait(false);
         }
 
         public void Reply(PluginHostManager manager, string invokeEnvelope, string resultJson)

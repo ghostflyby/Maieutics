@@ -27,7 +27,7 @@ public sealed class TestProcessBudgetTests
         Assert.Equal(expected, TestDenoProcessGate.ComputeLimit(processorCount));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ALeaseRoundTripsThroughTheBudget()
     {
         // Acquire and release one slot: a lease that never released would starve every

@@ -59,9 +59,10 @@ public sealed class SkillCatalogTests : IDisposable
         return catalog;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceSkillShadowsTheUserNameWithADiagnostic()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "shared", "workspace wins");
         WriteSkill(userRoot, "shared", "user loses");
         WriteSkill(userRoot, "user-only", "user contributes");
@@ -75,7 +76,7 @@ public sealed class SkillCatalogTests : IDisposable
             diagnostic.Contains("shared") && diagnostic.Contains("shadowed"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InRootDuplicateNamesShadowWithADiagnostic()
     {
         WriteSkill(workspaceRoot, "alpha", "first");
@@ -91,9 +92,10 @@ public sealed class SkillCatalogTests : IDisposable
             diagnostic.Contains("alpha") && diagnostic.Contains("shadowed"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WatchedChangeRebuildsTheSnapshotAfterTheDebounce()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "initial", "the first skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
@@ -107,9 +109,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Equal(2, catalog.Current.Skills.Count());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AWriteBurstCollapsesIntoFewRebuilds()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "initial", "the first skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
@@ -128,7 +131,7 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Equal(6, catalog.Current.Skills.Count());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DisposalStopsTheWatchers()
     {
         WriteSkill(workspaceRoot, "initial", "the first skill");
@@ -148,9 +151,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Single(catalog.Current.Skills, skill => skill.Name == "initial");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DisposalIsIdempotent()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "initial", "the first skill");
         var catalog = CreateCatalog(new FakeTimeProvider(), userSource: false);
 
@@ -169,7 +173,7 @@ public sealed class SkillCatalogTests : IDisposable
             $"---\nname: {name}\ndescription: {description}\n---\n\nBody of {name}.\n");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EditingOneSkillBodyRescansOnlyThatSkillDirectory()
     {
         for (var index = 0; index < 12; index++)
@@ -190,9 +194,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.True(catalog.DirectoryVisits - visitsBefore < 10);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AMidTreeBoundarySkillMdPreemptsTheDeeperSkill()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
@@ -209,9 +214,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Single(catalog.Current.Skills, skill => skill.Name == "shallow-skill");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RemovingTheBoundarySkillMdReexposesTheDeeperSkill()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkillAt("category", "shallow-skill", "claims the whole category");
         WriteSkillAt(Path.Combine("category", "deep"), "deep-skill", "the deep skill");
         var clock = new FakeTimeProvider();
@@ -227,9 +233,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Single(catalog.Current.Skills, skill => skill.Name == "deep-skill");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ASkillAddedDeepInTheTreeIsDiscovered()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "top-level", "the flat skill");
         Directory.CreateDirectory(Path.Combine(workspaceRoot, "category"));
         var clock = new FakeTimeProvider();
@@ -244,9 +251,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Equal(2, catalog.Current.Skills.Count());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ADeletedSkillDirectoryLeavesTheCatalog()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "alpha", "the first skill");
         WriteSkill(workspaceRoot, "beta", "the surviving skill");
         var clock = new FakeTimeProvider();
@@ -261,9 +269,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Single(catalog.Current.Skills, skill => skill.Name == "beta");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ARenamedSkillDirectoryMovesToItsNewPath()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "alpha", "the renamed skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
@@ -280,7 +289,7 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Equal(Path.Combine(workspaceRoot, "beta", "SKILL.md"), Assert.Single(catalog.Current.Skills, skill => skill.Name == "alpha").BodyPath);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ARenameAcrossTheRootBoundaryRecordsOnlyTheInsideHalf()
     {
         WriteSkill(workspaceRoot, "alpha", "the moved skill");
@@ -324,7 +333,7 @@ public sealed class SkillCatalogTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ACasedEventPathRevalidatesTheKnownSkillDirectory()
     {
         if (OperatingSystem.IsLinux())
@@ -347,9 +356,10 @@ public sealed class SkillCatalogTests : IDisposable
         Assert.Single(catalog.Current.Skills);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheInitialScanCommitsEachSkillDirectoryProgressivelyInPrecedenceOrder()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "ws-only", "workspace contributes");
         WriteSkill(workspaceRoot, "shared", "the workspace winner");
         WriteSkill(userRoot, "shared", "the user's transient view");
@@ -383,9 +393,10 @@ public sealed class SkillCatalogTests : IDisposable
             diagnostic.Contains("shared") && diagnostic.Contains("shadowed"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RenamingTheSkillFileAwayRemovesTheSkill()
     {
+        _ = TestContext.Current.CancellationToken;
         WriteSkill(workspaceRoot, "alpha", "the first skill");
         var clock = new FakeTimeProvider();
         await using var catalog = CreateCatalog(clock, userSource: false);
@@ -490,7 +501,7 @@ public sealed class SkillResourceProviderTests : IDisposable
             NullLogger<SkillCatalog>.Instance);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ServesTheCurrentBodyFromDisk()
     {
         await using var catalog = CreateCatalog();
@@ -506,7 +517,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         Assert.Equal("text/markdown", result.MimeType);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RejectsEveryUriShapeExceptTheVerbatimSkillForm()
     {
         await using var catalog = CreateCatalog();
@@ -520,7 +531,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnknownSkillIsATypedNotFound()
     {
         await using var catalog = CreateCatalog();
@@ -534,7 +545,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DeletedBodyIsATypedNotFound()
     {
         await using var catalog = CreateCatalog();
@@ -549,7 +560,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await act.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CatalogListsActiveSkillsOnly()
     {
         Directory.CreateDirectory(Path.Combine(root, "inert"));
@@ -562,7 +573,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         Assert.Equal("skill://alpha", Assert.Single(entries).Uri);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task BodyRelinkedOutsideTheRootAfterDiscoveryIsATypedNotFound()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -591,7 +602,7 @@ public sealed class SkillResourceProviderTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OversizedBodyServingIsRefused()
     {
         await using var catalog = CreateCatalog();
@@ -629,9 +640,10 @@ public sealed class SkillsProfileProviderTests : IDisposable
         return lease.Profile;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EmptyCatalogPassesTheLeaseThroughUntouched()
     {
+        _ = TestContext.Current.CancellationToken;
         Directory.CreateDirectory(root);
         await using var catalog = SkillCatalog.Create(
             [(SkillSource.Workspace, root)],
@@ -644,7 +656,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
         Assert.Null(profile.Options.SystemPrompt);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheNextAcquisitionCarriesTheRebuiltCatalog()
     {
         Directory.CreateDirectory(root);
@@ -670,7 +682,7 @@ public sealed class SkillsProfileProviderTests : IDisposable
         Assert.Contains("skill://alpha", composed);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheComposedPromptRidesTheConfiguredBasePrompt()
     {
         Directory.CreateDirectory(Path.Combine(root, "alpha"));

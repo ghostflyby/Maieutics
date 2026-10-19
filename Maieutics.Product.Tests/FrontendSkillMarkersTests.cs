@@ -116,7 +116,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         return new SkillResourceProvider(catalog);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ExpandsEachDistinctNameOnceWithFramedBody()
     {
         var provider = CreateProvider(("alpha", "Alpha body."));
@@ -134,7 +134,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         Assert.Contains("Alpha body.", Assert.IsType<TextContent>(Assert.Single(parts)).Text);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UnknownNameFailsTyped()
     {
         var provider = CreateProvider(("alpha", "Alpha body."));
@@ -147,7 +147,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         Assert.Equal(FrontendErrors.SkillUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task TurnBudgetOverflowFailsTheWholeSubmission()
     {
         var threeMiB = new string('x', 3 * 1024 * 1024);

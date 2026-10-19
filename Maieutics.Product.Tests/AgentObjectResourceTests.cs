@@ -7,7 +7,7 @@ namespace Maieutics.Product.Tests;
 
 public sealed class AgentObjectResourceTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PublishedObjectReadsBackThroughItsContentAddress()
     {
         var harness = new ObjectHarness();
@@ -36,7 +36,7 @@ public sealed class AgentObjectResourceTests
         Assert.Equal(new ResourceClaim("objects"), Assert.Single(provider.Claims));
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData("objects://ABCDEF0000000000000000000000000000000000000000000000000000000000")]
     [InlineData("objects://abcd")]
     [InlineData("objects://abcd0000000000000000000000000000000000000000000000000000000000000")]
@@ -56,7 +56,7 @@ public sealed class AgentObjectResourceTests
         Assert.Equal("resource_invalid_uri", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await read.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnknownObjectAddressReadsAsNotFound()
     {
         var harness = new ObjectHarness();
@@ -70,7 +70,7 @@ public sealed class AgentObjectResourceTests
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await read.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReadLimitsBoundTheReturnedObject()
     {
         var harness = new ObjectHarness();

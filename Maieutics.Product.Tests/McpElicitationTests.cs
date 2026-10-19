@@ -30,7 +30,7 @@ public sealed class McpElicitationTests
         };
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AttributedElicitationIsPresentedAndMappedToAccept()
     {
         var coordinator = new McpElicitationCoordinator(
@@ -46,7 +46,7 @@ public sealed class McpElicitationTests
         coordinator.UnregisterCall(callId);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnattributedElicitationIsCancelledWithoutPresenting()
     {
         var presented = false;
@@ -64,7 +64,7 @@ public sealed class McpElicitationTests
         Assert.False(presented);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AmbiguousAttributionIsCancelledWithoutPresenting()
     {
         var coordinator = new McpElicitationCoordinator(
@@ -80,7 +80,7 @@ public sealed class McpElicitationTests
         coordinator.UnregisterCall(second);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ConcurrentElicitationsAnswerCancel()
     {
         // The first presenter call holds until we release it, keeping the coordinator's
@@ -104,7 +104,7 @@ public sealed class McpElicitationTests
         Assert.Equal(1, Volatile.Read(ref calls));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnansweredElicitationTimesOutToCancel()
     {
         var coordinator = new McpElicitationCoordinator(
@@ -118,7 +118,7 @@ public sealed class McpElicitationTests
         Assert.Equal("cancel", result.Action);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DeclinedAndCancelledAnswersMapThrough()
     {
         var coordinator = new McpElicitationCoordinator(
@@ -130,7 +130,7 @@ public sealed class McpElicitationTests
             .Action);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task OversizedMessageIsCancelledWithoutPresenting()
     {
         var presented = false;

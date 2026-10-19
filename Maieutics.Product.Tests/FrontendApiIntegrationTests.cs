@@ -1085,7 +1085,9 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task NotebookSwitchesBetweenOpenAiAndAnthropicWithCanonicalHistory()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(60));
+        // 45 s inside the 60 s outer Fact timeout: the switch exercises two providers and a
+        // canonical-history replay, while the outer attribute still fires with time to report.
+        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
         var dualConfig = DualProviderConfigTemplate

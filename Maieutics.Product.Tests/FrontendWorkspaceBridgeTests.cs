@@ -47,7 +47,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Null(sockets.TryGetAuthority(null));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task TargetedSendReachesOnlyTheNamedRegistration()
     {
         var sockets = new FrontendIdeSockets();
@@ -89,7 +89,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
     // ---------- bridge channel round trips ----------
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task BridgedReadAnswersTheFrontendTextStateThroughTheRealWireShapes()
     {
         using var harness = BridgeHarness.Create();
@@ -105,7 +105,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal(new Uri(Path.Combine(harness.Root, "a.cs")).AbsoluteUri, harness.LastRequest!.Value.PhysicalUri);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task BridgedListingCarriesEntriesAndAbsentDirectoriesMapTyped()
     {
         using var harness = BridgeHarness.Create();
@@ -123,7 +123,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal("workspace_path_not_found", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await missingList.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task BridgedWriteCarriesTheBeforeHashAndFailsTypedOnConflict()
     {
         using var harness = BridgeHarness.Create();
@@ -146,7 +146,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal("workspace_path_exists", (await Assert.ThrowsAnyAsync<WorkspaceException>(async () => { await exists.Invoke(); })).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task DirtyBuffersFailBridgedWritesTyped()
     {
         using var harness = BridgeHarness.Create();
@@ -163,7 +163,7 @@ public sealed class FrontendWorkspaceBridgeTests
         await clean.Invoke();
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UnsupportedMethodAbsorbsOnceAndTheBridgeReportsItselfInactive()
     {
         using var harness = BridgeHarness.Create();
@@ -180,7 +180,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
     // ---------- coverage: the bridge serves only what the IDE's folders cover ----------
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task PathsOutsideTheFrontendsFoldersFallBackToLocalIo()
     {
         using var harness = BridgeHarness.Create();
@@ -208,7 +208,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.DoesNotContain(harness.DiskFrontend.Requests, request => request.Method == "maieutics/fs/local/read" && request.PhysicalUri.Contains("outside"));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task MixedPatchServesCoveredFilesThroughTheBridgeAndUncoveredFilesLocally()
     {
         using var harness = BridgeHarness.Create();
@@ -232,7 +232,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal("patched locally\n", await File.ReadAllTextAsync(Path.Combine(harness.Root, "docs", "local.txt"), TestContext.Current.CancellationToken));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task WorkspaceFsScriptToolsReportUncoveredPathsAsTheShimFallbackSignal()
     {
         using var harness = BridgeHarness.Create();
@@ -258,7 +258,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
     // ---------- workspace tools under the bridge ----------
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReadTextServesTheBridgedTextStateInsteadOfTheDisk()
     {
         using var harness = BridgeHarness.Create();
@@ -274,7 +274,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal("buffer one\nbuffer two\nbuffer three", result.GetProperty("text").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SearchTextIsServedByTheBridgeWhenTheFrontendCoversTheRoot()
     {
         using var harness = BridgeHarness.Create();
@@ -315,7 +315,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal(1, regex.GetProperty("matches").GetArrayLength());
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SearchTextLocalScanHonorsTheFilterGlobs()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -353,7 +353,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.True(SearchGlobs.Passes("anything.go", "anything.go", null, null), "no filters passes everything");
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SearchTextFallsBackLocallyWhenTheFrontendCannotSearch()
     {
         using var harness = BridgeHarness.Create();
@@ -384,7 +384,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.Equal("buffer without the needle", buffered.GetProperty("text").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SearchTextFallsBackLocallyOnACoverageMiss()
     {
         using var harness = BridgeHarness.Create();
@@ -404,7 +404,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.DoesNotContain(harness.DiskFrontend.Requests, request => request.Method == "maieutics/fs/local/search");
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task WriteTextBridgesCreateUpdateAndKeepsEveryKernelGate()
     {
         using var harness = BridgeHarness.Create();
@@ -436,7 +436,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.False(File.Exists(Path.Combine(harness.Root, "AGENTS.md")), "the gated write never reached the frontend");
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task EditTextAndApplyPatchRouteThroughTheBridge()
     {
         using var harness = BridgeHarness.Create();
@@ -472,7 +472,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
     // ---------- script tools ----------
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task WorkspaceFsScriptToolsRideTheBridgeAndDegradeTypedWhenInactive()
     {
         using var harness = BridgeHarness.Create();

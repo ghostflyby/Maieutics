@@ -7,26 +7,7 @@ namespace Maieutics.Product.Tests;
 
 public sealed class FrontendElicitationPresenterTests
 {
-    private sealed class FakePublisher : IFrontendSessionFramePublisher
-    {
-        private readonly bool publishable;
-
-        internal FakePublisher(bool publishable = true)
-        {
-            this.publishable = publishable;
-        }
-
-        internal List<(AgentSessionId SessionId, string Type, JsonElement Data)> Published { get; } = [];
-
-        public bool TryPublishPresentation(AgentSessionId sessionId, string type, JsonElement data)
-        {
-            if (!publishable) return false;
-            Published.Add((sessionId, type, data));
-            return true;
-        }
-    }
-
-    private static FrontendElicitationPresenter CreatePresenter(FakePublisher publisher) =>
+    private static FrontendElicitationPresenter CreatePresenter(RecordingFramePublisher publisher) =>
         new(
             publisher,
             new FrontendFormModelHost(
@@ -45,23 +26,23 @@ public sealed class FrontendElicitationPresenterTests
             Password: false);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PresentPublishesFrameAndAcceptCompletesWithObjectContent()
     {
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
         var session = AgentSessionId.Create();
 
         var wait = presenter.PresentAsync(
             new McpElicitationRequest(session.Value.ToString("N"), session.Value.ToString("N"), "msg", null, false),
             deadline.Token);
 
-        // The frame is published synchronously before the await.
-        await Task.Delay(50, deadline.Token);
-        // This request carries no schema, so only the input.request frame is published.
-        Assert.Single(publisher.Published);
-        var (publishedSession, type, data) = publisher.Published.Single();
+        // The frame is published synchronously before the await, and this request carries
+        // no schema, so only the input.request frame is published. The signal makes the
+        // observation deterministic without a settle window.
+        await publisher.WaitForCountAsync(1, deadline.Token);
+        var (publishedSession, type, data) = Assert.Single(publisher.Published);
         Assert.Equal(session.Value, publishedSession.Value);
         Assert.Equal("input.request", type);
         var payload = JsonSerializer.Deserialize<JsonElement>(data.GetRawText());
@@ -78,18 +59,17 @@ public sealed class FrontendElicitationPresenterTests
         Assert.Equal("""{"token":"t0k"}""", answer.ContentJson);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DeclineAnswersWithoutContentAndSecondCompletionFails()
     {
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
 
         var wait = presenter.PresentAsync(BuildRequest(), deadline.Token);
-        await Task.Delay(50, deadline.Token);
+        await publisher.WaitForCountAsync(1, deadline.Token);
         var requestId = JsonSerializer
-            .Deserialize<JsonElement>(
-                publisher.Published.Single(frame => frame.Type == "input.request").Data.GetRawText())
+            .Deserialize<JsonElement>(publisher.Single("input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;
 
         Assert.True(presenter.TryCompleteInput(requestId, "decline", ""));
@@ -100,18 +80,17 @@ public sealed class FrontendElicitationPresenterTests
         Assert.False(presenter.TryCompleteInput(requestId, "accept", "{}"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task NonObjectAcceptValueIsDowngradedToCancel()
     {
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
 
         var wait = presenter.PresentAsync(BuildRequest(), deadline.Token);
-        await Task.Delay(50, deadline.Token);
+        await publisher.WaitForCountAsync(1, deadline.Token);
         var requestId = JsonSerializer
-            .Deserialize<JsonElement>(
-                publisher.Published.Single(frame => frame.Type == "input.request").Data.GetRawText())
+            .Deserialize<JsonElement>(publisher.Single("input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;
 
         Assert.True(presenter.TryCompleteInput(requestId, null, "just text"));
@@ -121,10 +100,10 @@ public sealed class FrontendElicitationPresenterTests
         Assert.Null(answer.ContentJson);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnpublishableSessionAnswersCancelImmediately()
     {
-        var presenter = CreatePresenter(new FakePublisher(publishable: false));
+        var presenter = CreatePresenter(new RecordingFramePublisher(publishable: false));
 
         var answer = await presenter.PresentAsync(BuildRequest(), TestContext.Current.CancellationToken);
 

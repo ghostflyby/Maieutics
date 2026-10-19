@@ -46,7 +46,7 @@ public sealed partial class DenoEmbeddedModulesTests
         Assert.DoesNotContain(names, item => Regex.IsMatch(item, "^Deno/.*/test_fixtures/.*$"));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task EveryRelativeImportInTheMaterializedTreeResolves()
     {
         var modules = new PluginHostModule();

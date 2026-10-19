@@ -55,7 +55,7 @@ public sealed class PluginUiCapabilityTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task PublishUiFormRejectsPluginsWithoutAUsableEntry()
     {
         if (OperatingSystem.IsWindows())
@@ -83,7 +83,7 @@ public sealed class PluginUiCapabilityTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UiModelsFrameReachesTheSinkAndAnswersOk()
     {
         if (OperatingSystem.IsWindows())
@@ -114,7 +114,7 @@ public sealed class PluginUiCapabilityTests
         Assert.Equal("hi", frames[0].Data!.Value.GetProperty("state").GetProperty("title").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UiModelsWithoutGrantIsDenied()
     {
         if (OperatingSystem.IsWindows())
@@ -139,7 +139,7 @@ public sealed class PluginUiCapabilityTests
         Assert.False(sinkRan);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UiModelsRejectsMalformedFramesBeforeTheSink()
     {
         if (OperatingSystem.IsWindows())
@@ -166,7 +166,7 @@ public sealed class PluginUiCapabilityTests
         Assert.False(sinkRan);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task UiModelsSurfacesTypedSinkRejections()
     {
         if (OperatingSystem.IsWindows())
@@ -188,7 +188,7 @@ public sealed class PluginUiCapabilityTests
         Assert.Contains("No active session", sent);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task CompositionPublishesOpenAndAnnouncementAndClosesOnMissingStream()
     {
         if (OperatingSystem.IsWindows())

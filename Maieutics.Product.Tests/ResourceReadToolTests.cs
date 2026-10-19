@@ -13,9 +13,10 @@ namespace Maieutics.Product.Tests;
 
 public sealed class ResourceReadToolTests
 {
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReadTextFollowsRegisteredProvidersThroughTheSharedEntry()
     {
+        _ = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path)),
@@ -38,7 +39,7 @@ public sealed class ResourceReadToolTests
         Assert.Null(result.NextStartLine);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReadTextKeepsWorkspaceSemanticsWhenRegistryIsPresent()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -65,9 +66,10 @@ public sealed class ResourceReadToolTests
         Assert.Equal("workspace_path_not_found", ShouldFailure(missing).Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReadTextSurfacesTypedResourceFailures()
     {
+        _ = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path))
@@ -97,9 +99,10 @@ public sealed class ResourceReadToolTests
         Assert.ThrowsAny<InvalidOperationException>(() => check.Invoke());
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ListResourcesMergesCatalogsAndConflicts()
     {
+        _ = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         var catalogProvider = new FakeProvider([
             new ResourceCatalogEntry("fake", "notes://a", "a", null, null, "resource", null),
@@ -125,7 +128,7 @@ public sealed class ResourceReadToolTests
         Assert.Equal("shadowed", Assert.Single(result.Conflicts).ProviderId);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ControlHostServesResourceBodiesAndTypedErrors()
     {
         if (OperatingSystem.IsWindows())
@@ -137,7 +140,7 @@ public sealed class ResourceReadToolTests
                 new ResourceCatalogEntry("fake", "notes://team/idea", null, null, "text/plain", "resource", null)
             ])
         ]);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var cts = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         var registry2 = new ReplControlSessionRegistry();
         // The test process itself is the peer behind the unix socket connection.
         registry2.Register(Environment.ProcessId, "test-session");
@@ -182,9 +185,10 @@ public sealed class ResourceReadToolTests
         });
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReadTextRejectsBinaryProviderBodies()
     {
+        _ = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         var registry = new ResourceRegistry([new FakeProvider([
             new ResourceCatalogEntry("fake", "notes://team/binary", null, null, null, "resource", null)

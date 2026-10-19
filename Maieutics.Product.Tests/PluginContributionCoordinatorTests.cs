@@ -12,9 +12,10 @@ namespace Maieutics.Product.Tests;
 /// PluginSkillsContributionTests / PluginDeclarativeExtensionsTests.</summary>
 public sealed class PluginContributionCoordinatorTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnUnchangedFrameRepublishesRegistryWideButSchedulesNothing()
     {
+        _ = TestContext.Current.CancellationToken;
         var coordinator = new ContributionCoordinator(NullLogger<ContributionCoordinator>.Instance);
         var wide = new FakeDelivery("McpDiscover", ContributionDeliveryShape.RegistryWide);
         var perPlugin = new FakeDelivery("Skills", ContributionDeliveryShape.PerPlugin);
@@ -34,9 +35,10 @@ public sealed class PluginContributionCoordinatorTests
         Assert.Empty(perPlugin.Invocations);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FrameTargetsSchedulePerPluginPassesOnlyForPerPluginKinds()
     {
+        _ = TestContext.Current.CancellationToken;
         var coordinator = new ContributionCoordinator(NullLogger<ContributionCoordinator>.Instance);
         var wide = new FakeDelivery("McpDiscover", ContributionDeliveryShape.RegistryWide);
         var skills = new FakeDelivery("Skills", ContributionDeliveryShape.PerPlugin);
@@ -54,7 +56,7 @@ public sealed class PluginContributionCoordinatorTests
         await skills.WaitUntilAsync(() => skills.ActivePasses == 0);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EventsLandingDuringAPassCoalesceIntoOneFollowUp()
     {
         var coordinator = new ContributionCoordinator(NullLogger<ContributionCoordinator>.Instance);
@@ -81,9 +83,10 @@ public sealed class PluginContributionCoordinatorTests
         Assert.Equal(2, skills.Invocations.Count(request => request == "p"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AFaultingPassReleasesTheFlightAndObservesTheException()
     {
+        _ = TestContext.Current.CancellationToken;
         var coordinator = new ContributionCoordinator(NullLogger<ContributionCoordinator>.Instance);
         var skills = new FakeDelivery("Skills", ContributionDeliveryShape.PerPlugin);
         coordinator.Attach([skills]);
@@ -149,9 +152,10 @@ public sealed class PluginContributionCoordinatorTests
         Assert.Empty(coordinator.DrainReloadForces(new Dictionary<string, int>()));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ApprovalTransitionsRepublishRegistryWideUnconditionallyAndRoutePerPluginTargetsByKind()
     {
+        _ = TestContext.Current.CancellationToken;
         var coordinator = new ContributionCoordinator(NullLogger<ContributionCoordinator>.Instance);
         var wide = new FakeDelivery("McpDiscover", ContributionDeliveryShape.RegistryWide);
         var skills = new FakeDelivery("Skills", ContributionDeliveryShape.PerPlugin);
@@ -356,7 +360,7 @@ public sealed class PluginContributionCoordinatorTests
 
     // —— MCP delivery adapter ——
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheMcpAdapterFiltersTheSnapshotAndForwardsTheForcedSet()
     {
         var discovered = new List<PluginRegistration>();
@@ -405,9 +409,10 @@ public sealed class PluginContributionCoordinatorTests
         lock (discovered) Assert.Equal(2, discovered.Count);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheDisposedCoordinatorGuardFollowsTheHistoricalAsymmetry()
     {
+        _ = TestContext.Current.CancellationToken;
         var coordinator = new PluginMcpCoordinator(
             (_, _) => Task.FromResult(PluginMcpDiscoveryResult.Success([])),
             (_, _) => throw new InvalidOperationException("unreachable"),
@@ -433,7 +438,7 @@ public sealed class PluginContributionCoordinatorTests
         Assert.ThrowsAny<ObjectDisposedException>(() => unguarded.Invoke());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheMcpAdapterSnapshotStateSurvivesConcurrentPublishes()
     {
         // Dispatch runs outside the host gate and is reachable from concurrent

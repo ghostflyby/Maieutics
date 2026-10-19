@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Time.Testing;
 

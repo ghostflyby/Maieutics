@@ -500,8 +500,10 @@ public sealed class PluginApprovalTests
     /// controls, without needing a real host connection.</summary>
     private static string CreateProbePluginsRoot(string pluginName)
     {
-        var root = Path.Combine(Path.GetTempPath(), pluginName);
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        // Unique suffix: these classes run in parallel collections, and a fixed path would
+        // let one run delete another run's live tree. The plugin id is the directory name,
+        // so callers derive it from the returned path.
+        var root = Path.Combine(Path.GetTempPath(), $"{pluginName}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
             Path.Combine(root, "deno.json"),
@@ -574,7 +576,7 @@ public sealed class PluginApprovalTests
             root,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
+            new DenoReplOptions { Executable = FakeDenoExecutable.Path },
             new PluginHostModule(),
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
@@ -583,16 +585,6 @@ public sealed class PluginApprovalTests
             pluginApprovalsPath: approvalsPath);
     }
 
-    private static string CreateFakeDenoExecutable()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
 
     private static void Cleanup(string root)
     {

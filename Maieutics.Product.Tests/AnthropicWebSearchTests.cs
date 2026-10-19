@@ -151,10 +151,5 @@ public sealed class AnthropicWebSearchTests
 
     private static CancellationTokenSource CreateDeadline(
         CancellationToken cancellationToken,
-        TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 }

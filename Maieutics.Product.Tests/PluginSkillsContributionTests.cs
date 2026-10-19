@@ -51,11 +51,13 @@ public sealed class PluginSkillsContributionTests : IDisposable
     }
 
     /// <summary>A plugins root whose single plugin declares Skills roots; read grants are
-    /// the caller's choice.</summary>
+    /// the caller's choice. The directory carries a unique suffix — tests in this class run
+    /// in parallel collections and a fixed path would let one run delete another's live
+    /// tree — and the plugin id is the directory name, so callers derive it from the
+    /// returned path instead of assuming the label.</summary>
     private static string CreateSkillsPluginsRoot(string pluginName, string rootsJson, string readGrantJson)
     {
-        var root = Path.Combine(Path.GetTempPath(), pluginName);
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        var root = Path.Combine(Path.GetTempPath(), $"{pluginName}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         File.WriteAllText(
             Path.Combine(root, "deno.json"),
@@ -115,7 +117,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
             root,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = CreateFakeDenoExecutable() },
+            new DenoReplOptions { Executable = FakeDenoExecutable.Path },
             new PluginHostModule(),
             new ReplControlSessionRegistry(),
             loggerFactory?.CreateLogger<PluginHostManager>() ?? NullLogger<PluginHostManager>.Instance,
@@ -218,7 +220,7 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
             var skill = catalog.Current.Skills.Single(skill => skill.Name == "alpha");
             Assert.Equal(SkillSource.PluginDeclared, skill.Source);
-            Assert.Contains("skills-plain", skill.BodyPath);
+            Assert.Contains(Path.GetFileName(root), skill.BodyPath);
         }
         finally
         {
@@ -1385,16 +1387,6 @@ public sealed class PluginSkillsContributionTests : IDisposable
         return envelope.GetRawText();
     }
 
-    private static string CreateFakeDenoExecutable()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
 
     private sealed class EmptyVariableSource : IPermissionVariableSource
     {

@@ -194,10 +194,7 @@ public sealed class FrontendEventsSocketRunWaitTests
                !seenRunIds.Contains(runId);
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(timeout);
-        return deadline;
-    }
+    private static CancellationTokenSource CreateDeadline(
+        CancellationToken cancellationToken,
+        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 }

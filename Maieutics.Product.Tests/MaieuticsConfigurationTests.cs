@@ -17,29 +17,12 @@ public sealed class MaieuticsConfigurationTests
 {
 
 /// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
-/// Windows a config-file watcher or an exiting MCP stdio child can hold a file for a
-/// short while after the test body completes. The lock holder has no completion
-/// signal, so the retry waits by delay — asynchronously, never blocking a pool
-/// thread.</summary>
-internal static async Task DeleteDirectoryWithRetryAsync(string path, CancellationToken cancellationToken)
-{
-    for (var attempt = 0; ; attempt++)
-    {
-        try
-        {
-            Directory.Delete(path, true);
-            return;
-        }
-        catch (IOException) when (attempt < 10)
-        {
-            await Task.Delay(200 * (attempt + 1), cancellationToken);
-        }
-        catch (UnauthorizedAccessException) when (attempt < 10)
-        {
-            await Task.Delay(200 * (attempt + 1), cancellationToken);
-        }
-    }
-}
+    /// Windows a config-file watcher or an exiting MCP stdio child can hold a file for a
+    /// short while after the test body completes. The lock holder has no completion
+    /// signal, so the retry waits by delay — asynchronously, never blocking a pool
+    /// thread. Delegates to the shared cleanup policy (same budget and retry shape).</summary>
+    internal static Task DeleteDirectoryWithRetryAsync(string path, CancellationToken cancellationToken) =>
+        TempDirectoryCleanup.DeleteWithRetryAsync(path, cancellationToken);
 
     [Fact(Timeout = 30_000)]
     public async Task ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()

@@ -123,8 +123,7 @@ public sealed class PluginHostReplRegistrationTests
         deadline.CancelAfter(Deadline);
         var registry = new ReplControlSessionRegistry();
         await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
-        var fakeDenoPath = CreateFakeDenoExecutable();
-        var manager = CreateManager(registry, broker, fakeDenoPath);
+        var manager = CreateManager(registry, broker, FakeDenoExecutable.Path);
         try
         {
             await manager.StartAsync(deadline.Token);
@@ -155,7 +154,6 @@ public sealed class PluginHostReplRegistrationTests
         finally
         {
             await manager.DisposeAsync();
-            TryDelete(fakeDenoPath);
         }
     }
 
@@ -169,8 +167,7 @@ public sealed class PluginHostReplRegistrationTests
         deadline.CancelAfter(Deadline);
         var registry = new ReplControlSessionRegistry();
         await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
-        var fakeDenoPath = CreateFakeDenoExecutable();
-        var manager = CreateManager(registry, broker, fakeDenoPath);
+        var manager = CreateManager(registry, broker, FakeDenoExecutable.Path);
         try
         {
             await manager.StartAsync(deadline.Token);
@@ -206,7 +203,6 @@ public sealed class PluginHostReplRegistrationTests
         finally
         {
             await manager.DisposeAsync();
-            TryDelete(fakeDenoPath);
         }
     }
 
@@ -312,13 +308,13 @@ public sealed class PluginHostReplRegistrationTests
     private static PluginHostManager CreateManager(
         ReplControlSessionRegistry registry,
         DenoPermissionBroker? broker,
-        string? fakeDenoPath = null)
+        string? denoExecutable = null)
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-reg-{Guid.NewGuid():N}"),
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
+            new DenoReplOptions { Executable = denoExecutable ?? "deno" },
             new PluginHostModule(),
             registry,
             NullLogger<PluginHostManager>.Instance,
@@ -397,37 +393,6 @@ public sealed class PluginHostReplRegistrationTests
     private static Task<string> ReadProbeAsync(TestChildProcess child, CancellationToken cancellationToken)
     {
         return child.ReadToEndAsync(cancellationToken);
-    }
-
-    /// <summary>Creates a fake deno executable (an immediate-exit shell script on unix, the
-    /// always-present <c>cmd.exe</c> on Windows) so the manager's real host process never connects
-    /// to a control socket and races the simulated host. On Windows the host launches
-    /// <c>cmd.exe run --config=...</c>, which prints "'run' is not recognized" and exits
-    /// immediately; <c>cmd.exe</c> is resolved through PATH and is guaranteed present, unlike
-    /// <c>color.exe</c>/<c>where.exe</c> which are not reliably on Windows CI runners.</summary>
-    private static string CreateFakeDenoExecutable()
-    {
-        if (OperatingSystem.IsWindows())
-            return "cmd.exe";
-
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        File.SetUnixFileMode(
-            path,
-            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            // Best-effort temp cleanup.
-        }
     }
 
     /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and

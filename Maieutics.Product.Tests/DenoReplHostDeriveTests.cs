@@ -488,7 +488,7 @@ public sealed class DenoReplHostDeriveTests
         ReplControlCredentialRegistry credentials)
     {
         var socketPath = ReplControlHost.CreateSocketPath();
-        var manager = CreateManager(registry, broker: null, fakeDenoPath: null, socketPath);
+        var manager = CreateManager(registry, broker: null, denoExecutable: null, socketPath);
         var controlHost = new ReplControlHost(
             socketPath,
             registry,
@@ -514,7 +514,7 @@ public sealed class DenoReplHostDeriveTests
             OutputHost = outputHost,
             Manager = manager
         };
-        harness.Initialize(application, fakeDenoPath: null);
+        harness.Initialize(application);
         return harness;
     }
 
@@ -534,12 +534,10 @@ public sealed class DenoReplHostDeriveTests
         internal required PluginHostManager Manager { get; init; }
 
         private WebApplication? application;
-        private string? fakeDenoPath;
 
-        internal void Initialize(WebApplication app, string? fakeDenoPath)
+        internal void Initialize(WebApplication app)
         {
             application = app;
-            this.fakeDenoPath = fakeDenoPath;
         }
 
         public async ValueTask DisposeAsync()
@@ -547,7 +545,6 @@ public sealed class DenoReplHostDeriveTests
             Host?.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
             if (application is not null) await application.DisposeAsync().ConfigureAwait(false);
-            if (fakeDenoPath is not null) TryDelete(fakeDenoPath);
         }
     }
 
@@ -581,8 +578,7 @@ public sealed class DenoReplHostDeriveTests
         ReplControlSessionRegistry registry,
         ReplControlCredentialRegistry credentials)
     {
-        var fakeDenoPath = CreateFakeDenoExecutable();
-        var manager = CreateManager(registry, broker: null, fakeDenoPath);
+        var manager = CreateManager(registry, broker: null, FakeDenoExecutable.Path);
         await manager.StartAsync(cancellationToken);
 
         var socketPath = ReplControlHost.CreateSocketPath();
@@ -616,7 +612,7 @@ public sealed class DenoReplHostDeriveTests
             Host = fakeSocket,
             Manager = manager
         };
-        harness.Initialize(application, fakeDenoPath);
+        harness.Initialize(application);
         // Keep the attach loop referenced so the fake socket is read until the harness disposes it.
         _ = attach;
         return harness;
@@ -686,42 +682,17 @@ public sealed class DenoReplHostDeriveTests
         }
     }
 
-    /// <summary>Creates a fake deno executable (an immediate-exit shell script) so the manager's
-    /// real host process never connects to the control socket and races the simulated host.</summary>
-    private static string CreateFakeDenoExecutable()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"mc-fake-deno-{Guid.NewGuid():N}.sh");
-        File.WriteAllText(path, "#!/bin/sh\nexit 0\n");
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(
-                path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        return path;
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            // Best-effort temp cleanup.
-        }
-    }
-
     private static PluginHostManager CreateManager(
         ReplControlSessionRegistry registry,
         DenoPermissionBroker? broker,
-        string? fakeDenoPath = null,
+        string? denoExecutable = null,
         string? socketPath = null)
     {
         return new PluginHostManager(
             Path.Combine(Path.GetTempPath(), $"mc-repl-derive-{Guid.NewGuid():N}"),
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             socketPath ?? ReplControlHost.CreateSocketPath(),
-            new DenoReplOptions { Executable = fakeDenoPath ?? "deno" },
+            new DenoReplOptions { Executable = denoExecutable ?? "deno" },
             new PluginHostModule(),
             registry,
             NullLogger<PluginHostManager>.Instance,

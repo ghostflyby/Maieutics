@@ -6,7 +6,7 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>The model-visible read path for stored objects: object_fetch returns stored JSON as
 /// structured data and rejects absent or non-JSON objects with typed failures.</summary>
-public sealed class AgentObjectFunctionsTests : IDisposable
+public sealed class AgentObjectFunctionsTests : IAsyncDisposable
 {
     private readonly string objectsRoot;
 
@@ -18,12 +18,9 @@ public sealed class AgentObjectFunctionsTests : IDisposable
             Guid.NewGuid().ToString("N"));
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(objectsRoot))
-        {
-            Directory.Delete(objectsRoot, recursive: true);
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
     }
 
     [Fact(Timeout = 30_000)]

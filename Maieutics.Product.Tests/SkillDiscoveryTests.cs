@@ -2,20 +2,14 @@ using Maieutics.Skills;
 
 namespace Maieutics.Product.Tests;
 
-public sealed class SkillDiscoveryTests : IDisposable
+public sealed class SkillDiscoveryTests : IAsyncDisposable
 {
     private readonly string root =
         Path.Combine(Path.GetTempPath(), $"maieutics-skills-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        try
-        {
-            Directory.Delete(root, recursive: true);
-        }
-        catch (DirectoryNotFoundException)
-        {
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
     }
 
     private string WriteSkill(string relativeDirectory, string body, string fileName = "SKILL.md")

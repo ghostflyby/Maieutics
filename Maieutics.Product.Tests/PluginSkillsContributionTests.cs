@@ -17,7 +17,7 @@ namespace Maieutics.Product.Tests;
 /// <summary>Plugin skill contributions (ADR 0039 stage 2): declarative roots through the
 /// extensions Skills kind, the read-grant gate for outside-root roots, approval gating,
 /// and the worker generator invoke with sticky-last-good.</summary>
-public sealed class PluginSkillsContributionTests : IDisposable
+public sealed class PluginSkillsContributionTests : IAsyncDisposable
 {
     private const int Deadline = 60_000;
     private static readonly TimeSpan CatalogWaitBudget = TimeSpan.FromSeconds(15);
@@ -30,15 +30,9 @@ public sealed class PluginSkillsContributionTests : IDisposable
     private readonly string workspaceRoot =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-plugin-ws-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        try
-        {
-            Directory.Delete(workspaceRoot, recursive: true);
-        }
-        catch (DirectoryNotFoundException)
-        {
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(workspaceRoot);
     }
 
     private static void WriteSkill(string root, string name, string description)

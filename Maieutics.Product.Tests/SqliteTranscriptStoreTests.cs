@@ -7,7 +7,7 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>Product tests for the SQLite Agent transcript store: durable round trips across
 /// reopen, session metadata, and schema-version refusal (ADR 0009 metadata store, v1).</summary>
-public sealed class SqliteTranscriptStoreTests : IDisposable
+public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
 {
     private readonly string databaseDirectory;
     private readonly string databasePath;
@@ -21,12 +21,13 @@ public sealed class SqliteTranscriptStoreTests : IDisposable
         databasePath = Path.Combine(databaseDirectory, "history.db");
     }
 
-    public void Dispose()
+    /// <summary>A WAL database's last handle can outlive the store's disposal by a moment
+    /// (Windows releases the file asynchronously, and a scanner may still hold it), so the
+    /// directory is removed through the shared retrying cleanup instead of a bare recursive
+    /// delete that turns that window into a cleanup failure.</summary>
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(databaseDirectory))
-        {
-            Directory.Delete(databaseDirectory, recursive: true);
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(databaseDirectory);
     }
 
     [Fact]

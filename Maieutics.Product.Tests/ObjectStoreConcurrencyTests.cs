@@ -8,7 +8,7 @@ namespace Maieutics.Product.Tests;
 /// same payload can be ingested by two paths at once. Publication must be a compare-and-set on
 /// the destination: racers all find it absent, only one rename can win, and the losers must
 /// observe the hit rather than an <c>IOException</c>.</summary>
-public sealed class ObjectStoreConcurrencyTests : IDisposable
+public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
 {
     private readonly string objectsRoot;
 
@@ -20,12 +20,9 @@ public sealed class ObjectStoreConcurrencyTests : IDisposable
             Guid.NewGuid().ToString("N"));
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(objectsRoot))
-        {
-            Directory.Delete(objectsRoot, recursive: true);
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
     }
 
     /// <summary>Many ingests of identical bytes, released simultaneously, must all succeed and

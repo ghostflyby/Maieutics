@@ -6,7 +6,7 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>Product tests for the content-addressed object store: hash-addressed publication,
 /// deduplication by CAS hit, readback, id validation, and staging reclamation.</summary>
-public sealed class ObjectStoreTests : IDisposable
+public sealed class ObjectStoreTests : IAsyncDisposable
 {
     // SHA-256 of the UTF-8 bytes "abc" (RFC 9160 test vector).
     private const string AbcDigest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
@@ -21,12 +21,9 @@ public sealed class ObjectStoreTests : IDisposable
             Guid.NewGuid().ToString("N"));
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(objectsRoot))
-        {
-            Directory.Delete(objectsRoot, recursive: true);
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
     }
 
     private ObjectStore CreateStore() => new(objectsRoot);

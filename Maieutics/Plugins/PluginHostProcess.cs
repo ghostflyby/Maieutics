@@ -66,7 +66,8 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
     public static PluginHostProcess Start(
         PluginHostProcessOptions options,
-        ILogger logger)
+        ILogger logger,
+        ChildSlotLease hostSlot = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
@@ -124,7 +125,8 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         var inner = DenoRunProcess.Start(
             startInfo,
             InternalDenoProcessKind.PluginHost,
-            logger);
+            logger,
+            slot: hostSlot);
         logger.LogInformation("Plugin host started with pid {ProcessId}.", inner.ProcessId);
         return new PluginHostProcess(inner);
     }

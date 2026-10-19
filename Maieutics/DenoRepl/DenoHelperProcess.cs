@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Maieutics.DenoExecution;
 
 namespace Maieutics.DenoRepl;
 
@@ -26,6 +27,10 @@ internal static class DenoHelperProcess
         string purpose,
         CancellationToken cancellationToken)
     {
+        // The helper child counts against the test process gate for its whole (short)
+        // life: the lease disposes when this method returns, and by then the child has
+        // exited or been killed — the method never returns while the child runs.
+        using var slot = await InternalDenoProcessGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
         var process = Process.Start(startInfo)
                       ?? throw new InvalidOperationException(
                           $"Could not start '{startInfo.FileName}' {purpose}");

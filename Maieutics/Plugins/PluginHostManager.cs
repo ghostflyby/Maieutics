@@ -725,11 +725,27 @@ internal sealed class PluginHostManager(
             // the whole scan (the gate is also what serializes startup against dispose).
             var plan = await DiscoverPluginsAsync(cancellationToken).ConfigureAwait(false);
 
-            lock (lifecycleGate)
+            // The host generation's live-child slot (the test process gate): acquired
+            // asynchronously out here — never inside the lifecycle lock, which must not
+            // be held across an await — so parallel managers cannot oversubscribe a
+            // shared runner with process startups. The slot leaves with the spawned
+            // child (wired to its completion in DenoRunProcess); the catch below
+            // unwinds it when the lifecycle check or the spawn itself fails first.
+            var hostSlot = await InternalDenoProcessGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
+
+            try
             {
-                ObjectDisposedException.ThrowIf(stopping is not null, this);
-                Start(plan);
-                readiness.TrySetResult();
+                lock (lifecycleGate)
+                {
+                    ObjectDisposedException.ThrowIf(stopping is not null, this);
+                    Start(plan, hostSlot);
+                    readiness.TrySetResult();
+                }
+            }
+            catch
+            {
+                hostSlot.Dispose();
+                throw;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -863,7 +879,7 @@ internal sealed class PluginHostManager(
         return new PluginStartupPlan(enabled, importMerge);
     }
 
-    private void Start(PluginStartupPlan plan)
+    private void Start(PluginStartupPlan plan, ChildSlotLease hostSlot)
     {
         // The contribution engine exists before any generation state is published, so
         // the generation reset and the start seed below both reach it.
@@ -923,7 +939,8 @@ internal sealed class PluginHostManager(
                 modules.WorkerEntryUrl,
                 modules.ConfigFile,
                 broker),
-            logger);
+            logger,
+            hostSlot);
         sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
         processExitObservation = ObserveExitAsync(process, configPath);
         StartDynamicMcpCoordinator();

@@ -119,13 +119,27 @@ internal sealed class DenoReplProcess : IAsyncDisposable
         environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
         foreach (var pair in environment) startInfo.Environment[pair.Key] = pair.Value;
 
-        var inner = DenoRunProcess.Start(
-            startInfo,
-            InternalDenoProcessKind.DenoRepl,
-            logger,
-            options.Broker,
-            policy,
-            captureStandardError: true);
+        // The session's live-child slot for the test process gate: acquired
+        // asynchronously right before the spawn; DenoRunProcess releases it when
+        // the session process's completion settles.
+        var slot = await InternalDenoProcessGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        DenoRunProcess inner;
+        try
+        {
+            inner = DenoRunProcess.Start(
+                startInfo,
+                InternalDenoProcessKind.DenoRepl,
+                logger,
+                options.Broker,
+                policy,
+                captureStandardError: true,
+                slot: slot);
+        }
+        catch
+        {
+            slot.Dispose();
+            throw;
+        }
         logger.LogInformation(
             "Deno REPL session {SessionId} generation {Generation} started with pid {ProcessId}.",
             options.SessionId,

@@ -7,7 +7,7 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>The derived inspection view: repair rebuilds relative links from canonical data,
 /// is idempotent, and never links to absent objects.</summary>
-public sealed class AgentObjectViewTests : IDisposable
+public sealed class AgentObjectViewTests : IAsyncDisposable
 {
     private readonly string agentRoot;
 
@@ -19,12 +19,12 @@ public sealed class AgentObjectViewTests : IDisposable
             Guid.NewGuid().ToString("N"));
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         // The transcript store's SQLite handle can linger briefly past its dispose on
-        // Windows (WAL teardown, external scanners); retry on a time budget so a
-        // teardown lock never masks the test result.
-        TempDirectoryCleanup.DeleteWithRetry(agentRoot);
+        // Windows (WAL teardown, external scanners); retry with an asynchronous
+        // backoff so a teardown lock never masks the test result.
+        await TempDirectoryCleanup.DeleteWithRetryAsync(agentRoot, TestContext.Current.CancellationToken);
     }
 
     [Fact]

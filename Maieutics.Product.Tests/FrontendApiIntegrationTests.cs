@@ -1220,11 +1220,14 @@ public sealed class FrontendApiIntegrationTests
             Environment.SetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT", previousPluginsRoot);
             Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", previousApprovals);
             if (File.Exists(approvalsPath)) File.Delete(approvalsPath);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root);
         }
     }
 
-    private static void DeleteDirectoryWithRetry(string path)
+    /// <summary>Deletes a temporary directory, retrying with an asynchronous backoff:
+    /// the lock holder (watcher, exiting child) has no completion signal, so the
+    /// retry waits by delay — asynchronously, never blocking a pool thread.</summary>
+    private static async Task DeleteDirectoryWithRetryAsync(string path)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -1235,11 +1238,11 @@ public sealed class FrontendApiIntegrationTests
             }
             catch (IOException) when (attempt < 10)
             {
-                Thread.Sleep(200 * (attempt + 1));
+                await Task.Delay(200 * (attempt + 1), TestContext.Current.CancellationToken);
             }
             catch (UnauthorizedAccessException) when (attempt < 10)
             {
-                Thread.Sleep(200 * (attempt + 1));
+                await Task.Delay(200 * (attempt + 1), TestContext.Current.CancellationToken);
             }
         }
     }

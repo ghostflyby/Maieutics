@@ -10,7 +10,7 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>Manual recovery through the session manager: list, resume, start new, the
 /// disabled-persistence guard, and object pruning. No automatic restore exists by design.</summary>
-public sealed class MaieuticsAgentSessionManagerTests : IDisposable
+public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 {
     private readonly string databaseDirectory;
     private readonly string objectsRoot;
@@ -24,12 +24,12 @@ public sealed class MaieuticsAgentSessionManagerTests : IDisposable
         objectsRoot = Path.Combine(databaseDirectory, "objects");
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         // WAL teardown and external scanners (antivirus, indexer) can hold the database
-        // handle past the last close on Windows; the shared helper retries on a time
-        // budget so a teardown lock never masks the test result.
-        TempDirectoryCleanup.DeleteWithRetry(databaseDirectory);
+        // handle past the last close on Windows; the shared helper retries with an
+        // asynchronous backoff so a teardown lock never masks the test result.
+        await TempDirectoryCleanup.DeleteWithRetryAsync(databaseDirectory, TestContext.Current.CancellationToken);
     }
 
     [Fact]

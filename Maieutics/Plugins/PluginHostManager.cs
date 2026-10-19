@@ -723,7 +723,7 @@ internal sealed class PluginHostManager(
             // Discovery waits on child processes and touches no gated state, so it runs
             // before the lifecycle gate. Holding that gate across it blocked GetStatus for
             // the whole scan (the gate is also what serializes startup against dispose).
-            var plan = DiscoverPlugins();
+            var plan = await DiscoverPluginsAsync(cancellationToken).ConfigureAwait(false);
 
             lock (lifecycleGate)
             {
@@ -825,10 +825,10 @@ internal sealed class PluginHostManager(
     /// it before taking <c>lifecycleGate</c> or <c>gate</c>: holding either across the scan
     /// stalls every control-plane reader — status, registrations, and each control-bus frame —
     /// and spends a thread-pool thread on blocking waits inside async startup.</summary>
-    private PluginStartupPlan DiscoverPlugins()
+    private async Task<PluginStartupPlan> DiscoverPluginsAsync(CancellationToken cancellationToken)
     {
         EnsurePluginsRoot();
-        var scanned = ScanPlugins();
+        var scanned = await ScanPluginsAsync(cancellationToken).ConfigureAwait(false);
         var graph = PluginDependencyGraph.Validate(scanned);
         foreach (var exclusion in graph.Exclusions)
         {
@@ -2053,7 +2053,7 @@ internal sealed class PluginHostManager(
         }
     }
 
-    private List<PluginDescriptor> ScanPlugins()
+    private async Task<List<PluginDescriptor>> ScanPluginsAsync(CancellationToken cancellationToken)
     {
         // The plugins root always exists (EnsurePluginsRoot ran in Start): it is
         // itself the plugin project. Its maieutics.json declares its own
@@ -2083,24 +2083,27 @@ internal sealed class PluginHostManager(
 
         // Registry-installed plugins: exact-version jsr: dependencies of the root
         // project are resolved through the Deno toolchain and loaded with the same
-        // sibling manifest contract (docs/plugin-import-resolution.md §9).
+        // sibling manifest contract (docs/plugin-import-resolution.md §9). The
+        // toolchain queries run asynchronously: a cold-cache `deno info` performs
+        // real network fetches and must never block a thread-pool thread.
         var diagnostics = new List<string>();
         foreach (var import in PluginManifest.ReadImports(pluginsRoot))
         {
             if (import.Value.StartsWith("jsr:", StringComparison.Ordinal))
             {
-                var jsrDescriptor = PluginRegistryDiscovery.TryLoadJsr(
+                var jsrDescriptor = await PluginRegistryDiscovery.TryLoadJsrAsync(
                     import.Key,
                     import.Value,
                     denoOptions.Executable,
-                    url => PluginRegistryDiscovery.DenoInfoLocalPath(denoOptions.Executable, url),
-                    diagnostics);
+                    (url, token) => PluginRegistryDiscovery.DenoInfoLocalPathAsync(denoOptions.Executable, url, token),
+                    diagnostics,
+                    cancellationToken).ConfigureAwait(false);
                 if (jsrDescriptor is not null) AddDescriptor(jsrDescriptor);
             }
             else if (import.Value.StartsWith("npm:", StringComparison.Ordinal))
             {
-                var npmDescriptor = PluginRegistryDiscovery.TryLoadNpm(
-                    import.Key, import.Value, denoOptions.Executable, diagnostics);
+                var npmDescriptor = await PluginRegistryDiscovery.TryLoadNpmAsync(
+                    import.Key, import.Value, denoOptions.Executable, diagnostics, cancellationToken).ConfigureAwait(false);
                 if (npmDescriptor is not null) AddDescriptor(npmDescriptor);
             }
         }

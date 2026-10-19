@@ -16,10 +16,12 @@ namespace Maieutics.Product.Tests;
 public sealed class MaieuticsConfigurationTests
 {
 
-/// <summary>Deletes a temporary directory, retrying briefly: on Windows a config-file
-/// watcher or an exiting MCP stdio child can hold a file for a short while after the
-/// test body completes.</summary>
-internal static void DeleteDirectoryWithRetry(string path)
+/// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
+/// Windows a config-file watcher or an exiting MCP stdio child can hold a file for a
+/// short while after the test body completes. The lock holder has no completion
+/// signal, so the retry waits by delay — asynchronously, never blocking a pool
+/// thread.</summary>
+internal static async Task DeleteDirectoryWithRetryAsync(string path, CancellationToken cancellationToken)
 {
     for (var attempt = 0; ; attempt++)
     {
@@ -30,17 +32,17 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         catch (IOException) when (attempt < 10)
         {
-            Thread.Sleep(200 * (attempt + 1));
+            await Task.Delay(200 * (attempt + 1), cancellationToken);
         }
         catch (UnauthorizedAccessException) when (attempt < 10)
         {
-            Thread.Sleep(200 * (attempt + 1));
+            await Task.Delay(200 * (attempt + 1), cancellationToken);
         }
     }
 }
 
-    [Fact]
-    public void ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()
+    [Fact(Timeout = 30_000)]
+    public async Task ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-path-{Guid.NewGuid():N}");
         var applicationBase = Path.Combine(root, "app");
@@ -106,12 +108,12 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
-    [Fact]
-    public void HostOwnsAndDisposesConfigurationFileProvider()
+    [Fact(Timeout = 30_000)]
+    public async Task HostOwnsAndDisposesConfigurationFileProvider()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-owner-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -130,7 +132,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -180,7 +182,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -219,7 +221,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -257,7 +259,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -295,7 +297,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -351,7 +353,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -394,7 +396,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -443,7 +445,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -507,7 +509,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -557,7 +559,7 @@ internal static void DeleteDirectoryWithRetry(string path)
             factory.ReleaseAutomaticCreate.TrySetResult();
             await host.DisposeAsync();
             Assert.Equal(1, Assert.Single(factory.Clients).DisposalCount);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -597,7 +599,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.True(Assert.Single(factory.Clients).Disposed);
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -651,7 +653,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -697,7 +699,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             factory.ReleaseFirstDiscovery.TrySetResult();
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -739,7 +741,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -792,7 +794,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -848,12 +850,12 @@ internal static void DeleteDirectoryWithRetry(string path)
             factory.ReleaseCreation.TrySetResult();
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
-    [Fact]
-    public void ConfigurationSourcesUseJsonAliasStandardEnvironmentThenCommandLinePrecedence()
+    [Fact(Timeout = 30_000)]
+    public async Task ConfigurationSourcesUseJsonAliasStandardEnvironmentThenCommandLinePrecedence()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-config-order-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -884,12 +886,12 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
-    [Fact]
-    public void NamedConfigurationAliasesUseStandardEnvironmentAndCommandLinePrecedence()
+    [Fact(Timeout = 30_000)]
+    public async Task NamedConfigurationAliasesUseStandardEnvironmentAndCommandLinePrecedence()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-named-config-order-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -933,7 +935,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1016,7 +1018,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1051,7 +1053,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         finally
         {
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1081,7 +1083,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1122,7 +1124,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1214,7 +1216,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1311,7 +1313,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1410,7 +1412,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1446,7 +1448,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         }
         finally
         {
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1896,7 +1898,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -1946,7 +1948,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         {
             await host.DisposeAsync();
             Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -2149,7 +2151,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         finally
         {
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -2194,7 +2196,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         finally
         {
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -2229,7 +2231,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         finally
         {
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 
@@ -2267,7 +2269,7 @@ internal static void DeleteDirectoryWithRetry(string path)
         finally
         {
             await host.DisposeAsync();
-            DeleteDirectoryWithRetry(root);
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
         }
     }
 

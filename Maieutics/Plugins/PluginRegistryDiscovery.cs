@@ -17,18 +17,19 @@ internal static class PluginRegistryDiscovery
     /// <summary>Toolchain query seam: fetches the URL through `deno info --json`
     /// and returns the reported local path, or null when the URL does not exist
     /// (404) or the query fails.</summary>
-    public delegate string? DenoInfoLocal(string url);
+    public delegate Task<string?> DenoInfoLocalAsync(string url, CancellationToken cancellationToken);
 
     /// <summary>Attempts to load one `jsr:` import entry as a registry plugin.
     /// Returns null when the entry is not an exact-version jsr package, the
     /// package is absent, or it publishes no maieutics.json (not every registry
     /// dependency is a plugin); diagnostics explain the outcome.</summary>
-    public static PluginDescriptor? TryLoadJsr(
+    public static async Task<PluginDescriptor?> TryLoadJsrAsync(
         string key,
         string value,
         string denoExecutable,
-        DenoInfoLocal denoInfoLocal,
-        List<string> diagnostics)
+        DenoInfoLocalAsync denoInfoLocal,
+        List<string> diagnostics,
+        CancellationToken cancellationToken)
     {
         if (!value.StartsWith("jsr:", StringComparison.Ordinal))
         {
@@ -50,14 +51,14 @@ internal static class PluginRegistryDiscovery
             return null;
         }
 
-        string? DenoLocal(string file) => denoInfoLocal($"https://jsr.io/{packageName}/{version}/{file}");
-        var denoJsonLocal = DenoLocal("deno.json");
+        Task<string?> DenoLocal(string file) => denoInfoLocal($"https://jsr.io/{packageName}/{version}/{file}", cancellationToken);
+        var denoJsonLocal = await DenoLocal("deno.json").ConfigureAwait(false);
         if (denoJsonLocal is null)
         {
             diagnostics.Add($"Registry discovery: '{value}' was not found on the registry.");
             return null;
         }
-        var maieuticsLocal = DenoLocal("maieutics.json");
+        var maieuticsLocal = await DenoLocal("maieutics.json").ConfigureAwait(false);
         if (maieuticsLocal is null)
         {
             diagnostics.Add($"Registry discovery: '{value}' publishes no maieutics.json and is not a Maieutics plugin.");
@@ -123,11 +124,12 @@ internal static class PluginRegistryDiscovery
     /// the worker entry is a file URL into that directory, and the package root
     /// doubles as the plugin root directory (relative read grants are meaningful
     /// here, unlike the jsr case).</summary>
-    public static PluginDescriptor? TryLoadNpm(
+    public static async Task<PluginDescriptor?> TryLoadNpmAsync(
         string key,
         string value,
         string denoExecutable,
-        List<string> diagnostics)
+        List<string> diagnostics,
+        CancellationToken cancellationToken)
     {
         if (!value.StartsWith("npm:", StringComparison.Ordinal))
         {
@@ -135,7 +137,7 @@ internal static class PluginRegistryDiscovery
             return null;
         }
 
-        var package = NpmPackage(denoExecutable, value);
+        var package = await NpmPackageAsync(denoExecutable, value, cancellationToken).ConfigureAwait(false);
         if (package is null)
         {
             diagnostics.Add($"Registry discovery: '{value}' could not be resolved (offline or not found).");
@@ -255,7 +257,10 @@ internal static class PluginRegistryDiscovery
 
     /// <summary>`deno info --json npm:spec` resolves ranges/tags and reports the
     /// extracted package directory (browsable) under the shared npm cache.</summary>
-    public static NpmPackageInfo? NpmPackage(string denoExecutable, string specifier)
+    public static async Task<NpmPackageInfo?> NpmPackageAsync(
+        string denoExecutable,
+        string specifier,
+        CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -270,7 +275,7 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add(specifier);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
-        var stdout = ReadOutput(process, TimeSpan.FromSeconds(120));
+        var stdout = await ReadOutputAsync(process, TimeSpan.FromSeconds(120), cancellationToken).ConfigureAwait(false);
         if (stdout is null) return null;
 
         var document = JsonDocument.Parse(stdout);
@@ -288,7 +293,10 @@ internal static class PluginRegistryDiscovery
         return null;
     }
 
-    public static string? DenoInfoLocalPath(string denoExecutable, string url)
+    public static async Task<string?> DenoInfoLocalPathAsync(
+        string denoExecutable,
+        string url,
+        CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -303,7 +311,7 @@ internal static class PluginRegistryDiscovery
         startInfo.ArgumentList.Add(url);
         using var process = Process.Start(startInfo);
         if (process is null) return null;
-        var stdout = ReadOutput(process, TimeSpan.FromSeconds(60));
+        var stdout = await ReadOutputAsync(process, TimeSpan.FromSeconds(60), cancellationToken).ConfigureAwait(false);
         if (stdout is null) return null;
 
         var document = JsonDocument.Parse(stdout);
@@ -319,39 +327,58 @@ internal static class PluginRegistryDiscovery
         return null;
     }
 
-    /// <summary>Reads the child's stdout within one total budget: the wait is bounded,
-    /// so a stalled child is killed instead of blocking startup forever. Both pipes are
-    /// drained concurrently (a child blocked on a full pipe never exits), and a child
-    /// that outlives the budget is killed instead of being orphaned by the
-    /// <c>using</c> disposal. Returns null when the child failed or the budget
-    /// elapsed.</summary>
-    private static string? ReadOutput(Process process, TimeSpan timeout)
+    /// <summary>Reads the child's stdout within one total budget: the wait is bounded
+    /// and asynchronous — a stalled child is killed instead of blocking startup (and
+    /// never a pool thread) forever. Both pipes are drained concurrently (a child
+    /// blocked on a full pipe never exits), and a child that outlives the budget is
+    /// killed instead of being orphaned by the <c>using</c> disposal. Returns null
+    /// when the child failed or the budget elapsed; the caller's cancellation
+    /// propagates.</summary>
+    private static async Task<string?> ReadOutputAsync(
+        Process process,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
     {
-        var standardOutput = process.StandardOutput.ReadToEndAsync();
-        var standardError = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit(timeout))
-        {
-            process.Kill(entireProcessTree: true);
-            ObserveDrain(standardOutput);
-            ObserveDrain(standardError);
-            return null;
-        }
-
+        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         try
         {
-            // The child has exited, so both pipes have hit EOF and the drains are
-            // already complete or within one scheduling hop of completing.
-            var stdout = standardOutput.GetAwaiter().GetResult();
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            budget.CancelAfter(timeout);
+            await process.WaitForExitAsync(budget.Token).ConfigureAwait(false);
+            var stdout = await standardOutput.ConfigureAwait(false);
             if (process.ExitCode != 0) return null;
 
             return stdout;
         }
-        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        catch (Exception exception) when (
+            exception is OperationCanceledException or IOException or ObjectDisposedException)
         {
+            // The caller canceled, or the budget elapsed: kill a stalled child tree so
+            // nothing is orphaned by the using disposal.
+            try
+            {
+                if (!process.HasExited) process.Kill(entireProcessTree: true);
+            }
+            catch (Exception killException) when (
+                killException is InvalidOperationException or ObjectDisposedException)
+            {
+                // The process exited between the check and the kill.
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             return null;
         }
         finally
         {
+            // Both drains are observed whichever way this ends: completed drains make
+            // the fault-only continuation a no-op, pending ones get their eventual
+            // faults absorbed so nothing surfaces as an unobserved task exception.
+            ObserveDrain(standardOutput);
             ObserveDrain(standardError);
         }
     }

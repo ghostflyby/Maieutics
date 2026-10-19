@@ -594,33 +594,13 @@ public sealed class ReplControlHostTests
                 startInfo.ArgumentList.Add("--allow-write");
                 startInfo.ArgumentList.Add(scriptPath);
                 startInfo.ArgumentList.Add(host.SocketPath);
-                using var process = Process.Start(startInfo)
-                                    ?? throw new InvalidOperationException(
-                                        "Could not start the deno control channel client.");
-                registry.Register(process.Id, "test-session");
+                await using var child = await TestChildProcess.StartAsync(startInfo, timeout.Token);
+                registry.Register(child.Id, "test-session");
 
-                try
-                {
-                    // Drain both pipes concurrently while the child runs: reading them only
-                    // after exit can deadlock once a full pipe blocks the child. A hung child
-                    // is killed by the finally so it never outlives the test.
-                    var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                    var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-                    await process.WaitForExitAsync(timeout.Token);
-                    var outputs = await Task.WhenAll(stdout, stderr);
-                    Assert.Equal(0, process.ExitCode);
-                }
-                finally
-                {
-                    try
-                    {
-                        if (!process.HasExited) process.Kill(entireProcessTree: true);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // The process already exited.
-                    }
-                }
+                // The client exits on its own; disposal still kills a hung tree, so the child
+                // never outlives the test. Pipes are drained concurrently by the child wrapper.
+                _ = await child.ReadToEndAsync(timeout.Token);
+                Assert.Equal(0, child.Raw.ExitCode);
             }
             finally
             {

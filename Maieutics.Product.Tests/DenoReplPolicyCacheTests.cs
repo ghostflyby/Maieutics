@@ -48,7 +48,7 @@ public sealed class DenoReplPolicyCacheTests
                 ownerSessionId: null);
             DenoReplPolicyCache.Cache(manager, "prepared-session", policy);
 
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "prepared-session", 1, process.Id)));
@@ -97,7 +97,7 @@ public sealed class DenoReplPolicyCacheTests
                 NullLogger.Instance,
                 deadline.Token);
 
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "prepared-session", 1, process.Id)));
@@ -150,7 +150,7 @@ public sealed class DenoReplPolicyCacheTests
                 deadline.Token);
             Assert.Null(policy);
 
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "failed-session", 1, process.Id)));
@@ -180,7 +180,7 @@ public sealed class DenoReplPolicyCacheTests
             DenoReplPolicyCache.Cache(manager, "closed-session", CreateBaselinePolicy(root));
             DenoReplPolicyCache.Clear(manager, "closed-session");
 
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "closed-session", 1, process.Id)));
@@ -219,7 +219,7 @@ public sealed class DenoReplPolicyCacheTests
             DenoReplPolicyCache.Clear(manager, "restarted-session");
             DenoReplPolicyCache.Cache(manager, "restarted-session", CreateBaselinePolicy(currentRoot));
 
-            using var process = StartProbe(broker, currentRoot, deadline.Token);
+            await using var process = await StartProbeAsync(broker, currentRoot, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
             manager.HandleHostMessage(Envelope(ReplMessageType.HostReplSpawned, new HostReplSpawnedPayload(
                 "restarted-session", 2, process.Id)));
@@ -303,7 +303,7 @@ public sealed class DenoReplPolicyCacheTests
     /// <summary>Starts a real Deno child that connects to the broker and probes read + env
     /// permissions. The child blocks on its first broker request until the policy for its pid is
     /// registered, so a report can register it after spawn (the broker's slot waits, ADR 0018).</summary>
-    private static Process StartProbe(
+    private static async Task<TestChildProcess> StartProbeAsync(
         DenoPermissionBroker broker,
         string root,
         CancellationToken cancellationToken)
@@ -332,31 +332,11 @@ public sealed class DenoReplPolicyCacheTests
         startInfo.ArgumentList.Add("--no-prompt");
         startInfo.Environment["DENO_PERMISSION_BROKER_PATH"] = broker.Address;
         startInfo.ArgumentList.Add(scriptPath);
-        return Process.Start(startInfo)
-               ?? throw new InvalidOperationException("The deno probe could not be started.");
+        return await TestChildProcess.StartAsync(startInfo, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<string> ReadProbeAsync(Process process, CancellationToken cancellationToken)
+    private static Task<string> ReadProbeAsync(TestChildProcess child, CancellationToken cancellationToken)
     {
-        try
-        {
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return stdout + stderr;
-        }
-        finally
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // The process already exited.
-            }
-
-            process.Dispose();
-        }
+        return child.ReadToEndAsync(cancellationToken);
     }
 }

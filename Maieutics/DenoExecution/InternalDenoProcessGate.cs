@@ -11,16 +11,25 @@ namespace Maieutics.DenoExecution;
 internal static class InternalDenoProcessGate
 {
     /// <summary>Safety net for the cancellation-free path: a slot held forever by a
-    /// wedged child must fail a start loudly instead of hanging it indefinitely.</summary>
+    /// wedged child must fail a start loudly instead of hanging it indefinitely. The
+    /// budget is deliberately generous: legitimate queueing behind a long-lived sibling
+    /// child must never turn into a failure, so only a genuinely wedged slot trips it.</summary>
     private static readonly TimeSpan WaitBudget = TimeSpan.FromSeconds(120);
 
     private static SemaphoreSlim? liveChildren;
+    private static int? enabledLimit;
+
+    /// <summary>The configured slot count while the gate is enabled, or null when the
+    /// gate is inert (production). Internal test observability: a wiring test asserts the
+    /// suite enabled it with the expected budget.</summary>
+    internal static int? EnabledLimit => enabledLimit;
 
     /// <summary>Enables the gate with <paramref name="limit"/> live-child slots.</summary>
     internal static void EnableForTests(int limit)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         liveChildren = new SemaphoreSlim(limit, limit);
+        enabledLimit = limit;
     }
 
     /// <summary>Acquires one live-child slot when the gate is enabled, or returns the

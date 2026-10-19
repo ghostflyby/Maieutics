@@ -39,7 +39,7 @@ public sealed class PluginHostReplRegistrationTests
             var policy = CreatePolicy(root, "HOME");
             manager.RegisterReplPolicy("host-repl-session", policy);
 
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
 
             // The child connects to the broker immediately and blocks on its first request until the
@@ -70,7 +70,7 @@ public sealed class PluginHostReplRegistrationTests
         var root = CreateProbeRoot();
         try
         {
-            using var process = StartProbe(broker, root, deadline.Token);
+            await using var process = await StartProbeAsync(broker, root, deadline.Token);
             var outputTask = ReadProbeAsync(process, deadline.Token);
 
             // No kernel path pre-cached a policy for this session (esbuild-wasm resolution failed
@@ -244,8 +244,8 @@ public sealed class PluginHostReplRegistrationTests
             manager.RegisterReplPolicy("session-a", CreatePolicy(root, "HOME"));
             manager.RegisterReplPolicy("session-b", CreatePolicy(root, "PATH"));
 
-            using var processA = StartProbe(broker, root, deadline.Token);
-            using var processB = StartProbe(broker, root, deadline.Token);
+            await using var processA = await StartProbeAsync(broker, root, deadline.Token);
+            await using var processB = await StartProbeAsync(broker, root, deadline.Token);
             var outputA = ReadProbeAsync(processA, deadline.Token);
             var outputB = ReadProbeAsync(processB, deadline.Token);
 
@@ -362,7 +362,7 @@ public sealed class PluginHostReplRegistrationTests
     /// <summary>Starts a real Deno child that connects to the broker and probes read + env
     /// permissions. The child blocks on its first broker request until the policy for its pid is
     /// registered, so a report can register it after spawn (the broker's slot waits, ADR 0018).</summary>
-    private static Process StartProbe(
+    private static async Task<TestChildProcess> StartProbeAsync(
         DenoPermissionBroker broker,
         string root,
         CancellationToken cancellationToken)
@@ -391,32 +391,12 @@ public sealed class PluginHostReplRegistrationTests
         startInfo.ArgumentList.Add("--no-prompt");
         startInfo.Environment["DENO_PERMISSION_BROKER_PATH"] = broker.Address;
         startInfo.ArgumentList.Add(scriptPath);
-        return Process.Start(startInfo)
-               ?? throw new InvalidOperationException("The deno probe could not be started.");
+        return await TestChildProcess.StartAsync(startInfo, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<string> ReadProbeAsync(Process process, CancellationToken cancellationToken)
+    private static Task<string> ReadProbeAsync(TestChildProcess child, CancellationToken cancellationToken)
     {
-        try
-        {
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return stdout + stderr;
-        }
-        finally
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // The process already exited.
-            }
-
-            process.Dispose();
-        }
+        return child.ReadToEndAsync(cancellationToken);
     }
 
     /// <summary>Creates a fake deno executable (an immediate-exit shell script on unix, the

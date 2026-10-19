@@ -78,6 +78,23 @@ internal static class PluginWatcherTestWaits
                     });
                 using var __ = collect;
                 await collect!.WaitForExitAsync().ConfigureAwait(false);
+                // Managed stacks cannot be read cross-OS, so the report is produced on
+                // the collecting runner and uploaded as text next to the dump.
+                var report = Process.Start(
+                    new ProcessStartInfo(
+                        tool,
+                        $"analyze {dump} -c \"clrstack -all\" -c \"exit\"")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                    });
+                using var ___ = report;
+                var stacks = await report!.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
+                await report!.WaitForExitAsync().ConfigureAwait(false);
+                await File.WriteAllTextAsync(
+                    Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.stacks.txt"),
+                    stacks).ConfigureAwait(false);
             }
             catch
             {

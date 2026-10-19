@@ -131,6 +131,12 @@ public sealed class FrontendEventsSocketRunWaitTests
         string? lastRunningRunId = null;
         while (true)
         {
+            // Capture the version BEFORE reading the state. The queue publishes a new
+            // version on every mutation, and a version read after the GET can already
+            // include the change this snapshot does not show — the wait would then park
+            // for a mutation that already happened and only the deadline would end it
+            // (the windows-CI timeout this ordering fixes).
+            var version = harness.TurnQueue.FrameSnapshot(sessionId).Version;
             using var response = await harness.Client
                 .GetAsync($"/v1/agent/sessions/{sessionId}/queue", wait.Token)
                 .ConfigureAwait(false);
@@ -139,12 +145,7 @@ public sealed class FrontendEventsSocketRunWaitTests
             if (queue.TryGetProperty("running", out var running))
             {
                 lastRunningRunId = running.GetProperty("runId").GetString();
-                // A run is live: idle cannot be reached synchronously. Waiting on the queue's
-                // mutation signal also covers the dequeue handshake window, which presents as
-                // an empty queue with no running item while the submission is in flight.
-                await harness.TurnQueue
-                    .WaitForChangeAsync(sessionId, harness.TurnQueue.FrameSnapshot(sessionId).Version, wait.Token)
-                    .ConfigureAwait(false);
+                await harness.TurnQueue.WaitForChangeAsync(sessionId, version, wait.Token).ConfigureAwait(false);
                 continue;
             }
 
@@ -154,6 +155,10 @@ public sealed class FrontendEventsSocketRunWaitTests
                 return lastRunningRunId;
             }
 
+            // Idle covers what a single "running absent, items empty" sample cannot: a
+            // dequeued item whose submission handshake is still in flight is in neither
+            // field. WaitUntilIdleAsync re-reads the state itself, so the capture above
+            // only feeds this pass.
             await harness.TurnQueue.WaitUntilIdleAsync(sessionId, wait.Token).ConfigureAwait(false);
         }
     }

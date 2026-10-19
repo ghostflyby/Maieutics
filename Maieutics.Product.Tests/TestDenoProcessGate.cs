@@ -7,26 +7,27 @@ namespace Maieutics.Product.Tests;
 /// executes. Every child the suite starts — internal Deno children (plugin host
 /// generations, REPL sessions, cache/helper children, registry probes) as well as
 /// test-driven children such as real Deno probes and the published smoke executable —
-/// acquires a slot from the same semaphore; the gate is inert in production. The budget
-/// leaves one core for the test host and its GC while capping live children at three on a
-/// four-core runner and two on the three-core macOS runner, which keeps the suite inside
-/// the hosted runners' memory budget (see the Test job notes in ci.yml).</summary>
+/// acquires a slot from the same semaphore; the gate is inert in production. The budget is
+/// the runner's core count (parallel collections, see
+/// <see cref="ProcessorCountParallelizationAttribute"/>) plus one: at most one long-lived
+/// child per running collection stays unqueued, and a collection's second child (a cache or
+/// discovery helper) is admitted by the spare slot instead of waiting for a peer
+/// collection's host to exit. Anything beyond that queues, so live children still track the
+/// machine instead of the collection count.</summary>
 internal static class TestDenoProcessGate
 {
-    /// <summary>Live-child cap: the core count, floored at two and ceilinged at four. The
-    /// ceiling is what bounds startup storms and inherited-heap memory; the floor keeps a
-    /// two-core runner from serializing every Deno test. A test collection holds at most
-    /// two children at once (a plugin host or REPL plus at most one helper), so at the
-    /// three-collection parallel cap the gate admits the first four nested starts and
-    /// queues the rest until a child exits — a throttle, never a deadlock, because every
-    /// slot holder is itself progressing.</summary>
+    /// <summary>Live-child cap: cores plus one, floored at two. Parallelism is the core
+    /// count and a collection holds at most two children at once (a plugin host or REPL
+    /// plus at most one helper), so cores + 1 admits every concurrent long-lived child plus
+    /// one helper while any further start queues — a throttle, never a deadlock, because
+    /// every slot holder is itself progressing.</summary>
     internal static readonly int Limit = ComputeLimit(Environment.ProcessorCount);
 
     /// <summary>The budget for a given core count, split out so the mapping is directly
     /// testable without mutating the process-wide gate.</summary>
     internal static int ComputeLimit(int processorCount)
     {
-        return Math.Clamp(processorCount, 2, 4);
+        return Math.Max(2, processorCount + 1);
     }
 
     [ModuleInitializer]

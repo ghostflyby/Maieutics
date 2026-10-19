@@ -92,6 +92,14 @@ jobs:
       Logging__LogLevel__Maieutics: Debug
       Logging__LogLevel__Microsoft: Warning
       Logging__LogLevel__System: Warning
+      # The suite's parallel process churn (frontend hosts, plugin hosts, MCP servers)
+      # drives the runner into memory-reclaim storms: the whole test host freezes for
+      # tens of seconds while the kernel reclaims, the kernel OOM-kills freshly started
+      # children (exit 137), and any test whose deadline crosses the freeze times out —
+      # the rotating ubuntu "starvation" flakes. Workstation GC keeps the test host's
+      # heap (and its inherited-heap children) well under the runner's memory so the
+      # reclaim storms do not start.
+      DOTNET_gcServer: 0
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +128,21 @@ jobs:
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
+
+      - name: Add swap (ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The suite's peak memory (test host + parallel frontend/plugin/MCP children)
+          # brushes the hosted runner's limit; without swap the kernel freezes everything
+          # in direct reclaim and OOM-kills children (exit 137) mid-test. A swapfile turns
+          # that into slow progress instead of a freeze.
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
 
       - name: Warm Deno registry cache
         shell: bash

@@ -4,7 +4,7 @@ namespace Maieutics.Product.Tests;
 /// locks that outlive the last SQLite handle (WAL teardown, antivirus and indexer scans).
 /// The lock holder is an OS-external condition with no completion signal, so the retry
 /// waits with an asynchronous backoff — never a blocking sleep — and a lock that truly
-/// persists is still surfaced after the budget instead of being swallowed.</summary>
+/// persists is still surfaced after the budget, naming the last observed cause.</summary>
 internal static class TempDirectoryCleanup
 {
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(10);
@@ -13,6 +13,7 @@ internal static class TempDirectoryCleanup
     public static async Task DeleteWithRetryAsync(string path, CancellationToken cancellationToken)
     {
         var deadline = Environment.TickCount64 + (long)Budget.TotalMilliseconds;
+        Exception? lastFailure = null;
         while (true)
         {
             try
@@ -28,7 +29,18 @@ internal static class TempDirectoryCleanup
                 exception is IOException or UnauthorizedAccessException &&
                 Environment.TickCount64 < deadline)
             {
+                lastFailure = exception;
                 await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // The budget is spent while the tree is still locked. Report the actual
+                // cause: a bare cancellation would hide whether it was a sharing violation
+                // or a permission problem.
+                throw new TimeoutException(
+                    $"The temporary directory '{path}' stayed locked for {Budget.TotalSeconds:0.#}s.",
+                    lastFailure ?? exception);
             }
         }
     }

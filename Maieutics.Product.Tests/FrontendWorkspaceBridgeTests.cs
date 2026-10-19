@@ -92,7 +92,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task BridgedReadAnswersTheFrontendTextStateThroughTheRealWireShapes()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "a.cs"), "disk content\n", TestContext.Current.CancellationToken);
         harness.DiskFrontend.AnswerText["a.cs"] = "editor buffer state\n";
         var bridge = harness.CreateBridge();
@@ -108,7 +108,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task BridgedListingCarriesEntriesAndAbsentDirectoriesMapTyped()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         Directory.CreateDirectory(Path.Combine(harness.Root, "sub"));
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "sub", "x.ts"), "x\n", TestContext.Current.CancellationToken);
         var bridge = harness.CreateBridge();
@@ -126,7 +126,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task BridgedWriteCarriesTheBeforeHashAndFailsTypedOnConflict()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "doc.md"), "before\n", TestContext.Current.CancellationToken);
         var bridge = harness.CreateBridge();
         var channel = bridge.Acquire(BridgeHarness.SessionId)!;
@@ -149,7 +149,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task DirtyBuffersFailBridgedWritesTyped()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "open.md"), "saved\n", TestContext.Current.CancellationToken);
         harness.DiskFrontend.DirtyUris.Add(new Uri(Path.Combine(harness.Root, "open.md")).AbsoluteUri);
         var bridge = harness.CreateBridge();
@@ -166,7 +166,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task UnsupportedMethodAbsorbsOnceAndTheBridgeReportsItselfInactive()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         harness.DiskFrontend.SupportedMethods = ["maieutics/dirty"];
         var bridge = harness.CreateBridge();
 
@@ -183,7 +183,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task PathsOutsideTheFrontendsFoldersFallBackToLocalIo()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         // The window opens only the app/ subfolder of the kernel workspace root: a
         // file under docs/ is a valid workspace URI the bridge must not claim.
         var appFolder = Path.Combine(harness.Root, "app");
@@ -211,7 +211,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task MixedPatchServesCoveredFilesThroughTheBridgeAndUncoveredFilesLocally()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         var appFolder = Path.Combine(harness.Root, "app");
         Directory.CreateDirectory(appFolder);
         harness.DiskFrontend.CoverageRoot = appFolder;
@@ -235,7 +235,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task WorkspaceFsScriptToolsReportUncoveredPathsAsTheShimFallbackSignal()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         var appFolder = Path.Combine(harness.Root, "app");
         Directory.CreateDirectory(appFolder);
         harness.DiskFrontend.CoverageRoot = appFolder;
@@ -261,7 +261,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task ReadTextServesTheBridgedTextStateInsteadOfTheDisk()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "a.cs"), "line one\nline two\n", TestContext.Current.CancellationToken);
         harness.DiskFrontend.AnswerText["a.cs"] = "buffer one\nbuffer two\nbuffer three\n";
         var functions = new WorkspaceFunctions(harness.Workspace, bridge: harness.Bridge);
@@ -277,7 +277,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task SearchTextIsServedByTheBridgeWhenTheFrontendCoversTheRoot()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         Directory.CreateDirectory(Path.Combine(harness.Root, "sub"));
         await File.WriteAllTextAsync(
             Path.Combine(harness.Root, "sub", "a.cs"),
@@ -356,7 +356,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task SearchTextFallsBackLocallyWhenTheFrontendCannotSearch()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "a.cs"), "needle on disk\n", TestContext.Current.CancellationToken);
         harness.DiskFrontend.AnswerText["a.cs"] = "buffer without the needle\n";
         harness.DiskFrontend.SupportedMethods =
@@ -387,7 +387,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task SearchTextFallsBackLocallyOnACoverageMiss()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         var appFolder = Path.Combine(harness.Root, "app");
         Directory.CreateDirectory(appFolder);
         harness.DiskFrontend.CoverageRoot = appFolder;
@@ -407,7 +407,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task WriteTextBridgesCreateUpdateAndKeepsEveryKernelGate()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         var functions = new WorkspaceEditFunctions(
             harness.Workspace,
             acquirer: TestPermissionPolicies.Unconfigured(),
@@ -439,7 +439,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task EditTextAndApplyPatchRouteThroughTheBridge()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "code.cs"), "int a = 1;\nint b = 2;\n", TestContext.Current.CancellationToken);
         var edit = new WorkspaceEditFunctions(harness.Workspace, bridge: harness.Bridge);
 
@@ -475,7 +475,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact(Timeout = 60_000)]
     public async Task WorkspaceFsScriptToolsRideTheBridgeAndDegradeTypedWhenInactive()
     {
-        using var harness = BridgeHarness.Create();
+        await using var harness = BridgeHarness.Create();
         await File.WriteAllTextAsync(Path.Combine(harness.Root, "cell.ts"), "const x = 1;\n", TestContext.Current.CancellationToken);
         var functions = new WorkspaceBridgeFunctions(harness.Workspace, harness.Bridge);
         var read = functions.Functions.Single(static function => function.Name == "workspace_fs_read");
@@ -506,7 +506,7 @@ public sealed class FrontendWorkspaceBridgeTests
     /// plus the answering side: a local-disk stand-in for the extension host's local fs
     /// family, with an injectable text map for buffer state and a dirty set for the
     /// dirty gate. Every answer travels the real registry, keyed by the real frame.</summary>
-    private sealed class BridgeHarness : IDisposable
+    private sealed class BridgeHarness : IAsyncDisposable
     {
         public const string SessionId = "0123456789abcdef0123456789abcdef";
 
@@ -572,16 +572,13 @@ public sealed class FrontendWorkspaceBridgeTests
             };
         }
 
-        public void Dispose()
+        public async ValueTask DisposeAsync()
         {
             foreach (var registration in registrations) Sockets.Withdraw(SessionId, registration);
-            try
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-            catch (DirectoryNotFoundException)
-            {
-            }
+            // Windows can still hold a file inside the tree for a moment after the last
+            // writer; the shared retry turns that into a short wait instead of a teardown
+            // failure. A genuinely wedged tree still surfaces after the budget.
+            await TempDirectoryCleanup.DeleteWithRetryAsync(Root);
         }
     }
 

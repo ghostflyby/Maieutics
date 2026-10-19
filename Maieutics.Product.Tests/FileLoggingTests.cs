@@ -4,18 +4,23 @@ namespace Maieutics.Product.Tests;
 
 /// <summary>Unit tests for the opt-in file logging provider: directory creation, record
 /// formatting, exception rendering, append semantics, and single-shot disposal.</summary>
-public sealed class FileLoggingTests : IDisposable
+public sealed class FileLoggingTests : IAsyncDisposable
 {
     private readonly string logDirectory = Path.Combine(
         Path.GetTempPath(),
         "maieutics-file-logging-tests",
         Guid.NewGuid().ToString("N"));
 
-    public void Dispose()
+    /// <summary>Best-effort teardown: a log file still held by a scanner must not fail a
+    /// test, but the retry keeps the common case from leaving the directory behind.</summary>
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(logDirectory))
+        try
         {
-            Directory.Delete(logDirectory, recursive: true);
+            await TempDirectoryCleanup.DeleteWithRetryAsync(logDirectory);
+        }
+        catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
+        {
         }
     }
 

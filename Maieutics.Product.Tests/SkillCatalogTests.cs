@@ -8,7 +8,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace Maieutics.Product.Tests;
 
-public sealed class SkillCatalogTests : IDisposable
+public sealed class SkillCatalogTests : IAsyncDisposable
 {
     private readonly string workspaceRoot =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-ws-{Guid.NewGuid():N}");
@@ -16,16 +16,10 @@ public sealed class SkillCatalogTests : IDisposable
     private readonly string userRoot =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-user-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        foreach (var directory in new[] { workspaceRoot, userRoot })
-            try
-            {
-                Directory.Delete(directory, recursive: true);
-            }
-            catch (DirectoryNotFoundException)
-            {
-            }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(workspaceRoot);
+        await TempDirectoryCleanup.DeleteWithRetryAsync(userRoot);
     }
 
     private static void WriteSkill(string root, string name, string description)
@@ -473,20 +467,14 @@ public sealed class SkillPromptComposerTests
     }
 }
 
-public sealed class SkillResourceProviderTests : IDisposable
+public sealed class SkillResourceProviderTests : IAsyncDisposable
 {
     private readonly string root =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-plane-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        try
-        {
-            Directory.Delete(root, recursive: true);
-        }
-        catch (DirectoryNotFoundException)
-        {
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
     }
 
     private SkillCatalog CreateCatalog()
@@ -618,20 +606,14 @@ public sealed class SkillResourceProviderTests : IDisposable
     }
 }
 
-public sealed class SkillsProfileProviderTests : IDisposable
+public sealed class SkillsProfileProviderTests : IAsyncDisposable
 {
     private readonly string root =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-prompt-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        try
-        {
-            Directory.Delete(root, recursive: true);
-        }
-        catch (DirectoryNotFoundException)
-        {
-        }
+        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
     }
 
     private static async Task<AgentRunProfile> AcquireAsync(SkillsProfileProvider provider)

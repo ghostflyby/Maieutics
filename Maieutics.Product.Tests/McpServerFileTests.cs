@@ -11,14 +11,14 @@ namespace Maieutics.Product.Tests;
 ///     exercised through the configuration pipeline; the plugin data file is its only
 ///     consumer now.
 /// </summary>
-public sealed class McpServerFileTests : IDisposable
+public sealed class McpServerFileTests : IAsyncDisposable
 {
     private static readonly string BaseDirectory =
         Path.Combine(Path.GetTempPath(), $"mcp-parser-base-{Guid.NewGuid():N}");
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(BaseDirectory)) Directory.Delete(BaseDirectory, true);
+        await TempDirectoryCleanup.DeleteWithRetryAsync(BaseDirectory);
     }
 
     [Fact]

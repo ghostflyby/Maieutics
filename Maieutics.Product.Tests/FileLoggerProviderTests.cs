@@ -9,7 +9,7 @@ namespace Maieutics.Product.Tests;
 /// <c>ObjectDisposedException</c> into the logging pipeline. The file sink is the evidence
 /// channel for CI forensics, so noise injected at shutdown is costly.</summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FileLoggerProviderTests : IDisposable
+public sealed class FileLoggerProviderTests : IAsyncDisposable
 {
     private readonly string logDirectory;
 
@@ -21,17 +21,17 @@ public sealed class FileLoggerProviderTests : IDisposable
             Guid.NewGuid().ToString("N"));
     }
 
-    public void Dispose()
+    /// <summary>Best-effort teardown, preserved from the synchronous form: a log file still
+    /// held by a scanner must not fail a test, but the retry keeps the common case from
+    /// leaving the directory behind.</summary>
+    public async ValueTask DisposeAsync()
     {
-        if (Directory.Exists(logDirectory))
+        try
         {
-            try
-            {
-                Directory.Delete(logDirectory, recursive: true);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-            }
+            await TempDirectoryCleanup.DeleteWithRetryAsync(logDirectory);
+        }
+        catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
+        {
         }
     }
 

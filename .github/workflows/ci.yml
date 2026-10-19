@@ -154,6 +154,9 @@ jobs:
           deno info --json npm:chalk@5 || true
           deno info --json npm:@maieutics/probe-server || true
 
+      - name: Install dotnet-dump (hang diagnosis)
+        run: dotnet tool install --global dotnet-dump
+
       - name: Restore
         run: dotnet restore Maieutics.slnx
 

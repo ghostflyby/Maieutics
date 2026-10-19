@@ -27,6 +27,7 @@ internal static class PluginWatcherTestWaits
         Task applied,
         CancellationToken cancellationToken)
     {
+        StartHangDumpWatchdog();
         while (!applied.IsCompleted)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -39,4 +40,50 @@ internal static class PluginWatcherTestWaits
             clock.Advance(PluginHostManager.PluginReloadDebounce);
         }
     }
+
+    /// <summary>CI diagnosis: when a watched reload parks past 25s (the flake this hunt
+    /// chases — the reload runs only when the test's cancellation fires), capture a dump
+    /// of the test host so the parked stacks name the stall. Best-effort: dotnet-dump is
+    /// installed by the workflow; the dump lands in MAIEUTICS_LOG_DIR and is uploaded
+    /// with the test logs. Runs once per process.</summary>
+    private static void StartHangDumpWatchdog()
+    {
+        if (Interlocked.Exchange(ref hangDumpStarted, 1) == 1) return;
+        var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
+        if (string.IsNullOrEmpty(logDirectory)) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+                var dump = Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.dmp");
+                var install = Process.Start(
+                    new ProcessStartInfo("dotnet", "tool install --global dotnet-dump")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    });
+                using var _ = install;
+                await install!.WaitForExitAsync().ConfigureAwait(false);
+                var tool = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".dotnet", "tools", "dotnet-dump");
+                var collect = Process.Start(
+                    new ProcessStartInfo(tool, $"collect -p {Environment.ProcessId} -o {dump}")
+                    {
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                    });
+                using var __ = collect;
+                await collect!.WaitForExitAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Diagnosis must never fail a test.
+            }
+        });
+    }
+
+    private static int hangDumpStarted;
 }

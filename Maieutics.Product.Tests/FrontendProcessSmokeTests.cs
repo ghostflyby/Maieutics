@@ -248,40 +248,18 @@ public sealed class FrontendProcessSmokeTests
         public string DiscoveryPath { get; } = discoveryPath;
 
         /// <summary>Waits for the discovery file's appearance within the remaining test
-        /// budget. Transient read failures are retried: the writer publishes atomically,
-        /// but on Windows an AV scanner can hold the file briefly (sharing violation) and
-        /// a reader racing the rename can observe a not-yet-readable state.</summary>
+        /// budget. A dead child is reported immediately; otherwise the shared reader retries
+        /// the transient open/parse failures (atomic rename, Windows scanner lock).</summary>
         public async Task<JsonElement> WaitForDiscoveryAsync(CancellationToken cancellationToken)
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(TimeSpan.FromSeconds(60));
-            while (true)
-            {
-                if (process.HasExited)
-                {
-                    var tail = outputTail();
-                    throw new InvalidOperationException(
-                        $"The Maieutics process exited with code {process.ExitCode} before publishing discovery."
-                        + (tail.Length > 0 ? $"\noutput:\n{tail}" : ""));
-                }
-
-                try
-                {
-                    using var stream = File.OpenRead(DiscoveryPath);
-                    using var document = await JsonDocument.ParseAsync(
-                        stream, cancellationToken: deadline.Token).ConfigureAwait(false);
-                    return document.RootElement.Clone();
-                }
-                catch (Exception exception) when (
-                    exception is FileNotFoundException or
-                        DirectoryNotFoundException or
-                        IOException or
-                        JsonException)
-                {
-                }
-
-                await Task.Delay(50, deadline.Token).ConfigureAwait(false);
-            }
+            return await FrontendDiscoveryFile.ReadAsync(
+                DiscoveryPath,
+                TimeSpan.FromSeconds(60),
+                cancellationToken,
+                fault: () => process.HasExited
+                    ? $"The Maieutics process exited with code {process.ExitCode} before publishing discovery."
+                      + (outputTail() is { Length: > 0 } tail ? $"\noutput:\n{tail}" : string.Empty)
+                    : null).ConfigureAwait(false);
         }
 
         public async ValueTask DisposeAsync()

@@ -1620,25 +1620,13 @@ public sealed class FrontendApiIntegrationTests
             });
             await host.StartAsync(cancellationToken);
 
-            JsonElement discoveryElement;
-            using (var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-            {
-                wait.CancelAfter(TimeSpan.FromSeconds(20));
-                while (true)
-                {
-                    if (File.Exists(discoveryPath))
-                    {
-                        using var stream = File.OpenRead(discoveryPath);
-                        using var document = await JsonDocument.ParseAsync(
-                            stream,
-                            cancellationToken: wait.Token);
-                        discoveryElement = document.RootElement.Clone();
-                        break;
-                    }
-
-                    await Task.Delay(50, wait.Token);
-                }
-            }
+            // The host publishes the discovery file after Kestrel binds; a file that exists
+            // but cannot be opened yet (Windows scanner lock on the fresh rename) is retried
+            // rather than surfaced as an IOException at the readiness probe.
+            var discoveryElement = await FrontendDiscoveryFile.ReadAsync(
+                discoveryPath,
+                TimeSpan.FromSeconds(20),
+                cancellationToken);
 
             return new FrontendHarness(
                 host,

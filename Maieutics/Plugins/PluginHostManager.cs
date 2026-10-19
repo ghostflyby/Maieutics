@@ -1164,6 +1164,9 @@ internal sealed class PluginHostManager(
                 }
 
                 await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                logger.LogDebug(
+                    "Watched change at '{Path}' applied.",
+                    args.FullPath);
                 lock (gate)
                 {
                     reloadApplied.TrySetResult();
@@ -1417,6 +1420,10 @@ internal sealed class PluginHostManager(
         }
 
         if (owner is null) return;
+        logger.LogDebug(
+            "Watched change at '{Path}' reloads plugin '{PluginId}'.",
+            changedPath,
+            owner.Id);
         EnsureApprovalStoreLoaded();
 
         // Re-resolve the descriptor from disk so manifest, permission, and mcp.json
@@ -1458,6 +1465,10 @@ internal sealed class PluginHostManager(
                 // whole pass runs under the reconcile serialization so a concurrent
                 // approve/revoke cannot interleave its frames with these.
                 await reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                logger.LogDebug(
+                    "Plugin '{PluginId}' reload holds the reconcile pass; approval blocked: {Blocked}.",
+                    owner.Id,
+                    IsApprovalBlocked(reloaded.Id));
                 try
                 {
                     HashSet<string> previouslyBlocked;

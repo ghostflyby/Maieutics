@@ -1015,16 +1015,15 @@ public sealed class PluginHostIntegrationTests
         await using (application)
         {
             // Trigger a set change and wait until the restart has actually torn the old
-            // generation down (status leaves Ready), then dispose mid-restart. Dispose must
-            // complete deterministically: the aborted restart's StartAsync faults readiness
-            // and cleans up, and the manager ends terminal Stopped with nothing resurrected.
+            // generation down and installed its successor (the channel swap is reported at
+            // that point, with readiness still pending), then dispose mid-restart. Dispose
+            // must complete deterministically: the aborted restart's StartAsync faults
+            // readiness and cleans up, and the manager ends terminal Stopped with nothing
+            // resurrected.
+            var restarted = manager.RegistryChangesReplaced;
             WriteExtraPlugin(pluginsRoot);
             AddLocalImport(pluginsRoot, "@acme/extra/main", "./extra/mod.ts");
-
-            while (manager.GetStatus().State is PluginHostState.Ready)
-            {
-                await Task.Delay(100, timeout.Token);
-            }
+            await restarted.WaitAsync(timeout.Token);
 
             await manager.DisposeAsync();
             // The terminal state depends on where the race landed (a startup cancelled by the
@@ -1069,20 +1068,19 @@ public sealed class PluginHostIntegrationTests
         }
     }
 
-    /// <summary>Bounded poll for an approval classification appearing after a plugin-set
-    /// change. The manager exposes no awaited signal for approval state: registry snapshots
-    /// only carry approved registrations, so a pending classification never writes a frame.</summary>
+    /// <summary>Waits for an approval classification to appear after a plugin-set change,
+    /// waking on the manager's approval-recompute signal instead of polling. Approval state
+    /// never writes a registry frame, so this signal is the only completion edge; a missing
+    /// classification surfaces as a timeout here instead of an unrelated later assertion.</summary>
     private static async Task WaitForApprovalAsync(
         PluginHostManager manager,
         string pluginId,
         CancellationToken cancellationToken)
     {
-        var deadline = TimeSpan.FromSeconds(100);
-        while (deadline > TimeSpan.Zero)
+        while (!manager.ListPluginApprovals().Any(approval => approval.PluginId == pluginId))
         {
-            if (manager.ListPluginApprovals().Any(approval => approval.PluginId == pluginId)) return;
-            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
-            deadline -= TimeSpan.FromMilliseconds(250);
+            var changed = manager.ApprovalsChanged;
+            await changed.WaitAsync(TimeSpan.FromSeconds(100), cancellationToken).ConfigureAwait(false);
         }
     }
 

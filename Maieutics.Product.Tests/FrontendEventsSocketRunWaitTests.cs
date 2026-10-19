@@ -136,20 +136,25 @@ public sealed class FrontendEventsSocketRunWaitTests
                 .ConfigureAwait(false);
             Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
             var queue = await response.Content.ReadFromJsonAsync<JsonElement>(wait.Token).ConfigureAwait(false);
-            var pending = queue.GetProperty("items").GetArrayLength();
             if (queue.TryGetProperty("running", out var running))
             {
                 lastRunningRunId = running.GetProperty("runId").GetString();
+                // A run is live: idle cannot be reached synchronously. Waiting on the queue's
+                // mutation signal also covers the dequeue handshake window, which presents as
+                // an empty queue with no running item while the submission is in flight.
+                await harness.TurnQueue
+                    .WaitForChangeAsync(sessionId, harness.TurnQueue.FrameSnapshot(sessionId).Version, wait.Token)
+                    .ConfigureAwait(false);
                 continue;
             }
 
-            if (pending == 0)
+            if (queue.GetProperty("items").GetArrayLength() == 0)
             {
                 Trace("queue reported drained");
                 return lastRunningRunId;
             }
 
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            await harness.TurnQueue.WaitUntilIdleAsync(sessionId, wait.Token).ConfigureAwait(false);
         }
     }
 

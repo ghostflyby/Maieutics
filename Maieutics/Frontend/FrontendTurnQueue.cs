@@ -224,6 +224,29 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         }
     }
 
+    /// <summary>Waits until the session's worker is gone and no item is pending, running,
+    /// or mid-dequeue. Wakes on queue mutations instead of re-reading on a timer, and the
+    /// drained-lease transition publishes the final change, so the caller observes a
+    /// quiescent queue rather than a sequence of coincidentally empty samples.</summary>
+    public async Task WaitUntilIdleAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var state = GetOrAdd(sessionId);
+        while (true)
+        {
+            long version;
+            lock (state.Gate)
+            {
+                if (IsIdleLocked(state)) return;
+                version = state.Version;
+            }
+
+            await WaitForChangeAsync(sessionId, version, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsIdleLocked(SessionQueue state) =>
+        state.Items.Count == 0 && state.Running is null && !state.DequeueInFlight && state.Worker is null;
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposeState, 1) != 0)

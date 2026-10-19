@@ -94,6 +94,28 @@ internal sealed class ContributionCoordinator
     private readonly Dictionary<string, int> pendingReloadForces = new(StringComparer.Ordinal);
     private IReadOnlyList<IContributionDelivery> deliveries = [];
 
+    /// <summary>Internal test observability: completes when the last running flight finishes
+    /// and no follow-up is pending, i.e. every scheduled pass has drained. A completed source
+    /// is handed back once and a fresh one installed under <see cref="flightGate"/>, so a test
+    /// can assert "nothing further ran" after awaiting this idle edge instead of sleeping out
+    /// a settle window.</summary>
+    private TaskCompletionSource flightIdle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes when the coordinator has no running or pending pass. Returns an
+    /// already-completed task when nothing is in flight, so awaiting it before a trigger
+    /// followed by a re-check after is race-free for callers that schedule synchronously;
+    /// for asynchronous producers, capture it after the triggering call.</summary>
+    internal Task FlightIdle
+    {
+        get
+        {
+            lock (flightGate)
+            {
+                return flights.Count == 0 ? Task.CompletedTask : flightIdle.Task;
+            }
+        }
+    }
+
     public ContributionCoordinator(ILogger logger)
     {
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -379,6 +401,15 @@ internal sealed class ContributionCoordinator
                     {
                         flights.Remove((kindName, pluginId));
                     }
+                }
+
+                // Quiet means no flight is running and none was re-armed: the pass that
+                // just finished was the last one, so an idle waiter can re-read state.
+                if (!rearm && flights.Count == 0)
+                {
+                    var idle = flightIdle;
+                    flightIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    idle.TrySetResult();
                 }
             }
 

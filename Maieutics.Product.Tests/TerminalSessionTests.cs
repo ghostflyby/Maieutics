@@ -487,6 +487,7 @@ public sealed class TerminalSessionTests
     {
         var fake = new FakeTerminalProcess();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new StalledTerminalProcessFactory(release.Task, fake);
         var session = new TerminalSession(
             AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
@@ -497,7 +498,7 @@ public sealed class TerminalSessionTests
             ["60"],
             EffectivePolicy.Default,
             TestOptions(),
-            new StalledTerminalProcessFactory(release.Task, fake),
+            factory,
             NullLogger<TerminalSession>.Instance);
         try
         {
@@ -506,19 +507,17 @@ public sealed class TerminalSessionTests
             // Cancel while the spawn is still blocked: the OCE surfaces before any process
             // is adopted, so the only disposer is the fire-and-forget late-spawn reclaim.
             // It must still dispose the child — asynchronously, because cancellation must
-            // not wait on a pathological spawn.
+            // not wait on a pathological spawn. StartEntered makes the in-flight spawn
+            // deterministic instead of pacing cancellation against a sleep.
             var run = session.RunOnceAsync(TimeSpan.FromSeconds(60), new TerminalSnapshotRequest(), cancel.Token);
-            await Task.Delay(50, TestContext.Current.CancellationToken);
+            await factory.StartEntered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             await cancel.CancelAsync();
 
             var failure = () => run;
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await failure.Invoke(); });
             release.TrySetResult();
 
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-            while (!fake.Disposed && DateTime.UtcNow < deadline)
-                await Task.Delay(10, TestContext.Current.CancellationToken);
-
+            await fake.DisposedSignal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             Assert.True(fake.Disposed, "the reclaim must dispose the late spawn even though the cancellation surfaced first");
         }
         finally
@@ -591,21 +590,19 @@ public sealed class TerminalSessionTests
         Assert.Null(session.GetSnapshot().ExitCode);
     }
 
-    /// <summary>State polling is the residual wait in this fixture: the session writes its
-    /// state enum under a plain lock with no state-change signal (only the one-shot exit has a
-    /// completion task, via <see cref="TerminalSession.WaitExitedAsync"/>), so there is no
-    /// event to await for a general transition. Bounded, unlike a sleep: the deadline names
-    /// the state that never arrived.</summary>
+    /// <summary>Awaits a state transition on the session's own signal instead of polling:
+    /// capture <see cref="TerminalSession.StateChanged"/> before triggering the transition,
+    /// then re-check the wire state after each completion. The wait is bounded only by the
+    /// caller's deadline, and a state that never arrives is named in the timeout.</summary>
     private static async Task WaitForStateAsync(
         TerminalSession session,
         string expected,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         while (!string.Equals(session.GetSnapshot().State, expected, StringComparison.Ordinal))
         {
-            if (DateTime.UtcNow >= deadline) throw new TimeoutException($"state never became {expected}");
-            await Task.Delay(10, cancellationToken);
+            var changed = session.StateChanged;
+            await changed.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
         }
     }
 }
@@ -632,6 +629,12 @@ internal sealed class FakeTerminalProcessFactory(FakeTerminalProcess process) : 
 internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTerminalProcess? process = null)
     : ITerminalProcessFactory
 {
+    private readonly TaskCompletionSource startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes when the product has entered <see cref="Start"/> and is blocked on
+    /// the release gate; tests await this instead of pacing against a sleep.</summary>
+    internal Task StartEntered => startEntered.Task;
+
     public ITerminalProcess Start(
         string shell,
         IReadOnlyList<string> arguments,
@@ -640,6 +643,7 @@ internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTer
         int columns,
         int rows)
     {
+        startEntered.TrySetResult();
         pendingRelease.Wait();
         return process ?? new FakeTerminalProcess();
     }
@@ -668,6 +672,12 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public bool Disposed { get; private set; }
 
+    /// <summary>Completes when the session disposes this process, so the late-spawn reclaim
+    /// can be awaited instead of polled.</summary>
+    internal Task DisposedSignal => disposed.Task;
+
+    private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public void RaiseExited(int exitCode)
     {
         ExitCode = exitCode;
@@ -693,6 +703,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
     public ValueTask DisposeAsync()
     {
         Disposed = true;
+        disposed.TrySetResult();
         return ValueTask.CompletedTask;
     }
 

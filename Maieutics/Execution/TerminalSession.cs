@@ -49,6 +49,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     private Task? pump;
     private CancellationTokenSource? pumpLifetime;
     private TerminalSessionState state = TerminalSessionState.Created;
+    private TaskCompletionSource stateChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal TerminalSession(
         AgentSessionId ownerSessionId,
@@ -345,7 +346,11 @@ internal sealed class TerminalSession : IAsyncDisposable
                 // Only busy executions return to idle; a fault observed mid-execution stays faulted.
                 lock (stateGate)
                 {
-                    if (state == TerminalSessionState.Busy) state = TerminalSessionState.Idle;
+                    if (state == TerminalSessionState.Busy)
+                    {
+                        state = TerminalSessionState.Idle;
+                        stateChanged.TrySetResult();
+                    }
                 }
             }
 
@@ -405,7 +410,11 @@ internal sealed class TerminalSession : IAsyncDisposable
                 // Only busy executions return to idle; a fault observed mid-execution stays faulted.
                 lock (stateGate)
                 {
-                    if (state == TerminalSessionState.Busy) state = TerminalSessionState.Idle;
+                    if (state == TerminalSessionState.Busy)
+                    {
+                        state = TerminalSessionState.Idle;
+                        stateChanged.TrySetResult();
+                    }
                 }
             }
 
@@ -622,6 +631,8 @@ internal sealed class TerminalSession : IAsyncDisposable
             {
                 state = TerminalSessionState.Faulted;
             }
+
+            stateChanged.TrySetResult();
         }
 
         if (exited.TerminationSignal is { } signal)
@@ -942,11 +953,31 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
     }
 
+    /// <summary>Internal test observability: completes on the next state transition, so a
+    /// test can await a transition instead of polling <see cref="GetSnapshot"/>. A completed
+    /// source is handed back once and a fresh one installed in the same locked section; a
+    /// reader that races the transition therefore observes that edge instead of waiting for
+    /// a second transition that may never happen.</summary>
+    internal Task StateChanged
+    {
+        get
+        {
+            lock (stateGate)
+            {
+                var changed = stateChanged.Task;
+                if (changed.IsCompleted)
+                    stateChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                return changed;
+            }
+        }
+    }
+
     private void SetState(TerminalSessionState value)
     {
         lock (stateGate)
         {
             state = value;
+            stateChanged.TrySetResult();
         }
     }
 
@@ -957,7 +988,9 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         lock (stateGate)
         {
-            if (state == TerminalSessionState.Starting) state = TerminalSessionState.Idle;
+            if (state != TerminalSessionState.Starting) return;
+            state = TerminalSessionState.Idle;
+            stateChanged.TrySetResult();
         }
     }
 
@@ -965,8 +998,9 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         lock (stateGate)
         {
-            if (state is not (TerminalSessionState.Closing or TerminalSessionState.Closed))
-                state = TerminalSessionState.Faulted;
+            if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
+            state = TerminalSessionState.Faulted;
+            stateChanged.TrySetResult();
         }
     }
 

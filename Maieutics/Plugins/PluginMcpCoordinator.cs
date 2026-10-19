@@ -176,6 +176,21 @@ internal sealed class PluginMcpCoordinator(
         return revision;
     }
 
+    /// <summary>Internal test observability: completes when the most recently enqueued
+    /// registry revision has been applied (or superseded by a later one). Capture it right
+    /// after publishing to await that revision's effect instead of polling the published
+    /// surface; a revision that already settled returns a completed task.</summary>
+    internal Task RegistryReconciled
+    {
+        get
+        {
+            lock (gate)
+            {
+                return latestRevision?.Completion.Task ?? Task.CompletedTask;
+            }
+        }
+    }
+
     internal IReadOnlyList<McpServerGeneration.McpServerLease> AcquireLeases()
     {
         McpServerGeneration[] snapshot;

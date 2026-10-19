@@ -12,8 +12,6 @@ namespace Maieutics.Product.Tests;
 /// PluginSkillsContributionTests / PluginDeclarativeExtensionsTests.</summary>
 public sealed class PluginContributionCoordinatorTests
 {
-    private static readonly TimeSpan SettleDelay = TimeSpan.FromMilliseconds(300);
-
     [Fact]
     public async Task AnUnchangedFrameRepublishesRegistryWideButSchedulesNothing()
     {
@@ -26,7 +24,9 @@ public sealed class PluginContributionCoordinatorTests
             [new PluginRegistration("p1", "e1", "McpDiscover")],
             ContributionFrameInput.NoForcedPlugins,
             []));
-        await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
+        // The frame carries no per-plugin targets, so the coordinator has no flight to
+        // wait on and the registry-wide publish is synchronous — no settle window.
+        await coordinator.FlightIdle;
 
         Assert.Single(wide.Frames);
         Assert.Single(wide.Frames[0].Registrations);
@@ -74,9 +74,10 @@ public sealed class PluginContributionCoordinatorTests
         await skills.WaitUntilAsync(() => skills.CompletedPasses >= 1);
         await skills.WaitUntilAsync(() => skills.ActivePasses == 1);
         skills.ReleasePass();
-        await skills.WaitUntilAsync(() => skills.ActivePasses == 0);
-        Assert.Equal(2, skills.Invocations.Count(request => request == "p"));
-        await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
+        // Await the coordinator's own quiescence edge: after it, any extra follow-up pass
+        // would already have been scheduled and entered, so the count can be asserted
+        // without a settle window.
+        await coordinator.FlightIdle.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(2, skills.Invocations.Count(request => request == "p"));
     }
 
@@ -171,7 +172,9 @@ public sealed class PluginContributionCoordinatorTests
         Assert.Single(wide.Frames);
         Assert.Equal(2, wide.Frames[0].Registrations.Count());
         Assert.True(wide.Guarded[0], "approval publishes take the disposed-coordinator guard");
-        await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
+        // The input carries no per-plugin targets, so nothing is scheduled: awaiting the
+        // coordinator's idle edge confirms it without a settle window.
+        await coordinator.FlightIdle;
         Assert.Empty(skills.Invocations);
         Assert.Empty(other.Invocations);
 
@@ -381,26 +384,25 @@ public sealed class PluginContributionCoordinatorTests
             ContributionFrameInput.NoForcedPlugins,
             []);
         adapter.PublishFrame(frame, guardDisposed: true);
-        await WaitForAsync(() =>
-        {
-            lock (discovered) return discovered.Count == 1;
-        });
+        await coordinator.RegistryReconciled.WaitAsync(
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         lock (discovered) Assert.Equal(new PluginRegistration("p1", "e1", "McpDiscover"), discovered[0]);
 
         // The registration-level diff stays inside the consumer engine: an unchanged
-        // frame re-publishes but invokes no discovery.
+        // frame re-publishes but invokes no discovery. The revision's completion settles
+        // only after the diff ran, so the assertion needs no settle window.
         adapter.PublishFrame(frame, guardDisposed: true);
-        await Task.Delay(SettleDelay, TestContext.Current.CancellationToken);
+        await coordinator.RegistryReconciled.WaitAsync(
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         lock (discovered) Assert.Single(discovered);
 
         // The forced form re-runs the plugin's discovery over unchanged records.
         adapter.PublishFrame(
             frame with { ForcedPlugins = new HashSet<string>(["p1"], StringComparer.Ordinal) },
             guardDisposed: true);
-        await WaitForAsync(() =>
-        {
-            lock (discovered) return discovered.Count == 2;
-        });
+        await coordinator.RegistryReconciled.WaitAsync(
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        lock (discovered) Assert.Equal(2, discovered.Count);
     }
 
     [Fact]

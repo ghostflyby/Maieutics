@@ -325,6 +325,31 @@ internal sealed class PluginHostManager(
     /// are excluded from the host config, declaration recording, and extension invokes.</summary>
     private readonly Dictionary<string, PluginApprovalState> approvalStates =
         new(StringComparer.Ordinal);
+
+    /// <summary>Internal test observability: completes when approval classifications were
+    /// recomputed (start, watched reload, approve, revoke). A completed source is handed
+    /// back once and a fresh one installed in the same gate section, so a reader that races
+    /// the transition still observes that edge.</summary>
+    private TaskCompletionSource approvalsChanged =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes on the next approval-classification recomputation. Capture it
+    /// before the triggering action and await it under the caller's deadline.</summary>
+    internal Task ApprovalsChanged
+    {
+        get
+        {
+            lock (gate)
+            {
+                var changed = approvalsChanged.Task;
+                if (changed.IsCompleted)
+                    approvalsChanged = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                return changed;
+            }
+        }
+    }
+
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
         new(StringComparer.Ordinal);
 
@@ -2326,6 +2351,14 @@ internal sealed class PluginHostManager(
     /// <see cref="gate" /> after the descriptors or the approval store changed.</summary>
     private void RecomputeApprovalStatesLock(IReadOnlyList<PluginDescriptor> current)
     {
+        // Every approval-bearing transition recomputes classifications under the gate, so
+        // completing the signal here covers start, watched reloads, approvals, and revokes.
+        // A completed source is handed back once and a fresh one installed: a waiter that
+        // races the transition observes that edge instead of waiting for the next one.
+        var changed = approvalsChanged;
+        approvalsChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        changed.TrySetResult();
+
         declarationFingerprints.Clear();
         approvalStates.Clear();
         foreach (var descriptor in current)

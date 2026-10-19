@@ -45,23 +45,17 @@ public sealed class SkillCatalogTests : IDisposable
         return SkillCatalog.Create(roots, clock, NullLogger<SkillCatalog>.Instance);
     }
 
-    /// <summary>Advances the fake clock in small steps while waiting for a watcher-driven
-    /// rebuild, so the test is insensitive to whether the filesystem event lands before or
-    /// after the pump's debounce delay starts.</summary>
-    private async Task<SkillCatalog> AwaitSkillsAsync(
+    /// <summary>Waits out a watcher-driven rebuild under the test's cancellation budget via
+    /// the shared signal-driven helper (see
+    /// <see cref="SkillCatalogTestWaits.AwaitAsync"/>); returns the catalog so call sites
+    /// stay expression-shaped.</summary>
+    private static async Task<SkillCatalog> AwaitSkillsAsync(
         SkillCatalog catalog,
         FakeTimeProvider clock,
-        Func<SkillCatalogSnapshot, bool> predicate,
-        TimeSpan? timeout = null)
+        Func<SkillCatalogSnapshot, bool> predicate)
     {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(8));
-        while (DateTime.UtcNow < deadline)
-        {
-            if (predicate(catalog.Current)) return catalog;
-            clock.Advance(TimeSpan.FromMilliseconds(100));
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        }
-
+        await SkillCatalogTestWaits.AwaitAsync(
+            catalog, clock, predicate, TestContext.Current.CancellationToken);
         return catalog;
     }
 
@@ -143,12 +137,13 @@ public sealed class SkillCatalogTests : IDisposable
         await catalog.DisposeAsync();
 
         WriteSkill(workspaceRoot, "added", "arrived after disposal");
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-        while (DateTime.UtcNow < deadline)
-        {
-            clock.Advance(TimeSpan.FromMilliseconds(100));
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        }
+
+        // The watchers are gone, so no debounce registration can ever arrive: give the
+        // filesystem a bounded window in which a regression would have to fire, then assert
+        // the snapshot is unchanged. This is a genuine quiet-period assertion, not a poll
+        // for a signal (there is none to await after disposal).
+        await Task.Delay(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
+        clock.Advance(SkillCatalog.RescanDebounce);
 
         Assert.Single(catalog.Current.Skills, skill => skill.Name == "initial");
     }
@@ -663,12 +658,11 @@ public sealed class SkillsProfileProviderTests : IDisposable
 
         Directory.CreateDirectory(Path.Combine(root, "alpha"));
         await File.WriteAllTextAsync(Path.Combine(root, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: arrived later\n---\nBody.\n", TestContext.Current.CancellationToken);
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
-        while (DateTime.UtcNow < deadline && catalog.Current.Skills.IsEmpty)
-        {
-            clock.Advance(TimeSpan.FromMilliseconds(100));
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        }
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(8));
+        await SkillCatalogTestWaits.AwaitAsync(
+            catalog, clock, snapshot => !snapshot.Skills.IsEmpty, deadline.Token);
 
         var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
 

@@ -131,25 +131,35 @@ public sealed class FrontendEventsSocketRunWaitTests
         string? lastRunningRunId = null;
         while (true)
         {
+            // Capture the version BEFORE reading the state. The queue publishes a new
+            // version on every mutation, and a version read after the GET can already
+            // include the change this snapshot does not show — the wait would then park
+            // for a mutation that already happened and only the deadline would end it
+            // (the windows-CI timeout this ordering fixes).
+            var version = harness.TurnQueue.FrameSnapshot(sessionId).Version;
             using var response = await harness.Client
                 .GetAsync($"/v1/agent/sessions/{sessionId}/queue", wait.Token)
                 .ConfigureAwait(false);
             Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
             var queue = await response.Content.ReadFromJsonAsync<JsonElement>(wait.Token).ConfigureAwait(false);
-            var pending = queue.GetProperty("items").GetArrayLength();
             if (queue.TryGetProperty("running", out var running))
             {
                 lastRunningRunId = running.GetProperty("runId").GetString();
+                await harness.TurnQueue.WaitForChangeAsync(sessionId, version, wait.Token).ConfigureAwait(false);
                 continue;
             }
 
-            if (pending == 0)
+            if (queue.GetProperty("items").GetArrayLength() == 0)
             {
                 Trace("queue reported drained");
                 return lastRunningRunId;
             }
 
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            // Idle covers what a single "running absent, items empty" sample cannot: a
+            // dequeued item whose submission handshake is still in flight is in neither
+            // field. WaitUntilIdleAsync re-reads the state itself, so the capture above
+            // only feeds this pass.
+            await harness.TurnQueue.WaitUntilIdleAsync(sessionId, wait.Token).ConfigureAwait(false);
         }
     }
 

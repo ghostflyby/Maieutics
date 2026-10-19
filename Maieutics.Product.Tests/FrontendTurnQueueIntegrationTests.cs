@@ -14,10 +14,6 @@ public sealed class FrontendTurnQueueIntegrationTests
 {
     private const string Answer = "queued answer";
 
-    /// <summary>Consecutive empty queue observations that count as drained. The dequeue→running
-    /// handshake is a local in-process submission, so four 50 ms polls is far beyond it.</summary>
-    private const int StableEmptyPolls = 4;
-
     private readonly ITestOutputHelper output;
 
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
@@ -655,6 +651,9 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
         var polls = 0;
+        // The queue publishes a version on every mutation; a read that does not match yet
+        // parks on that signal instead of re-reading on a timer.
+        var version = harness.TurnQueue.FrameSnapshot(sessionId).Version;
         try
         {
             while (true)
@@ -665,7 +664,9 @@ public sealed class FrontendTurnQueueIntegrationTests
 
                 if (polls % 10 == 0)
                     Trace($"queue poll #{polls}: {QueueSummary(queue)}");
-                await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                version = await harness.TurnQueue
+                    .WaitForChangeAsync(sessionId, version, wait.Token)
+                    .ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
@@ -744,45 +745,49 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(60));
-        var polls = 0;
-        var consecutiveEmptyPolls = 0;
-        var lastSummary = "not polled";
+        var releases = 0;
         try
         {
+            // Fully signal-driven drain: wake when either the queue reaches idle (the
+            // worker is gone and nothing is pending, running, or mid-dequeue) or a provider
+            // request parks. A parked request is released immediately, which settles its run
+            // and publishes the next queue change. This replaces the former "stable empty
+            // across N polls" heuristic, whose samples could legitimately miss the
+            // dequeue→running window.
             while (true)
             {
-                var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
-                polls++;
-                lastSummary = QueueSummary(queue);
+                var idle = harness.TurnQueue.WaitUntilIdleAsync(sessionId, wait.Token);
+                var parked = provider.WaitForParkedAsync(1, wait.Token);
+                var winner = await Task.WhenAny(idle, parked).ConfigureAwait(false);
+                if (winner == idle)
+                {
+                    await idle.ConfigureAwait(false);
+                    // No run can still own a request, but a vanished client may have left a
+                    // zombie entry; release it so it cannot leak past the harness teardown.
+                    provider.ReleaseAll();
+                    Trace($"queue drained after {releases} release(s)");
+                    return;
+                }
 
-                // Always: a request parked during a window where the queue still looks empty
-                // must be released too, or it is never released at all.
                 provider.ReleaseAll();
-
-                if (!HasRunningItem(queue) && ItemIds(queue).Length == 0)
-                {
-                    if (++consecutiveEmptyPolls >= StableEmptyPolls)
-                    {
-                        Trace($"queue drained (stable across {consecutiveEmptyPolls} polls)");
-                        return;
-                    }
-                }
-                else
-                {
-                    consecutiveEmptyPolls = 0;
-                }
-
-                if (polls % 10 == 0)
-                    Trace($"drain poll #{polls}: {lastSummary}");
-                await Task.Delay(50, wait.Token).ConfigureAwait(false);
+                releases++;
             }
         }
         catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
         {
-            // Name what the queue actually looked like instead of surfacing a bare cancellation:
-            // a drain that cannot converge means a run is parked with nothing releasing it.
+            using var diagnostic = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            string summary;
+            try
+            {
+                summary = QueueSummary(await GetQueueAsync(harness, sessionId, diagnostic.Token));
+            }
+            catch (Exception readFailure) when (readFailure is OperationCanceledException or HttpRequestException)
+            {
+                summary = $"unreadable ({readFailure.GetType().Name})";
+            }
+
             throw new InvalidOperationException(
-                $"the queue did not drain after {polls} polls; last observed: {lastSummary}",
+                $"the queue did not drain after {releases} release(s); last observed: {summary}",
                 exception);
         }
     }
@@ -797,6 +802,11 @@ public sealed class FrontendTurnQueueIntegrationTests
         wait.CancelAfter(TimeSpan.FromSeconds(60));
         while (true)
         {
+            // Capture the queue version before reading: a turn is committed during the
+            // submission handshake, so any change published after this read is evidence the
+            // transcript may have advanced. Waking on the queue's own mutation signal
+            // replaces the former fixed polling interval.
+            var version = harness.TurnQueue.FrameSnapshot(sessionId).Version;
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
                 wait.Token).ConfigureAwait(false);
@@ -808,7 +818,7 @@ public sealed class FrontendTurnQueueIntegrationTests
                     .ToArray();
             }
 
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            await harness.TurnQueue.WaitForChangeAsync(sessionId, version, wait.Token).ConfigureAwait(false);
         }
     }
 

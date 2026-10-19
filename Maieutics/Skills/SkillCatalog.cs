@@ -126,6 +126,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private readonly Action<SkillCatalogSnapshot>? onProgressiveCommit;
     private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
     private TaskCompletionSource snapshotPublished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int rebuildCount;
     private bool disposed;
 
@@ -192,6 +193,28 @@ internal sealed class SkillCatalog : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             return snapshotPublished.Task;
+        }
+    }
+
+    /// <summary>Internal test observability: completes when a rescan pump has registered its
+    /// debounce wait with the injected <see cref="TimeProvider"/>. A test supplying a fake
+    /// clock advances it past <see cref="RescanDebounce"/> once this completes, so it never
+    /// sleeps out the window in real time. A completed registration is handed back once and
+    /// a fresh source installed in the same locked section: a test whose first read races
+    /// the pump must observe that edge instead of waiting for a second registration a single
+    /// write burst may never produce.</summary>
+    internal Task WatcherDebounceRegistered
+    {
+        get
+        {
+            lock (gate)
+            {
+                var registered = watcherDebounceRegistered.Task;
+                if (registered.IsCompleted)
+                    watcherDebounceRegistered = new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                return registered;
+            }
         }
     }
 
@@ -411,7 +434,16 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     {
                     }
 
-                    await Task.Delay(RescanDebounce, timeProvider, lifetime.Token).ConfigureAwait(false);
+                    // The debounce rides the injected time provider (a fake clock in tests
+                    // advances past it); the registration is reported only after Task.Delay
+                    // returned, so the wait's timer provably exists in the provider by then.
+                    var debounceWait = Task.Delay(RescanDebounce, timeProvider, lifetime.Token);
+                    lock (gate)
+                    {
+                        watcherDebounceRegistered.TrySetResult();
+                    }
+
+                    await debounceWait.ConfigureAwait(false);
                     var (paths, fullRescan) = state.TakeBatch();
                     if (paths.Length == 0 && !fullRescan) continue;
 

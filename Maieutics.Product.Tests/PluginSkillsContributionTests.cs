@@ -114,12 +114,22 @@ public sealed class PluginSkillsContributionTests : IDisposable
         Func<SkillCatalogSnapshot, bool> predicate,
         CancellationToken cancellationToken)
     {
-        var deadline = Task.Delay(CatalogWaitBudget, cancellationToken);
+        // Subscribe before the first predicate read: a publication landing after the
+        // check completes the held wait, so no publication can fall into the gap
+        // between checking and subscribing (which would idle out the whole budget).
+        var changed = catalog.WaitForNextSnapshotAsync();
         while (!predicate(catalog.Current))
         {
-            var changed = catalog.WaitForNextSnapshotAsync();
-            if (await Task.WhenAny(changed, deadline).ConfigureAwait(false) == deadline)
+            try
+            {
+                await changed.WaitAsync(CatalogWaitBudget, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
                 break;
+            }
+
+            changed = catalog.WaitForNextSnapshotAsync();
         }
 
         if (!predicate(catalog.Current))
@@ -1398,20 +1408,28 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         public async Task<string> ReadSkillInvokeAsync(CancellationToken cancellationToken)
         {
-            var deadline = Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var deadline = Task.Delay(TimeSpan.FromSeconds(15), linked.Token);
             while (true)
             {
                 var message = await ReadNextAsync(
-                    deadline, cancellationToken, "No Skills host.invoke envelope arrived.").ConfigureAwait(false);
+                    deadline,
+                    linked,
+                    cancellationToken,
+                    "No Skills host.invoke envelope arrived.").ConfigureAwait(false);
                 if (message.Contains("\"Skills\"", StringComparison.Ordinal)) return message;
             }
         }
 
         public async Task<string> ReadAsync(CancellationToken cancellationToken)
         {
-            var deadline = Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var deadline = Task.Delay(TimeSpan.FromSeconds(15), linked.Token);
             return await ReadNextAsync(
-                deadline, cancellationToken, "No host envelope arrived.").ConfigureAwait(false);
+                deadline,
+                linked,
+                cancellationToken,
+                "No host envelope arrived.").ConfigureAwait(false);
         }
 
         /// <summary>Awaits one bounded window for the next outbound Skills invoke and
@@ -1420,7 +1438,9 @@ public sealed class PluginSkillsContributionTests : IDisposable
         /// skipped, mirroring <see cref="ReadSkillInvokeAsync"/>. On window expiry the
         /// in-flight read is canceled and observed: a left-behind read would linger as
         /// a zombie channel reader and consume the very next message the caller's
-        /// subsequent <see cref="ReadSkillInvokeAsync"/> is owed.</summary>
+        /// subsequent <see cref="ReadSkillInvokeAsync"/> is owed. A message racing the
+        /// expiry boundary may be consumed and reported as quiet — boundary arrivals
+        /// count as quiet is the chosen, stable semantics.</summary>
         public async Task<bool> TryAwaitNextSkillInvokeAsync(
             TimeSpan window,
             CancellationToken cancellationToken)
@@ -1452,12 +1472,28 @@ public sealed class PluginSkillsContributionTests : IDisposable
 
         private async Task<string> ReadNextAsync(
             Task deadline,
+            CancellationTokenSource linked,
             CancellationToken cancellationToken,
             string timeoutMessage)
         {
-            var read = sent.Reader.ReadAsync(cancellationToken).AsTask();
+            var read = sent.Reader.ReadAsync(linked.Token).AsTask();
             var completed = await Task.WhenAny(read, deadline).ConfigureAwait(false);
-            if (completed != read) throw new TimeoutException(timeoutMessage);
+            if (completed != read)
+            {
+                // Deadline won: cancel and observe the in-flight read so no zombie
+                // channel reader survives (see TryAwaitNextSkillInvokeAsync).
+                linked.Cancel();
+                try
+                {
+                    await read.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                throw new TimeoutException(timeoutMessage);
+            }
+
             return await read.ConfigureAwait(false);
         }
 

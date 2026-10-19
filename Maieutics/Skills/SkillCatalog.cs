@@ -182,7 +182,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
 
     /// <summary>Completes when the next snapshot publication after this call lands,
     /// so callers can await a catalog change signal instead of polling
-    /// <see cref="Current"/>; no publication ever completes a stale wait.</summary>
+    /// <see cref="Current"/>; no publication ever completes a stale wait. After
+    /// disposal no publication ever arrives: a task already returned stays
+    /// incomplete forever, and new calls throw <see cref="ObjectDisposedException"/>
+    /// — bounded callers are expected to carry their own deadline.</summary>
     internal Task WaitForNextSnapshotAsync()
     {
         lock (gate)

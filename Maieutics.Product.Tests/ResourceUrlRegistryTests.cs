@@ -70,7 +70,7 @@ public sealed class ResourceUrlRegistryTests
         Assert.Same(mcp, registry.Resolve(escape));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceProviderReadsFilesThroughWorkspaceContainment()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -91,7 +91,7 @@ public sealed class ResourceUrlRegistryTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceProviderKeepsItsTypedErrors()
     {
         using var workspace = TemporaryWorkspace.Create();
@@ -113,7 +113,7 @@ public sealed class ResourceUrlRegistryTests
         Assert.Equal("workspace_path_not_found", missingAssertions.Code);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WorkspaceProviderRefusesBodiesBeyondTheLimit()
     {
         using var workspace = TemporaryWorkspace.Create();

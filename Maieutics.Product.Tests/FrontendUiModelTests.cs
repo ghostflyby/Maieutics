@@ -36,11 +36,11 @@ public sealed class FrontendUiModelTests
         return (router, pushes);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task KernelFormPublishesCommOpenAndDisplayAnnouncement()
     {
         var (router, _) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
 
@@ -67,11 +67,11 @@ public sealed class FrontendUiModelTests
         Assert.Equal("Approve deployment?", display.Data.GetProperty("text/plain").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task KernelFormUplinkRoutesToTheOwnerAndNeverToTheChild()
     {
         var (router, childPushes) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
         var submitted = new TaskCompletionSource<Dictionary<string, object?>>(
@@ -100,11 +100,11 @@ public sealed class FrontendUiModelTests
         Assert.Equal("ship it", values["note"]);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task KernelFormCancelDeclinesAndFrontendCloseReleasesTheComm()
     {
         var (router, _) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
         var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -132,11 +132,11 @@ public sealed class FrontendUiModelTests
         Assert.Empty(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task MalformedKernelUplinkIsIgnoredWithoutBreakingThePlane()
     {
         var (router, _) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
         var model = await host.TryCreateFormAsync(
@@ -160,7 +160,7 @@ public sealed class FrontendUiModelTests
         Assert.Single(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ReplCommsStillRouteUplinkToTheChild()
     {
         var (router, childPushes) = CreateRouter();
@@ -184,11 +184,11 @@ public sealed class FrontendUiModelTests
         Assert.Equal("w1", Assert.Single(childPushes).CommId);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task FormWithoutALiveStreamIsClosedAndReportsNoModel()
     {
         var (router, _) = CreateRouter();
-        var publisher = new FakePublisher(publishable: false);
+        var publisher = new RecordingFramePublisher(publishable: false);
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
 
@@ -219,15 +219,15 @@ public sealed class FrontendUiModelTests
             .EnumerateArray().Select(family => family.GetString()));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ElicitationWithSchemaPublishesTheFormAnnouncement()
     {
         var (router, childPushes) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var presenter = new FrontendElicitationPresenter(
             publisher,
             new FrontendFormModelHost(router, publisher));
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
         var session = AgentSessionId.Create();
         using var schema = JsonDocument.Parse(
             "{\"type\":\"object\",\"required\":[\"token\"],\"properties\":{\"token\":{\"type\":\"string\",\"title\":\"API token\"},\"level\":{\"type\":\"integer\"},\"mode\":{\"enum\":[\"fast\",\"slow\"]}}}");
@@ -240,10 +240,11 @@ public sealed class FrontendUiModelTests
                 schema.RootElement.Clone(),
                 Password: false),
             deadline.Token);
-        await Task.Delay(100, deadline.Token);
 
-        // Both presentations ride the run stream: the fallback input.request frame
-        // and the native form announcement (ADR 0038 stage 2).
+        // Both presentations ride the run stream: the fallback input.request frame is
+        // synchronous, and the native form announcement lands after the form model's
+        // router publish. The publication signal replaces a settle window.
+        await publisher.WaitForCountAsync(2, deadline.Token);
         Assert.Equivalent(new[] { "input.request", "repl.display" }, publisher.Published.Select(frame => frame.Type));
         var announcement = publisher.Published
             .Single(frame => frame.Type == "repl.display")
@@ -272,11 +273,11 @@ public sealed class FrontendUiModelTests
         Assert.Empty(router.PlaneFor(session.ToString()).SnapshotLive());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task KernelFormOpenCarriesTheStatePayloadAndDoubleDisposeIsIdempotent()
     {
         var (router, _) = CreateRouter();
-        var publisher = new FakePublisher();
+        var publisher = new RecordingFramePublisher();
         var host = new FrontendFormModelHost(router, publisher);
         var session = AgentSessionId.Create();
         var closedCount = 0;
@@ -304,15 +305,4 @@ public sealed class FrontendUiModelTests
         Assert.Empty(plane.SnapshotLive());
     }
 
-    private sealed class FakePublisher(bool publishable = true) : IFrontendSessionFramePublisher
-    {
-        internal List<(AgentSessionId SessionId, string Type, JsonElement Data)> Published { get; } = [];
-
-        public bool TryPublishPresentation(AgentSessionId sessionId, string type, JsonElement data)
-        {
-            if (!publishable) return false;
-            Published.Add((sessionId, type, data.Clone()));
-            return true;
-        }
-    }
 }

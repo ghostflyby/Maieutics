@@ -566,9 +566,10 @@ public sealed class McpServerGenerationTests
         await generation.Retire().WaitAsync(deadline.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ProgressForwardingPreservesOrderAndSilencesAfterALimitFailure()
     {
+        _ = TestContext.Current.CancellationToken;
         var calls = 0;
         var payloads = new List<double>();
         var context = CreateProgressContext(async (_, _) =>

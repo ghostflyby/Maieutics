@@ -22,7 +22,7 @@ public sealed class PluginRegistryDiscoveryTests
         }
         """;
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task BuildsDescriptorFromPublishedSiblingManifests()
     {
         var denoJson = Path.Combine(Path.GetTempPath(), $"mc-reg-{Guid.NewGuid():N}");
@@ -83,7 +83,7 @@ public sealed class PluginRegistryDiscoveryTests
         Assert.Contains("maieutics.json", Assert.Single(diagnostics));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task RejectsVersionRangesWithADiagnostic()
     {
         var diagnostics = new List<string>();
@@ -99,7 +99,7 @@ public sealed class PluginRegistryDiscoveryTests
         Assert.Contains("exact version", Assert.Single(diagnostics));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReturnsNullWhenThePackagePublishesNoMaieuticsJson()
     {
         var denoJson = Path.Combine(Path.GetTempPath(), $"mc-reg-{Guid.NewGuid():N}");
@@ -118,7 +118,7 @@ public sealed class PluginRegistryDiscoveryTests
         Assert.Contains("maieutics.json", Assert.Single(diagnostics));
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ReturnsNullForNonJsrKinds()
     {
         var diagnostics = new List<string>();

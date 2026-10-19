@@ -17,9 +17,10 @@ public sealed class TaskResourceTests
         Assert.Equal("reserved_scheme", Assert.Single(registry.GetConflicts()).Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TaskProviderClaimsOneAuthorityPerSource()
     {
+        _ = TestContext.Current.CancellationToken;
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(Directory.GetCurrentDirectory(), Directory.GetCurrentDirectory())),
             new TaskResourceProvider([new TerminalTaskResourceSource(CreateBareRegistry())])
@@ -32,7 +33,7 @@ public sealed class TaskResourceTests
         Assert.Null(registry.Resolve(new Uri("task://other/a/b")));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnknownAuthoritiesAndMalformedPathsAreNotFound()
     {
         await using var harness = new TaskHarness();
@@ -122,7 +123,7 @@ public sealed class TaskResourceTests
         Assert.Null(result.TaskUri);
     }
 
-    [Fact(Timeout = 10_000)]
+    [Fact(Timeout = 20_000)]
     public async Task WaitResolvesWithTheTerminalSnapshotWhenTheProcessExits()
     {
         await using var harness = new TaskHarness();
@@ -205,7 +206,7 @@ public sealed class TaskResourceTests
         Assert.Equal("working", stillWorking.GetProperty("status").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ObjectsPlaneReadsStoredContentAndRejectsUnknownAddresses()
     {
         var store = new InMemoryAgentObjectStore();

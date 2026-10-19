@@ -18,10 +18,9 @@ public sealed class PluginSurfaceTests
         // this test drives the ADAPTER against a stub seam instead.
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task PluginsEndpointServesTheSurfaceAndPublishesForms()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var token = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             token,

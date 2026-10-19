@@ -50,7 +50,7 @@ public sealed class McpAdjustmentChainTests
         return document.RootElement.Clone();
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompositionFoldRunsInTopologicalOrderAndDropsServers()
     {
         // "provider" defines the server; "middle" depends on provider; "consumer"
@@ -107,7 +107,7 @@ public sealed class McpAdjustmentChainTests
             .Single());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompositionFoldIsStickyPerAdjusterOnFailure()
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));
@@ -140,7 +140,7 @@ public sealed class McpAdjustmentChainTests
         Assert.Contains("plugin:provider::main", third);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CompositionFoldFiltersOutOfScopeServersFromThePayload()
     {
         // The adjuster depends on "provider" only: "other" must not appear in its
@@ -171,7 +171,7 @@ public sealed class McpAdjustmentChainTests
         Assert.DoesNotContain("plugin:other::secret", seenServers);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolChainThreadsListings()
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));
@@ -213,7 +213,7 @@ public sealed class McpAdjustmentChainTests
         Assert.Equal("Safe echo", tool.GetProperty("description").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ToolChainFailsClosedWhenNoListingEverSucceeded()
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));
@@ -224,7 +224,7 @@ public sealed class McpAdjustmentChainTests
         Assert.Null(adjusted);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task EmptyChainPassesTheListingThrough()
     {
         var chain = CreateChain((_, _, _, _) => throw new InvalidOperationException("must not be invoked"));
@@ -234,7 +234,7 @@ public sealed class McpAdjustmentChainTests
         Assert.Equal(listing.GetRawText(), adjusted.Value.GetRawText());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task UnknownAliasEntriesAreDroppedWithTheRestApplied()
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));

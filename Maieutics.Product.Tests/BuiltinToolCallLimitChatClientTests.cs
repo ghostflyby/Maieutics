@@ -9,7 +9,7 @@ namespace Maieutics.Product.Tests;
 /// than the configured limit, and pass everything through when no limit is configured.</summary>
 public sealed class BuiltinToolCallLimitChatClientTests
 {
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task WithoutALimitEveryUpdateIsPassedThrough()
     {
         var inner = new StubChatClient(WebSearchUpdates(calls: 5));
@@ -26,7 +26,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
             .OfType<WebSearchToolCallContent>().Count());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CallsWithinTheLimitStreamFully()
     {
         var inner = new StubChatClient(WebSearchUpdates(calls: 2));
@@ -43,7 +43,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
             .OfType<WebSearchToolCallContent>().Count());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ExceedingTheLimitFailsTheRequestWithATypedError()
     {
         var inner = new StubChatClient(WebSearchUpdates(calls: 3));
@@ -62,7 +62,7 @@ public sealed class BuiltinToolCallLimitChatClientTests
         Assert.Equal(2, exception.Maximum);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task NonStreamingResponseExceedingTheLimitFailsWithTheSameError()
     {
         var updates = WebSearchUpdates(calls: 2).ToArray();

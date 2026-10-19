@@ -519,6 +519,49 @@ public sealed class PluginDeclarativeExtensionsTests
         }
     }
 
+    /// <summary>Deterministic regression for the scheduled-CI hang: under load the watcher
+    /// chain registers (and completes) the debounce before the test's first read — the
+    /// write's continuation and the watcher event race. The read must hand that completed
+    /// registration back instead of swapping it for a fresh source: a waiter whose first
+    /// read loses the edge then parks on a second registration a single change never
+    /// produces, and the reload applies only when the Fact deadline cancels the wait (the
+    /// observed failure applied it at the deadline instant, 60 s after an idle,
+    /// never-advanced debounce). The registration is captured before the write, so the
+    /// completion provably lands after the capture and before the racing read.</summary>
+    [Fact(Timeout = 30_000)]
+    public async Task ACompletedDebounceRegistrationIsHandedToTheNextRead()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The fake deno executable is a shell script.");
+
+        var root = CreateMcpDataFilePluginsRoot("declarative-debounce-race");
+        var clock = new FakeTimeProvider();
+        var manager = CreateManager(root, clock);
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(20));
+            await manager.StartAsync(deadline.Token);
+            await manager.WaitUntilReadyAsync(deadline.Token);
+
+            Task registered = manager.WatcherDebounceRegistered;
+            WriteMcpDataFile(root, "{");
+            await registered.WaitAsync(deadline.Token);
+
+            // Identity, not just completion: the waiter must observe exactly the edge its
+            // completion belongs to. A fresh source handed out here is the lost edge.
+            Task observed = manager.WatcherDebounceRegistered;
+            Assert.Same(registered, observed);
+            Assert.True(observed.IsCompleted);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     /// <summary>CI diagnosis: when MAIEUTICS_LOG_DIR is set (CI sets it and uploads the
     /// directory on failure), the managers under test log their reload and approval
     /// chains to the shared maieutics-{pid}.log instead of running silent — a hung

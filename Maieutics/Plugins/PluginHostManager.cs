@@ -374,22 +374,25 @@ internal sealed class PluginHostManager(
     /// completed task or hands the completer the fresh source. Internal test observability
     /// for virtual time: advancing a fake clock past <see cref="PluginReloadDebounce"/> once
     /// this completes is guaranteed to fire the wait, so tests never sleep out the debounce
-    /// in real time. A completed task is replaced on the next read (one await observes one
-    /// registered debounce); capture a read before the watched change to await exactly its
-    /// registration.</summary>
+    /// in real time.</summary>
     private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Internal test observability: completes when a watcher event's debounced wait
-    /// has been registered with the time provider (see the field above).</summary>
+    /// <summary>Internal test observability: returns a task that completes when a watcher
+    /// event's debounced wait has been registered with the time provider (see the field
+    /// above). An already-completed registration is handed back once and a fresh source is
+    /// installed in the same locked section, so a read that races the watcher chain never
+    /// drops the observation: the caller sees the completed task and can advance the clock
+    /// instead of waiting for a second registration that a single change never produces.</summary>
     internal Task WatcherDebounceRegistered
     {
         get
         {
             lock (gate)
             {
-                if (watcherDebounceRegistered.Task.IsCompleted)
-                    watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                return watcherDebounceRegistered.Task;
+                Task registered = watcherDebounceRegistered.Task;
+                if (registered.IsCompleted)
+                    watcherDebounceRegistered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                return registered;
             }
         }
     }
@@ -437,16 +440,21 @@ internal sealed class PluginHostManager(
     private TaskCompletionSource registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes when the registry channel was replaced
-    /// by a host restart (see the field above).</summary>
+    /// by a host restart (see the field above). A completed replacement is handed back once
+    /// and a fresh source installed in the same locked section, because a waiter can capture
+    /// the superseded channel just before the swap and read this signal just after the
+    /// completion: dropping that edge would park it on a channel that never produces frames
+    /// again.</summary>
     internal Task RegistryChangesReplaced
     {
         get
         {
             lock (gate)
             {
-                if (registryChangesReplaced.Task.IsCompleted)
-                    registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                return registryChangesReplaced.Task;
+                Task replaced = registryChangesReplaced.Task;
+                if (replaced.IsCompleted)
+                    registryChangesReplaced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                return replaced;
             }
         }
     }

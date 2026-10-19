@@ -8,6 +8,21 @@ namespace Maieutics.Product.Tests;
 public sealed class TestProcessBudgetTests
 {
     [Fact]
+    public void ParallelismFollowsTheCoreCount()
+    {
+        // xUnit discovers the assembly's single IParallelizationAttribute; ours must report
+        // the runner's core count so a bigger runner is used instead of a fixed constant.
+        var attributes = typeof(TestProcessBudgetTests).Assembly
+            .GetCustomAttributes(inherit: false)
+            .OfType<Xunit.v3.IParallelizationAttribute>()
+            .ToArray();
+        var parallelization = Assert.Single(attributes);
+        Assert.Equal(Environment.ProcessorCount, parallelization.GetMaxThreads());
+        Assert.Equal(Xunit.Sdk.ParallelMode.Collections, parallelization.GetMode());
+        Assert.Equal(Xunit.Sdk.ParallelAlgorithm.Conservative, parallelization.GetAlgorithm());
+    }
+
+    [Fact]
     public void TheSuiteEnablesTheProcessBudget()
     {
         // A null limit is production's inert state; every test run must install a real gate.
@@ -17,12 +32,12 @@ public sealed class TestProcessBudgetTests
 
     [Theory]
     [InlineData(1, 2)]
-    [InlineData(2, 2)]
-    [InlineData(3, 3)]
-    [InlineData(4, 4)]
-    [InlineData(8, 4)]
-    [InlineData(32, 4)]
-    public void TheBudgetTracksCoresWithinATwoToFourWindow(int processorCount, int expected)
+    [InlineData(2, 3)]
+    [InlineData(3, 4)]
+    [InlineData(4, 5)]
+    [InlineData(8, 9)]
+    [InlineData(32, 33)]
+    public void TheBudgetFollowsTheCoreCount(int processorCount, int expected)
     {
         Assert.Equal(expected, TestDenoProcessGate.ComputeLimit(processorCount));
     }

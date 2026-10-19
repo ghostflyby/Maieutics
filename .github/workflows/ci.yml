@@ -19,6 +19,11 @@ on:
         description: "Solution or project scope for the Test job"
         required: false
         default: "Maieutics.slnx"
+      hang_dump:
+        description: "Collect a test-host dump and stack report when a watched reload parks 25s"
+        required: false
+        default: false
+        type: boolean
   schedule:
     # Daily build+test at 19:37 UTC (03:37 Beijing) — prime hour and minute, off the
     # top-of-the-hour CI crunch. The scheduled run on an idle day also surfaces
@@ -155,6 +160,7 @@ jobs:
           deno info --json npm:@maieutics/probe-server || true
 
       - name: Install dotnet-dump (hang diagnosis)
+        if: ${{ inputs.hang_dump }}
         run: dotnet tool install --global dotnet-dump
 
       - name: Restore
@@ -173,6 +179,10 @@ jobs:
           TEST_REPEATS: ${{ github.event_name == 'schedule' && 3 || github.event.inputs.test_repeat || 1 }}
           TEST_FILTER: ${{ github.event.inputs.test_filter }}
           TEST_PROJECTS: ${{ github.event.inputs.test_projects || 'Maieutics.slnx' }}
+          # Opt-in flake hunting: a hung watched reload dumps the test host and renders
+          # its managed stacks on the runner. Off for normal runs — the dump is large
+          # and collection plus analysis takes minutes.
+          MAIEUTICS_HANG_DUMP: ${{ inputs.hang_dump && '1' || '' }}
         run: |
           # The default solution scope reuses the build step via --no-build; a scoped
           # project hunt builds itself, because `dotnet test <csproj> --no-build` fails

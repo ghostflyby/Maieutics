@@ -40,7 +40,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         ILogger logger,
         TimeSpan stopBudget,
         TaskCompletionSource<string>? standardError,
-        DenoPermissionBroker? broker)
+        DenoPermissionBroker? broker,
+        ChildSlotLease slot)
     {
         this.process = process;
         this.logger = logger;
@@ -51,6 +52,21 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, null);
         var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, standardError);
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
+        if (slot.HasSlot)
+        {
+            // The test gate's live-child slot leaves with the child, on every exit
+            // path (normal exit, stop, disposal): Completion observes the process's
+            // end whichever way it happened, and it cannot complete before this
+            // continuation is attached — if the child is already gone the
+            // continuation runs immediately.
+            _ = Completion.ContinueWith(
+                static (_, state) => ((ChildSlotLease)state!).Dispose(),
+                slot,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
         if (broker is not null)
         {
             // Retire the registration with the child, on every exit path (normal exit, stop,
@@ -108,7 +124,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         DenoPermissionBroker? broker = null,
         EffectivePolicy? policy = null,
         bool captureStandardError = false,
-        TimeSpan? stopBudget = null)
+        TimeSpan? stopBudget = null,
+        ChildSlotLease slot = default)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentNullException.ThrowIfNull(logger);
@@ -133,7 +150,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
             captureStandardError
                 ? new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously)
                 : null,
-            broker);
+            broker,
+            slot);
     }
 
     internal Task StopAsync()

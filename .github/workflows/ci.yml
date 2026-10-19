@@ -121,6 +121,16 @@ jobs:
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
 
+      - name: Warm Deno registry cache
+        shell: bash
+        run: |
+          # Registry-discovery tests resolve real npm packages through the toolchain;
+          # pre-warm the shared Deno cache so the in-test `deno info` probes stay off
+          # the cold network path. Best-effort: fixture packages may not exist
+          # publicly, and a registry 404 only means there is nothing to warm.
+          deno info --json npm:chalk@5 || true
+          deno info --json npm:@maieutics/probe-server || true
+
       - name: Restore
         run: dotnet restore Maieutics.slnx
 

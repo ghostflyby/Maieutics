@@ -23,17 +23,20 @@ internal sealed class AgentSubagentFunctions
 
     private readonly TaskResourceProvider taskResources;
     private readonly PermissionOverrideRegistry? permissionOverrides;
-    private readonly IAgentChildScopeRegistry? childScopes;
+
+    /// <summary>The approval gate's parent link, resolved lazily. The registry is the frontend
+    /// presenter, which depends (through the session service) on the run-profile provider that
+    /// consumes this very tool list — resolving it in the constructor would close a DI cycle.
+    /// Per-spawn resolution is long after composition has settled.</summary>
+    private readonly Func<IAgentChildScopeRegistry?>? childScopes;
 
     public AgentSubagentFunctions(
         TaskResourceProvider taskResources,
         PermissionOverrideRegistry? permissionOverrides = null,
-        IAgentChildScopeRegistry? childScopes = null)
+        Func<IAgentChildScopeRegistry?>? childScopes = null)
     {
         this.taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
         this.permissionOverrides = permissionOverrides;
-        // The approval gate's parent link: a child's approval request presents on the owning
-        // session's stream, because a child session never announces one of its own.
         this.childScopes = childScopes;
         Functions =
         [
@@ -94,7 +97,7 @@ internal sealed class AgentSubagentFunctions
                 onChildSessionCreated: childSessionId =>
                 {
                     permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
-                    childScopes?.RegisterChildScope(childSessionId, context.SessionId);
+                    childScopes?.Invoke()?.RegisterChildScope(childSessionId, context.SessionId);
                 })
                 .ConfigureAwait(false);
         }

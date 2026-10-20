@@ -525,7 +525,10 @@ public static class MaieuticsHost
             new AgentSubagentFunctions(
                 services.GetRequiredService<TaskResourceProvider>(),
                 services.GetRequiredService<PermissionOverrideRegistry>(),
-                services.GetService<IAgentChildScopeRegistry>()));
+                // Deferred: the registry is the frontend presenter, which reaches back into
+                // this tool list through the run-profile provider. Resolving per spawn breaks
+                // the construction cycle without changing the registration.
+                () => services.GetService<IAgentChildScopeRegistry>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,

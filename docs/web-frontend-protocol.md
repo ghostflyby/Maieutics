@@ -242,7 +242,7 @@ no MCP servers answers `409 agent_configuration_error`. Generic markdown
 renderers may mishandle the opaque href — an accepted limitation; the
 reference's arbiter is the kernel grammar, not the renderer.
 
-## Input requests (REPL stdin and MCP elicitation)
+## Input requests (REPL stdin, MCP elicitation, and tool approval)
 
 A REPL `prompt()` surfaces as an `input.request` frame. The frontend answers
 with:
@@ -254,12 +254,48 @@ POST /v1/agent/inputs/{requestId}   body: {"value": "..."}   → 200 {} | 404
 The answer completes the pending request; a second answer for the same id is
 `404`.
 
-MCP elicitation requests (ADR 0029) use the same frame with two optional
-fields, `schema` (the server's primitive form schema object) and `serverId`
-(the configured server that raised it); older clients ignore them and can
-still answer. Their answers additionally carry `action`: omit it (or
-`"accept"`) with `value` set to a JSON object of field values for form
-elicitation, or send `{"value":"", "action":"decline"|"cancel"}` to refuse. If the run ends (or the presentation scope detaches) before an answer
+Three consumers share this frame and endpoint. The request id's prefix selects
+the owner before any lookup, so an id can never cross-wire:
+
+| Prefix | Producer | Answer |
+|---|---|---|
+| `input-` | REPL stdin | `value`; no `action` |
+| `elicit-` | MCP elicitation (ADR 0029) | `value` plus `action` |
+| `approve-` | Tool approval (ADR 0043) | `value` plus `action` |
+
+The frame carries an explicit `kind` (`input` / `elicitation` / `approval`) so a
+frontend picks the right surface instead of inferring it from which optional
+fields are present. Older clients that ignore `kind` still answer, because the
+action vocabulary is shared.
+
+MCP elicitation requests (ADR 0029) add two optional fields, `schema` (the
+server's primitive form schema object) and `serverId` (the configured server that
+raised it); older clients ignore them and can still answer. Their answers carry
+`action`: omit it (or `"accept"`) with `value` set to a JSON object of field
+values for form elicitation, or send `{"value":"", "action":"decline"|"cancel"}`
+to refuse.
+
+Tool-approval requests (ADR 0043) add `tool` and `reason` alongside
+`kind: "approval"`. The tool's arguments ride the `schema`'s `description` as
+read-only context, never as editable fields: the user approves the call the model
+made, and editing it here would create a second, unreviewed argument source. The
+answer's `action` is the decision:
+
+| Action | Decision |
+|---|---|
+| `accept` / `allow` / `approve` | Approved for this call |
+| `always` / `always-allow` | Approved, and remembered for this session |
+| `decline` / `deny` / `reject` | Denied; `value` carries the user's reason |
+| `cancel` | Denied |
+| absent or unknown | Denied |
+
+A denial is a recoverable tool failure: the model receives
+`{"status":"error","code":"tool_denied"}` and the turn continues. The gate never
+hangs and never silently executes — a run that ends, a session with no live
+stream, a timeout (120 s by default), and a malformed answer all resolve to a
+denial.
+
+If the run ends (or the presentation scope detaches) before an answer
 arrives, the request is cancelled server-side and any late answer is `404`.
 Dismissing the input box should post an empty value.
 
@@ -630,7 +666,12 @@ JSON text:
  "content": {"kind": "text", "text": "…"}}
 {"type": "tool.finished", "runId": "…", "sequence": 8, "callId": "…",
  "result": {"status": "ok", "value": {"…": "…"}}}
-{"type": "turn.truncated", "runId": "…", "sequence": 9}
+{"type": "tool.approval_requested", "runId": "…", "sequence": 9, "callId": "…",
+ "tool": "remove_file", "reason": "The tool declares that it may destroy data or resources.",
+ "arguments": {"…": "…"}}
+{"type": "tool.approval_resolved", "runId": "…", "sequence": 10, "callId": "…",
+ "approved": true, "reason": "Approved by the user.", "alwaysAllow": false}
+{"type": "turn.truncated", "runId": "…", "sequence": 11}
 {"type": "run.completed", "runId": "…", "truncated": false,
  "model": {"profileId": "…", "provider": "openai", "model": "…"},
  "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}
@@ -640,6 +681,7 @@ JSON text:
 {"type": "run.status", "state": "busy" | "idle"}
 {"type": "input.request", "requestId": "input-<unique>-1", "prompt": "Name:", "password": false}
 {"type": "input.request", "requestId": "elicit-<unique>-1", "prompt": "Pick:", "password": false, "schema": {"type":"object","properties":{…}}, "serverId": "srv"}
+{"type": "input.request", "requestId": "approve-<unique>-1", "prompt": "Allow 'remove_file' to run? It may destroy data.", "password": false, "kind": "approval", "tool": "remove_file", "reason": "…", "schema": {"type":"object","properties":{},"description":"{\"path\":\"/tmp/x\"}"}}
 ```
 
 Rules:

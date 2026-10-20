@@ -52,6 +52,10 @@ public sealed record AgentSessionOptions
     /// profile, so a spawned child carries a depth-reduced copy.</summary>
     public AgentSubagentOptions? Subagents { get; init; }
 
+    /// <summary>Gets the tool-approval gate and policy, or null when tool calls run without
+    /// asking. A null value is the default and preserves the pre-gate behavior exactly.</summary>
+    public AgentToolApprovalOptions? ToolApproval { get; init; }
+
     internal void Validate()
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
@@ -66,6 +70,27 @@ public sealed record AgentSessionOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
         Subagents?.Validate();
+        ToolApproval?.Validate();
+    }
+}
+
+/// <summary>Binds the approval gate to its policy for one run.</summary>
+public sealed record AgentToolApprovalOptions
+{
+    /// <summary>Gets the gate that performs the decision.</summary>
+    public required IAgentToolApprovalGate Gate { get; init; }
+
+    /// <summary>Gets the policy deciding which tools need a decision.</summary>
+    public AgentToolApprovalPolicy Policy { get; init; } = new();
+
+    /// <summary>Gets the session-scoped memory of "always allow" decisions.</summary>
+    public AgentToolApprovalMemory? Memory { get; init; }
+
+    internal void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(Gate);
+        ArgumentNullException.ThrowIfNull(Policy);
+        ArgumentNullException.ThrowIfNull(Policy.Require);
     }
 }
 

@@ -76,6 +76,14 @@ import {
 } from "./turnView.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
+import {
+  type ApprovalAction,
+  approvalAnswer,
+  approvalChoices,
+  approvalTitle,
+  isApprovalRequest,
+  planApproval,
+} from "./approval.ts";
 import { coerceField, planElicitation } from "./elicitation.ts";
 import {
   buildRgArgs,
@@ -1961,16 +1969,22 @@ class RunExecution {
    * A plain REPL prompt stays an input box (dismissing posts an empty value).
    * An MCP elicitation carrying a form schema (ADR 0029) becomes a choice —
    * fill the form field by field, or refuse with decline/cancel, which the
-   * plain input box could never express. */
+   * plain input box could never express. A tool-approval request (ADR 0044)
+   * becomes an allow-once / always-allow / deny choice; its `always` action is
+   * the one the plain input box could not express either. */
   private answerInputRequest(frame: EventFrame): void {
     const requestId = frame.requestId;
     if (requestId === undefined) return;
 
-    const extras = frame as { schema?: unknown; serverId?: unknown };
+    if (isApprovalRequest(frame.kind)) {
+      void this.answerApprovalRequest(requestId, frame);
+      return;
+    }
+
     const plan = planElicitation(
       frame.prompt ?? "Input requested",
-      extras.schema,
-      typeof extras.serverId === "string" ? extras.serverId : undefined,
+      frame.schema,
+      typeof frame.serverId === "string" ? frame.serverId : undefined,
     );
 
     void (async () => {
@@ -2035,10 +2049,58 @@ class RunExecution {
 
       await this.client.submitInput(requestId, values, { action: "accept" });
     })().catch((error: unknown) => {
+      // A replayed request that was already answered draws a 404 — replay noise, not a
+      // failure, and it must not paint an error over the cell. Anything else is real.
+      if (isNotFound(error)) return;
       this.execution.replaceOutput([
         errorOutput(new FrontendError("input_failed", 0, String(error))),
       ]);
     });
+  }
+
+  /** Presents one tool-approval request and posts the decision back (ADR 0044).
+   * Dismissing the pick denies: the kernel treats every non-accept action as a
+   * denial, so an abandoned dialog can never be read as consent. A plan without a
+   * usable tool name denies outright rather than opening an input box, because
+   * there is no sensible free-text answer to "may this run?". */
+  private async answerApprovalRequest(requestId: string, frame: EventFrame): Promise<void> {
+    const plan = planApproval(
+      frame.prompt ?? "Allow this tool to run?",
+      frame.tool,
+      frame.reason,
+      frame.schema,
+    );
+    if (!plan.usable) {
+      await this.postApproval(requestId, "decline");
+      return;
+    }
+
+    const choice = await vscode.window.showQuickPick(
+      approvalChoices(plan).map((row) => ({ ...row })),
+      {
+        title: approvalTitle(plan),
+        placeHolder: "This tool call needs your approval before it runs",
+        ignoreFocusOut: true,
+      },
+    );
+
+    await this.postApproval(requestId, approvalAnswer(choice?.action).action);
+  }
+
+  /** Posts one approval decision. A 404 means the request already settled (the run
+   * ended, the gate timed out, or a reconnect replayed it) — replay noise, absorbed
+   * silently like the IDE answer path. Any other failure is surfaced, because a
+   * silently dropped decision leaves the gate to time out with no trace on the
+   * client while the user believes they answered. */
+  private async postApproval(requestId: string, action: ApprovalAction): Promise<void> {
+    try {
+      await this.client.submitInput(requestId, "", { action, alwaysSendAction: true });
+    } catch (error: unknown) {
+      if (isNotFound(error)) return;
+      this.execution.replaceOutput([
+        errorOutput(new FrontendError("approval_failed", 0, String(error))),
+      ]);
+    }
   }
 
   /** Prompts one form field; null when the user abandoned the form. Enum
@@ -2444,6 +2506,13 @@ function errorOutput(error: unknown): vscode.NotebookCellOutput {
     truncated: false,
     error: { code, message },
   });
+}
+
+/** Whether a request answer failed because the kernel no longer holds it pending.
+ * The answer endpoint answers 404 for an already-answered, timed-out, cancelled,
+ * or replayed request, and that is replay noise rather than a fault. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof FrontendError && error.status === 404;
 }
 
 /** A structured turn output carries exactly the single turn+json item

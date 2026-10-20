@@ -130,6 +130,85 @@ public sealed record AgentToolStarted : AgentEvent
     public JsonElement Arguments { get; }
 }
 
+/// <summary>Reports that a tool call is suspended pending approval. The run waits inside
+/// the tool invocation until <see cref="AgentToolApprovalResolved"/> or the run ends, so a
+/// frontend that reconnects receives this event on replay and can still answer.</summary>
+public sealed record AgentToolApprovalRequested : AgentEvent
+{
+    /// <summary>Initializes an approval request event.</summary>
+    public AgentToolApprovalRequested(
+        AgentRunId runId,
+        long sequence,
+        AgentToolCallId callId,
+        string toolName,
+        string reason,
+        JsonElement arguments) : base(runId, sequence)
+    {
+        if (callId.Value == Guid.Empty)
+            throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        if (arguments.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("Tool arguments must be a JSON object.", nameof(arguments));
+
+        CallId = callId;
+        ToolName = toolName;
+        // A blank reason is a cosmetic policy defect, not a reason to abort the turn.
+        Reason = string.IsNullOrWhiteSpace(reason) ? "This tool call needs approval." : reason;
+        Arguments = arguments.Clone();
+    }
+
+    /// <summary>Gets the Maieutics tool-call identifier.</summary>
+    public AgentToolCallId CallId { get; }
+
+    /// <summary>Gets the provider-visible function name.</summary>
+    public string ToolName { get; }
+
+    /// <summary>Gets why the tool needs approval (a policy explanation, not model text).</summary>
+    public string Reason { get; }
+
+    /// <summary>Gets detached untrusted model arguments.</summary>
+    public JsonElement Arguments { get; }
+}
+
+/// <summary>Reports the terminal outcome of one approval request. Absent when the run was
+/// cancelled while the gate waited: the denial the gate returns cannot be recorded on an
+/// already-unwinding run, so a cancelled turn has a request event with no resolution.</summary>
+public sealed record AgentToolApprovalResolved : AgentEvent
+{
+    /// <summary>Initializes an approval resolution event.</summary>
+    public AgentToolApprovalResolved(
+        AgentRunId runId,
+        long sequence,
+        AgentToolCallId callId,
+        bool approved,
+        string reason,
+        bool alwaysAllow) : base(runId, sequence)
+    {
+        if (callId.Value == Guid.Empty)
+            throw new ArgumentException("Agent tool call identifiers cannot be empty.", nameof(callId));
+
+        CallId = callId;
+        Approved = approved;
+        // A gate may return a blank reason; the event must still be constructible, because
+        // throwing here would abort the turn for a cosmetic defect in an approval answer.
+        Reason = string.IsNullOrWhiteSpace(reason) ? "No reason was given." : reason;
+        AlwaysAllow = alwaysAllow;
+    }
+
+    /// <summary>Gets the Maieutics tool-call identifier.</summary>
+    public AgentToolCallId CallId { get; }
+
+    /// <summary>Gets whether execution may proceed.</summary>
+    public bool Approved { get; }
+
+    /// <summary>Gets the decision reason; always non-empty, including for approval.</summary>
+    public string Reason { get; }
+
+    /// <summary>Gets whether the decision also allows this tool for the rest of the session.</summary>
+    public bool AlwaysAllow { get; }
+}
+
 /// <summary>Reports bounded progress from an executing tool.</summary>
 /// <param name="RunId">The owning run.</param>
 /// <param name="Sequence">The strictly increasing run-local sequence.</param>

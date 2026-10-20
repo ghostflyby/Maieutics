@@ -364,6 +364,27 @@ to these files stay behind the instruction-surface gate above.
 | `Maieutics:Agent:MaxToolProgressEventsPerCall` |      `256` |
 | `Maieutics:Agent:EventBufferCapacity`          |      `128` |
 
+### Tool approval
+
+The approval gate pauses a flagged tool call before it executes and waits for the frontend's
+decision (ADR 0044). A denial is a recoverable tool failure: the model receives `tool_denied` and
+the turn continues.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `Maieutics:Agent:ToolApproval:Require` | `[]` | Tool-name patterns (glob, case-insensitive) that always require approval |
+| `Maieutics:Agent:ToolApproval:WaitTimeout` | `00:02:00` | How long a pending approval waits before denying itself |
+
+A tool a plugin declared `destructive` requires approval without any pattern; a tool declared
+`readOnly` (and not destructive) is exempt even when a pattern matches. The list is empty by
+default, so enabling the gate changes nothing for tools that declare nothing.
+
+Waiting consumes turn budget: `MaxTurnDuration` keeps running while a human decides, so a short
+duration and an interactive approval policy interact. A turn that expires while the dialog is open
+rolls back (like any cancelled turn) rather than committing a `tool_denied` result — the model sees
+the cancellation, not a denial. With no frontend connected, the gate denies immediately rather than
+executing an unapproved call.
+
 History limits are applied when the next successful turn commits. `MaxHistoryBytes` measures the compact canonical
 message JSON as UTF-8 and evicts complete turns. Tool argument and result sizes are also measured as UTF-8 JSON bytes.
 

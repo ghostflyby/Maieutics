@@ -41,6 +41,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
     private readonly FrontendElicitationPresenter elicitationPresenter;
+    private readonly FrontendToolApprovalPresenter? toolApprovalPresenter;
     private readonly FrontendTurnQueue turnQueue;
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
@@ -66,7 +67,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         Skills.SkillCatalog? skillCatalog = null,
         Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null,
         IdeRequestRegistry? ideRequests = null,
-        FrontendIdeSockets? ideSockets = null)
+        FrontendIdeSockets? ideSockets = null,
+        FrontendToolApprovalPresenter? toolApprovalPresenter = null)
     {
         this.options = options;
         this.service = service;
@@ -80,6 +82,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 new FrontendFormModelHost(
                     commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
                     NoFramesPublisher.Instance));
+        this.toolApprovalPresenter = toolApprovalPresenter;
         this.objectStore = objectStore;
         this.commRouter = commRouter;
         this.pluginSurface = pluginSurface;
@@ -674,11 +677,14 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        // Elicitation answers carry the terminal action and complete against the elicitation
-        // presenter; REPL stdin answers (no action) route through the presentation router.
-        var completed = request.Action is not null
-            ? elicitationPresenter.TryCompleteInput(requestId, request.Action, request.Value)
-            : service.TryCompleteInput(requestId, request.Value);
+        // Three consumers share one endpoint. The request-id prefix picks the owner before any
+        // lookup, so an id can never cross-wire to the wrong registry; an unmatched id is the
+        // documented 404.
+        var completed = FrontendToolApprovalPresenter.OwnsRequestId(requestId)
+            ? toolApprovalPresenter?.TryCompleteInput(requestId, request.Action, request.Value) == true
+            : request.Action is not null
+                ? elicitationPresenter.TryCompleteInput(requestId, request.Action, request.Value)
+                : service.TryCompleteInput(requestId, request.Value);
         if (!completed)
         {
             await WriteErrorAsync(

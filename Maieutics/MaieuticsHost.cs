@@ -306,6 +306,16 @@ public static class MaieuticsHost
             new FrontendElicitationPresenter(
                 services.GetRequiredService<IFrontendSessionFramePublisher>(),
                 services.GetRequiredService<FrontendFormModelHost>()));
+        // Tool approval (the gate the Agent runtime consults before a tool call executes).
+        // Registered unconditionally: without a frontend the gate's publish finds no live
+        // stream and denies, so a headless host never silently executes an unapproved call.
+        builder.Services.AddSingleton<FrontendToolApprovalPresenter>(static services =>
+            new FrontendToolApprovalPresenter(
+                services.GetRequiredService<IFrontendSessionFramePublisher>(),
+                services.GetRequiredService<ILogger<FrontendToolApprovalPresenter>>(),
+                ReadApprovalWaitTimeout(services.GetRequiredService<IConfiguration>())));
+        // The session-scoped "always allow" memory outlives individual runs.
+        builder.Services.AddSingleton<AgentToolApprovalMemory>();
         // The IDE capability bridge (ADR 0042 stage A): per-socket announcements back the
         // profile gate, and the registry correlates ide.request payloads with their
         // /v1/agent/ide answers. Registered unconditionally so a host without a frontend
@@ -343,6 +353,11 @@ public static class MaieuticsHost
         // back into MaieuticsRuntimeConfiguration (it consumes IMcpElicitationPresenter).
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>
             new DeferredElicitationPresenter(services));
+        // Same cycle for the approval gate: the runtime configuration builds it into every run
+        // profile, and the presenter depends on the session service that depends back on the
+        // configuration. Registered as the gate the Agent runtime sees.
+        builder.Services.AddSingleton<IAgentToolApprovalGate>(static services =>
+            new DeferredToolApprovalGate(services));
         builder.Services.AddSingleton<FrontendTurnQueue>();
         builder.Services.AddSingleton<FrontendPluginSurfaceAdapter>();
         builder.Services.AddSingleton<IFrontendPluginSurface>(static services =>
@@ -565,6 +580,17 @@ public static class MaieuticsHost
     /// expands trigger and skill-root patterns against: env from the process, var.* from
     /// the fixed data/plugins roots plus the live workspace source. Built once for the
     /// plugin host manager; plugins never build their own table.</summary>
+    /// <summary>Reads the approval wait budget from configuration, falling back to the
+    /// presenter's default. A non-positive or unparsable value keeps the default rather than
+    /// disabling the wait: a zero budget would deny every request before a user could see it.</summary>
+    private static TimeSpan ReadApprovalWaitTimeout(IConfiguration configuration)
+    {
+        var configured = configuration.GetValue<TimeSpan?>("Maieutics:Agent:ToolApproval:WaitTimeout");
+        return configured is { } value && value > TimeSpan.Zero
+            ? value
+            : FrontendToolApprovalPresenter.DefaultWaitTimeout;
+    }
+
     private static VariableTable BuildPluginManifestVariables(
         IServiceProvider services,
         string pluginsRoot)

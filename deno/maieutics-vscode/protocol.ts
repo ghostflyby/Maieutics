@@ -228,6 +228,19 @@ export interface EventFrame {
   requestId?: string;
   prompt?: string;
   password?: boolean;
+  /** What an `input.request` frame asks for (ADR 0044): `input` for plain REPL
+   * stdin, `elicitation` for an MCP form, `approval` for a tool-approval request.
+   * Absent on servers predating the discriminator, where the presence of a
+   * `schema` still identifies an elicitation. */
+  kind?: "input" | "elicitation" | "approval" | (string & Record<never, never>);
+  /** Why a tool needs approval (policy text, never model output). Approval frames only;
+   * the tool's own name rides the shared `tool` field above. */
+  reason?: string;
+  /** The MCP elicitation form schema, or an approval request's read-only argument
+   * context. Shared because both ride the same `schema` field. */
+  schema?: unknown;
+  /** The MCP server that raised an elicitation. */
+  serverId?: string;
   session?: SessionInfo;
   replayed?: boolean;
   /** Terminal run metadata: the model identity and provider-reported usage

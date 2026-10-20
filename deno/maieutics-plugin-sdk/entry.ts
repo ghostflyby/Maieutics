@@ -29,6 +29,10 @@ export {
   isService,
 } from "./mod.ts";
 
+// —— Model-callable tools (schema + handler in one declaration) ——
+
+export { defineTool, schema, ToolError } from "./tools.ts";
+
 // —— Actor surfaces and dependency interop ——
 
 export { defineActor, defineDependency, depActor } from "./mod.ts";
@@ -131,4 +135,17 @@ export type {
   ToolPreInvokeInput,
   ToolPreInvokeObject,
   ToolPreInvokeObjectInput,
+} from "./mod.ts";
+
+export type { InferShape, Tool, ToolCallContext, ToolOptions, ToolSchema } from "./tools.ts";
+export type { ToolAnnotations } from "./tools.ts";
+export type {
+  ToolCallRequest,
+  ToolDefinitionPayload,
+  ToolDescribeRequest,
+  ToolDispatch,
+  ToolImplementation,
+  ToolImplementationInput,
+  ToolRequest,
+  ToolResponse,
 } from "./mod.ts";

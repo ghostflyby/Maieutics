@@ -287,6 +287,25 @@ async function main(): Promise<void> {
       }
       return;
     }
+    if (envelope.type === "host.invokeCancel") {
+      // Kernel → host cancel for one in-flight extension call (model tool cancellation or
+      // its per-call budget). The host posts a worker-frame cancel; the plugin SDK's
+      // defineTool aborts the handler's AbortSignal. The invoke's own response still
+      // settles the kernel-side pending call, so this frame has no reply.
+      const payload = envelope.payload as {
+        pluginId?: string;
+        exportName?: string;
+        callId?: string;
+      };
+      if (
+        typeof payload?.pluginId === "string" &&
+        typeof payload.exportName === "string" &&
+        typeof payload.callId === "string"
+      ) {
+        host.cancelInvoke(payload.pluginId, payload.exportName, payload.callId);
+      }
+      return;
+    }
     if (envelope.type === "host.repl.derive") {
       // ADR 0020 / B5a: kernel → host instruction stream. The kernel decides
       // the REPL entry, the complete child env, and the static permission

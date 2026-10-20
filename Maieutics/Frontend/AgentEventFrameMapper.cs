@@ -42,6 +42,22 @@ internal static class AgentEventFrameMapper
                 Sequence: finished.Sequence,
                 CallId: finished.CallId.Value.ToString("N"),
                 Result: finished.Result),
+            AgentToolApprovalRequested approvalRequested => new FrontendEventFrame(
+                "tool.approval_requested",
+                RunId: approvalRequested.RunId.Value.ToString("N"),
+                Sequence: approvalRequested.Sequence,
+                CallId: approvalRequested.CallId.Value.ToString("N"),
+                Tool: approvalRequested.ToolName,
+                Reason: approvalRequested.Reason,
+                Arguments: approvalRequested.Arguments),
+            AgentToolApprovalResolved approvalResolved => new FrontendEventFrame(
+                "tool.approval_resolved",
+                RunId: approvalResolved.RunId.Value.ToString("N"),
+                Sequence: approvalResolved.Sequence,
+                CallId: approvalResolved.CallId.Value.ToString("N"),
+                Approved: approvalResolved.Approved,
+                Reason: approvalResolved.Reason,
+                AlwaysAllow: approvalResolved.AlwaysAllow),
             AgentTurnTruncated turnTruncated => new FrontendEventFrame(
                 "turn.truncated",
                 RunId: turnTruncated.RunId.Value.ToString("N"),

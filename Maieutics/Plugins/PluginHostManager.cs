@@ -9,6 +9,7 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -152,6 +153,29 @@ internal sealed class PluginHostManager(
     // 30s: the extension-point channel also covers on-demand worker starts
     // (ADR 0035) — a cold spawn's handshake rides the same budget.
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>The allowance added to a *declared* per-call budget so the caller's wait covers
+    /// an on-demand worker start (ADR 0035) rather than charging that startup to the call. A
+    /// tool declaration's timeout is the handler's budget — the worker enforces it from the
+    /// moment the handler begins — so the kernel needs a bound that cannot fire first.
+    ///
+    /// It applies only when a caller supplied its own budget. Every other extension-point call
+    /// (discovery, skills, triggers, hooks) has no declared handler budget to protect, and its
+    /// existing ceiling already includes a cold spawn by design; adding the allowance there
+    /// would silently double how long a wedged call blocks.</summary>
+    private static readonly TimeSpan WorkerStartAllowance = TimeSpan.FromSeconds(30);
+
+    /// <summary>The longest wait the kernel applies to one extension-point call.</summary>
+    private static TimeSpan CallWaitBudget(TimeSpan? timeout)
+    {
+        // No caller budget: the default already covers a cold start, so it is the ceiling.
+        if (timeout is not { } handlerBudget) return InvokeTimeout;
+        return handlerBudget + WorkerStartAllowance;
+    }
+
+    /// <summary>The best-effort budget for delivering one cancel instruction. It must never
+    /// extend the caller's own deadline or host shutdown, so it is deliberately short.</summary>
+    private static readonly TimeSpan CallCancellationBudget = TimeSpan.FromSeconds(2);
 
     /// <summary>Idle grace before an unreferenced worker is reclaimed
     /// (ADR 0035); MAIEUTICS_PLUGIN_IDLE_GRACE_MS overrides (milliseconds).</summary>
@@ -298,6 +322,11 @@ internal sealed class PluginHostManager(
     /// <summary>The skills kind's PerPlugin delivery: the former reconcile pass, owning
     /// the contribution slot table that replaced the four skill dictionaries.</summary>
     private Contributions.SkillsContributionDelivery? skillsDelivery;
+
+    /// <summary>The model-callable plugin tool surface: describes <c>Tool</c> exports and
+    /// republishes immutable declarations for run-profile acquisition. Created per host
+    /// generation (describe passes die with the host they address).</summary>
+    private PluginToolCoordinator? toolCoordinator;
 
     // —— Plugin declaration approval (ADR 0037) ——
 
@@ -917,6 +946,7 @@ internal sealed class PluginHostManager(
         // The contribution engine exists before any generation state is published, so
         // the generation reset and the start seed below both reach it.
         EnsureContributionEngine();
+        EnsureToolCoordinator();
 
         // Publication stays under one lock: a concurrent GetStatus/PushAsync reader must
         // never observe a half-replaced registry.
@@ -955,6 +985,12 @@ internal sealed class PluginHostManager(
             // everything anyway, so no deferred force may survive the swap.
             contributions?.Reset();
         }
+
+        // Outside the gate: Reset cancels any describe pass still awaiting the previous
+        // host, and cancellation callbacks must not run while the manager gate is held.
+        // Tool descriptors come from the workers this generation spawns, so a previous
+        // generation's declarations cannot be served to a run.
+        toolCoordinator?.Reset();
 
         // The root deno.json must exist before the host process starts: it carries the
         // process import map (host machinery plus the merged plugin entries) that the
@@ -1043,7 +1079,15 @@ internal sealed class PluginHostManager(
 
     private void StartDynamicMcpCoordinator()
     {
-        adjustmentChain = new McpAdjustmentChain(InvokeExtensionPointAsync, logger);
+        adjustmentChain = new McpAdjustmentChain(
+            (pluginId, exportName, extensionPoint, request, cancellationToken) =>
+                InvokeExtensionPointAsync(
+                    pluginId,
+                    exportName,
+                    extensionPoint,
+                    request,
+                    cancellationToken),
+            logger);
         UpdateAdjustmentSnapshot();
         var coordinator = new PluginMcpCoordinator(
             DiscoverDynamicMcpAsync,
@@ -1689,16 +1733,25 @@ internal sealed class PluginHostManager(
     ///     message family: the kernel sends the instruction with a correlation id, the host invokes
     ///     the plugin worker's <c>Remote&lt;T&gt;</c> surface directly in-process (ADR 0020 §7.2,
     ///     replacing the retired <c>extension.invoke</c> protocol), and answers
-    ///     <c>host.invokeResult</c> / <c>host.invokeError</c> echoing that id. Failure and timeout
-    ///     semantics are unchanged: an error response becomes <see cref="ExtensionCallOutcome.Error"/>
-    ///     and the call cancels after <see cref="InvokeTimeout" /> or when the host disconnects.
+    ///     <c>host.invokeResult</c> / <c>host.invokeError</c> echoing that id. Failure semantics are
+    ///     unchanged: an error response becomes <see cref="ExtensionCallOutcome.Error"/> and the call
+    ///     cancels after <paramref name="timeout"/> (default <see cref="InvokeTimeout"/>) or when the
+    ///     host disconnects.
     /// </summary>
+    /// <param name="cancellableCallId">When set, cooperative cancellation is propagated to the
+    /// worker: a timeout, a caller cancellation, or host shutdown posts a
+    /// <c>host.invokeCancel</c> frame so the worker aborts the handler's signal instead of
+    /// leaving it running unobserved. A worker that ignores the abort keeps running — the
+    /// host has no per-call termination (killing it would discard the plugin's other state),
+    /// so the signal is the whole mechanism.</param>
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
         string pluginId,
         string exportName,
         string extensionPoint,
         JsonElement? request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null,
+        string? cancellableCallId = null)
     {
         // Approval gate (ADR 0037): a stopped-but-registered worker would otherwise be
         // woken on demand (ADR 0035), so refusal happens here — the kernel authority —
@@ -1712,29 +1765,94 @@ internal sealed class PluginHostManager(
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pendingInvokes[correlationId] = tcs;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        timeout.CancelAfter(InvokeTimeout);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        // The caller's budget is the handler's, so the wait adds the startup allowance on
+        // top: a short declaration must not time out because the worker was cold.
+        budget.CancelAfter(CallWaitBudget(timeout));
         try
         {
-            await using var registration = timeout.Token.Register(
+            await using var registration = budget.Token.Register(
                 static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
             var payload = new HostInvokePayload(pluginId, exportName, extensionPoint, request);
-            await PushAsync(
+            var delivered = await PushAsync(
                 Socket ?? throw new InvalidOperationException("The plugin host is not connected."),
                 new ReplEnvelope(
                     EnvelopeVersion,
                     ReplMessageType.HostInvoke,
                     correlationId,
                     JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.HostInvokePayload)),
-                timeout.Token).ConfigureAwait(false);
-            return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+                budget.Token).ConfigureAwait(false);
+            if (!delivered)
+                return ExtensionCallOutcome.Error(
+                    "plugin_unavailable",
+                    $"The plugin host connection is not available ({extensionPoint}).");
+            return await tcs.Task.WaitAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+            if (cancellableCallId is not null)
+                await RequestCallCancellationAsync(pluginId, exportName, cancellableCallId).ConfigureAwait(false);
+            return ExtensionCallOutcome.Error(
+                "plugin_unavailable",
+                "The plugin host stopped before the call completed.");
+        }
+        catch (OperationCanceledException) when (cancellableCallId is not null)
+        {
+            // Either the caller cancelled (turn cancellation) or the per-call budget
+            // expired. The worker still holds the handler, so propagate the abort before
+            // surfacing the outcome.
+            await RequestCallCancellationAsync(pluginId, exportName, cancellableCallId).ConfigureAwait(false);
+            throw;
         }
         finally
         {
             pendingInvokes.TryRemove(correlationId, out _);
         }
     }
+
+    /// <summary>Posts one best-effort cancel instruction for a call the kernel stopped waiting
+    /// on. Bounded by its own short budget so shutdown can never be extended by a stalled
+    /// host, and failures are logged: the caller's outcome is already decided.</summary>
+    private async Task RequestCallCancellationAsync(string pluginId, string exportName, string callId)
+    {
+        try
+        {
+            if (Socket is not { State: WebSocketState.Open } socket) return;
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            budget.CancelAfter(CallCancellationBudget);
+            var payload = new HostInvokeCancelPayload(pluginId, exportName, callId);
+            await PushAsync(
+                socket,
+                new ReplEnvelope(
+                    EnvelopeVersion,
+                    ReplMessageType.HostInvokeCancel,
+                    Guid.NewGuid().ToString("N"),
+                    JsonSerializer.SerializeToElement(payload, ReplControlJsonContext.Default.HostInvokeCancelPayload)),
+                budget.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
+        {
+            logger.LogDebug(exception, "The cancel instruction for tool call '{CallId}' was not delivered.", callId);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Propagating cancellation for tool call '{CallId}' failed.", callId);
+        }
+    }
+
+    /// <summary>The current plugin tool declarations as provider-visible functions. An
+    /// immutable snapshot: a run holds the functions it acquired, while a later registry
+    /// frame may describe replacements for the next run.</summary>
+    public IReadOnlyList<AIFunction> SnapshotPluginTools()
+    {
+        return toolCoordinator?.SnapshotTools() ?? [];
+    }
+
+    /// <summary>Completes when no plugin tool describe pass is running or queued. Internal
+    /// test observability: a registry frame's reconciliation is observable deterministically
+    /// instead of by polling the tool list.</summary>
+    internal Task PluginToolsIdle => toolCoordinator?.FlightIdle ?? Task.CompletedTask;
 
     /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
     public async Task<IReadOnlyList<McpServerGeneration.McpServerLease>> AcquireDynamicMcpLeasesAsync(
@@ -2037,6 +2155,14 @@ internal sealed class PluginHostManager(
         }
 
         if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
+        PluginToolCoordinator? tools;
+        lock (gate)
+        {
+            tools = toolCoordinator;
+            toolCoordinator = null;
+        }
+
+        if (tools is not null) await tools.DisposeAsync().ConfigureAwait(false);
         ClearSkillContributions();
         RegistryChanges.Writer.TryComplete();
         StopPluginWatcher();
@@ -2330,6 +2456,30 @@ internal sealed class PluginHostManager(
         contributions = engine;
     }
 
+    /// <summary>Creates the plugin tool coordinator once per manager. It invokes through the
+    /// manager's own extension-point channel, so its describe/cancel semantics match every
+    /// other plugin call, and it consults the reserved tool names the runtime configuration
+    /// publishes.</summary>
+    private void EnsureToolCoordinator()
+    {
+        if (toolCoordinator is not null) return;
+        toolCoordinator = new PluginToolCoordinator(
+            (pluginId, exportName, extensionPoint, request, cancellationToken, timeout, callId) =>
+                InvokeExtensionPointAsync(
+                    pluginId,
+                    exportName,
+                    extensionPoint,
+                    request,
+                    cancellationToken,
+                    timeout,
+                    callId),
+            () =>
+            {
+                lock (gate) return reservedToolNames;
+            },
+            logger);
+    }
+
     /// <summary>The snapshot of blocked plugin ids, for transition detection. Called under
     /// <see cref="gate" />.</summary>
     private HashSet<string> BlockedIdsLock()
@@ -2424,6 +2574,7 @@ internal sealed class PluginHostManager(
         var stops = new List<(string PluginId, string[] Exports)>();
         PluginRegistration[] registrySnapshot;
         List<string> transitioningSkillPlugins;
+        HashSet<string> transitioningPlugins;
         lock (gate)
         {
             capabilityGrants.Clear();
@@ -2442,6 +2593,7 @@ internal sealed class PluginHostManager(
             registrations.AddRange(DeclarativeRegistrationsLock());
 
             var blocked = BlockedIdsLock();
+            transitioningPlugins = new HashSet<string>(StringComparer.Ordinal);
             // Differential skill reconcile (the former whole-set pass): only plugins
             // whose approval classification actually transitioned reconcile. The face
             // check includes a held contribution slot so a publish-only plugin that
@@ -2450,6 +2602,7 @@ internal sealed class PluginHostManager(
             foreach (var pluginId in previouslyBlocked.Union(blocked, StringComparer.Ordinal))
             {
                 if (previouslyBlocked.Contains(pluginId) == blocked.Contains(pluginId)) continue;
+                transitioningPlugins.Add(pluginId);
                 if (HasSkillFaceLock(pluginId)) transitioningSkillPlugins.Add(pluginId);
             }
             // Activation configs are assigned over the FULL active set, not just the
@@ -2491,6 +2644,10 @@ internal sealed class PluginHostManager(
             // drop with it); the skills targets stay face-filtered PerPlugin passes.
             registrySnapshot = registrations.ToArray();
         }
+
+        // Approval transitions change which tool exports are routable: a revoked plugin's
+        // definitions leave the snapshot and drop; a newly approved plugin's exports describe.
+        toolCoordinator?.OnRegistryFrame(registrySnapshot, transitioningPlugins);
 
         if (contributions is { } engine)
         {
@@ -3445,6 +3602,11 @@ internal sealed class PluginHostManager(
         }
 
         RegistryChanges.Writer.TryWrite(registrySnapshot);
+        // Plugin tools reconcile on every frame: the describe pass owns its own
+        // single-flight drain, so this call never awaits the host and never holds the gate.
+        toolCoordinator?.OnRegistryFrame(
+            registrySnapshot,
+            new HashSet<string>(forcedByReload, StringComparer.Ordinal));
         if (contributions is { } engine)
         {
             // The frame the host sends after completing a requested reload carries an

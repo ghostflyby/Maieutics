@@ -88,6 +88,7 @@ export const ExtensionPoint: {
   readonly PluginEvent: symbol;
   readonly ToolPreInvoke: symbol;
   readonly ToolPostInvoke: symbol;
+  readonly Tool: symbol;
   readonly UiEvent: symbol;
   readonly Skills: symbol;
 } = {
@@ -96,6 +97,7 @@ export const ExtensionPoint: {
   PluginEvent: Symbol.for(`${NAMESPACE}/plugin.event`),
   ToolPreInvoke: Symbol.for(`${NAMESPACE}/tools.preInvoke`),
   ToolPostInvoke: Symbol.for(`${NAMESPACE}/tools.postInvoke`),
+  Tool: Symbol.for(`${NAMESPACE}/tool`),
   UiEvent: Symbol.for(`${NAMESPACE}/ui.event`),
   Skills: Symbol.for(`${NAMESPACE}/skills.generate`),
 };
@@ -349,23 +351,84 @@ export type PluginEventFunction = PluginEventFunctionInput & {
 export type PluginEventInput = PluginEventObjectInput | PluginEventFunctionInput;
 export type PluginEvent = PluginEventObject | PluginEventFunction;
 
+// —— Model-callable tools (the Tool extension point) ——
+
+/** What the kernel sends to describe one tool export. */
+export interface ToolDescribeRequest {
+  readonly phase: "describe";
+}
+
+/** What the kernel sends to invoke one tool export. */
+export interface ToolCallRequest {
+  readonly phase: "call";
+  readonly callId: string;
+  readonly sessionId: string;
+  readonly arguments: Record<string, unknown>;
+}
+
+/** What the kernel sends when it describes or calls one tool export. */
+export type ToolRequest = ToolDescribeRequest | ToolCallRequest;
+
+/** The describe response: exactly the fields the kernel persists as the tool definition. */
+export interface ToolDefinitionPayload {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: Record<string, unknown>;
+  readonly timeoutMs?: number;
+  /** Classification hints; the kernel applies MCP's defaults for absent members. */
+  readonly annotations?: {
+    readonly title?: string;
+    readonly readOnly?: boolean;
+    readonly destructive?: boolean;
+    readonly idempotent?: boolean;
+    readonly openWorld?: boolean;
+  };
+}
+
+/** The call response. `ok` values are rendered as the tool result's `value`. */
+export type ToolResponse =
+  | { readonly outcome: "ok"; readonly value: unknown }
+  | { readonly outcome: "error"; readonly code: string; readonly message: string };
+
+/**
+ * The dispatch surface a tool export exposes. The overloads let a caller that knows
+ * the phase receive the matching response type; the union form is what the host's
+ * generic extension-point invocation uses.
+ */
+export interface ToolDispatch {
+  (request: ToolDescribeRequest): Promise<ToolDefinitionPayload>;
+  (request: ToolCallRequest): Promise<ToolResponse>;
+  (request: ToolRequest): Promise<ToolDefinitionPayload | ToolResponse>;
+}
+
+/** The unmarked dispatch an extension-point host invokes for one tool export. */
+export type ToolImplementationInput = ToolDispatch;
+
+/** The marked extension-point export returned by `defineTool`. */
+export type ToolImplementation = ToolDispatch & {
+  readonly [ExtensionPoint.Tool]: true;
+};
+
 interface ExtensionPointShape<K extends ExtensionPointName> {
   context: K extends "McpDiscover" ? DiscoverContext
     : K extends "McpAdjust" ? McpAdjustContext
     : K extends "PluginEvent" ? PluginEventContext
     : K extends "ToolPreInvoke" ? ToolInvokeContext
+    : K extends "Tool" ? ToolRequest
     : K extends "Skills" ? SkillsContext
     : ToolPostInvokeContext;
   input: K extends "McpDiscover" ? McpDiscoverInput
     : K extends "McpAdjust" ? McpAdjustInput
     : K extends "PluginEvent" ? PluginEventInput
     : K extends "ToolPreInvoke" ? ToolPreInvokeInput
+    : K extends "Tool" ? ToolImplementationInput
     : K extends "Skills" ? SkillsInput
     : ToolPostInvokeInput;
   impl: K extends "McpDiscover" ? McpDiscover
     : K extends "McpAdjust" ? McpAdjust
     : K extends "PluginEvent" ? PluginEvent
     : K extends "ToolPreInvoke" ? ToolPreInvoke
+    : K extends "Tool" ? ToolImplementation
     : K extends "Skills" ? Skills
     : ToolPostInvoke;
 }
@@ -936,6 +999,15 @@ function scanExports(namespace: Record<string, unknown>): void {
         const [extensionName, symbol] of Object.entries(ExtensionPoint as Record<string, symbol>)
       ) {
         if ((value as Record<symbol, unknown>)[symbol] === true) {
+          if (extensions.has(extensionName)) {
+            // The registry is keyed by extension point, so a second export claiming the
+            // same point would silently replace the first. Say so instead: a carrier
+            // module declares at most one export per extension point.
+            console.error(
+              `[maieutics] More than one export declares the '${extensionName}' extension point; ` +
+                `'${name}' replaces the earlier one.`,
+            );
+          }
           extensions.set(extensionName, value);
         }
       }

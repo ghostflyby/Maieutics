@@ -628,6 +628,19 @@ public sealed class AgentSession : IAgentSession
                     record.Arguments),
                 cancellationToken).ConfigureAwait(false);
 
+            // Approval gate (IAgentToolApprovalGate): the model has asked for the tool and
+            // nothing has happened yet, so this is the only safe suspension point. A denial is
+            // a recoverable tool failure — the model sees tool_denied and the turn continues.
+            // The gate runs outside any lock and owns its own bounded wait.
+            if (options.ToolApproval is { } approval)
+            {
+                var decision = await ApproveAsync(approval, function, record, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!decision.Approved)
+                    return await FinishDeniedAsync(record, decision.Reason, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+
             var progressCount = 0;
             var context = new AgentToolContext(
                 owner.Id,
@@ -721,6 +734,120 @@ public sealed class AgentSession : IAgentSession
                 cancellationToken).ConfigureAwait(false);
 
             return envelope;
+        }
+
+        /// <summary>Runs the approval gate for one call. The gate's own failures never escape as
+        /// turn failures: an unexpected gate exception is a denial with a typed reason, because
+        /// a broken approver must not be able to turn into silent execution.</summary>
+        private async ValueTask<AgentToolApprovalDecision> ApproveAsync(
+            AgentToolApprovalOptions approval,
+            AIFunction function,
+            ToolInvocationRecord record,
+            CancellationToken cancellationToken)
+        {
+            var classification = AgentToolClassification.From(function);
+            var requiresApproval = approval.Policy.RequiresApproval(
+                function.Name,
+                classification,
+                out var requiredReason);
+
+            // A remembered "always allow" or a policy that does not require a decision skips
+            // the gate entirely: no event, no wait, no frontend round trip.
+            if (!requiresApproval ||
+                approval.Memory?.IsAllowed(owner.Id, function.Name, classification) == true)
+            {
+                return AgentToolApprovalDecision.Allow("The policy does not require approval.");
+            }
+
+            await run.WriteEventAsync(
+                sequence => new AgentToolApprovalRequested(
+                    run.Id,
+                    sequence,
+                    record.CallId,
+                    function.Name,
+                    requiredReason,
+                    record.Arguments),
+                cancellationToken).ConfigureAwait(false);
+
+            AgentToolApprovalDecision decision;
+            try
+            {
+                decision = await approval.Gate.RequestApprovalAsync(
+                    new AgentToolApprovalRequest(
+                        owner.Id,
+                        run.Id,
+                        record.CallId,
+                        function.Name,
+                        record.Arguments.Clone(),
+                        classification,
+                        requiredReason),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The run ended while waiting; the caller's cancellation owns the outcome.
+                throw;
+            }
+            catch (Exception exception)
+            {
+                decision = AgentToolApprovalDecision.Deny(
+                    $"The approval gate failed: {exception.Message}");
+            }
+
+            // Report "remembered" only when something actually remembers it: a host that
+            // configured no memory must not tell the UI the tool is allowed for the session.
+            var remembered = decision.Approved && decision.AlwaysAllow && approval.Memory is not null;
+            if (remembered)
+                approval.Memory?.AllowAlways(owner.Id, function.Name, classification);
+
+            await run.WriteEventAsync(
+                sequence => new AgentToolApprovalResolved(
+                    run.Id,
+                    sequence,
+                    record.CallId,
+                    decision.Approved,
+                    decision.Reason,
+                    remembered),
+                cancellationToken).ConfigureAwait(false);
+
+            return decision;
+        }
+
+        /// <summary>Completes a denied call the same way a recoverable tool failure completes:
+        /// one tool result for the model, one tool-finished event for the frontend, and the
+        /// turn continues.</summary>
+        /// <remarks>The reason is bounded here rather than at the gate, because it can carry
+        /// text the gate did not author — a user's typed refusal, for instance. Unbounded, it
+        /// would bypass the result-size limit every other result path obeys, then be committed
+        /// to the transcript, counted against the history budget, retained for replay, and sent
+        /// back to the provider on the next iteration.</remarks>
+        private async ValueTask<JsonElement> FinishDeniedAsync(
+            ToolInvocationRecord record,
+            string reason,
+            CancellationToken cancellationToken)
+        {
+            var envelope = ToolJson.CreateFailureEnvelope(
+                "tool_denied",
+                BoundDenialReason(reason));
+            intermediateMessages.Add(new ChatMessage(
+                ChatRole.Tool,
+                [new FunctionResultContent(record.ProviderCallId, envelope)]));
+            await run.WriteEventAsync(
+                sequence => new AgentToolFinished(run.Id, sequence, record.CallId, envelope),
+                cancellationToken).ConfigureAwait(false);
+            return envelope;
+        }
+
+        /// <summary>The longest denial reason committed to the transcript. Generous for a
+        /// sentence or two of explanation, far below any result-size limit.</summary>
+        private const int MaximumDenialReasonCharacters = 4 * 1024;
+
+        private static string BoundDenialReason(string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason)) return "The tool call was denied.";
+            return reason.Length <= MaximumDenialReasonCharacters
+                ? reason
+                : reason[..MaximumDenialReasonCharacters] + "…";
         }
 
         private async ValueTask PublishTerminalFailureAsync(

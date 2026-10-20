@@ -157,19 +157,41 @@ internal sealed record FrontendModelProfile(
 /// <summary>A status answer.</summary>
 internal sealed record FrontendStatusResponse([property: JsonPropertyName("markdown")] string Markdown);
 
+/// <summary>What an <c>input.request</c> frame is asking for. An explicit discriminator lets
+/// the frontend pick the right surface instead of inferring the kind from which optional
+/// fields happen to be present. The member names are load-bearing: the default
+/// source-generated converter writes the numeric value, which no client can read as
+/// "approval", and the converter's own naming policy is not applied to enum members.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<FrontendInputKind>))]
+internal enum FrontendInputKind
+{
+    /// <summary>Plain REPL stdin.</summary>
+    [JsonStringEnumMemberName("input")] Input,
+
+    /// <summary>An MCP server's structured elicitation (ADR 0029).</summary>
+    [JsonStringEnumMemberName("elicitation")] Elicitation,
+
+    /// <summary>A tool-approval request raised by the Agent approval gate.</summary>
+    [JsonStringEnumMemberName("approval")] Approval
+}
+
 /// <summary>An input request announcement (server to frontend). The optional schema and
-/// server id ride along for MCP elicitation requests (ADR 0029); older clients ignore
-/// unknown fields and can still decline.</summary>
+/// server id ride along for MCP elicitation requests (ADR 0029); <see cref="Kind" />, with
+/// <see cref="Tool" /> and <see cref="Reason" />, marks a tool-approval request. Older clients
+/// ignore unknown fields and still answer with an action.</summary>
 internal sealed record FrontendInputRequest(
     [property: JsonPropertyName("requestId")] string RequestId,
     [property: JsonPropertyName("prompt")] string Prompt,
     [property: JsonPropertyName("password")] bool Password,
     [property: JsonPropertyName("schema")] JsonElement? Schema = null,
-    [property: JsonPropertyName("serverId")] string? ServerId = null);
+    [property: JsonPropertyName("serverId")] string? ServerId = null,
+    [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null,
+    [property: JsonPropertyName("tool")] string? Tool = null,
+    [property: JsonPropertyName("reason")] string? Reason = null);
 
 /// <summary>An input answer body (frontend to server). The optional action carries the
-/// elicitation terminal choice ("accept" default, "decline", "cancel"); REPL stdin answers
-/// omit it.</summary>
+/// terminal choice: elicitation uses accept/decline/cancel, tool approval additionally accepts
+/// <c>always</c> to remember the tool for the session, and REPL stdin answers omit it.</summary>
 internal sealed record FrontendInputAnswer(
     [property: JsonPropertyName("value")] string Value,
     [property: JsonPropertyName("action")] string? Action = null);
@@ -261,7 +283,11 @@ internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("usage")] FrontendUsage? Usage = null,
     [property: JsonPropertyName("queue")] FrontendQueueSnapshot? Queue = null,
     [property: JsonPropertyName("schema")] JsonElement? Schema = null,
-    [property: JsonPropertyName("serverId")] string? ServerId = null);
+    [property: JsonPropertyName("serverId")] string? ServerId = null,
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("approved")] bool? Approved = null,
+    [property: JsonPropertyName("alwaysAllow")] bool? AlwaysAllow = null,
+    [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null);
 
 /// <summary>One active skill of the catalog, as served by <c>GET /v1/skills</c> for
 /// frontend completion and pickers (ADR 0039): name doubles as the <c>skill://</c> host
@@ -324,6 +350,7 @@ internal sealed record FrontendPromptList(
 [JsonSerializable(typeof(FrontendCompleteRequest))]
 [JsonSerializable(typeof(FrontendCompleteResponse))]
 [JsonSerializable(typeof(FrontendInputRequest))]
+[JsonSerializable(typeof(FrontendInputKind))]
 [JsonSerializable(typeof(FrontendUsage))]
 [JsonSerializable(typeof(FrontendModelProfile))]
 [JsonSerializable(typeof(FrontendModelProfile[]))]

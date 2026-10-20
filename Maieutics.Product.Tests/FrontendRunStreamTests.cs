@@ -39,6 +39,134 @@ public sealed class FrontendRunStreamTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task AnApprovalInputRequestKeepsItsDiscriminatorAndContextOnTheWire()
+    {
+        var stream = FrontendRunStream.Create(
+            AgentSessionId.Create(),
+            new NeverCompletingRun(),
+            presentationRouter: null,
+            NullLogger<FrontendRunStream>.Instance);
+
+        stream.PublishPresentation(
+            "input.request",
+            displayId: null,
+            JsonSerializer.SerializeToElement(
+                new FrontendInputRequest(
+                    "approve-abc-1",
+                    "Allow 'remove_file' to run?",
+                    Password: false,
+                    Schema: null,
+                    ServerId: null,
+                    Kind: FrontendInputKind.Approval,
+                    Tool: "remove_file",
+                    Reason: "It may destroy data."),
+                FrontendJsonContext.Default.FrontendInputRequest),
+            TestContext.Current.CancellationToken);
+
+        var (frames, channel) = stream.Subscribe(sinceSequence: 0);
+        var frame = frames.Single(entry => entry.Type == "input.request");
+
+        // The lift is hand-written, so a forgotten field silently disappears from the wire
+        // and the frontend can no longer tell an approval from a plain prompt.
+        Assert.Equal(FrontendInputKind.Approval, frame.Kind);
+        Assert.Equal("remove_file", frame.Tool);
+        Assert.Equal("It may destroy data.", frame.Reason);
+        Assert.Equal("approve-abc-1", frame.RequestId);
+        stream.Unsubscribe(channel);
+        await Task.CompletedTask;
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task APendingInputRequestReplaysForAReconnectingClient()
+    {
+        var stream = FrontendRunStream.Create(
+            AgentSessionId.Create(),
+            new NeverCompletingRun(),
+            presentationRouter: null,
+            NullLogger<FrontendRunStream>.Instance);
+
+        stream.PublishPresentation(
+            "input.request",
+            displayId: null,
+            JsonSerializer.SerializeToElement(
+                new FrontendInputRequest(
+                    "approve-replay-1",
+                    "Allow 'remove_file' to run?",
+                    Password: false,
+                    Schema: null,
+                    ServerId: null,
+                    Kind: FrontendInputKind.Approval,
+                    Tool: "remove_file",
+                    Reason: "It may destroy data."),
+                FrontendJsonContext.Default.FrontendInputRequest),
+            TestContext.Current.CancellationToken);
+
+        // The reconnecting client resumes from the last sequence it observed. The request
+        // carries no sequence of its own, so the replay decision is explicit: without it the
+        // request is answerable in principle but invisible in practice, and the user can only
+        // let it time out.
+        var (frames, channel) = stream.Subscribe(sinceSequence: 1);
+        var frame = frames.Single(entry => entry.Type == "input.request");
+        Assert.Equal("approve-replay-1", frame.RequestId);
+        Assert.Equal(FrontendInputKind.Approval, frame.Kind);
+        Assert.Equal("remove_file", frame.Tool);
+        Assert.Equal("It may destroy data.", frame.Reason);
+        stream.Unsubscribe(channel);
+        await Task.CompletedTask;
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnUnsequencedNonRequestFrameIsNotReplayed()
+    {
+        // The widening must be exactly "pending requests", not "every unsequenced frame":
+        // replaying display noise would duplicate rendered output on every reconnect.
+        var stream = FrontendRunStream.Create(
+            AgentSessionId.Create(),
+            new NeverCompletingRun(),
+            presentationRouter: null,
+            NullLogger<FrontendRunStream>.Instance);
+
+        stream.PublishPresentation(
+            "repl.display",
+            "display-1",
+            JsonSerializer.SerializeToElement(new Dictionary<string, JsonElement>
+            {
+                ["text/plain"] = JsonSerializer.SerializeToElement("hi")
+            }),
+            TestContext.Current.CancellationToken);
+
+        var (frames, channel) = stream.Subscribe(sinceSequence: 1);
+        Assert.DoesNotContain(frames, entry => entry.Type == "repl.display");
+        stream.Unsubscribe(channel);
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public void TheApprovalKindReachesTheWireAsAString()
+    {
+        // Every other assertion in this file round-trips through the same JSON context, so a
+        // numeric enum encoding would pass all of them while no real client could read it.
+        // This pins the raw JSON the extension actually parses.
+        var frame = new FrontendEventFrame(
+            "input.request",
+            RequestId: "approve-wire-1",
+            Prompt: "Allow 'remove_file' to run?",
+            Password: false,
+            Kind: FrontendInputKind.Approval,
+            Tool: "remove_file",
+            Reason: "It may destroy data.");
+
+        var json = JsonSerializer.Serialize(frame, FrontendJsonContext.Default.FrontendEventFrame);
+
+        Assert.Contains("\"kind\":\"approval\"", json);
+        Assert.Contains("\"tool\":\"remove_file\"", json);
+        Assert.Contains("\"reason\":\"It may destroy data.\"", json);
+        // The numeric form is what the default source-generated converter emits; it must not
+        // reappear.
+        Assert.DoesNotContain("\"kind\":2", json);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task OtherPresentationFramesKeepTheDisplayIdAndBundleData()
     {
         var stream = FrontendRunStream.Create(

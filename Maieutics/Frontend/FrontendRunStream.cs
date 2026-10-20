@@ -204,7 +204,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// <summary>Publishes a REPL presentation frame that carries no run-local sequence.
     /// The documented <c>input.request</c> frame is flat (requestId/prompt/password at the
     /// top level), while the sink hands the typed payload through the generic presentation
-    /// seam, so the run stream lifts the fields onto the frame.</summary>
+    /// seam, so the run stream lifts every field onto the frame. A field this lift forgets is
+    /// silently dropped from the wire, so it mirrors the record.</summary>
     public void PublishPresentation(
         string type,
         string? displayId,
@@ -223,7 +224,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 Prompt: request.Prompt,
                 Password: request.Password,
                 Schema: request.Schema,
-                ServerId: request.ServerId));
+                ServerId: request.ServerId,
+                Kind: request.Kind,
+                Tool: request.Tool,
+                Reason: request.Reason));
             return;
         }
 
@@ -521,7 +525,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         if (sinceSequence <= 0) return true;
         if (frame.Sequence is { } sequence) return sequence > sinceSequence;
 
-        return frame.Type is "run.completed" or "run.failed" or "run.missing";
+        // Unsequenced frames are presentation, not run history. A pending request is the one
+        // kind a reconnecting client must still see: without it the request is answerable in
+        // principle but invisible in practice, so the user cannot decide and the request can
+        // only time out. Replaying an already-answered request is harmless — its answer
+        // endpoint is idempotent and answers 404, which clients absorb silently.
+        return frame.Type is "run.completed" or "run.failed" or "run.missing" or "input.request";
     }
 
     private void MarkCompleted()

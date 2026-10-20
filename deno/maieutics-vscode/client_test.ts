@@ -75,6 +75,8 @@ function startMockServer(): Promise<{
   uploadedObjects(): { bytes: Uint8Array; mediaType: string; name: string | null }[];
   /** The server-side turn queue the /queue endpoints serve. */
   queue: MockQueue;
+  /** The input answers the mock received, in arrival order. */
+  inputAnswers(): { requestId: string; body: { value: unknown; action?: unknown } }[];
 }> {
   let sockets: WebSocket[] = [];
   let broadcast: ((frame: unknown) => void) | null = null;
@@ -84,6 +86,7 @@ function startMockServer(): Promise<{
   let onEventsConnection: ((connection: MockEventsConnection) => void) | undefined;
   const objectFetches = new Map<string, number>();
   const uploadedObjects: { bytes: Uint8Array; mediaType: string; name: string | null }[] = [];
+  const inputAnswers: { requestId: string; body: { value: unknown; action?: unknown } }[] = [];
   const abort = new AbortController();
 
   // The server-owned turn queue: REST mutations move it and every mutation
@@ -362,6 +365,16 @@ function startMockServer(): Promise<{
         }
       }
 
+      if (url.pathname.startsWith("/v1/agent/inputs/")) {
+        // Captures the answer body verbatim. The action's presence is load-bearing: the
+        // elicitation consumer treats an absent action as accept, but the approval vocabulary
+        // deliberately denies on absence, so a client that omits "accept" turns "allow once"
+        // into a denial.
+        const body = await request.json() as { value: unknown; action?: unknown };
+        inputAnswers.push({ requestId: url.pathname.slice("/v1/agent/inputs/".length), body });
+        return json(200, {});
+      }
+
       if (url.pathname === "/v1/agent/sessions/turns" || url.pathname.endsWith("/turns")) {
         const body = await request.json() as { text: string };
         if (body.text.startsWith("%")) {
@@ -433,6 +446,7 @@ function startMockServer(): Promise<{
     },
     objectHits: () => Object.fromEntries(objectFetches),
     uploadedObjects: () => uploadedObjects.map((entry) => ({ ...entry })),
+    inputAnswers: () => inputAnswers.map((entry) => ({ ...entry })),
     queue,
     shutdown: async () => {
       // Upgraded WebSocket requests and keep-alive connections are long-lived: on Linux,
@@ -1364,6 +1378,43 @@ Deno.test("drain waits evaluate a snapshot that beat the registration", async ()
 
     controller.abort();
     await pump;
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("an approval answer sends its action explicitly, including accept", async () => {
+  // The elicitation and REPL consumers treat an absent action as accept, and the client's
+  // submitInput follows that convention by omitting it. The approval vocabulary deliberately
+  // has no such default (an absent action denies), so "allow once" must be sent explicitly —
+  // otherwise choosing Allow once silently denies the call.
+  const { discovery, shutdown, inputAnswers } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    for (const action of ["accept", "always", "decline", "cancel"] as const) {
+      await client.submitInput(`approve-${action}`, "", { action, alwaysSendAction: true });
+    }
+
+    const sent = inputAnswers();
+    assertEquals(sent.length, 4);
+    assertEquals(sent.map((entry) => entry.body.action), ["accept", "always", "decline", "cancel"]);
+    for (const entry of sent) assertEquals(entry.body.value, "");
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("an elicitation answer still omits accept to preserve its default", async () => {
+  // The opt-in flag must not change the other consumers: their wire shape is unchanged.
+  const { discovery, shutdown, inputAnswers } = await startMockServer();
+  const client = FrontendClient.fromDiscovery(discovery);
+  try {
+    await client.submitInput("elicit-1", { field: "value" }, { action: "accept" });
+    await client.submitInput("elicit-2", "", { action: "decline" });
+
+    const sent = inputAnswers();
+    assertEquals(sent[0].body.action, undefined);
+    assertEquals(sent[1].body.action, "decline");
   } finally {
     await shutdown();
   }

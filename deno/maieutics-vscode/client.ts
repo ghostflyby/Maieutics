@@ -442,14 +442,32 @@ export class FrontendClient {
 
   /** Answers a pending input request announced by an `input.request` frame.
    * A REPL prompt posts a string; an MCP elicitation posts its field values
-   * as an object, or refuses with action `decline`/`cancel` (ADR 0029). */
+   * as an object, or refuses with action `decline`/`cancel` (ADR 0029). A tool
+   * approval posts `accept` to allow once, `always` to allow for the session,
+   * or `decline`/`cancel` to deny (ADR 0044).
+   *
+   * `always` and `cancel` are not expressible by omission, so they are always
+   * sent. `accept` is sent only when `alwaysSendAction` is set: the elicitation
+   * and REPL consumers treat an absent action as accept, but the approval
+   * vocabulary deliberately has no such default (an absent action denies), so
+   * omitting it there would silently turn "allow once" into a denial. */
   async submitInput(
     requestId: string,
     value: string | Record<string, unknown>,
-    options: { action?: "accept" | "decline" | "cancel"; signal?: AbortSignal } = {},
+    options: {
+      action?: "accept" | "always" | "decline" | "cancel";
+      alwaysSendAction?: boolean;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<void> {
     const body: Record<string, unknown> = { value };
-    if (options.action !== undefined && options.action !== "accept") body.action = options.action;
+    if (
+      options.action !== undefined &&
+      (options.action !== "accept" || options.alwaysSendAction === true)
+    ) {
+      body.action = options.action;
+    }
+
     const response = await this.fetchJson(
       "POST",
       `/v1/agent/inputs/${requestId}`,

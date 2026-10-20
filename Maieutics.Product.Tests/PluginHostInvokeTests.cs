@@ -292,8 +292,10 @@ public sealed class PluginHostInvokeTests
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
         await using var harness = await CreateHarnessAsync(deadline.Token);
 
-        // The simulated host never answers; the 15s invoke budget cancels the call. The timeout
-        // token is linked from the caller's token, so a caller cancellation cancels promptly too.
+        // The simulated host never answers; the caller's own 30s deadline cancels the call
+        // first (the manager's ceiling for a budget-less call is InvokeTimeout, also 30s, so
+        // either may win). The timeout token is linked from the caller's token, so a caller
+        // cancellation cancels promptly too.
         var invoke = harness.Manager.InvokeExtensionPointAsync(
             "plugin-1",
             "./main",

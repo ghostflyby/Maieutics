@@ -372,7 +372,7 @@ the turn continues.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `Maieutics:Agent:ToolApproval:Require` | `[]` | Tool-name patterns (glob, case-insensitive) that always require approval |
+| `Maieutics:Agent:ToolApproval:Require` | `[]` | Tool-name patterns (`*` = any run, `?` = one character; case-insensitive) that always require approval |
 | `Maieutics:Agent:ToolApproval:WaitTimeout` | `00:02:00` | How long a pending approval waits before denying itself |
 
 A tool a plugin declared `destructive` requires approval without any pattern; a tool declared

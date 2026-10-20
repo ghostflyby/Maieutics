@@ -154,17 +154,22 @@ internal sealed class PluginHostManager(
     // (ADR 0035) — a cold spawn's handshake rides the same budget.
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(30);
 
-    /// <summary>The allowance added to a per-call budget so the caller's wait covers an
-    /// on-demand worker start (ADR 0035) rather than charging that startup to the call. A
-    /// declaration's timeout is the handler's budget; the worker enforces it from the moment
-    /// the handler begins, and the kernel only needs a bound that cannot fire first.</summary>
+    /// <summary>The allowance added to a *declared* per-call budget so the caller's wait covers
+    /// an on-demand worker start (ADR 0035) rather than charging that startup to the call. A
+    /// tool declaration's timeout is the handler's budget — the worker enforces it from the
+    /// moment the handler begins — so the kernel needs a bound that cannot fire first.
+    ///
+    /// It applies only when a caller supplied its own budget. Every other extension-point call
+    /// (discovery, skills, triggers, hooks) has no declared handler budget to protect, and its
+    /// existing ceiling already includes a cold spawn by design; adding the allowance there
+    /// would silently double how long a wedged call blocks.</summary>
     private static readonly TimeSpan WorkerStartAllowance = TimeSpan.FromSeconds(30);
 
-    /// <summary>The longest wait the kernel applies to one extension-point call: the caller's
-    /// budget (or the default) plus the worker-start allowance.</summary>
+    /// <summary>The longest wait the kernel applies to one extension-point call.</summary>
     private static TimeSpan CallWaitBudget(TimeSpan? timeout)
     {
-        var handlerBudget = timeout ?? InvokeTimeout;
+        // No caller budget: the default already covers a cold start, so it is the ceiling.
+        if (timeout is not { } handlerBudget) return InvokeTimeout;
         return handlerBudget + WorkerStartAllowance;
     }
 

@@ -330,29 +330,41 @@ public sealed class AgentToolApprovalTests
     }
 
     [Fact]
-    public void TheMemoryEvictsTheOldestAllowanceRatherThanGrowingForever()
+    public void AChangedDeclarationIsAskedAgainRatherThanInheritingTheAllowance()
     {
+        // A plugin reload can change what the same tool name declares. The user approved the
+        // declaration they were shown, so a tool that becomes destructive must re-ask.
         var memory = new AgentToolApprovalMemory();
-        var first = AgentSessionId.Create();
-        memory.AllowAlways(first, "oldest");
+        var session = AgentSessionId.Create();
+        var readOnly = new AgentToolClassification(ReadOnly: true, Destructive: false);
+        var destructive = new AgentToolClassification(ReadOnly: false, Destructive: true);
 
-        // The cap is far above any realistic session count; drive past it to prove the bound
-        // exists rather than the map growing with every session the process ever sees.
-        for (var index = 0; index < 1500; index++)
-            memory.AllowAlways(AgentSessionId.Create(), $"tool-{index}");
+        memory.AllowAlways(session, "remove_file", readOnly);
 
-        Assert.False(memory.IsAllowed(first, "oldest"), "the oldest allowance was evicted");
-        Assert.True(memory.IsAllowed(AgentSessionId.Create(), "unrelated") is false);
+        Assert.True(memory.IsAllowed(session, "remove_file", readOnly));
+        Assert.False(
+            memory.IsAllowed(session, "remove_file", destructive),
+            "a tool whose declaration changed must be approved again");
+        Assert.False(memory.IsAllowed(session, "remove_file", classification: null));
     }
 
     [Fact]
-    public void RepeatedAllowAlwaysForTheSamePairDoesNotGrowTheOrder()
+    public void TheMemoryBoundIsTheDeclaredCapacity()
     {
+        // The eviction test above only pins "some cap"; this pins the cap itself, so a change
+        // to the constant is a deliberate edit rather than a silent regression.
         var memory = new AgentToolApprovalMemory();
-        var session = AgentSessionId.Create();
-        for (var index = 0; index < 5000; index++) memory.AllowAlways(session, "guarded");
+        var oldest = AgentSessionId.Create();
+        memory.AllowAlways(oldest, "oldest");
 
-        Assert.True(memory.IsAllowed(session, "guarded"));
+        // 1024 is the capacity: filling it exactly must keep the first entry.
+        for (var index = 0; index < 1023; index++)
+            memory.AllowAlways(AgentSessionId.Create(), $"tool-{index}");
+        Assert.True(memory.IsAllowed(oldest, "oldest"), "the first entry survives a full table");
+
+        // One more evicts it.
+        memory.AllowAlways(AgentSessionId.Create(), "overflow");
+        Assert.False(memory.IsAllowed(oldest, "oldest"), "the oldest entry is evicted at the cap");
     }
 
     private static AgentToolApprovalPolicy RequireAll(string pattern) =>

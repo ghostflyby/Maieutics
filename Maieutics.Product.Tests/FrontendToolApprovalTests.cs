@@ -190,6 +190,99 @@ public sealed class FrontendToolApprovalTests
     }
 
     [Fact]
+    public async Task AChildRunsRequestIsPresentedOnItsParentsStream()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var publisher = new RecordingFramePublisher();
+        var presenter = CreatePresenter(publisher);
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+
+        // A child session never announces a frontend stream of its own (only a
+        // frontend-submitted turn does), so presenting on the child id would find nothing and
+        // deny with a false "no frontend connected" reason.
+        presenter.RegisterChildScope(child, parent);
+
+        var approval = presenter.RequestApprovalAsync(Request(child, "remove_file"), deadline.Token);
+        await publisher.WaitForCountAsync(1, deadline.Token);
+
+        var frame = publisher.Single("input.request");
+        Assert.Equal(parent, frame.SessionId);
+
+        var requestId = frame.Data
+            .Deserialize(FrontendJsonContext.Default.FrontendInputRequest)!.RequestId;
+        Assert.True(presenter.TryCompleteInput(requestId, "accept", string.Empty));
+        Assert.True((await approval).Approved);
+    }
+
+    [Fact]
+    public async Task AReleasedChildScopeFallsBackToItsOwnSession()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        // A publishing fake that reports "no live stream": the child has no stream of its own
+        // and its parent link was released, so the request must deny rather than hang.
+        var presenter = CreatePresenter(new RecordingFramePublisher(publishable: false));
+        var parent = AgentSessionId.Create();
+        var child = AgentSessionId.Create();
+        presenter.RegisterChildScope(child, parent);
+        presenter.ReleaseChildScope(child);
+
+        var decision = await presenter.RequestApprovalAsync(Request(child, "remove_file"), deadline.Token);
+        Assert.False(decision.Approved);
+        Assert.Contains("No frontend", decision.Reason);
+    }
+
+    [Fact]
+    public async Task AnAnswerThatRacedTheTimeoutIsNotReportedAsAccepted()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var publisher = new RecordingFramePublisher();
+        // A budget short enough that the wait's own expiry wins the race deterministically:
+        // the answer below arrives after it.
+        var presenter = new FrontendToolApprovalPresenter(
+            publisher,
+            NullLogger<FrontendToolApprovalPresenter>.Instance,
+            TimeSpan.FromMilliseconds(50));
+
+        var decision = await presenter.RequestApprovalAsync(
+            Request(AgentSessionId.Create(), "remove_file"),
+            deadline.Token);
+        Assert.False(decision.Approved);
+
+        var requestId = publisher.Single("input.request").Data
+            .Deserialize(FrontendJsonContext.Default.FrontendInputRequest)!.RequestId;
+
+        // The wait already claimed the request, so the late answer is a 404 rather than a 200
+        // for a decision nobody consumed. Reporting success would tell the user their approval
+        // counted while the model saw a timeout denial.
+        Assert.False(presenter.TryCompleteInput(requestId, "accept", string.Empty));
+    }
+
+    [Fact]
+    public async Task AnAnswerThatWonTheRaceIsTheDecisionTheModelSees()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var publisher = new RecordingFramePublisher();
+        var presenter = CreatePresenter(publisher);
+
+        var approval = presenter.RequestApprovalAsync(Request(AgentSessionId.Create(), "remove_file"), deadline.Token);
+        await publisher.WaitForCountAsync(1, deadline.Token);
+        var requestId = publisher.Single("input.request").Data
+            .Deserialize(FrontendJsonContext.Default.FrontendInputRequest)!.RequestId;
+
+        // The answer claims the entry first; the wait then returns that decision rather than
+        // its own timeout.
+        Assert.True(presenter.TryCompleteInput(requestId, "accept", string.Empty));
+        var decision = await approval;
+        Assert.True(decision.Approved);
+        Assert.Equal("Approved by the user.", decision.Reason);
+    }
+
+    [Fact]
     public async Task TheDeferredGateResolvesTheRealPresenter()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

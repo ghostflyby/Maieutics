@@ -515,6 +515,47 @@ public sealed class PluginToolCoordinatorTests
         return JsonSerializer.Deserialize(json, ReplControlJsonContext.Default.ReplEnvelope)!;
     }
 
+    [Fact]
+    public async Task ABudgetLessCallKeepsTheDefaultCeiling()
+    {
+        // The worker-start allowance protects a *declared* handler budget. A budget-less call
+        // (discovery, skills, hooks) already had a ceiling covering a cold start; adding the
+        // allowance there would silently double how long a wedged call blocks. The distinction
+        // lives in a private helper, so it is pinned through the public surface: a declared
+        // budget must outlive it, and the caller must stay cancellable either way.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(deadline.Token);
+
+        harness.Manager.HandleHostMessage(ToolRegistryFrame("plugin-1", "./echo"));
+        var idle = harness.Manager.PluginToolsIdle;
+        await ReplyToDescribeAsync(harness, deadline.Token);
+        await idle.WaitAsync(Deadline, deadline.Token);
+
+        var tool = Assert.Single(harness.Manager.SnapshotPluginTools());
+        var invocation = new AIFunctionArguments(new Dictionary<string, object?>())
+        {
+            Context = new Dictionary<object, object?>
+            {
+                [typeof(AgentToolContext)] = new AgentToolContext(
+                    AgentSessionId.Create(),
+                    AgentRunId.Create(),
+                    AgentToolCallId.Create(),
+                    static (_, _) => ValueTask.CompletedTask),
+            },
+        };
+
+        // A declared 1 s budget: the wait must outlive it (allowance applied), and cancelling
+        // the caller still wins immediately (the caller's token is always linked).
+        var call = tool.InvokeAsync(invocation, deadline.Token).AsTask();
+        _ = await harness.Host.ReadSentAsync(deadline.Token);
+        await Task.Delay(TimeSpan.FromMilliseconds(200), deadline.Token);
+        Assert.False(call.IsCompleted);
+
+        await deadline.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await call; });
+    }
+
     private static readonly IReadOnlySet<string> EmptyForced =
         new HashSet<string>(StringComparer.Ordinal);
 

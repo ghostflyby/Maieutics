@@ -316,6 +316,10 @@ public static class MaieuticsHost
                 ReadApprovalWaitTimeout(services.GetRequiredService<IConfiguration>())));
         // The session-scoped "always allow" memory outlives individual runs.
         builder.Services.AddSingleton<AgentToolApprovalMemory>();
+        // The same presenter is the child-scope registry the spawn paths register into, so an
+        // approval raised inside a subagent presents on the owning session's stream.
+        builder.Services.AddSingleton<IAgentChildScopeRegistry>(static services =>
+            services.GetRequiredService<FrontendToolApprovalPresenter>());
         // The IDE capability bridge (ADR 0042 stage A): per-socket announcements back the
         // profile gate, and the registry correlates ide.request payloads with their
         // /v1/agent/ide answers. Registered unconditionally so a host without a frontend
@@ -520,7 +524,8 @@ public static class MaieuticsHost
         builder.Services.AddSingleton(static services =>
             new AgentSubagentFunctions(
                 services.GetRequiredService<TaskResourceProvider>(),
-                services.GetRequiredService<PermissionOverrideRegistry>()));
+                services.GetRequiredService<PermissionOverrideRegistry>(),
+                services.GetService<IAgentChildScopeRegistry>()));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
@@ -576,10 +581,6 @@ public static class MaieuticsHost
         return application;
     }
 
-    /// <summary>Composes the manifest variable table (ADR 0018 §4) the plugin system
-    /// expands trigger and skill-root patterns against: env from the process, var.* from
-    /// the fixed data/plugins roots plus the live workspace source. Built once for the
-    /// plugin host manager; plugins never build their own table.</summary>
     /// <summary>Reads the approval wait budget from configuration, falling back to the
     /// presenter's default. A non-positive or unparsable value keeps the default rather than
     /// disabling the wait: a zero budget would deny every request before a user could see it.</summary>
@@ -591,6 +592,10 @@ public static class MaieuticsHost
             : FrontendToolApprovalPresenter.DefaultWaitTimeout;
     }
 
+    /// <summary>Composes the manifest variable table (ADR 0018 §4) the plugin system
+    /// expands trigger and skill-root patterns against: env from the process, var.* from
+    /// the fixed data/plugins roots plus the live workspace source. Built once for the
+    /// plugin host manager; plugins never build their own table.</summary>
     private static VariableTable BuildPluginManifestVariables(
         IServiceProvider services,
         string pluginsRoot)

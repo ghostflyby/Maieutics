@@ -261,7 +261,7 @@ the owner before any lookup, so an id can never cross-wire:
 |---|---|---|
 | `input-` | REPL stdin | `value`; no `action` |
 | `elicit-` | MCP elicitation (ADR 0029) | `value` plus `action` |
-| `approve-` | Tool approval (ADR 0043) | `value` plus `action` |
+| `approve-` | Tool approval (ADR 0044) | `value` plus `action` |
 
 The frame carries an explicit `kind` (`input` / `elicitation` / `approval`) so a
 frontend picks the right surface instead of inferring it from which optional
@@ -275,7 +275,7 @@ raised it); older clients ignore them and can still answer. Their answers carry
 values for form elicitation, or send `{"value":"", "action":"decline"|"cancel"}`
 to refuse.
 
-Tool-approval requests (ADR 0043) add `tool` and `reason` alongside
+Tool-approval requests (ADR 0044) add `tool` and `reason` alongside
 `kind: "approval"`. The tool's arguments ride the `schema`'s `description` as
 read-only context, never as editable fields: the user approves the call the model
 made, and editing it here would create a second, unreviewed argument source. The
@@ -295,8 +295,11 @@ hangs and never silently executes — a run that ends, a session with no live
 stream, a timeout (120 s by default), and a malformed answer all resolve to a
 denial.
 
-If the run ends (or the presentation scope detaches) before an answer
-arrives, the request is cancelled server-side and any late answer is `404`.
+If the run ends before an answer arrives, the request is cancelled
+server-side and any late answer is `404`. A detached presentation scope
+cancels REPL stdin and elicitation; a tool-approval request keeps waiting for
+its budget (it is bounded by `Maieutics:Agent:ToolApproval:WaitTimeout`, so a
+closed notebook denies rather than executing).
 Dismissing the input box should post an empty value.
 
 ## IDE requests (Problems and language services, ADR 0042)

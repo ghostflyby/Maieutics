@@ -754,7 +754,7 @@ public sealed class AgentSession : IAgentSession
             // A remembered "always allow" or a policy that does not require a decision skips
             // the gate entirely: no event, no wait, no frontend round trip.
             if (!requiresApproval ||
-                approval.Memory?.IsAllowed(owner.Id, function.Name) == true)
+                approval.Memory?.IsAllowed(owner.Id, function.Name, classification) == true)
             {
                 return AgentToolApprovalDecision.Allow("The policy does not require approval.");
             }
@@ -794,8 +794,11 @@ public sealed class AgentSession : IAgentSession
                     $"The approval gate failed: {exception.Message}");
             }
 
-            if (decision.Approved && decision.AlwaysAllow)
-                approval.Memory?.AllowAlways(owner.Id, function.Name);
+            // Report "remembered" only when something actually remembers it: a host that
+            // configured no memory must not tell the UI the tool is allowed for the session.
+            var remembered = decision.Approved && decision.AlwaysAllow && approval.Memory is not null;
+            if (remembered)
+                approval.Memory?.AllowAlways(owner.Id, function.Name, classification);
 
             await run.WriteEventAsync(
                 sequence => new AgentToolApprovalResolved(
@@ -804,7 +807,7 @@ public sealed class AgentSession : IAgentSession
                     record.CallId,
                     decision.Approved,
                     decision.Reason,
-                    decision.Approved && decision.AlwaysAllow),
+                    remembered),
                 cancellationToken).ConfigureAwait(false);
 
             return decision;

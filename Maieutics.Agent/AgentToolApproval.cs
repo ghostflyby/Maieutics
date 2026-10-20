@@ -31,6 +31,21 @@ public sealed record AgentToolClassification(bool ReadOnly, bool Destructive)
     }
 }
 
+/// <summary>
+///     Tracks which owning session presents a spawned child run's approval requests. A child
+///     session never announces a frontend stream of its own (only a frontend-submitted turn
+///     does), so a gate that presents on the child id finds nothing and denies. The kernel's
+///     spawn paths register the pair here, and the gate resolves the parent before presenting.
+/// </summary>
+public interface IAgentChildScopeRegistry
+{
+    /// <summary>Registers a spawned child's session under its owning session.</summary>
+    void RegisterChildScope(AgentSessionId childSessionId, AgentSessionId parentSessionId);
+
+    /// <summary>Releases one child registration when its run settles.</summary>
+    void ReleaseChildScope(AgentSessionId childSessionId);
+}
+
 /// <summary>One tool call suspended for approval.</summary>
 /// <param name="SessionId">The owning session.</param>
 /// <param name="RunId">The owning run.</param>
@@ -105,39 +120,51 @@ public interface IAgentToolApprovalGate
 /// </remarks>
 public sealed class AgentToolApprovalMemory
 {
-    /// <summary>The retained allowance cap. Each entry is a session id and a tool name, so the
-    /// bound is far above any realistic session count while still being finite.</summary>
+    /// <summary>The retained allowance cap. Each entry is a session, tool name, and
+    /// classification, so the bound is far above any realistic session count while still
+    /// being finite.</summary>
     private const int Capacity = 1024;
 
     private readonly Lock gate = new();
-    private readonly Dictionary<(AgentSessionId SessionId, string Tool), bool> perSession =
-        new(SessionKeyComparer.Instance);
-    private readonly Queue<(AgentSessionId SessionId, string Tool)> order = new();
+    private readonly Dictionary<AllowanceKey, bool> perSession = new(AllowanceKeyComparer.Instance);
+    private readonly Queue<AllowanceKey> order = new();
 
-    /// <summary>Records that the session's user allowed the tool for the rest of the session.</summary>
-    public void AllowAlways(AgentSessionId sessionId, string toolName)
+    /// <summary>Records that the session's user allowed the tool for the rest of the session.
+    /// The classification is part of the key: a plugin reload can change what the same tool
+    /// name declares (a read-only tool that becomes destructive), and the user approved the
+    /// declaration they were shown, not the name. A changed declaration therefore re-asks.</summary>
+    public void AllowAlways(
+        AgentSessionId sessionId,
+        string toolName,
+        AgentToolClassification? classification = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        var key = new AllowanceKey(sessionId, toolName, classification);
         lock (gate)
         {
-            if (!perSession.TryAdd((sessionId, toolName), true)) return;
-            order.Enqueue((sessionId, toolName));
+            if (!perSession.TryAdd(key, true)) return;
+            order.Enqueue(key);
             while (order.Count > Capacity) perSession.Remove(order.Dequeue());
         }
     }
 
-    /// <summary>Whether the session's user already allowed the tool.</summary>
-    public bool IsAllowed(AgentSessionId sessionId, string toolName)
+    /// <summary>Whether the session's user already allowed this exact declaration.</summary>
+    public bool IsAllowed(
+        AgentSessionId sessionId,
+        string toolName,
+        AgentToolClassification? classification = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         lock (gate)
         {
-            return perSession.ContainsKey((sessionId, toolName));
+            return perSession.ContainsKey(new AllowanceKey(sessionId, toolName, classification));
         }
     }
 
     /// <summary>Drops every remembered allowance for one session. No production surface calls
-    /// this today (there is no session-close signal); it exists for the owner that gains one.</summary>
+    /// this today (there is no session-close signal); it exists for the owner that gains one.
+    /// The FIFO keeps the removed keys, so a later AllowAlways for the same key can evict a
+    /// live entry early — harmless (the user is asked again) and bounded.</summary>
     public void Clear(AgentSessionId sessionId)
     {
         lock (gate)
@@ -157,18 +184,27 @@ public sealed class AgentToolApprovalMemory
         }
     }
 
-    private sealed class SessionKeyComparer : IEqualityComparer<(AgentSessionId SessionId, string Tool)>
+    /// <summary>One remembered allowance: the session, the tool name, and the declaration the
+    /// user actually approved.</summary>
+    private readonly record struct AllowanceKey(
+        AgentSessionId SessionId,
+        string Tool,
+        AgentToolClassification? Classification);
+
+    private sealed class AllowanceKeyComparer : IEqualityComparer<AllowanceKey>
     {
-        internal static readonly SessionKeyComparer Instance = new();
+        internal static readonly AllowanceKeyComparer Instance = new();
 
-        public bool Equals(
-            (AgentSessionId SessionId, string Tool) left,
-            (AgentSessionId SessionId, string Tool) right) =>
+        public bool Equals(AllowanceKey left, AllowanceKey right) =>
             left.SessionId == right.SessionId &&
-            string.Equals(left.Tool, right.Tool, StringComparison.Ordinal);
+            string.Equals(left.Tool, right.Tool, StringComparison.Ordinal) &&
+            left.Classification == right.Classification;
 
-        public int GetHashCode((AgentSessionId SessionId, string Tool) key) =>
-            HashCode.Combine(key.SessionId, key.Tool.GetHashCode(StringComparison.Ordinal));
+        public int GetHashCode(AllowanceKey key) =>
+            HashCode.Combine(
+                key.SessionId,
+                key.Tool.GetHashCode(StringComparison.Ordinal),
+                key.Classification);
     }
 }
 
@@ -225,8 +261,9 @@ public sealed record AgentToolApprovalPolicy
         if (pattern.Length == 0) return false;
         if (pattern is "*" or "**") return true;
 
-        // Only '*' is special: tool names are restricted to ASCII letters, digits, '_' and
-        // '-', so a character-by-character matcher is enough and avoids a regex dependency.
+        // '*' matches any run of characters and '?' matches exactly one; nothing else is
+        // special. Tool names are restricted to ASCII letters, digits, '_' and '-', so a
+        // character-by-character matcher is enough and avoids a regex dependency.
         var name = toolName.AsSpan();
         var mask = pattern.AsSpan();
         var nameIndex = 0;

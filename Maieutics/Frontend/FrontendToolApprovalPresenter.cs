@@ -15,7 +15,7 @@ namespace Maieutics.Frontend;
 ///     with a typed reason. Denying is the only safe default for an action the user did not
 ///     affirmatively approve.
 /// </remarks>
-internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate
+internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IAgentChildScopeRegistry
 {
     /// <summary>How long a pending approval waits before denying itself. The composition root
     /// supplies the configured value; this is the fallback for a host that supplies none.</summary>
@@ -28,6 +28,15 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate
     private readonly Dictionary<string, TaskCompletionSource<AgentToolApprovalDecision>> pending =
         new(StringComparer.Ordinal);
 
+    /// <summary>Child session → owning session, so a request raised inside a subagent run is
+    /// presented on the parent's stream. A child session is created by the subagent host and
+    /// never announces a stream of its own (only frontend-submitted turns do), so presenting
+    /// on the child id would find nothing and deny with a false "no frontend" reason. Bounded
+    /// by the same discipline as the permission registry's child scopes.</summary>
+    private readonly Dictionary<AgentSessionId, AgentSessionId> parents = [];
+    private readonly Queue<AgentSessionId> parentOrder = new();
+    private const int MaximumParentScopes = 256;
+
     internal FrontendToolApprovalPresenter(
         IFrontendSessionFramePublisher publisher,
         ILogger<FrontendToolApprovalPresenter> logger,
@@ -36,6 +45,39 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate
         this.publisher = publisher;
         this.logger = logger;
         this.waitTimeout = waitTimeout ?? DefaultWaitTimeout;
+    }
+
+    /// <summary>Registers a spawned child run's session under its owning session, so an
+    /// approval the child raises is presented to the user watching the parent. Mirrors
+    /// <c>PermissionOverrideRegistry.RegisterChildScope</c>: unknown parents are harmless
+    /// (the request then denies, which is the safe direction).</summary>
+    public void RegisterChildScope(AgentSessionId childSessionId, AgentSessionId parentSessionId)
+    {
+        lock (gate)
+        {
+            if (!parents.TryAdd(childSessionId, parentSessionId)) return;
+            parentOrder.Enqueue(childSessionId);
+            while (parentOrder.Count > MaximumParentScopes) parents.Remove(parentOrder.Dequeue());
+        }
+    }
+
+    /// <summary>Releases one child registration when its run settles.</summary>
+    public void ReleaseChildScope(AgentSessionId childSessionId)
+    {
+        lock (gate)
+        {
+            parents.Remove(childSessionId);
+        }
+    }
+
+    /// <summary>The session whose stream presents this request: the parent for a child run,
+    /// the session itself otherwise.</summary>
+    private AgentSessionId PresentationSession(AgentSessionId sessionId)
+    {
+        lock (gate)
+        {
+            return parents.TryGetValue(sessionId, out var parent) ? parent : sessionId;
+        }
     }
 
     /// <summary>The request-id prefix that routes answers here. Distinct from the elicitation
@@ -56,20 +98,41 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate
             pending[requestId] = completion;
         }
 
-        var published = publisher.TryPublishPresentation(
-            request.SessionId,
-            "input.request",
-            JsonSerializer.SerializeToElement(
-                new FrontendInputRequest(
-                    requestId,
-                    BuildPrompt(request),
-                    Password: false,
-                    Schema: BuildApprovalSchema(request),
-                    ServerId: null,
-                    Kind: FrontendInputKind.Approval,
-                    Tool: request.ToolName,
-                    Reason: request.Reason),
-                FrontendJsonContext.Default.FrontendInputRequest));
+        bool published;
+        try
+        {
+            published = publisher.TryPublishPresentation(
+                PresentationSession(request.SessionId),
+                "input.request",
+                JsonSerializer.SerializeToElement(
+                    new FrontendInputRequest(
+                        requestId,
+                        BuildPrompt(request),
+                        Password: false,
+                        Schema: BuildApprovalSchema(request),
+                        ServerId: null,
+                        Kind: FrontendInputKind.Approval,
+                        Tool: request.ToolName,
+                        Reason: request.Reason),
+                    FrontendJsonContext.Default.FrontendInputRequest));
+        }
+        catch (Exception exception)
+        {
+            // A throwing publisher must not leave a pending entry behind: a late answer would
+            // otherwise draw a 200 for a decision nobody consumed.
+            lock (gate)
+            {
+                pending.Remove(requestId);
+            }
+
+            logger.LogWarning(
+                exception,
+                "Publishing the approval request for tool '{Tool}' failed.",
+                request.ToolName);
+            return AgentToolApprovalDecision.Deny(
+                "The approval request could not be presented to the frontend.");
+        }
+
         if (!published)
         {
             lock (gate)

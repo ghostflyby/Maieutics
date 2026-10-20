@@ -23,13 +23,18 @@ internal sealed class AgentSubagentFunctions
 
     private readonly TaskResourceProvider taskResources;
     private readonly PermissionOverrideRegistry? permissionOverrides;
+    private readonly IAgentChildScopeRegistry? childScopes;
 
     public AgentSubagentFunctions(
         TaskResourceProvider taskResources,
-        PermissionOverrideRegistry? permissionOverrides = null)
+        PermissionOverrideRegistry? permissionOverrides = null,
+        IAgentChildScopeRegistry? childScopes = null)
     {
         this.taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
         this.permissionOverrides = permissionOverrides;
+        // The approval gate's parent link: a child's approval request presents on the owning
+        // session's stream, because a child session never announces one of its own.
+        this.childScopes = childScopes;
         Functions =
         [
             CreateFunction(
@@ -87,7 +92,10 @@ internal sealed class AgentSubagentFunctions
                 },
                 cancellationToken,
                 onChildSessionCreated: childSessionId =>
-                    permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId))
+                {
+                    permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
+                    childScopes?.RegisterChildScope(childSessionId, context.SessionId);
+                })
                 .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)

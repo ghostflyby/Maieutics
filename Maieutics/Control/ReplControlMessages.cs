@@ -64,6 +64,7 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(HostInvokePayload))]
 [JsonSerializable(typeof(HostInvokeResultPayload))]
 [JsonSerializable(typeof(HostInvokeErrorPayload))]
+[JsonSerializable(typeof(HostInvokeCancelPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPayload))]
 [JsonSerializable(typeof(PluginTriggerPayload))]
 [JsonSerializable(typeof(ExtensionRegistryPlugin))]
@@ -147,6 +148,7 @@ internal static class ReplMessageType
     public const string HostInvoke = "host.invoke";
     public const string HostInvokeResult = "host.invokeResult";
     public const string HostInvokeError = "host.invokeError";
+    public const string HostInvokeCancel = "host.invokeCancel";
     public const string ExtensionRegistry = "extension.registry";
     public const string PluginReload = "plugin.reload";
     public const string PluginTrigger = "plugin.trigger";
@@ -202,6 +204,11 @@ internal static class ReplExtensionPointName
     public const string ToolPreInvoke = "ToolPreInvoke";
     public const string ToolPostInvoke = "ToolPostInvoke";
 
+    /// <summary>Model-callable plugin tools (the describe/call phases): the kernel invokes
+    /// the worker export with a phase-tagged request at registry reconciliation and per
+    /// model tool call. One export is one tool.</summary>
+    public const string Tool = "Tool";
+
     /// <summary>Plugin UI uplink events (ADR 0038 stage 3): the kernel invokes the
     /// worker's registered UiEvent export with {commId, name, payload} when the
     /// frontend sends a frame for one of the plugin's models.</summary>
@@ -220,6 +227,7 @@ internal static class ReplExtensionPointName
                name.Equals(McpAdjust, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(ToolPreInvoke, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(ToolPostInvoke, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(Tool, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(UiEvent, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(Skills, StringComparison.OrdinalIgnoreCase);
     }
@@ -229,7 +237,7 @@ internal static class ReplExtensionPointName
     /// correct regardless of what the reporting side spelled.</summary>
     public static string? Canonicalize(string name)
     {
-        foreach (var candidate in (string[]) [McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, UiEvent, Skills])
+        foreach (var candidate in (string[]) [McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, Tool, UiEvent, Skills])
             if (name.Equals(candidate, StringComparison.OrdinalIgnoreCase))
                 return candidate;
         return null;
@@ -301,6 +309,10 @@ internal sealed record HostInvokeResultPayload(JsonElement? Value = null);
 
 /// <summary>Host-to-kernel typed failure for an extension point call.</summary>
 internal sealed record HostInvokeErrorPayload(string Code, string Message);
+
+/// <summary>Kernel → host cancel for one in-flight extension call: the host posts a
+/// <c>tool.cancel</c> frame to the owning worker, whose SDK aborts the handler's signal.</summary>
+internal sealed record HostInvokeCancelPayload(string PluginId, string ExportName, string CallId);
 
 /// <summary>Host-to-kernel registry snapshot of scanned extension points per worker. The
 /// optional <c>ReloadEpochs</c> map counts each plugin's completed lifecycle mutations

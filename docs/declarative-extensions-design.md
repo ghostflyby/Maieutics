@@ -97,6 +97,7 @@ identical to handler-contributed conflicts.
 | `McpDiscover` | code + declarative | `PluginMcpCoordinator` (dynamic MCP generation) |
 | `McpAdjust` | code (ADR 0034) | the MCP adjustment chain — dependency-ordered tool-surface projection |
 | `ToolPreInvoke` / `ToolPostInvoke` | code only | per-call hook chain — no declarative form |
+| `Tool` | code only | the plugin tool coordinator (ADR 0043): describe/call phases become provider-visible `AIFunction`s. No declarative form — the schema and the handler must be co-located |
 
 New kinds are kernel release events: an interpreter + a catalog entry + a contract
 document. The manifest parse layer (raw kind → entries) never changes per kind.

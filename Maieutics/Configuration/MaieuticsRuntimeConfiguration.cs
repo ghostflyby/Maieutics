@@ -72,6 +72,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
     private readonly PermissionOverrideRegistry? permissionOverrides;
 
+    /// <summary>The approval gate and policy every run profile carries, or null when the
+    /// composition root supplied none (tests, headless embeddings). Null preserves the
+    /// pre-gate behavior exactly: every tool call executes without asking.</summary>
+    private readonly AgentToolApprovalOptions? toolApproval;
+
     public MaieuticsRuntimeConfiguration(
         IConfiguration configuration,
         MaieuticsConfigurationFile configurationFile,
@@ -83,7 +88,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
         PermissionOverrideRegistry? permissionOverrides = null,
-        IdeToolFamily? ideTools = null)
+        IdeToolFamily? ideTools = null,
+        IAgentToolApprovalGate? toolApprovalGate = null,
+        AgentToolApprovalMemory? toolApprovalMemory = null)
     {
         this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
@@ -96,6 +103,14 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
         this.terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
         this.ideTools = ideTools;
+        this.toolApproval = toolApprovalGate is null
+            ? null
+            : new AgentToolApprovalOptions
+            {
+                Gate = toolApprovalGate,
+                Policy = CreateApprovalPolicy(),
+                Memory = toolApprovalMemory,
+            };
 
         CreateCandidate();
 
@@ -106,6 +121,20 @@ internal sealed class MaieuticsRuntimeConfiguration :
     }
 
     internal long ReloadAttempt => Interlocked.Read(ref reloadAttempt);
+
+    /// <summary>Builds the approval policy from configuration. The default posture is the
+    /// useful one: a tool its producer declared destructive asks, and the name list is empty
+    /// unless configured, so enabling the gate changes nothing for tools that declare nothing.</summary>
+    private AgentToolApprovalPolicy CreateApprovalPolicy()
+    {
+        var configured = configuration.GetSection("Maieutics:Agent:ToolApproval:Require").Get<string[]>();
+        return new AgentToolApprovalPolicy
+        {
+            Require = configured is { Length: > 0 } names
+                ? [.. names.Where(static name => !string.IsNullOrWhiteSpace(name))]
+                : [],
+        };
+    }
 
     /// <summary>Every built-in tool name plus the capability-gated terminal tool names and
     /// the connection-gated IDE tool names (ADR 0042 decision 9). MCP and plugin tools must
@@ -380,12 +409,32 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     lease.ServerId);
         }
 
+        // Plugin-declared tools (the Tool extension point) join last, through the same
+        // global name guard: a worker export may not shadow a built-in, capability-gated,
+        // IDE, or MCP tool. Reserved names are also rejected at describe time; this guard
+        // covers the names that only exist in the current run's composition.
+        if (Volatile.Read(ref pluginHosts) is { } toolHosts)
+        {
+            foreach (var function in toolHosts.SnapshotPluginTools())
+            {
+                if (!exposedToolNames.Add(function.Name))
+                {
+                    logger.LogWarning(
+                        "Plugin tool '{Tool}' duplicates another exposed tool name; the plugin tool is hidden.",
+                        function.Name);
+                    continue;
+                }
+
+                tools.Add(function);
+            }
+        }
+
         return new RuntimeProfileLease(
             generationLease,
             mcpLeases,
             new AgentRunProfile(
                 selection.Generation.Client,
-                CreateAgentOptions(selection.Snapshot.Options, selection.MaxBuiltinToolCalls),
+                CreateAgentOptions(selection.Snapshot.Options, selection.MaxBuiltinToolCalls, toolApproval),
                 selection.Identity,
                 selection.Capabilities,
                 selection.HostedCapabilities,
@@ -1543,7 +1592,10 @@ internal sealed class MaieuticsRuntimeConfiguration :
         return new AgentModelProfileId($"auto-{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}");
     }
 
-    private static AgentSessionOptions CreateAgentOptions(MaieuticsOptions options, int? maxBuiltinToolCalls)
+    private static AgentSessionOptions CreateAgentOptions(
+        MaieuticsOptions options,
+        int? maxBuiltinToolCalls,
+        AgentToolApprovalOptions? toolApproval)
     {
         return new AgentSessionOptions
         {
@@ -1559,7 +1611,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             MaxToolResultBytes = options.Agent.MaxToolResultBytes,
             MaxToolProgressEventsPerCall = options.Agent.MaxToolProgressEventsPerCall,
             MaxBuiltinToolCalls = maxBuiltinToolCalls,
-            EventBufferCapacity = options.Agent.EventBufferCapacity
+            EventBufferCapacity = options.Agent.EventBufferCapacity,
+            ToolApproval = toolApproval
         };
     }
 

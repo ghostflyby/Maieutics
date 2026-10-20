@@ -130,6 +130,9 @@ export interface HostOptions {
 }
 
 const DEFAULT_INVOKE_TIMEOUT_MS = 15_000;
+/** The retained cancel frames per worker while it is still starting. Bounded so a cancel
+ * for a call the worker never receives cannot accumulate. */
+const MAXIMUM_PENDING_CANCELS = 64;
 const DEFAULT_MAX_RESTARTS = 3;
 const DEFAULT_STOP_GRACE_MS = 5_000;
 const DEFAULT_IDLE_GRACE_MS = 30_000;
@@ -228,6 +231,9 @@ interface WorkerHandle {
   /** Contract identities (extension points) this worker's entry exports. */
   contractIdentities: ContractExportIdentity[];
   restarts: number;
+  /** Cancel frames that arrived while the worker was still starting, replayed once it is
+   * running. The plugin module is not loaded before that, so nothing is listening. */
+  pendingCancels: string[];
   /** ADR 0035: when the worker last reached zero references (undefined while
    * referenced or running its grace). */
   idleSince?: number;
@@ -335,6 +341,7 @@ export class PluginHost {
           extensionPoints: new Set(),
           contractIdentities: [],
           restarts: 0,
+          pendingCancels: [],
         });
         this.#bySpecifier.set(workerConfig.specifier, key);
       }
@@ -626,6 +633,54 @@ export class PluginHost {
     }
   }
 
+  /** Posts a cancel frame for one in-flight invocation to the owning worker. The
+   * worker's SDK aborts the matching handler signal; a worker that ignores the
+   * abort keeps running until the kernel stops it.
+   *
+   * A cancel that cannot be delivered yet — the worker is still starting or stopped, so
+   * its plugin module is not loaded and nothing is listening — is queued and replayed when
+   * the worker reaches `Running`. Dropping it would let a cancelled handler start and run
+   * to completion, side effects included, with only its value discarded. `Stopped` is NOT
+   * terminal: an invocation wakes it on demand (ADR 0035), so a cancel arriving before that
+   * wake must be queued too. Only a worker that can never run the call is a genuine no-op.
+   * Fire-and-forget by design: the invoke's own result/error still settles the kernel's
+   * pending call. */
+  cancelInvoke(pluginId: string, exportName: string, callId: string): void {
+    const key = workerKey(pluginId, exportName);
+    const handle = this.#workers.get(key);
+    if (handle === undefined || handle.state === State.Failed || handle.state === State.Disabled) {
+      return;
+    }
+
+    if (handle.state !== State.Running) {
+      // Replayed by #flushPendingCancels once the worker is running. Bounded like every
+      // other per-worker queue: a cancel for a call this worker never receives must not
+      // accumulate.
+      handle.pendingCancels.push(callId);
+      if (handle.pendingCancels.length > MAXIMUM_PENDING_CANCELS) handle.pendingCancels.shift();
+      return;
+    }
+
+    this.#postCancel(handle, callId);
+  }
+
+  /** Posts one cancel frame, tolerating a worker that terminated in between. */
+  #postCancel(handle: WorkerHandle, callId: string): void {
+    try {
+      handle.worker.postMessage({ type: "tool.cancel", callId });
+    } catch {
+      // The worker terminated between the state check and the post; the invoke
+      // settles through its own error path.
+    }
+  }
+
+  /** Replays the cancels that arrived before their worker could receive them. */
+  #flushPendingCancels(handle: WorkerHandle): void {
+    if (handle.pendingCancels.length === 0) return;
+    const pending = handle.pendingCancels.splice(0);
+    for (const callId of pending) this.#postCancel(handle, callId);
+  }
+
   /** Ensures a worker is running (ADR 0035 wake): its transitive dependency
    * closure starts first (dependencies before dependents), then the worker.
    * Concurrent wake requests share one start; an explicit wake resets the
@@ -773,6 +828,7 @@ export class PluginHost {
           extensionPoints: new Set(),
           contractIdentities: [],
           restarts: 0,
+          pendingCancels: [],
         };
         this.#workers.set(key, handle);
         this.#bySpecifier.set(handle.specifier, key);
@@ -1156,6 +1212,9 @@ export class PluginHost {
         throw new Error("The plugin host was disposed during worker startup.");
       }
       handle.state = State.Running;
+      // The plugin module is loaded now, so its cancel listener exists: replay the frames
+      // that arrived while this worker was starting.
+      this.#flushPendingCancels(handle);
     } catch (error) {
       handle.state = State.Failed;
       handle.failure = error instanceof Error ? error.message : String(error);

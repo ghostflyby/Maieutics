@@ -544,13 +544,22 @@ internal sealed class PluginHostManager(
 
     private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        Task stop;
+        Task? inFlightRestart;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            inFlightRestart = restart;
+            stop = EnsureStoppedAsync();
         }
-        return new ValueTask(EnsureStoppedAsync());
+
+        await stop.ConfigureAwait(false);
+        // A restart in flight is part of this stop: observing it here keeps the stop from
+        // returning while lifecycle state could still be reset or a fresh host generation
+        // started behind the caller's back.
+        await ObserveInFlightRestartAsync(inFlightRestart).ConfigureAwait(false);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -564,9 +573,13 @@ internal sealed class PluginHostManager(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        Task stop;
+        Task? inFlightRestart;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            inFlightRestart = restart;
+            stop = EnsureStoppedAsync();
         }
 
         // Stop must run to completion even if the caller's token cancels: an
@@ -576,12 +589,14 @@ internal sealed class PluginHostManager(
         // EnsureStoppedAsync itself is cancellation-free.
         try
         {
-            await EnsureStoppedAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            await stop.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await EnsureStoppedAsync().ConfigureAwait(false);
+            await stop.ConfigureAwait(false);
         }
+
+        await ObserveInFlightRestartAsync(inFlightRestart).ConfigureAwait(false);
     }
 
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
@@ -1765,12 +1780,16 @@ internal sealed class PluginHostManager(
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pendingInvokes[correlationId] = tcs;
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        // The caller's budget is the handler's, so the wait adds the startup allowance on
-        // top: a short declaration must not time out because the worker was cold.
-        budget.CancelAfter(CallWaitBudget(timeout));
         try
         {
+            // Built inside the guard: a stop that disposed the generation's lifetime source
+            // between the call's entry and this line is a host that is gone, reported as the
+            // typed unavailable outcome below instead of an ObjectDisposedException escaping
+            // the invoke path (AGENTS.md invariant 18).
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            // The caller's budget is the handler's, so the wait adds the startup allowance on
+            // top: a short declaration must not time out because the worker was cold.
+            budget.CancelAfter(CallWaitBudget(timeout));
             await using var registration = budget.Token.Register(
                 static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
@@ -1793,6 +1812,15 @@ internal sealed class PluginHostManager(
         {
             if (cancellableCallId is not null)
                 await RequestCallCancellationAsync(pluginId, exportName, cancellableCallId).ConfigureAwait(false);
+            return ExtensionCallOutcome.Error(
+                "plugin_unavailable",
+                "The plugin host stopped before the call completed.");
+        }
+        catch (ObjectDisposedException)
+        {
+            // The generation's lifetime source was disposed by StopCoreAsync while this call
+            // was in flight: the host is gone, and the failure stays recoverable within the
+            // turn (AGENTS.md invariant 18) instead of surfacing as a raw exception.
             return ExtensionCallOutcome.Error(
                 "plugin_unavailable",
                 "The plugin host stopped before the call completed.");
@@ -2221,6 +2249,32 @@ internal sealed class PluginHostManager(
             }
 
         lifetime.Dispose();
+    }
+
+    /// <summary>Waits for the in-flight plugin-set restart to unwind, so an external stop
+    /// (dispose or hosted-service stop) never returns while a restart could still reset the
+    /// lifecycle state or start a fresh host generation behind it. The restart observes the
+    /// externally-stopped flag at its reset and aborts, so it settles as soon as the stop does;
+    /// it also awaits this very stop as its own teardown, which is why the observation happens
+    /// in the external stop's caller and never inside <see cref="StopCoreAsync"/> — awaiting a
+    /// restart there would wait on a task that is itself waiting for this stop. Bounded by the
+    /// same 30 s budget the stop uses for its own drains, so a wedged restart cannot hold the
+    /// host stop open.</summary>
+    private async Task ObserveInFlightRestartAsync(Task? inFlightRestart)
+    {
+        if (inFlightRestart is null) return;
+
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            await inFlightRestart.WaitAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or AggregateException)
+        {
+            logger.LogWarning(
+                exception,
+                "The plugin host restart was still running when the host stopped.");
+        }
     }
 
     private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
@@ -3463,18 +3517,28 @@ internal sealed class PluginHostManager(
             cancellationToken);
     }
 
-    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue under the
-    /// caller's budget linked with the host lifetime, so a full queue can never block past the
-    /// budget (or past host stop); a reply to a detached host is dropped (the tracked call ends
-    /// with the socket).</summary>
+    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue under
+    /// the caller's budget linked with the host generation's lifetime, so a full queue can
+    /// never block past the budget (or past host stop); a reply whose generation is already
+    /// retired is dropped (the tracked call ends with the socket).</summary>
     private async Task PushCapabilityReplyAsync(
         WebSocket socket,
         ReplEnvelope envelope,
         CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        // The enqueue rides the linked budget; the bounded writer owns the write.
-        await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            // The enqueue rides the linked budget; the bounded writer owns the write.
+            await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // StopCoreAsync disposes the generation's lifetime source at the end of a stop; a
+            // reply racing that window has no destination (the tracked call ends with the
+            // socket), and the drain awaiting this call must not surface the disposal as a
+            // stop failure.
+        }
     }
 
     /// <summary>Replaces one plugin's capability grants (the kernel-parsed manifest
@@ -3961,21 +4025,29 @@ internal sealed class PluginHostManager(
         };
     }
 
-    /// <summary>Enqueues one frame on the bounded outbound queue. Returns whether the
-    /// frame was accepted; a detached host or a completed queue drops it, and callers
-    /// that report delivery must branch on the result.</summary>
+    /// <summary>Enqueues one frame on the bounded outbound queue of the connection the frame
+    /// was captured for. Returns whether the frame was accepted; a retired connection, a
+    /// detached host, or a completed queue drops it, and callers that report delivery must
+    /// branch on the result. The socket parameter is the generation fence: a call belongs to
+    /// the connection generation that was live when its socket was captured, and a restart
+    /// replaces both the socket and its queue — so a frame belonging to a retired generation
+    /// is refused here instead of being written into the replacement host's queue.</summary>
     private async Task<bool> PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
         ChannelWriter<byte[]>? writer;
         lock (gate)
         {
-            writer = outbound?.Writer;
+            // Same lock as the capture: the frame is enqueued only while the connection it
+            // belongs to still owns the outbound slot. The replacement host must never receive
+            // a frame that a call issued against the retired connection.
+            writer = ReferenceEquals(socket, Socket) ? outbound?.Writer : null;
         }
 
         if (writer is null)
         {
-            // No attached host writer (detached or never attached): nothing to send to.
+            // No attached host writer for this generation (detached, never attached, or
+            // replaced by a successor): nothing to send to.
             return false;
         }
 

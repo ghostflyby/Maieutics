@@ -1032,15 +1032,13 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// <summary>Rejects the configured executable when the effective policy restricts <c>run</c>.
     /// The default policy (and any policy without explicit run rules) grants <c>run</c> fully, so
     /// nothing changes by default (ADR 0018 §7, decision 2); the check engages only when a layer
-    /// contributes an explicit run allowlist or deny.</summary>
+    /// contributes an explicit run allowlist or deny. The verdict comes from the shared
+    /// general-start gate (Maieutics.Processes), so terminal and MCP server children judge
+    /// alike.</summary>
     private void EnsureExecutableAllowed()
     {
-        var run = policy.For(PermissionKind.Run);
-        if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
-
-        foreach (var allowed in run.Allow)
-            if (PermissionMatching.MatchesPath(allowed, executable))
-                return;
+        if (RunGrant.Allows(policy, executable))
+            return;
 
         throw new AgentToolException(
             "terminal_start_failed",

@@ -66,12 +66,22 @@ public sealed class McpProcessPolicyTests
                 Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind)).PluginId);
 
             // The coordinator starts the declared server straight from the manifest snapshot;
-            // the probe file is the child's environment dump.
-            for (var attempt = 0; attempt < 200 && !File.Exists(probe); attempt++)
+            // the probe file is the child's environment dump. The shell creates the file before
+            // /usr/bin/env's output lands in it, so on a loaded runner an existence check can
+            // win that race and read an empty dump (observed on ubuntu-24.04 CI) — wait for the
+            // granted line, not for the file.
+            var lines = Array.Empty<string>();
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                if (File.Exists(probe))
+                {
+                    lines = await File.ReadAllLinesAsync(probe, TestContext.Current.CancellationToken);
+                    if (lines.Contains($"{grantedName}=granted-value")) break;
+                }
                 await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
 
             Assert.True(File.Exists(probe), "the plugin-declared MCP stdio child never ran.");
-            var lines = await File.ReadAllLinesAsync(probe, TestContext.Current.CancellationToken);
 
             // The plugin's env grant reaches its child, and TERM is the pinned VT name — on
             // the SDK-curated environment neither holds: the grant is not in the SDK's list
@@ -124,6 +134,78 @@ public sealed class McpProcessPolicyTests
         // command identically, including the directory-boundary cases.
         Assert.Equal(expectedRefused, mcpRefused);
         Assert.Equal(expectedRefused, terminalRefused);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AStdioServerOutsideTheOwningScopesRunGrantIsRefused()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The probe child is a POSIX shell command.");
+
+        // The refusal must come from the real launch path — the default transport factory the
+        // production caller uses — not from the static gate alone: the owning scope's policy
+        // is rendered before any child is spawned (AGENTS.md invariant 19).
+        var granted = Path.Combine(Path.GetTempPath(), $"mcp-run-granted-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(granted);
+        var forbidden = Path.Combine(Path.GetTempPath(), $"mcp-run-forbidden-{Guid.NewGuid():N}");
+        var policy = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = [granted] }));
+        var definition = CreateStdioDefinition(
+            Path.Combine(forbidden, "probe.sh"),
+            [],
+            new Dictionary<string, string?>());
+
+        var failure = await Record.ExceptionAsync(() => McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            TestContext.Current.CancellationToken,
+            policy: policy));
+
+        Assert.True(
+            failure is ArgumentException,
+            $"expected the owning scope's run grant to refuse the command, got: {failure?.GetType().FullName ?? "null"}");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AStdioServerInsideTheOwningScopesRunGrantIsAllowed()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The probe child is a POSIX shell command.");
+
+        // The control case: a command inside the owning scope's grant passes the gate and the
+        // launch proceeds — the grant restricts, it does not deny. The child runs (writing the
+        // probe) and only then fails the MCP handshake, because it is not an MCP server.
+        var granted = Path.Combine(Path.GetTempPath(), $"mcp-run-granted-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(granted);
+        var probe = Path.Combine(granted, "child-env.txt");
+        var server = Path.Combine(granted, "probe.sh");
+        File.WriteAllText(server, $"#!/bin/sh\n/usr/bin/env > '{probe}'\n");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(
+                server,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var policy = BuildPolicy(
+            (PermissionKind.Run, new PermissionKindRules { Allow = [granted] }));
+        var definition = CreateStdioDefinition(server, [], new Dictionary<string, string?>());
+
+        var failure = await Record.ExceptionAsync(() => McpServerGeneration.CreateAsync(
+            definition,
+            NullLoggerFactory.Instance,
+            TimeProvider.System,
+            TestContext.Current.CancellationToken,
+            policy: policy));
+
+        Assert.NotNull(failure);
+        Assert.False(
+            failure is ArgumentException,
+            $"the owning scope's run grant refused a command inside its directory: {failure.Message}");
+
+        for (var attempt = 0; attempt < 100 && !File.Exists(probe); attempt++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(probe), "the MCP stdio child never ran.");
+        CleanupDirectory(granted);
     }
 
     [Fact(Timeout = 30_000)]

@@ -926,8 +926,33 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        using var peer = CancellationTokenSource.CreateLinkedTokenSource(
+            context.RequestAborted,
+            lifetime.Token);
+        // A WebSocket permits a single outstanding send, and this socket has three writers
+        // that run on different flows: the run frame stream served below, its interleaved
+        // queue flush, and the ide.push delegate the announce registration hands to
+        // FrontendIdeSockets (a context-less tool invocation writes through it from
+        // another request). Writes are serialized through this gate — the same discipline
+        // the comm socket applies — because an unserialized second send faults the run
+        // stream (the exception escapes ServeStreamAsync and this handler's catches) and
+        // makes FrontendIdeSockets withdraw the announcer as if the socket had died.
+        using var sendGate = new SemaphoreSlim(1, 1);
+        async Task SendAsync(Func<Task> write, CancellationToken token)
+        {
+            await sendGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                await write().ConfigureAwait(false);
+            }
+            finally
+            {
+                sendGate.Release();
+            }
+        }
+
         Guid? ideRegistration = ideAnnounced && ideSockets is not null
-            ? ideSockets.Announce(sessionId, (frame, token) => SendFrameAsync(socket, frame, token))
+            ? ideSockets.Announce(sessionId, (frame, token) => SendAsync(() => SendFrameAsync(socket, frame, token), token))
             : null;
         logger.LogDebug(
             "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
@@ -935,12 +960,11 @@ internal sealed class FrontendHost : IAsyncDisposable
             context.Request.Path,
             since,
             ideAnnounced);
-        using var peer = CancellationTokenSource.CreateLinkedTokenSource(
-            context.RequestAborted,
-            lifetime.Token);
-        await SendFrameAsync(
-            socket,
-            new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+        await SendAsync(
+            () => SendFrameAsync(
+                socket,
+                new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+                peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
         try
@@ -949,9 +973,11 @@ internal sealed class FrontendHost : IAsyncDisposable
             {
                 if (!service.TryGetRun(singleRunId, out var runStream) || runStream is null)
                 {
-                    await SendFrameAsync(
-                        socket,
-                        new FrontendEventFrame("run.missing", RunId: singleRunId),
+                    await SendAsync(
+                        () => SendFrameAsync(
+                            socket,
+                            new FrontendEventFrame("run.missing", RunId: singleRunId),
+                            peer.Token),
                         peer.Token).ConfigureAwait(false);
                 }
                 else
@@ -960,6 +986,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // its stream, so the interleaving flush is a no-op here.
                     await ServeStreamAsync(
                         socket,
+                        SendAsync,
                         runStream,
                         since,
                         static _ => Task.CompletedTask,
@@ -984,9 +1011,11 @@ internal sealed class FrontendHost : IAsyncDisposable
                         sessionId,
                         queueVersion);
                     if (socket.State == WebSocketState.Open)
-                        await SendFrameAsync(
-                            socket,
-                            new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                        await SendAsync(
+                            () => SendFrameAsync(
+                                socket,
+                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                                token),
                             token).ConfigureAwait(false);
                 }
 
@@ -1023,8 +1052,13 @@ internal sealed class FrontendHost : IAsyncDisposable
                         // the run just served.
                         pendingRunWait = null;
                         var stream = await runWait.ConfigureAwait(false);
-                        await ServeStreamAsync(socket, stream, since, FlushQueueAsync, peer.Token)
-                            .ConfigureAwait(false);
+                        await ServeStreamAsync(
+                            socket,
+                            SendAsync,
+                            stream,
+                            since,
+                            FlushQueueAsync,
+                            peer.Token).ConfigureAwait(false);
                         previous = stream;
                         // Replay offsets are per run; later runs stream live from their start.
                         since = 0;
@@ -1052,10 +1086,26 @@ internal sealed class FrontendHost : IAsyncDisposable
             await drain.ConfigureAwait(false);
             logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await CloseSocketOutputAsync(
-                    socket,
-                    WebSocketCloseStatus.NormalClosure,
-                    "stream ended").ConfigureAwait(false);
+            {
+                // The close frame is a write like any other, so it takes the gate too —
+                // an ide push that was already in flight when the loop ended still holds
+                // it. The peer token is cancelled by now, so the gate wait gets its own
+                // bounded budget: a budget that runs out skips the frame like any other
+                // dead peer instead of holding the teardown open behind a parked writer.
+                using var closeBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await SendAsync(
+                        () => CloseSocketOutputAsync(
+                            socket,
+                            WebSocketCloseStatus.NormalClosure,
+                            "stream ended"),
+                        closeBudget.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
         }
     }
 
@@ -1119,6 +1169,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private async Task ServeStreamAsync(
         WebSocket socket,
+        Func<Func<Task>, CancellationToken, Task> send,
         FrontendRunStream stream,
         long since,
         Func<CancellationToken, Task> flushQueueAsync,
@@ -1131,7 +1182,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         var nextFrame = Task.FromResult(false);
         try
         {
-            foreach (var frame in initial) await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+            foreach (var frame in initial) await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
 
             // Queue frames must interleave with run frames, not defer behind the whole
             // run: a run parked at a gated provider once pinned a worker transition
@@ -1159,7 +1210,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
                 while (channel.Reader.TryRead(out var frame))
                 {
-                    await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+                    await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
                     if (queueWake.IsCompleted)
                     {
                         await queueWake.ConfigureAwait(false);
@@ -1172,10 +1223,12 @@ internal sealed class FrontendHost : IAsyncDisposable
             (exception.InnerException is FrontendRunStream.FrontendBackpressureException)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await CloseSocketAsync(
-                    socket,
-                    (WebSocketCloseStatus)1011,
-                    "backpressure").ConfigureAwait(false);
+                await send(
+                    () => CloseSocketAsync(
+                        socket,
+                        (WebSocketCloseStatus)1011,
+                        "backpressure"),
+                    cancellationToken).ConfigureAwait(false);
         }
         finally
         {

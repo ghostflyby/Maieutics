@@ -202,6 +202,12 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IConfiguredChatClientFactory, AnthropicChatClientFactory>();
         builder.Services.AddSingleton<PermissionOverrideRegistry>();
         builder.Services.AddSingleton<MaieuticsRuntimeConfiguration>();
+        // The configuration object owns the two configuration-derived layers of the overlay, so
+        // it is the layer source the acquirer resolves. Without this registration the acquirer's
+        // lazy lookup fails at the first acquisition — every terminal, REPL, and directive-plane
+        // write path (AGENTS.md invariant 20).
+        builder.Services.AddSingleton<IPermissionLayerSource>(static services =>
+            services.GetRequiredService<MaieuticsRuntimeConfiguration>());
         builder.Services.AddSingleton<IPermissionVariableSource>(static services =>
             services.GetRequiredService<Workspace>());
         builder.Services.AddSingleton(static services =>

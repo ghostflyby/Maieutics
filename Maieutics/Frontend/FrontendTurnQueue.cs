@@ -5,9 +5,12 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Frontend;
 
 /// <summary>
-///     Server-side per-session queue of Agent turn items (ADR 0025). Each session owns a
-///     bounded FIFO (capacity <see cref="Capacity" />) and at most one worker loop; the
-///     worker dequeues the head, submits it through
+///     Server-side per-session queue of Agent turn items (ADR 0025). Queue state is keyed by
+///     the parsed session identifier — the same normalization every route value gets — so
+///     every accepted spelling of one session's id addresses one queue: capacity, snapshots,
+///     and clears are per session, never per spelling. Each session owns a bounded FIFO
+///     (capacity <see cref="Capacity" />) and at most one worker loop; the worker dequeues the
+///     head, submits it through
 ///     <see cref="FrontendSessionService.StartTurnAsync" /> — the same path a direct
 ///     <c>POST /turns</c> takes, so the session's single-run gate stays the only
 ///     serialization point (invariant 4) — waits for the run to settle, and continues.
@@ -42,7 +45,10 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     private readonly MaieuticsAgentSessionManager sessionManager;
     private readonly ILogger logger;
     private readonly Lock gate = new();
-    private readonly Dictionary<string, SessionQueue> sessions = new(StringComparer.Ordinal);
+
+    /// <summary>One queue state per session identifier: two spellings of one session's id
+    /// must never own two queues. See <see cref="ParseSessionId" />.</summary>
+    private readonly Dictionary<AgentSessionId, SessionQueue> sessions = new();
     private readonly CancellationTokenSource lifetime = new();
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int disposeState;
@@ -73,11 +79,14 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
         foreach (var text in texts) ValidateItemText(text);
 
+        // State is keyed by the parsed identity, not by the route spelling: the id parser
+        // accepts uppercase hex, and both spellings must address one queue.
+        var id = ParseSessionId(sessionId);
         var enqueuedAt = DateTimeOffset.UtcNow;
         var items = texts
             .Select(text => new QueuedItem(Guid.NewGuid().ToString("N"), text, enqueuedAt))
             .ToArray();
-        var state = GetOrAdd(sessionId);
+        var state = GetOrAdd(id);
         List<FrontendQueueEnqueuedItem> response;
         lock (state.Gate)
         {
@@ -102,8 +111,8 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 response.Add(new FrontendQueueEnqueuedItem(item.Id, state.Items.Count));
             }
 
-            EnsureLeaseLocked(sessionId, state);
-            EnsureWorkerLocked(sessionId, state);
+            EnsureLeaseLocked(id, state);
+            EnsureWorkerLocked(id, state);
         }
 
         logger.LogDebug(
@@ -122,7 +131,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     public void Remove(string sessionId, string itemId)
     {
         service.EnsureSessionResolved(sessionId);
-        var state = GetOrAdd(sessionId);
+        var state = GetOrAdd(ParseSessionId(sessionId));
         var removed = false;
         lock (state.Gate)
         {
@@ -158,7 +167,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     public void Clear(string sessionId)
     {
         service.EnsureSessionResolved(sessionId);
-        var state = GetOrAdd(sessionId);
+        var state = GetOrAdd(ParseSessionId(sessionId));
         bool removed;
         var removedCount = 0;
         lock (state.Gate)
@@ -183,17 +192,18 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     }
 
     /// <summary>Gets the session's full queue state with item texts (the GET snapshot
-    /// shape). Does not resolve the session — callers decide their own typed 404.</summary>
+    /// shape). Does not resolve the session — callers decide their own typed 404; a
+    /// malformed id is still the typed <see cref="FrontendErrors.InvalidRequest" />.</summary>
     public FrontendQueueSnapshot Snapshot(string sessionId)
     {
-        return BuildSnapshot(sessionId, includeText: true).Snapshot;
+        return BuildSnapshot(ParseSessionId(sessionId), includeText: true).Snapshot;
     }
 
     /// <summary>Gets the queue state for a <c>queue.updated</c> frame: item ids only
     /// (clients map ids to cells locally), plus the state version the frame reflects.</summary>
     public (FrontendQueueSnapshot Snapshot, long Version) FrameSnapshot(string sessionId)
     {
-        return BuildSnapshot(sessionId, includeText: false);
+        return BuildSnapshot(ParseSessionId(sessionId), includeText: false);
     }
 
     /// <summary>Waits for the session's next queue mutation, returning the version that
@@ -205,7 +215,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         long observedVersion,
         CancellationToken cancellationToken)
     {
-        var state = GetOrAdd(sessionId);
+        var state = GetOrAdd(ParseSessionId(sessionId));
         Task wait;
         lock (state.Gate)
         {
@@ -230,7 +240,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// quiescent queue rather than a sequence of coincidentally empty samples.</summary>
     public async Task WaitUntilIdleAsync(string sessionId, CancellationToken cancellationToken)
     {
-        var state = GetOrAdd(sessionId);
+        var state = GetOrAdd(ParseSessionId(sessionId));
         while (true)
         {
             long version;
@@ -321,7 +331,22 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 $"The queue item text must be at most {MaxItemCharacters} characters.");
     }
 
-    private SessionQueue GetOrAdd(string sessionId)
+    /// <summary>Parses one addressed session id into the canonical identifier that keys the
+    /// queue state. The frontend accepts every "N" spelling of a session id — hexadecimal
+    /// digits are case-insensitive — so keying by the raw route value would let the same
+    /// session open a second queue.</summary>
+    /// <exception cref="FrontendFailureException">
+    ///     <see cref="FrontendErrors.InvalidRequest" /> when the id is not a well-formed
+    ///     non-empty identifier, exactly as the other session-addressed routes answer.</summary>
+    private static AgentSessionId ParseSessionId(string sessionId)
+    {
+        if (!Guid.TryParseExact(sessionId, "N", out var parsed) || parsed == Guid.Empty)
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, "The session id is not valid.");
+
+        return new AgentSessionId(parsed);
+    }
+
+    private SessionQueue GetOrAdd(AgentSessionId sessionId)
     {
         lock (gate)
         {
@@ -334,7 +359,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     }
 
     private (FrontendQueueSnapshot Snapshot, long Version) BuildSnapshot(
-        string sessionId,
+        AgentSessionId sessionId,
         bool includeText)
     {
         var state = GetOrAdd(sessionId);
@@ -346,7 +371,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                     : new FrontendQueueItem(item.Id))
                 .ToArray();
             var snapshot = new FrontendQueueSnapshot(
-                sessionId,
+                sessionId.ToString(),
                 state.Running is { } running
                     ? new FrontendQueueRunningItem(running.ItemId, running.RunId)
                     : null,
@@ -371,17 +396,16 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         completed.TrySetResult();
     }
 
-    private void EnsureLeaseLocked(string sessionId, SessionQueue state)
+    private void EnsureLeaseLocked(AgentSessionId sessionId, SessionQueue state)
     {
         if (state.Lease is not null) return;
-
-        if (!Guid.TryParseExact(sessionId, "N", out var parsed) || parsed == Guid.Empty) return;
 
         // Cooperative capacity management (ADR 0025): a session with queued work pins its
         // live registration against LRU eviction. Eviction would be survivable through
         // lazy-resume, but queued work is active interest, so the queue holds one lease
-        // while the session has queue work and releases it when the queue drains.
-        state.Lease = sessionManager.TryPinSession(new AgentSessionId(parsed));
+        // while the session has queue work and releases it when the queue drains. The
+        // addressed identifier is parsed at the public boundary, so it is non-empty here.
+        state.Lease = sessionManager.TryPinSession(sessionId);
     }
 
     private void ReleaseLeaseLocked(SessionQueue state)
@@ -398,7 +422,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             ReleaseLeaseLocked(state);
     }
 
-    private void EnsureWorkerLocked(string sessionId, SessionQueue state)
+    private void EnsureWorkerLocked(AgentSessionId sessionId, SessionQueue state)
     {
         if (state.Worker is not null || lifetime.IsCancellationRequested) return;
 
@@ -424,7 +448,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     ///     Exactly one worker runs per session at a time; the next enqueue starts a new
     ///     one after this exits.
     /// </summary>
-    private async Task RunWorkerAsync(string sessionId, SessionQueue state, CancellationTokenSource cancellation)
+    private async Task RunWorkerAsync(AgentSessionId sessionId, SessionQueue state, CancellationTokenSource cancellation)
     {
         logger.LogDebug("Turn queue worker started for session {SessionId}.", sessionId);
         try
@@ -541,7 +565,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// <summary>Submits one queued item, waiting out (bounded) and retrying when a direct
     /// <c>POST /turns</c> raced the dequeue and holds the single-run gate.</summary>
     private async Task<string> SubmitWithBusyRetryAsync(
-        string sessionId,
+        AgentSessionId sessionId,
         string text,
         CancellationToken cancellationToken)
     {
@@ -551,8 +575,11 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             attempt++;
             try
             {
+                // The service addresses turns by the wire spelling; the typed identifier
+                // renders to that canonical "N" form, so the submission resolves the same
+                // session the queue state is keyed by.
                 var accepted = await service
-                    .StartTurnAsync(sessionId, text, cancellationToken)
+                    .StartTurnAsync(sessionId.ToString(), text, cancellationToken)
                     .ConfigureAwait(false);
                 return accepted.RunId;
             }
@@ -578,13 +605,12 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// next attempt observes a free gate — blocking for a further announcement here
     /// would wait for this worker's own future submission, which cannot happen until
     /// this wait returns.</summary>
-    private async Task WaitForInFlightRunAsync(string sessionId, CancellationToken cancellationToken)
+    private async Task WaitForInFlightRunAsync(AgentSessionId sessionId, CancellationToken cancellationToken)
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(BusyWaitBudget);
-        if (!Guid.TryParseExact(sessionId, "N", out var parsed) || parsed == Guid.Empty) return;
 
-        if (!service.TryGetLatestRun(new AgentSessionId(parsed), out var target) || target is null)
+        if (!service.TryGetLatestRun(sessionId, out var target) || target is null)
         {
             // Nothing has ever been announced on the session, yet the gate is held: the
             // racing submission reserved the gate and announces within moments. Wait for
@@ -592,7 +618,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
             try
             {
                 target = await service
-                    .WaitForRunAsync(new AgentSessionId(parsed), null, budget.Token)
+                    .WaitForRunAsync(sessionId, null, budget.Token)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (budget.IsCancellationRequested)
@@ -616,7 +642,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
     /// <summary>Waits for one run's terminal boundary. The run's outcome is rendered by
     /// its own frames; the queue only needs the settle signal.</summary>
-    private async Task AwaitRunSettledAsync(string sessionId, string runId, CancellationToken cancellationToken)
+    private async Task AwaitRunSettledAsync(AgentSessionId sessionId, string runId, CancellationToken cancellationToken)
     {
         // StartTurnAsync registers the run's stream before returning, so the lookup
         // succeeds; a run that already left the bounded registry also already settled.

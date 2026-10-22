@@ -38,6 +38,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private int settleState;
     private int disposeState;
     private bool completed;
+    private bool publishClosed;
 
     private FrontendRunStream(
         AgentSessionId sessionId,
@@ -212,26 +213,41 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         System.Text.Json.JsonElement data,
         CancellationToken cancellationToken)
     {
+        _ = TryPublishPresentationFrame(type, displayId, data, cancellationToken);
+    }
+
+    /// <summary>Publishes a REPL presentation frame, returning false when the stream already
+    /// published the run's terminal pair. The frame could then only be ordered behind
+    /// <c>run.status: idle</c>, so the publisher must be told the presentation is not live:
+    /// the approval and elicitation presenters deny or cancel on that answer instead of
+    /// waiting for a request no client will ever be offered.</summary>
+    internal bool TryPublishPresentationFrame(
+        string type,
+        string? displayId,
+        System.Text.Json.JsonElement data,
+        CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         if (type == "input.request" &&
             System.Text.Json.JsonSerializer.Deserialize(
                 data,
                 FrontendJsonContext.Default.FrontendInputRequest) is { } request)
         {
-            Publish(new FrontendEventFrame(
-                type,
-                RequestId: request.RequestId,
-                Prompt: request.Prompt,
-                Password: request.Password,
-                Schema: request.Schema,
-                ServerId: request.ServerId,
-                Kind: request.Kind,
-                Tool: request.Tool,
-                Reason: request.Reason));
-            return;
+            return PublishCore(
+                new FrontendEventFrame(
+                    type,
+                    RequestId: request.RequestId,
+                    Prompt: request.Prompt,
+                    Password: request.Password,
+                    Schema: request.Schema,
+                    ServerId: request.ServerId,
+                    Kind: request.Kind,
+                    Tool: request.Tool,
+                    Reason: request.Reason),
+                trackSequence: true);
         }
 
-        Publish(new FrontendEventFrame(type, DisplayId: displayId, Data: data));
+        return PublishCore(new FrontendEventFrame(type, DisplayId: displayId, Data: data), trackSequence: true);
     }
 
     public async ValueTask DisposeAsync()
@@ -303,12 +319,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 run.Id,
                 sessionId,
                 RunFailedCodes.Cancelled);
-            Publish(new FrontendEventFrame(
+            PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.Cancelled,
                 Message: exception.Message));
-            Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
         }
         catch (AgentException exception)
@@ -325,23 +340,21 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 run.Id,
                 sessionId,
                 code);
-            Publish(new FrontendEventFrame(
+            PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
                 Code: code,
                 Message: exception.Message));
-            Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "The frontend event pump for run {RunId} failed unexpectedly.", run.Id);
-            Publish(new FrontendEventFrame(
+            PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
                 RunId: run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.AgentError,
                 Message: "The agent turn failed."));
-            Publish(new FrontendEventFrame("run.status", State: "idle"));
             await SettleRunAsync().ConfigureAwait(false);
         }
         finally
@@ -435,12 +448,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             run.Id,
             sessionId,
             RunFailedCodes.Cancelled);
-        Publish(new FrontendEventFrame(
+        PublishTerminalPair(new FrontendEventFrame(
             "run.failed",
             RunId: run.Id.Value.ToString("N"),
             Code: RunFailedCodes.Cancelled,
             Message: "The host is shutting down."));
-        Publish(new FrontendEventFrame("run.status", State: "idle"));
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
@@ -493,7 +505,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private void PublishTerminal(AgentRunResult result, bool truncated)
     {
-        Publish(new FrontendEventFrame(
+        PublishTerminalPair(new FrontendEventFrame(
             "run.completed",
             RunId: run.Id.Value.ToString("N"),
             Truncated: result.Truncated || truncated,
@@ -506,7 +518,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                     usage.OutputTokenCount ?? 0,
                     usage.TotalTokenCount)
                 : null));
-        Publish(new FrontendEventFrame("run.status", State: "idle"));
     }
 
     private FrontendEventFrame MissingFrame()
@@ -538,6 +549,9 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         lock (gate)
         {
             completed = true;
+            // Belt and braces for every pump exit path: the terminal pair is the last frame
+            // pair, so nothing may be appended after the stream stopped draining its run.
+            publishClosed = true;
             // Complete live queues so subscriber loops advance to the next run; late
             // subscribers still replay the buffer through Subscribe.
             foreach (var subscriber in subscribers) subscriber.Channel.Writer.TryComplete();
@@ -548,62 +562,106 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private void Publish(FrontendEventFrame frame)
     {
-        PublishCore(frame, trackSequence: true);
+        _ = PublishCore(frame, trackSequence: true);
     }
 
     /// <summary>Publishes a child run's frame into this stream's replay and live queues
     /// without touching the parent run's sequence bookkeeping: child sequences are
     /// child-run-local, so the stream's oldest/latest tracking and the resume gap check stay
     /// parent-scoped. Child frames replay best-effort from retention (ADR 0030 decision 8);
-    /// live delivery is never dropped (invariant 16).</summary>
+    /// live delivery is never dropped (invariant 16). A child frame offered after the parent's
+    /// terminal pair is refused like any other: its producer is a display tap, not a run the
+    /// stream still serves.</summary>
     internal void PublishChildFrame(FrontendEventFrame frame)
     {
-        PublishCore(frame, trackSequence: false);
+        _ = PublishCore(frame, trackSequence: false);
     }
 
-    private void PublishCore(FrontendEventFrame frame, bool trackSequence)
+    /// <summary>Publishes the run's terminal pair — the terminal frame followed by
+    /// <c>run.status idle</c> — and closes the stream to every later frame. Both halves travel
+    /// under one lock hold, so a concurrent publisher cannot be ordered between them, and the
+    /// fence is set before the lock is released, so a publisher that raced the pair observes
+    /// the refusal instead of a frame behind <c>run.status idle</c> (invariant 7). Idempotent
+    /// per stream: a path that reached a second terminal pair would otherwise append a
+    /// duplicate pair behind the first.</summary>
+    private void PublishTerminalPair(FrontendEventFrame terminalFrame)
     {
         lock (gate)
         {
-            if (trackSequence && frame.Sequence is { } sequence)
-            {
-                if (oldestSequence == 0) oldestSequence = sequence;
-                if (sequence > latestSequence) latestSequence = sequence;
-            }
+            if (publishClosed) return;
 
-            replay.Add(frame);
-            if (replay.Count > ReplayRetention)
-            {
-                var evicted = replay[0];
-                replay.RemoveAt(0);
-                // Retention evicts from the front of the buffer, so the oldest retained
-                // sequence must follow the eviction: if it kept the all-time minimum,
-                // resumed clients behind the eviction would look current and silently
-                // receive a truncated replay (invariant 16's only permitted loss must
-                // surface as run.missing). Child frames are skipped: their sequences live
-                // in their own run-local spaces.
-                if (trackSequence &&
-                    evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
-                {
-                    oldestSequence = 0;
-                    foreach (var retained in replay)
-                        if (retained.RunId == ownRunId && retained.Sequence is { } retainedSequence)
-                        {
-                            oldestSequence = retainedSequence;
-                            break;
-                        }
-                }
-            }
-
-            foreach (var subscriber in subscribers)
-                if (!subscriber.Channel.Writer.TryWrite(frame))
-                    subscriber.Faulted = true;
+            PublishLocked(terminalFrame, trackSequence: true);
+            PublishLocked(new FrontendEventFrame("run.status", State: "idle"), trackSequence: true);
+            publishClosed = true;
         }
 
-        // Close overflowing subscribers outside the lock: backpressure disconnects instead of
-        // dropping frames, and the client reconnects with its last observed sequence. The
-        // queue completes with a marker exception after its buffered frames, so the handler
-        // closes the socket as a backpressure disconnect rather than a normal run end.
+        DisconnectOverflowingSubscribers();
+    }
+
+    private bool PublishCore(FrontendEventFrame frame, bool trackSequence)
+    {
+        lock (gate)
+        {
+            // A closed stream refuses frames outright: the run's terminal pair is its last
+            // frame pair, and a client resuming with sinceSequence rebuilds the run from this
+            // replay buffer, so a frame appended after it would be rendered as output of a run
+            // that already ended (invariant 7). The refusal is also the publisher's answer that
+            // the presentation is no longer live: the approval and elicitation presenters deny
+            // or cancel on it instead of waiting for a request no client will ever be offered.
+            if (publishClosed) return false;
+
+            PublishLocked(frame, trackSequence);
+        }
+
+        DisconnectOverflowingSubscribers();
+        return true;
+    }
+
+    /// <summary>Appends one frame to the replay buffer and the live subscriber queues. The
+    /// caller holds <see cref="gate" />.</summary>
+    private void PublishLocked(FrontendEventFrame frame, bool trackSequence)
+    {
+        if (trackSequence && frame.Sequence is { } sequence)
+        {
+            if (oldestSequence == 0) oldestSequence = sequence;
+            if (sequence > latestSequence) latestSequence = sequence;
+        }
+
+        replay.Add(frame);
+        if (replay.Count > ReplayRetention)
+        {
+            var evicted = replay[0];
+            replay.RemoveAt(0);
+            // Retention evicts from the front of the buffer, so the oldest retained
+            // sequence must follow the eviction: if it kept the all-time minimum,
+            // resumed clients behind the eviction would look current and silently
+            // receive a truncated replay (invariant 16's only permitted loss must
+            // surface as run.missing). Child frames are skipped: their sequences live
+            // in their own run-local spaces.
+            if (trackSequence &&
+                evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
+            {
+                oldestSequence = 0;
+                foreach (var retained in replay)
+                    if (retained.RunId == ownRunId && retained.Sequence is { } retainedSequence)
+                    {
+                        oldestSequence = retainedSequence;
+                        break;
+                    }
+            }
+        }
+
+        foreach (var subscriber in subscribers)
+            if (!subscriber.Channel.Writer.TryWrite(frame))
+                subscriber.Faulted = true;
+    }
+
+    /// <summary>Closes overflowing subscribers outside the lock: backpressure disconnects
+    /// instead of dropping frames, and the client reconnects with its last observed sequence.
+    /// The queue completes with a marker exception after its buffered frames, so the handler
+    /// closes the socket as a backpressure disconnect rather than a normal run end.</summary>
+    private void DisconnectOverflowingSubscribers()
+    {
         List<Subscriber>? overflowing = null;
         lock (gate)
         {

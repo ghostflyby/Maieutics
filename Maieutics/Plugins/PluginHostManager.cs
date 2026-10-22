@@ -1918,10 +1918,14 @@ internal sealed class PluginHostManager(
         string key,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        timeout.CancelAfter(ReplDeriveTimeout);
         try
         {
+            // Built inside the guard: a stop that disposed the generation's lifetime source
+            // between the call's entry and this line is a host that is gone, reported as the
+            // typed failed outcome below instead of an ObjectDisposedException escaping the
+            // derive path (AGENTS.md invariant 18).
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            timeout.CancelAfter(ReplDeriveTimeout);
             await using var registration = timeout.Token.Register(
                 static state => (state as TaskCompletionSource<ReplDeriveOutcome>)?.TrySetCanceled(),
                 tcs);
@@ -1934,6 +1938,14 @@ internal sealed class PluginHostManager(
                     JsonSerializer.SerializeToElement(derive, ReplControlJsonContext.Default.HostReplDerivePayload)),
                 timeout.Token).ConfigureAwait(false);
             return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The generation's lifetime source was disposed by StopCoreAsync while this derive
+            // was in flight: the host is gone, and the failure stays recoverable — the session
+            // factory falls back to a kernel-derived REPL — instead of surfacing as a raw
+            // exception (AGENTS.md invariant 18).
+            return ReplDeriveOutcome.DeriveFailed("The plugin host stopped before the derive completed.");
         }
         finally
         {

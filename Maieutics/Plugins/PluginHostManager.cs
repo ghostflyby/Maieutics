@@ -548,10 +548,15 @@ internal sealed class PluginHostManager(
     {
         Task stop;
         Task? inFlightRestart;
+        Task? inFlightStartup;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            // A restart clears `restart` in the same locked transition that swaps in the
+            // successor generation's startup, so past that point the in-flight work is the
+            // startup task itself; capture both under one gate read.
             inFlightRestart = restart;
+            inFlightStartup = starting;
             stop = EnsureStoppedAsync();
         }
 
@@ -559,7 +564,7 @@ internal sealed class PluginHostManager(
         // A restart in flight is part of this stop: observing it here keeps the stop from
         // returning while lifecycle state could still be reset or a fresh host generation
         // started behind the caller's back.
-        await ObserveInFlightRestartAsync(inFlightRestart).ConfigureAwait(false);
+        await ObserveInFlightRestartAsync(inFlightRestart, inFlightStartup).ConfigureAwait(false);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -575,10 +580,14 @@ internal sealed class PluginHostManager(
     {
         Task stop;
         Task? inFlightRestart;
+        Task? inFlightStartup;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            // Same capture as DisposeAsync: the restart's swap moves the in-flight work from
+            // `restart` to the successor generation's `starting`, so both are read together.
             inFlightRestart = restart;
+            inFlightStartup = starting;
             stop = EnsureStoppedAsync();
         }
 
@@ -596,7 +605,7 @@ internal sealed class PluginHostManager(
             await stop.ConfigureAwait(false);
         }
 
-        await ObserveInFlightRestartAsync(inFlightRestart).ConfigureAwait(false);
+        await ObserveInFlightRestartAsync(inFlightRestart, inFlightStartup).ConfigureAwait(false);
     }
 
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
@@ -2253,27 +2262,39 @@ internal sealed class PluginHostManager(
 
     /// <summary>Waits for the in-flight plugin-set restart to unwind, so an external stop
     /// (dispose or hosted-service stop) never returns while a restart could still reset the
-    /// lifecycle state or start a fresh host generation behind it. The restart observes the
-    /// externally-stopped flag at its reset and aborts, so it settles as soon as the stop does;
-    /// it also awaits this very stop as its own teardown, which is why the observation happens
-    /// in the external stop's caller and never inside <see cref="StopCoreAsync"/> — awaiting a
-    /// restart there would wait on a task that is itself waiting for this stop. Bounded by the
-    /// same 30 s budget the stop uses for its own drains, so a wedged restart cannot hold the
-    /// host stop open.</summary>
-    private async Task ObserveInFlightRestartAsync(Task? inFlightRestart)
+    /// lifecycle state or start a fresh host generation behind it. Past the restart's
+    /// generation swap the restart field is already cleared and the in-flight work is the
+    /// successor generation's <c>starting</c> startup, which the stop cancels but never
+    /// awaits — its completion is what would move the reported state after the stop
+    /// returns — so both captured tasks are observed here. The restart observes the
+    /// externally-stopped flag at its reset and aborts, so it settles as soon as the stop
+    /// does; the joined startup settles canceled or faulted against this stop (its
+    /// disposal-check failure reports through readiness) and its unwind awaits this very
+    /// stop as its own teardown, which is why the observation happens in the external
+    /// stop's caller and never inside <see cref="StopCoreAsync"/> — awaiting either task
+    /// there would wait on a task that is itself waiting for this stop. Bounded by the
+    /// same 30 s budget the stop uses for its own drains, so a wedged restart cannot hold
+    /// the host stop open.</summary>
+    private async Task ObserveInFlightRestartAsync(Task? inFlightRestart, Task? inFlightStartup)
     {
-        if (inFlightRestart is null) return;
+        if (inFlightRestart is null && inFlightStartup is null) return;
 
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try
         {
-            await inFlightRestart.WaitAsync(budget.Token).ConfigureAwait(false);
+            if (inFlightRestart is not null)
+                await inFlightRestart.WaitAsync(budget.Token).ConfigureAwait(false);
+            if (inFlightStartup is not null)
+                await inFlightStartup.WaitAsync(budget.Token).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is OperationCanceledException or AggregateException)
+        catch (Exception exception)
         {
+            // The restart handles its own failures, and a joined startup already reported
+            // its outcome through readiness; observing them here must not surface their
+            // cancellation or fault as the stop's own failure.
             logger.LogWarning(
                 exception,
-                "The plugin host restart was still running when the host stopped.");
+                "The plugin host restart or startup was still unwinding when the host stopped.");
         }
     }
 

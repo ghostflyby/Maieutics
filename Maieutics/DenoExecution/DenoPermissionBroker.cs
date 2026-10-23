@@ -32,6 +32,9 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> registrations = new();
     private readonly string? socketPath;
     private readonly string? pipeName;
+    // Serializes the pipe listener's replacement (the accept loop) with its shutdown release (the
+    // accept loop's cleanup), so a release can never race a replacement.
+    private readonly Lock listenerGate = new();
     private Task loop = Task.CompletedTask;
     private Socket? unixListener;
     private NamedPipeServerStream? pipeListener;
@@ -202,12 +205,15 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                     }
 
                     _ = ServePipeConnectionAsync(pipeListener, lifetime.Token);
-                    pipeListener = new NamedPipeServerStream(
-                        pipeName!,
-                        PipeDirection.InOut,
-                        MaximumPendingConnections,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous);
+                    lock (listenerGate)
+                    {
+                        pipeListener = new NamedPipeServerStream(
+                            pipeName!,
+                            PipeDirection.InOut,
+                            MaximumPendingConnections,
+                            PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous);
+                    }
                 }
 
                 return;
@@ -227,6 +233,19 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         finally
         {
             unixListener?.Dispose();
+
+            // The unix cleanup cannot release the Windows named-pipe listener: this loop creates
+            // and replaces it, and DisposeAsync only awaits this loop. Swap it out under the same
+            // lock the replacement takes so a release never races a replacement, then dispose the
+            // captured instance so shutdown cannot leave the pipe handle open.
+            NamedPipeServerStream? pipe;
+            lock (listenerGate)
+            {
+                pipe = pipeListener;
+                pipeListener = null;
+            }
+
+            pipe?.Dispose();
         }
     }
 

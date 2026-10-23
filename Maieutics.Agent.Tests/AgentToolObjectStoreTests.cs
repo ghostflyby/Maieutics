@@ -82,11 +82,7 @@ public sealed class AgentToolObjectStoreTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(testToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(25));
-        return deadline;
-    }
+        => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(
         IAgentRun run,

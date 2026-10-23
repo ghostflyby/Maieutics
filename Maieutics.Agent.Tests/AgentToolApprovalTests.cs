@@ -439,11 +439,7 @@ public sealed class AgentToolApprovalTests
     }
 
     private static CancellationTokenSource CreateDeadline()
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(Deadline);
-        return deadline;
-    }
+        => TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
 
     private static async Task<IReadOnlyList<AgentEvent>> ReadEventsAsync(
         IAgentRun run,

@@ -808,11 +808,7 @@ public sealed class AgentSubagentTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+        => TestDeadlines.Create(cancellationToken);
 
     private static AIFunction CreateSpawnTool(
         string name,

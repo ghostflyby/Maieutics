@@ -491,11 +491,7 @@ public sealed class AgentTranscriptSessionTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+        => TestDeadlines.Create(cancellationToken);
 
     private sealed class RecordingClient(
         params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)

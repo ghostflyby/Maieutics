@@ -1062,11 +1062,7 @@ public sealed class AgentSessionTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+        => TestDeadlines.Create(cancellationToken);
 
     // ReSharper disable once InconsistentNaming
     private sealed class MetadataAIFunction(

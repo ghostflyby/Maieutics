@@ -16,10 +16,12 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
+        <ProjectReference Include="..\Maieutics.Testing\Maieutics.Testing.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
         <Using Include="Xunit"/>
+        <Using Include="Maieutics.Testing"/>
     </ItemGroup>
 
 </Project>

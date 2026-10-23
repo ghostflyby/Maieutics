@@ -442,10 +442,20 @@ public sealed class PluginHostInvokeTests
     /// the simulated host answers by driving <see cref="PluginHostManager.HandleHostMessage"/>
     /// directly. A fake deno executable keeps the manager's real host process from racing the
     /// simulated socket.</summary>
-    internal static async Task<HostHarness> CreateHarnessAsync(CancellationToken cancellationToken)
+    internal static Task<HostHarness> CreateHarnessAsync(CancellationToken cancellationToken)
+    {
+        return CreateHarnessAsync(
+            Path.Combine(Path.GetTempPath(), $"mc-host-invoke-{Guid.NewGuid():N}"),
+            cancellationToken);
+    }
+
+    /// <summary>Same harness over a caller-supplied plugins root, so lifecycle tests can seed
+    /// or mutate the watched plugin set (the restart seam) before and after the manager starts
+    /// watching it.</summary>
+    internal static async Task<HostHarness> CreateHarnessAsync(string pluginsRoot, CancellationToken cancellationToken)
     {
         var manager = new PluginHostManager(
-            Path.Combine(Path.GetTempPath(), $"mc-host-invoke-{Guid.NewGuid():N}"),
+            pluginsRoot,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
             ReplControlHost.CreateSocketPath(),
             new DenoReplOptions { Executable = FakeDenoExecutable.Path },

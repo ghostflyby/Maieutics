@@ -17,7 +17,7 @@ public sealed class FileLoggingTests : IAsyncDisposable
     {
         try
         {
-            await TempDirectoryCleanup.DeleteWithRetryAsync(logDirectory);
+            await TempArea.DeleteAsync(logDirectory);
         }
         catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
         {

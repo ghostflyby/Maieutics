@@ -18,7 +18,7 @@ public sealed class McpServerFileTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(BaseDirectory);
+        await TempArea.DeleteAsync(BaseDirectory);
     }
 
     [Fact]

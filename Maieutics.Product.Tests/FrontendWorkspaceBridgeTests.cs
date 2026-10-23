@@ -578,7 +578,7 @@ public sealed class FrontendWorkspaceBridgeTests
             // Windows can still hold a file inside the tree for a moment after the last
             // writer; the shared retry turns that into a short wait instead of a teardown
             // failure. A genuinely wedged tree still surfaces after the budget.
-            await TempDirectoryCleanup.DeleteWithRetryAsync(Root);
+            await TempArea.DeleteAsync(Root);
         }
     }
 

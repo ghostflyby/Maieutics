@@ -24,7 +24,7 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
         // The transcript store's SQLite handle can linger briefly past its dispose on
         // Windows (WAL teardown, external scanners); retry with an asynchronous
         // backoff so a teardown lock never masks the test result.
-        await TempDirectoryCleanup.DeleteWithRetryAsync(agentRoot, TestContext.Current.CancellationToken);
+        await TempArea.DeleteAsync(agentRoot, TestContext.Current.CancellationToken);
     }
 
     [Fact]

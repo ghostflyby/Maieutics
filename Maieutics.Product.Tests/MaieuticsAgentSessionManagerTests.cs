@@ -29,7 +29,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         // WAL teardown and external scanners (antivirus, indexer) can hold the database
         // handle past the last close on Windows; the shared helper retries with an
         // asynchronous backoff so a teardown lock never masks the test result.
-        await TempDirectoryCleanup.DeleteWithRetryAsync(databaseDirectory, TestContext.Current.CancellationToken);
+        await TempArea.DeleteAsync(databaseDirectory, TestContext.Current.CancellationToken);
     }
 
     [Fact]

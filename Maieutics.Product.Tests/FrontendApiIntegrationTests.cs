@@ -1232,7 +1232,7 @@ public sealed class FrontendApiIntegrationTests
     /// its own budget, not the test token: after a timeout that token is canceled and
     /// would abort cleanup and leak the tree.</summary>
     private static Task DeleteDirectoryWithRetryAsync(string path) =>
-        TempDirectoryCleanup.DeleteWithRetryAsync(path);
+        TempArea.DeleteAsync(path);
 
     [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedPerSessionWithLazyResolve()
@@ -1827,12 +1827,13 @@ public sealed class FrontendApiIntegrationTests
             await provider.DisposeAsync();
             try
             {
-                Directory.Delete(dataRoot, recursive: true);
+                await TempArea.DeleteAsync(dataRoot);
             }
-            catch (IOException)
+            catch (TimeoutException)
             {
-                // A store connection can hold the directory briefly on Windows; a
-                // leftover temp directory must not mask the test result.
+                // A store connection can hold the directory briefly on Windows; the shared
+                // retry rides that out, and a leftover temp directory must not mask the
+                // test result.
             }
             try
             {

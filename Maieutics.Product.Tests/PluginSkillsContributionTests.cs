@@ -32,7 +32,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(workspaceRoot);
+        await TempArea.DeleteAsync(workspaceRoot);
     }
 
     private static void WriteSkill(string root, string name, string description)

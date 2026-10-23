@@ -183,7 +183,7 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
 
-        TemporaryWorkspace.DeleteTree(home.ProjectsRoot);
+        TempArea.DeleteTree(home.ProjectsRoot);
         Assert.True(File.Exists(marker), "link-aware deletion of product-owned workspace state must not follow managed links");
     }
 

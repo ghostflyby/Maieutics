@@ -18,8 +18,8 @@ public sealed class SkillCatalogTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(workspaceRoot);
-        await TempDirectoryCleanup.DeleteWithRetryAsync(userRoot);
+        await TempArea.DeleteAsync(workspaceRoot);
+        await TempArea.DeleteAsync(userRoot);
     }
 
     private static void WriteSkill(string root, string name, string description)
@@ -474,7 +474,7 @@ public sealed class SkillResourceProviderTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        await TempArea.DeleteAsync(root);
     }
 
     private SkillCatalog CreateCatalog()
@@ -613,7 +613,7 @@ public sealed class SkillsProfileProviderTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        await TempArea.DeleteAsync(root);
     }
 
     private static async Task<AgentRunProfile> AcquireAsync(SkillsProfileProvider provider)

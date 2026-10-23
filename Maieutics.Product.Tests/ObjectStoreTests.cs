@@ -23,7 +23,7 @@ public sealed class ObjectStoreTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
+        await TempArea.DeleteAsync(objectsRoot);
     }
 
     private ObjectStore CreateStore() => new(objectsRoot);

@@ -1514,7 +1514,7 @@ public sealed class FrontendApiIntegrationTests
     {
         return await FrontendHarness.StartAsync(
             cancellationToken,
-            new HangingOpenAiServer(),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Hanging, answer: "late"),
             hanging: true);
     }
 
@@ -1526,7 +1526,7 @@ public sealed class FrontendApiIntegrationTests
         private readonly IAsyncDisposable provider;
         private readonly string configurationFile;
         private readonly string dataRoot;
-        private readonly HangingOpenAiServer? hangingProvider;
+        private readonly GatedModelProvider? hangingProvider;
 
         private FrontendHarness(
             IHost host,
@@ -1541,7 +1541,7 @@ public sealed class FrontendApiIntegrationTests
             this.provider = provider;
             this.configurationFile = configurationFile;
             this.dataRoot = dataRoot;
-            hangingProvider = hanging ? (HangingOpenAiServer)provider : null;
+            hangingProvider = hanging ? (GatedModelProvider)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;
             Client = CreateClient();
@@ -1578,7 +1578,7 @@ public sealed class FrontendApiIntegrationTests
             // The model and provider endpoint live in the configuration file (not the CLI or
             // in-memory configuration) so the hot-reload test can rewrite them.
             var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
-                ?? (provider as HangingOpenAiServer)?.Endpoint.ToString() ?? string.Empty;
+                ?? (provider as GatedModelProvider)?.Endpoint.ToString() ?? string.Empty;
             var configurationFileBody = ConfigurationTemplate
                 .Replace("{{model}}", model)
                 .Replace("{{endpoint}}", endpoint);
@@ -1915,130 +1915,6 @@ public sealed class FrontendApiIntegrationTests
             CancellationToken cancellationToken)
         {
             Published.Add((type, displayId, data.Clone()));
-        }
-    }
-
-    /// <summary>A chat-completions SSE server that accepts the request and never answers
-    /// until released, making run lifetime deterministic.</summary>
-    private sealed class HangingOpenAiServer : IAsyncDisposable
-    {
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly Task serveLoop;
-        private readonly Lock gate = new();
-        private readonly List<Task> connections = [];
-
-        public HangingOpenAiServer()
-        {
-            listener.Start();
-            var endpoint = (IPEndPoint)listener.LocalEndpoint;
-            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            serveLoop = ServeAsync(cancellation.Token);
-        }
-
-        public Uri Endpoint { get; }
-
-        public void Release() => release.TrySetResult();
-
-        /// <summary>Failure diagnostics: how many provider connections were accepted, how
-        /// many reached the park point, and whether a release was already requested.</summary>
-        internal string DescribeState()
-        {
-            return $"connections={Volatile.Read(ref connectionsOpened)} "
-                + $"parked={Volatile.Read(ref parkedCount)} released={release.Task.IsCompleted}";
-        }
-
-        private int connectionsOpened;
-        private int parkedCount;
-
-        public async ValueTask DisposeAsync()
-        {
-            await cancellation.CancelAsync();
-            listener.Stop();
-            release.TrySetResult();
-            Task[] connectionTasks;
-            lock (gate)
-            {
-                connectionTasks = [.. connections];
-            }
-
-            try
-            {
-                // Every client task observes the cancellation (parked, answering, or
-                // holding the connection open for the client), so this settles promptly.
-                await Task.WhenAll(connectionTasks).ConfigureAwait(false);
-                // The accept loop settles once the listener stops; without observing
-                // it, a late ObjectDisposedException on the disposed CTS escapes.
-                await serveLoop.ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            cancellation.Dispose();
-        }
-
-        private async Task ServeAsync(CancellationToken cancellationToken)
-        {
-            // Accept in a loop: the provider client (and any retried request) may open more
-            // than one connection; a single accept would hang the second one on slow CI.
-            try
-            {
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    var client = await listener.AcceptTcpClientAsync(cancellationToken);
-                    Task connection = ServeClientAsync(client, cancellationToken);
-                    lock (gate)
-                    {
-                        connections.Add(connection);
-                    }
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException)
-            {
-            }
-        }
-
-        private async Task ServeClientAsync(TcpClient client, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var stream = client.GetStream();
-                Interlocked.Increment(ref connectionsOpened);
-                // The request must be read in full before parking: the release can land
-                // while the client is still sending, and answering-and-closing a
-                // partially-sent request resets the connection under the client's
-                // response read — Windows discards the buffered response bytes on the
-                // reset, surfacing as an agent_provider_error flake on slow runners.
-                await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref parkedCount);
-                await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                var body = Encoding.UTF8.GetBytes(
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n");
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-                // Hold the connection open (keep-alive, like a real HTTP server) instead
-                // of disposing it right after the response: the close races the client's
-                // response read. The drain ends at the client's EOF or server disposal.
-                var buffer = new byte[4096];
-                while (await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) > 0)
-                {
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or EndOfStreamException or SocketException
-                or IOException or ObjectDisposedException or InvalidDataException or JsonException)
-            {
-            }
-            finally
-            {
-                client.Dispose();
-            }
         }
     }
 }

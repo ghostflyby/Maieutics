@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
+using GatedOpenAiServer = Maieutics.Testing.GatedModelProvider;
 
 namespace Maieutics.Product.Tests;
 
@@ -30,7 +31,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -66,7 +67,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task ReleasesReachOnlyRequestsStillAwaitingRelease()
     {
         _ = TestContext.Current.CancellationToken;
-        await using var provider = new GatedOpenAiServer();
+        await using var provider = new GatedOpenAiServer(answer: Answer);
         var first = provider.ParkForTest();
         var second = provider.ParkForTest();
         Assert.Equal(2, provider.ParkedRequests);
@@ -88,7 +89,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task DirectTurnStaysBusyRejectedWhileTheQueueIsActive()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -120,7 +121,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueSnapshotCarriesRunningItemAndOrderedPendingItems()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -165,7 +166,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueItemDeleteRemovesQueuedItemsOnly()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -232,7 +233,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueClearRemovesQueuedItemsAndTheRunningItemCompletes()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -281,7 +282,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueFullRejectsTheWholeBatch()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -321,7 +322,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueRejectsCommandCellsInvalidTextsAndUnknownSessions()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -378,7 +379,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueueUpdatedFramesReachEveryEventsSocket()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         // Exposed to the shared wait helpers for their timeout diagnostics.
         this.provider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
@@ -475,7 +476,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task RunningTransitionFlushesWhileTheRunIsServed()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         this.provider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -519,7 +520,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task WorkerSurvivesADirectSubmissionRace()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -551,7 +552,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task DrainReleasesARunParkedWhileTheQueueLooksEmpty()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -588,7 +589,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public async Task QueuePinLeaseIsHeldWhileWorkIsQueuedAndReleasedOnDrain()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         var manager = harness.SessionManager;
@@ -888,7 +889,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         // vanishes while its release is pending used to leave an unreleasable entry at
         // the head of the gate, so every subsequent release popped the zombie and the
         // live request starved forever.
-        var provider = new GatedOpenAiServer();
+        var provider = new GatedOpenAiServer(answer: Answer);
         using var zombie = new TcpClient();
         await zombie.ConnectAsync(IPAddress.Loopback, provider.Port, TestContext.Current.CancellationToken);
         var request = Encoding.ASCII.GetBytes(
@@ -906,340 +907,5 @@ public sealed class FrontendTurnQueueIntegrationTests
         provider.ReleaseNext();
         await probe.Task.WaitAsync(wait.Token);
         Assert.True(probe.Task.IsCompleted);
-    }
-
-    /// <summary>A chat-completions SSE server whose responses are gated one request at a
-    /// time: every provider request parks until the test releases it, so run lifetimes and
-    /// queue transitions can be staged deterministically.</summary>
-    private sealed class GatedOpenAiServer : IAsyncDisposable
-    {
-        private static readonly byte[] HeaderTerminator = "\r\n\r\n"u8.ToArray();
-
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-        private readonly Task serveLoop;
-        private readonly Lock gate = new();
-        private readonly List<TaskCompletionSource> parked = [];
-        private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly List<Task> connections = [];
-
-        public GatedOpenAiServer()
-        {
-            listener.Start();
-            var endpoint = (IPEndPoint)listener.LocalEndpoint;
-            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            serveLoop = ServeAsync(cancellation.Token);
-        }
-
-        public Uri Endpoint { get; }
-
-        /// <summary>The raw listen port, for tests that drive the gate's TCP surface directly.</summary>
-        public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
-
-        /// <summary>How many provider requests have arrived and are waiting for release.</summary>
-        public int ParkedRequests
-        {
-            get
-            {
-                lock (gate)
-                {
-                    return parked.Count;
-                }
-            }
-        }
-
-        /// <summary>Waits until at least <paramref name="minimum"/> provider requests have
-        /// arrived and are waiting for release. Signal-driven: every parked-count mutation
-        /// (park, release, or a vanished client) completes a fresh source, so the wait needs
-        /// no polling of <see cref="ParkedRequests"/>.</summary>
-        internal async Task WaitForParkedAsync(int minimum, CancellationToken cancellationToken)
-        {
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                Task signal;
-                lock (gate)
-                {
-                    if (parked.Count >= minimum) return;
-
-                    signal = parkedChanged.Task;
-                }
-
-                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        /// <summary>Waits until every parked provider request has left the gate (released, or
-        /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync"/>.</summary>
-        internal async Task WaitForParkedDrainedAsync(CancellationToken cancellationToken)
-        {
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                Task signal;
-                lock (gate)
-                {
-                    if (parked.Count == 0) return;
-
-                    signal = parkedChanged.Task;
-                }
-
-                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        /// <summary>Completes the parked-count signal and swaps in a fresh source, under the
-        /// caller's hold of <see cref="gate"/>. RunContinuationsAsynchronously keeps waiter
-        /// continuations off the mutating thread.</summary>
-        private void NotifyParkedChangedLocked()
-        {
-            parkedChanged.TrySetResult();
-            parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        /// <summary>Releases the oldest provider request that is still awaiting release.
-        /// <para>
-        /// The released entry leaves <see cref="parked" /> under the same lock that releases
-        /// it, so the list holds exactly the requests that are still awaiting a release.
-        /// The earlier version removed an entry from the server-side continuation instead,
-        /// which left a released entry listed until that continuation ran: during that window
-        /// <see cref="ParkedRequests" /> over-reported, <c>ReleaseNext</c> hit the stale head
-        /// and silently no-opped (completing a completed source does nothing), and the request
-        /// that was really parked was never released — the CI timeout this guards.
-        /// </para></summary>
-        public void ReleaseNext()
-        {
-            TaskCompletionSource? release = null;
-            lock (gate)
-            {
-                while (parked.Count > 0)
-                {
-                    var next = parked[0];
-                    parked.RemoveAt(0);
-                    if (next.Task.IsCompleted) continue;
-                    release = next;
-                    break;
-                }
-
-                if (release is not null) NotifyParkedChangedLocked();
-            }
-
-            // Completed outside the lock: the entry is no longer listed, so only this call
-            // can complete it.
-            release?.TrySetResult();
-        }
-
-        /// <summary>Releases every provider request currently awaiting release.</summary>
-        public void ReleaseAll()
-        {
-            TaskCompletionSource[] releases;
-            lock (gate)
-            {
-                releases = [.. parked];
-                parked.Clear();
-                if (releases.Length > 0) NotifyParkedChangedLocked();
-            }
-
-            foreach (var release in releases) release.TrySetResult();
-        }
-
-        /// <summary>Parks a synthetic request so the release bookkeeping can be exercised
-        /// without a live socket. The returned source completes when a release reaches it.</summary>
-        internal TaskCompletionSource ParkForTest()
-        {
-            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (gate)
-            {
-                parked.Add(release);
-                NotifyParkedChangedLocked();
-            }
-
-            return release;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            listener.Stop();
-            ReleaseAll();
-            Task[] connectionTasks;
-            lock (gate)
-            {
-                connectionTasks = [.. connections];
-            }
-
-            try
-            {
-                await Task.WhenAll(connectionTasks).ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            try
-            {
-                await serveLoop.ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            cancellation.Dispose();
-        }
-
-        private async Task ServeAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-                    Task connection = ServeClientAsync(client, cancellationToken);
-                    lock (gate)
-                    {
-                        connections.Add(connection);
-                    }
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or ObjectDisposedException or IOException)
-            {
-            }
-        }
-
-        private async Task ServeClientAsync(TcpClient client, CancellationToken cancellationToken)
-        {
-            try
-            {
-                await using var stream = client.GetStream();
-                var buffer = new byte[64 * 1024];
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    // The gate registers only after the request fully arrived, so release
-                    // order matches request order (runs are serialized by the session).
-                    await ReadRequestAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
-                    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    lock (gate)
-                    {
-                        parked.Add(release);
-                        NotifyParkedChangedLocked();
-                    }
-
-                    // The release call owns removing a released entry; a client that walks
-                    // away while parked owns removing its own: a vanished connection can
-                    // never observe its release, so its entry would sit at the head of the
-                    // queue unreleasable and ReleaseNext would spend every pop on it while
-                    // the live request starved behind it (the Debug-load hang this guards).
-                    using var parkedWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    var disconnected = WaitDisconnectedAsync(client, parkedWait.Token);
-                    var settled = await Task.WhenAny(release.Task, disconnected).ConfigureAwait(false);
-                    await parkedWait.CancelAsync().ConfigureAwait(false);
-                    lock (gate)
-                    {
-                        if (parked.Remove(release)) NotifyParkedChangedLocked();
-                    }
-
-                    if (cancellationToken.IsCancellationRequested ||
-                        !ReferenceEquals(settled, release.Task))
-                    {
-                        return;
-                    }
-
-                    if (cancellationToken.IsCancellationRequested) return;
-
-                    var body = Encoding.UTF8.GetBytes(
-                        "data: {\"choices\":[{\"delta\":{\"content\":\"" + Answer + "\"}}]}\n\n" +
-                        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
-                    var headers = Encoding.ASCII.GetBytes(
-                        $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                    await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                    await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or EndOfStreamException or SocketException or IOException
-                    or ObjectDisposedException)
-            {
-            }
-            finally
-            {
-                client.Dispose();
-            }
-        }
-
-        /// <summary>Completes when the client closes its end (EOF) or the server shuts
-        /// down: a parked request whose connection is gone can never observe a release,
-        /// so its gate entry must be removed instead of blocking the head of the queue.</summary>
-        private static async Task WaitDisconnectedAsync(TcpClient client, CancellationToken cancellationToken)
-        {
-            var socket = client.Client;
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) return;
-                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        private static async Task ReadRequestAsync(
-            NetworkStream stream,
-            byte[] buffer,
-            CancellationToken cancellationToken)
-        {
-            var total = 0;
-            int headerEnd;
-            while (true)
-            {
-                var read = await stream.ReadAsync(buffer.AsMemory(total), cancellationToken).ConfigureAwait(false);
-                if (read == 0) throw new EndOfStreamException();
-
-                total += read;
-                headerEnd = IndexOf(buffer, total, HeaderTerminator);
-                if (headerEnd >= 0) break;
-
-                if (total == buffer.Length)
-                    throw new InvalidOperationException("The request headers overflowed the test buffer.");
-            }
-
-            var contentLength = ParseContentLength(Encoding.ASCII.GetString(buffer, 0, headerEnd));
-            var bodyEnd = headerEnd + HeaderTerminator.Length + contentLength;
-            while (total < bodyEnd)
-            {
-                var read = await stream.ReadAsync(buffer.AsMemory(total), cancellationToken).ConfigureAwait(false);
-                if (read == 0) throw new EndOfStreamException();
-
-                total += read;
-            }
-        }
-
-        private static int IndexOf(byte[] buffer, int length, byte[] pattern)
-        {
-            for (var start = 0; start <= length - pattern.Length; start++)
-            {
-                var matched = true;
-                for (var offset = 0; offset < pattern.Length; offset++)
-                    if (buffer[start + offset] != pattern[offset])
-                    {
-                        matched = false;
-                        break;
-                    }
-
-                if (matched) return start;
-            }
-
-            return -1;
-        }
-
-        private static int ParseContentLength(string headers)
-        {
-            foreach (var line in headers.Split("\r\n"))
-                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                    return int.Parse(line["Content-Length:".Length..].Trim(), CultureInfo.InvariantCulture);
-
-            return 0;
-        }
     }
 }

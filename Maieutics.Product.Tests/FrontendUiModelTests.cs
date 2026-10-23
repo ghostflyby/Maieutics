@@ -209,7 +209,7 @@ public sealed class FrontendUiModelTests
         var token = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",

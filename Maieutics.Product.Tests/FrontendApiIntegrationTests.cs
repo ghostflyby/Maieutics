@@ -596,7 +596,7 @@ public sealed class FrontendApiIntegrationTests
         // the configured count and stops answering after that.
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
@@ -720,7 +720,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task ForkAppliesTheRequestedProfileOverride()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
@@ -777,7 +777,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task AddressedModelCommandsLazilyResumeStoredSessions()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
@@ -1088,7 +1088,7 @@ public sealed class FrontendApiIntegrationTests
         // 45 s inside the 60 s outer Fact timeout: the switch exercises two providers and a
         // canonical-history replay, while the outer attribute still fires with time to report.
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
@@ -1277,7 +1277,7 @@ public sealed class FrontendApiIntegrationTests
         // single-active semantics busy-rejected the second submission).
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
@@ -1320,7 +1320,7 @@ public sealed class FrontendApiIntegrationTests
         // is enabled; the transform turns it on for this host.
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer),
             hanging: false,
             transformConfiguration: body => body.Replace(
                 "\"Maieutics\": {",

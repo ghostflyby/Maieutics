@@ -32,8 +32,9 @@ public sealed class FrontendEventsSocketRunWaitTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(70));
         // The harness owns the provider's lifetime and disposes it with the host.
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             requestCount: 3);
         await using var harness = await Harness.StartAsync(
             deadline.Token,

@@ -1280,7 +1280,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             cancellationToken,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
 
         var unknown = await harness.Client.PostAsJsonAsync("/v1/agent/ide/ide-none", new { value = 1 }, cancellationToken);
@@ -1331,7 +1331,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             cancellationToken,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         var gate = harness.IdeGate;

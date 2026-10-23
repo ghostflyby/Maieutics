@@ -24,7 +24,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",
@@ -46,7 +46,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -102,7 +102,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -158,7 +158,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -184,7 +184,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -211,7 +211,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -257,7 +257,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 

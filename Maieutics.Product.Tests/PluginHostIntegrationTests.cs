@@ -81,7 +81,7 @@ public sealed class PluginHostIntegrationTests
         {
             await manager.DisposeAsync();
             await application.DisposeAsync();
-            Directory.Delete(pluginsRoot, true);
+            await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 
@@ -120,7 +120,7 @@ public sealed class PluginHostIntegrationTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 
@@ -152,7 +152,7 @@ public sealed class PluginHostIntegrationTests
         finally
         {
             await manager.DisposeAsync();
-            Directory.Delete(pluginsRoot, true);
+            await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 
@@ -361,7 +361,7 @@ public sealed class PluginHostIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, true);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 120_000)]
@@ -463,7 +463,7 @@ public sealed class PluginHostIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, true);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
     }
 
     private static string CreateCapabilityPluginsRoot()
@@ -590,7 +590,7 @@ public sealed class PluginHostIntegrationTests
         {
             await manager.DisposeAsync();
             await application.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -676,7 +676,7 @@ public sealed class PluginHostIntegrationTests
         {
             await manager.DisposeAsync();
             await application.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -848,7 +848,7 @@ public sealed class PluginHostIntegrationTests
             Assert.Equal(0, manager.GetStatus().PendingApprovals);
         }
 
-        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 60_000)]
@@ -893,7 +893,7 @@ public sealed class PluginHostIntegrationTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 
@@ -967,7 +967,7 @@ public sealed class PluginHostIntegrationTests
             // The wait targets the NEW generation's convergence (root re-registered,
             // extra gone): the teardown phase clears every registration, so a negative
             // condition alone would "pass" mid-restart with the root still missing.
-            Directory.Delete(Path.Combine(pluginsRoot, "extra"), true);
+            await TempArea.DeleteAsync(Path.Combine(pluginsRoot, "extra"), timeout.Token);
             RemoveLocalImport(pluginsRoot, "@acme/extra/main");
 
             await WaitForRegistryConditionAsync(
@@ -980,7 +980,7 @@ public sealed class PluginHostIntegrationTests
             Assert.Contains(manager.GetRegistrations(ReplExtensionPointName.McpDiscover), registration => registration.PluginId == rootPluginId);
         }
 
-        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 150_000)]
@@ -1032,7 +1032,7 @@ public sealed class PluginHostIntegrationTests
             Assert.Contains(manager.GetStatus().State, new[] { PluginHostState.Stopped, PluginHostState.Canceled, PluginHostState.Failed });
         }
 
-        if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+        if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
     }
 
     /// <summary>

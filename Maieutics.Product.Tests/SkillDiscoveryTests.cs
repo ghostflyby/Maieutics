@@ -9,7 +9,7 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(root);
+        await TempArea.DeleteAsync(root, CancellationToken.None);
     }
 
     private string WriteSkill(string relativeDirectory, string body, string fileName = "SKILL.md")

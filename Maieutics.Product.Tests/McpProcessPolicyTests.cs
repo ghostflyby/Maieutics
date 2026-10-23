@@ -96,7 +96,7 @@ public sealed class McpProcessPolicyTests
             await manager.DisposeAsync();
             Environment.SetEnvironmentVariable(grantedName, previousGrant);
             Environment.SetEnvironmentVariable("TERM", previousTerm);
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
             CleanupDirectory(directory);
         }
     }
@@ -365,7 +365,7 @@ public sealed class McpProcessPolicyTests
     {
         try
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            TempArea.DeleteTree(directory);
         }
         catch (IOException)
         {

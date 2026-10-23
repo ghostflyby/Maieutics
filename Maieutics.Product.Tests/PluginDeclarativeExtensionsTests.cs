@@ -57,7 +57,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -92,7 +92,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -150,8 +150,8 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-            if (Directory.Exists(outside)) Directory.Delete(outside, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
+            if (Directory.Exists(outside)) await TempArea.DeleteAsync(outside, CancellationToken.None);
         }
     }
 
@@ -196,7 +196,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -265,7 +265,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -305,7 +305,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -362,7 +362,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -424,7 +424,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -474,7 +474,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -515,7 +515,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -558,7 +558,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -728,7 +728,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -783,7 +783,7 @@ public sealed class PluginDeclarativeExtensionsTests
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

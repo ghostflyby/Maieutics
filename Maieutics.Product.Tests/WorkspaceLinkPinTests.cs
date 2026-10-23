@@ -35,7 +35,7 @@ public sealed class WorkspaceLinkPinTests
             Path.Combine(replacement, "marker.txt"),
             "replacement",
             TestContext.Current.CancellationToken);
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
         Directory.Move(replacement, project);
 
         var uri = "workspace://local/projects/project/marker.txt";
@@ -90,7 +90,7 @@ public sealed class WorkspaceLinkPinTests
             Path.Combine(replacement, "marker.txt"),
             "replacement",
             TestContext.Current.CancellationToken);
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
         Directory.Move(replacement, project);
 
         // Legacy semantics: without a fingerprint the swap is indistinguishable, and the

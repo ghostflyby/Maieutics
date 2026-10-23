@@ -58,7 +58,7 @@ public sealed class PluginHostProcessTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

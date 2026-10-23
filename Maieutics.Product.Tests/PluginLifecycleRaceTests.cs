@@ -238,7 +238,7 @@ public sealed class PluginLifecycleRaceTests
         }
         finally
         {
-            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 

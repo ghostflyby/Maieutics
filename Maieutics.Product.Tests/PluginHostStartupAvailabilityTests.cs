@@ -69,7 +69,7 @@ public sealed class PluginHostStartupAvailabilityTests
             await manager.DisposeAsync();
             TryDelete(marker);
             TryDelete(release);
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

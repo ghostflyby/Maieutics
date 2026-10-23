@@ -32,7 +32,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(workspaceRoot);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
     }
 
     private static void WriteSkill(string root, string name, string description)
@@ -219,7 +219,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -265,7 +265,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -322,8 +322,8 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             await grantedManager.DisposeAsync();
             await ungrantedManager.DisposeAsync();
-            if (Directory.Exists(granted)) Directory.Delete(granted, true);
-            if (Directory.Exists(ungranted)) Directory.Delete(ungranted, true);
+            if (Directory.Exists(granted)) await TempArea.DeleteAsync(granted, CancellationToken.None);
+            if (Directory.Exists(ungranted)) await TempArea.DeleteAsync(ungranted, CancellationToken.None);
             Directory.Delete(outside, recursive: true);
         }
     }
@@ -355,7 +355,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         finally
         {
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
             File.Delete(approvals);
         }
     }
@@ -444,7 +444,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -548,7 +548,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -604,7 +604,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -648,8 +648,8 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             await poisonedManager.DisposeAsync();
             await healthyManager.DisposeAsync();
-            if (Directory.Exists(poisoned)) Directory.Delete(poisoned, true);
-            if (Directory.Exists(healthy)) Directory.Delete(healthy, true);
+            if (Directory.Exists(poisoned)) await TempArea.DeleteAsync(poisoned, CancellationToken.None);
+            if (Directory.Exists(healthy)) await TempArea.DeleteAsync(healthy, CancellationToken.None);
         }
     }
 
@@ -710,7 +710,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -777,7 +777,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -852,7 +852,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -925,7 +925,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -984,7 +984,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -1034,7 +1034,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
             if (File.Exists(approvals)) File.Delete(approvals);
         }
     }
@@ -1100,7 +1100,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -1164,7 +1164,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -1225,7 +1225,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         {
             fakeSocket.Dispose();
             await manager.DisposeAsync();
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

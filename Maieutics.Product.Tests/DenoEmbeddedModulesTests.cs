@@ -80,8 +80,7 @@ public sealed partial class DenoEmbeddedModulesTests
         }
         finally
         {
-            if (Directory.Exists(modules.ModuleDirectory))
-                Directory.Delete(modules.ModuleDirectory, true);
+                            await TempArea.DeleteAsync(modules.ModuleDirectory, CancellationToken.None);
         }
     }
 

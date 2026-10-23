@@ -27,7 +27,7 @@ public sealed class WorkspaceP2CleanupTests
         // The target vanishes without a remount: the registered link dangles. Whether the
         // failure comes from resolution or the pinned open, the code must say not-found,
         // never a generic I/O error.
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
 
         var uri = "workspace://local/projects/project/marker.txt";
         var readFailure = ShouldFailure(await InvokeAsync(

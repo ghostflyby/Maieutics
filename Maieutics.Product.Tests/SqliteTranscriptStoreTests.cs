@@ -27,7 +27,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     /// delete that turns that window into a cleanup failure.</summary>
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(databaseDirectory);
+        await TempArea.DeleteAsync(databaseDirectory, CancellationToken.None);
     }
 
     [Fact]

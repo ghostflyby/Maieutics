@@ -1832,7 +1832,7 @@ public sealed class FrontendApiIntegrationTests
             await provider.DisposeAsync();
             try
             {
-                await TempArea.DeleteAsync(dataRoot);
+                await TempArea.DeleteAsync(dataRoot, CancellationToken.None);
             }
             catch (TimeoutException)
             {

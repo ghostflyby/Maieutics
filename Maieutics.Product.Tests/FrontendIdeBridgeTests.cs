@@ -1343,7 +1343,6 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         Assert.False(gate.HasIdeFrontend, "no socket announced yet");
 
         var connection = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
-        var lapsed = harness.IdeLapsedAsync(sessionId);
         try
         {
             // The announce registration precedes the hello frame (FrontendHost serves
@@ -1361,6 +1360,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             await connection.DisposeAsync();
         }
 
+        // Captured AFTER the hello frame proved the announce: the lapse signal is
+        // re-armed by Announce, so a capture racing the announce would hold the
+        // replaced (dead) source; post-hello the capture is provably past the arm.
+        var lapsed = harness.IdeLapsedAsync(sessionId);
         await lapsed.WaitAsync(cancellationToken);
         Assert.False(gate.IsIdeFrontendConnected(sessionId), "the announcement lapses with the socket");
         Assert.False(gate.HasIdeFrontend, "the announcement lapses with the socket");

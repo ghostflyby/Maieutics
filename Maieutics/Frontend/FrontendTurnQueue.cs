@@ -455,19 +455,34 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         {
             while (true)
             {
-                QueuedItem item;
+                QueuedItem? item = null;
                 lock (state.Gate)
                 {
                     if (state.Items.Count == 0)
                     {
                         state.Worker = null;
                         ReleaseLeaseWhenDrainedLocked(state);
-                        return;
                     }
+                    else
+                    {
+                        item = state.Items[0];
+                        state.Items.RemoveAt(0);
+                        state.DequeueInFlight = true;
+                    }
+                }
 
-                    item = state.Items[0];
-                    state.Items.RemoveAt(0);
-                    state.DequeueInFlight = true;
+                if (item is null)
+                {
+                    // The worker-exit transition must publish: a waiter (WaitUntilIdleAsync,
+                    // or the change wait behind the events socket) that woke on the per-item
+                    // settle publish can observe the still-set Worker, capture that version,
+                    // and re-subscribe before the exit above clears it. Without this final
+                    // change such a waiter is never woken again — the queue has quiesced, so
+                    // no later mutation exists to signal it — and waits out its whole budget
+                    // on a quiescent queue. Waiters that subscribe after this publish
+                    // short-circuit on the version check.
+                    PublishChange(state);
+                    return;
                 }
 
                 // Dequeue transition: the item left the pending queue. It is not visible

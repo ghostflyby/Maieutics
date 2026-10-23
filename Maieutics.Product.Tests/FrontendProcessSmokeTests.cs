@@ -100,7 +100,7 @@ public sealed class FrontendProcessSmokeTests
             await process.DisposeAsync();
             try
             {
-                await TempArea.DeleteAsync(workspace, TestContext.Current.CancellationToken);
+                await TempArea.DeleteAsync(workspace, CancellationToken.None);
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)

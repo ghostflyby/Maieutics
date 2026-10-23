@@ -276,34 +276,4 @@ public sealed class FrontendRouteAuthenticationTests
     }
 
 
-    /// <summary>A model client the fixture never drives: route authentication tests assert
-    /// the gate and the events handshake, never a model turn.</summary>
-    private sealed class ScriptedChatClient : IChatClient
-    {
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException(
-                "The route authentication fixture never submits a model turn."));
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException("The route authentication fixture never submits a model turn.");
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
 }

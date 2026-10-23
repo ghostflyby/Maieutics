@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Commands;
@@ -14,7 +13,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-using ScriptedWorkspaceChatClient = Maieutics.Testing.ScriptedChatClient;
 using ParkingChatClient = Maieutics.Testing.ParkedChatClient;
 namespace Maieutics.Product.Tests;
 

@@ -1,11 +1,10 @@
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using System.Threading.Channels;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 
+using System.Text;
 namespace Maieutics.Product.Tests;
 
 public sealed class ReplEvalWebSocketTests

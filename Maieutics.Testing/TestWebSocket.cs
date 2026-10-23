@@ -6,8 +6,7 @@ namespace Maieutics.Testing;
 
 /// <summary>One in-memory fake <see cref="WebSocket" /> for the suite, unifying the
 /// host-socket doubles: the sent-message capture channel, the queued inbound frames
-/// (text, binary, close), the close-parks-receive state machine, and an optional send
-/// gate that deterministically parks writes. A receive on an empty queue waits for the
+/// (text, binary, close), and the close-parks-receive state machine. A receive on an empty queue waits for the
 /// next inbound frame or the socket's close/dispose, whichever comes first; close wins
 /// and yields the close frame.</summary>
 public class TestWebSocket : WebSocket
@@ -18,10 +17,6 @@ public class TestWebSocket : WebSocket
     private WebSocketCloseStatus? closeStatus;
     private string? closeStatusDescription;
     private WebSocketState state = WebSocketState.Open;
-
-    /// <summary>Optional gate awaited at the head of every send, so a test can hold one
-    /// write mid-flight deterministically. Null (the default) sends without pausing.</summary>
-    public Func<CancellationToken, Task>? SendGate { get; set; }
 
     /// <summary>Completes when the socket is closed, aborted, or disposed.</summary>
     public Task Closed => closed.Task;
@@ -145,8 +140,6 @@ public class TestWebSocket : WebSocket
         cancellationToken.ThrowIfCancellationRequested();
         if (!endOfMessage)
             throw new InvalidOperationException("The test socket only accepts complete messages.");
-        if (SendGate is { } gate)
-            await gate(cancellationToken).ConfigureAwait(false);
         await sent.Writer.WriteAsync(new SentFrame(messageType, buffer.ToArray()), cancellationToken).ConfigureAwait(false);
     }
 

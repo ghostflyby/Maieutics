@@ -17,7 +17,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task ADeniedCallReturnsToolDeniedAndTheTurnContinues()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Deny("Not allowed."));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),
@@ -51,7 +51,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnApprovedCallExecutesTheTool()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Allow("Go ahead."));
         var client = new ScriptedChatClient(
@@ -75,7 +75,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AToolThePolicyDoesNotRequireNeverReachesTheGate()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => throw new InvalidOperationException("the gate must not run"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),
@@ -94,7 +94,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AlwaysAllowSkipsTheGateForLaterCallsInTheSameTurn()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => new AgentToolApprovalDecision(true, "Always.", AlwaysAllow: true));
         var memory = new AgentToolApprovalMemory();
         var client = new ScriptedChatClient(
@@ -131,7 +131,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AFailingGateDeniesRatherThanExecuting()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var gate = new RecordingGate(_ => throw new InvalidOperationException("approver offline"));
         var client = new ScriptedChatClient(
@@ -156,7 +156,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task CancellingTheTurnWhileWaitingDoesNotHangOrExecute()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gate = new RecordingGate(async (_, token) =>
@@ -187,7 +187,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task ADestructiveClassificationRequiresApprovalWithoutAnyNameRule()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Allow("ok"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "plugin_writer")),
@@ -211,7 +211,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AReadOnlyClassificationIsExemptEvenWhenANameRuleMatches()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => throw new InvalidOperationException("the gate must not run"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded_reader")),
@@ -282,7 +282,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnOversizedDenialReasonIsBoundedBeforeItEntersTheTranscript()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         // The reason can carry a user's typed refusal, so it is untrusted text that must obey
         // the same bounding every other result path does.
         var reason = new string('x', 30_000);
@@ -315,7 +315,7 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnEmptyDenialReasonStillCarriesAMessage()
     {
-        using var deadline = CreateDeadline();
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => new AgentToolApprovalDecision(false, "   ", false));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),

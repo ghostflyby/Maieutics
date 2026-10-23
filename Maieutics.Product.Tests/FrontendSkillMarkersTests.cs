@@ -90,7 +90,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
             await catalog.DisposeAsync();
         try
         {
-            await TempArea.DeleteAsync(root, TestContext.Current.CancellationToken);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
         catch (DirectoryNotFoundException)
         {

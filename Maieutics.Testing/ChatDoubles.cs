@@ -7,7 +7,7 @@ namespace Maieutics.Testing;
 /// <summary>One scripted <see cref="IChatClient" /> for the suite: streams each queued
 /// response factory in order, capturing every request (cloned) and its instructions. A
 /// non-streaming call is not supported — the suite drives streaming turns.</summary>
-public class ScriptedChatClient(
+public sealed class ScriptedChatClient(
     params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
     : IChatClient
 {
@@ -21,7 +21,7 @@ public class ScriptedChatClient(
     /// <summary>The instructions of each streamed request, null when unset.</summary>
     public List<string?> Instructions { get; } = [];
 
-    public virtual Task<ChatResponse> GetResponseAsync(
+    public Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -29,7 +29,7 @@ public class ScriptedChatClient(
         return Task.FromException<ChatResponse>(new NotSupportedException());
     }
 
-    public virtual IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)

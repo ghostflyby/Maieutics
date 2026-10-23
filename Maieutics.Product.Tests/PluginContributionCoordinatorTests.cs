@@ -494,11 +494,16 @@ public sealed class PluginContributionCoordinatorTests
         while (true)
         {
             if (predicate()) return;
-            await Task.Delay(20, deadline.Token);
-            if (deadline.IsCancellationRequested)
+            try
+            {
+                await Task.Delay(20, deadline.Token);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
                 Assert.Fail(
                     "The contribution engine did not reach the expected state within the stage budget; "
-                    + "the budget is the failure, not the observation.");
+                        + "the budget is the failure, not the observation.");
+            }
         }
     }
 

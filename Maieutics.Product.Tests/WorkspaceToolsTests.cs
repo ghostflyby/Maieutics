@@ -10,7 +10,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 using ScriptedWorkspaceChatClient = Maieutics.Testing.ScriptedChatClient;
-using ParkingChatClient = Maieutics.Testing.ParkedChatClient;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]

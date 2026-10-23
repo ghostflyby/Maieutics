@@ -10,6 +10,7 @@ using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
 namespace Maieutics.Product.Tests;
 
 /// <summary>
@@ -396,103 +397,6 @@ public sealed class PluginHostReplRegistrationTests
     }
 
     /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
-    /// blocks on receive until disposed (the manager's receive loop then ends and runs its
-    /// disconnect finally). Modeled on the <c>DenoReplHostDeriveTests</c> fake socket.</summary>
-    private sealed class FakeHostWebSocket : WebSocket
-    {
-        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
-        private WebSocketCloseStatus? closeStatus;
-        private WebSocketState state = WebSocketState.Open;
-
-        public override WebSocketState State => state;
-
-        public override WebSocketCloseStatus? CloseStatus => closeStatus;
-
-        public override string? CloseStatusDescription => null;
-
-        public override string? SubProtocol => null;
-
-        internal Task Closed => closed.Task;
-
-        public override void Abort()
-        {
-            state = WebSocketState.Aborted;
-            closed.TrySetResult();
-        }
-
-        public override Task CloseAsync(
-            WebSocketCloseStatus closeStatus,
-            string? statusDescription,
-            CancellationToken cancellationToken)
-        {
-            return CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
-        }
-
-        public override Task CloseOutputAsync(
-            WebSocketCloseStatus closeStatus,
-            string? statusDescription,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            this.closeStatus = closeStatus;
-            state = WebSocketState.Closed;
-            closed.TrySetResult();
-            return Task.CompletedTask;
-        }
-
-        public override void Dispose()
-        {
-            state = WebSocketState.Closed;
-            sent.Writer.TryComplete();
-            closed.TrySetResult();
-        }
-
-        public override async Task<WebSocketReceiveResult> ReceiveAsync(
-            ArraySegment<byte> buffer,
-            CancellationToken cancellationToken)
-        {
-            await closed.Task.WaitAsync(cancellationToken);
-            state = WebSocketState.CloseReceived;
-            return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
-        }
-
-        public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            await closed.Task.WaitAsync(cancellationToken);
-            state = WebSocketState.CloseReceived;
-            return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);
-        }
-
-        public override Task SendAsync(
-            ArraySegment<byte> buffer,
-            WebSocketMessageType messageType,
-            bool endOfMessage,
-            CancellationToken cancellationToken)
-        {
-            if (buffer.Array is not { } array)
-                throw new ArgumentException("The test WebSocket send buffer requires a backing array.", nameof(buffer));
-            return SendAsync(
-                array.AsMemory(buffer.Offset, buffer.Count),
-                messageType,
-                endOfMessage,
-                cancellationToken).AsTask();
-        }
-
-        public override ValueTask SendAsync(
-            ReadOnlyMemory<byte> buffer,
-            WebSocketMessageType messageType,
-            bool endOfMessage,
-            CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (messageType != WebSocketMessageType.Text || !endOfMessage)
-                throw new InvalidOperationException("The test socket only accepts complete text messages.");
-            return sent.Writer.WriteAsync(Encoding.UTF8.GetString(buffer.Span), cancellationToken);
-        }
-    }
 
     private sealed class FakeVariableSource : Execution.IPermissionVariableSource
     {

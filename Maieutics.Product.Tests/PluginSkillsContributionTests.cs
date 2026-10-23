@@ -1386,29 +1386,16 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
     {
         public string? GetVariable(string name) => null;
     }
-
-    /// <summary>In-memory host socket: captures kernel envelopes, answers Skills invokes
-    /// with canned results (the PluginHostInvokeTests fake-socket shape, trimmed to what
-    /// these tests need), and counts outbound Skills host.invoke envelopes per plugin so
-    /// the differential tests can assert that unchanged events invoke no generator.</summary>
-    private sealed class FakeHostWebSocket : WebSocket
+    /// <summary>The host socket for the Skills contribution flow: the shared test
+    /// socket's capture machinery plus the Skills-specific invoke counting, bounded
+    /// readers, and reply helpers.</summary>
+    private sealed class FakeHostWebSocket : TestWebSocket
     {
-        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly Channel<string> sent = Channel.CreateUnbounded<string>();
         private readonly Dictionary<string, int> skillInvokes = new(StringComparer.Ordinal);
-        private WebSocketState state = WebSocketState.Open;
 
         internal int TotalSkillInvokes => skillInvokes.Values.Sum(static count => count);
 
         internal int SkillInvokesBy(string pluginId) => skillInvokes.GetValueOrDefault(pluginId, 0);
-
-        public override WebSocketState State => state;
-
-        public override WebSocketCloseStatus? CloseStatus => null;
-
-        public override string? CloseStatusDescription => null;
-
-        public override string? SubProtocol => null;
 
         public async Task<string> ReadSkillInvokeAsync(CancellationToken cancellationToken)
         {
@@ -1419,7 +1406,6 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
                 var message = await ReadNextAsync(
                     deadline,
                     linked,
-                    cancellationToken,
                     "No Skills host.invoke envelope arrived.").ConfigureAwait(false);
                 if (message.Contains("\"Skills\"", StringComparison.Ordinal)) return message;
             }
@@ -1432,7 +1418,6 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             return await ReadNextAsync(
                 deadline,
                 linked,
-                cancellationToken,
                 "No host envelope arrived.").ConfigureAwait(false);
         }
 
@@ -1453,7 +1438,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             var deadline = Task.Delay(window, linked.Token);
             while (true)
             {
-                var read = sent.Reader.ReadAsync(linked.Token).AsTask();
+                var read = ReadSentAsync(linked.Token).AsTask();
                 var completed = await Task.WhenAny(read, deadline).ConfigureAwait(false);
                 if (completed != read)
                 {
@@ -1477,10 +1462,9 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         private async Task<string> ReadNextAsync(
             Task deadline,
             CancellationTokenSource linked,
-            CancellationToken cancellationToken,
             string timeoutMessage)
         {
-            var read = sent.Reader.ReadAsync(linked.Token).AsTask();
+            var read = ReadSentAsync(linked.Token).AsTask();
             var completed = await Task.WhenAny(read, deadline).ConfigureAwait(false);
             if (completed != read)
             {
@@ -1521,39 +1505,6 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
                 "\",\"payload\":{\"code\":\"" + code + "\",\"message\":\"" + message + "\"}}");
         }
 
-        public override async Task<WebSocketReceiveResult> ReceiveAsync(
-            ArraySegment<byte> buffer,
-            CancellationToken cancellationToken)
-        {
-            await closed.Task.WaitAsync(cancellationToken);
-            state = WebSocketState.CloseReceived;
-            return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
-        }
-
-        public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            await closed.Task.WaitAsync(cancellationToken);
-            state = WebSocketState.CloseReceived;
-            return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);
-        }
-
-        public override Task SendAsync(
-            ArraySegment<byte> buffer,
-            WebSocketMessageType messageType,
-            bool endOfMessage,
-            CancellationToken cancellationToken)
-        {
-            if (buffer.Array is not { } array)
-                throw new ArgumentException("The test WebSocket send buffer requires a backing array.", nameof(buffer));
-            return SendAsync(
-                array.AsMemory(buffer.Offset, buffer.Count),
-                messageType,
-                endOfMessage,
-                cancellationToken).AsTask();
-        }
-
         public override ValueTask SendAsync(
             ReadOnlyMemory<byte> buffer,
             WebSocketMessageType messageType,
@@ -1563,9 +1514,8 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (messageType != WebSocketMessageType.Text || !endOfMessage)
                 throw new InvalidOperationException("The test socket only accepts complete text messages.");
-            var message = System.Text.Encoding.UTF8.GetString(buffer.Span);
-            CountSkillInvoke(message);
-            return sent.Writer.WriteAsync(message, cancellationToken);
+            CountSkillInvoke(System.Text.Encoding.UTF8.GetString(buffer.Span));
+            return base.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
         }
 
         /// <summary>Counts one Skills host.invoke envelope per owning plugin; the send
@@ -1586,25 +1536,6 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             {
                 // Not a parsable invoke envelope; nothing to count.
             }
-        }
-
-        public override void Abort() => Dispose();
-
-        public override Task CloseAsync(
-            WebSocketCloseStatus closeStatus,
-            string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public override Task CloseOutputAsync(
-            WebSocketCloseStatus closeStatus,
-            string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-
-        public override void Dispose()
-        {
-            state = WebSocketState.Closed;
-            sent.Writer.TryComplete();
-            closed.TrySetResult();
         }
     }
 }

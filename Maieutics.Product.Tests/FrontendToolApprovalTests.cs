@@ -15,7 +15,7 @@ public sealed class FrontendToolApprovalTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(10);
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnApprovalRequestPublishesAnInputRequestFrame()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -45,7 +45,7 @@ public sealed class FrontendToolApprovalTests
         Assert.False(decision.AlwaysAllow);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AlwaysAllowIsCarriedThroughTheDecision()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -87,7 +87,7 @@ public sealed class FrontendToolApprovalTests
         Assert.False(decision.AlwaysAllow);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ADeclinedAnswerCarriesTheUserReason()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -106,7 +106,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Equal("That file is load-bearing.", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task NoLiveStreamDeniesImmediately()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -122,7 +122,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Contains("No frontend", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AWaitedApprovalDeniesOnTimeout()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -142,7 +142,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Contains("timed out", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AWaitedApprovalDeniesWhenTheRunEnds()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -162,7 +162,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Contains("run ended", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnsweringTwiceIsRejected()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -189,7 +189,7 @@ public sealed class FrontendToolApprovalTests
         Assert.False(FrontendToolApprovalPresenter.OwnsRequestId(""));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AChildRunsRequestIsPresentedOnItsParentsStream()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -216,7 +216,7 @@ public sealed class FrontendToolApprovalTests
         Assert.True((await approval).Approved);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AReleasedChildScopeFallsBackToItsOwnSession()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -234,7 +234,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Contains("No frontend", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnAnswerThatRacedTheTimeoutIsNotReportedAsAccepted()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -261,7 +261,7 @@ public sealed class FrontendToolApprovalTests
         Assert.False(presenter.TryCompleteInput(requestId, "accept", string.Empty));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnAnswerThatWonTheRaceIsTheDecisionTheModelSees()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -282,7 +282,7 @@ public sealed class FrontendToolApprovalTests
         Assert.Equal("Approved by the user.", decision.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheDeferredGateResolvesTheRealPresenter()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

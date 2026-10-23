@@ -14,7 +14,7 @@ public sealed class AgentToolApprovalTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(10);
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ADeniedCallReturnsToolDeniedAndTheTurnContinues()
     {
         using var deadline = CreateDeadline();
@@ -48,7 +48,7 @@ public sealed class AgentToolApprovalTests
         Assert.Equal("tool_denied", Assert.IsType<JsonElement>(toolResult.Result).GetProperty("code").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnApprovedCallExecutesTheTool()
     {
         using var deadline = CreateDeadline();
@@ -72,7 +72,7 @@ public sealed class AgentToolApprovalTests
         Assert.True(Assert.Single(events.OfType<AgentToolApprovalResolved>()).Approved);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AToolThePolicyDoesNotRequireNeverReachesTheGate()
     {
         using var deadline = CreateDeadline();
@@ -91,7 +91,7 @@ public sealed class AgentToolApprovalTests
         Assert.Equal("ok", Assert.Single(events.OfType<AgentToolFinished>()).Result.GetProperty("status").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AlwaysAllowSkipsTheGateForLaterCallsInTheSameTurn()
     {
         using var deadline = CreateDeadline();
@@ -128,7 +128,7 @@ public sealed class AgentToolApprovalTests
         Assert.False(memory.IsAllowed(first, "guarded"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AFailingGateDeniesRatherThanExecuting()
     {
         using var deadline = CreateDeadline();
@@ -153,7 +153,7 @@ public sealed class AgentToolApprovalTests
         Assert.Contains("approver offline", finished.Result.GetProperty("message").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task CancellingTheTurnWhileWaitingDoesNotHangOrExecute()
     {
         using var deadline = CreateDeadline();
@@ -184,7 +184,7 @@ public sealed class AgentToolApprovalTests
         Assert.False(invoked, "a cancelled turn must not execute the pending tool");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ADestructiveClassificationRequiresApprovalWithoutAnyNameRule()
     {
         using var deadline = CreateDeadline();
@@ -208,7 +208,7 @@ public sealed class AgentToolApprovalTests
         Assert.Contains("destroy", request.Reason);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AReadOnlyClassificationIsExemptEvenWhenANameRuleMatches()
     {
         using var deadline = CreateDeadline();
@@ -279,7 +279,7 @@ public sealed class AgentToolApprovalTests
         Assert.Null(AgentToolClassification.From(undeclared));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnOversizedDenialReasonIsBoundedBeforeItEntersTheTranscript()
     {
         using var deadline = CreateDeadline();
@@ -312,7 +312,7 @@ public sealed class AgentToolApprovalTests
             $"the transcript copy is bounded too (was {committedMessage.Length})");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnEmptyDenialReasonStillCarriesAMessage()
     {
         using var deadline = CreateDeadline();

@@ -490,14 +490,16 @@ public sealed class PluginContributionCoordinatorTests
 
     private static async Task WaitForAsync(Func<bool> predicate, int seconds = 5)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
-        while (DateTime.UtcNow < deadline)
+        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(seconds));
+        while (true)
         {
             if (predicate()) return;
-            await Task.Delay(20);
+            await Task.Delay(20, deadline.Token);
+            if (deadline.IsCancellationRequested)
+                Assert.Fail(
+                    "The contribution engine did not reach the expected state within the stage budget; "
+                    + "the budget is the failure, not the observation.");
         }
-
-        Assert.Fail("The expected engine state was not reached within the deadline.");
     }
 
     private sealed class FakeDelivery(string kindName, ContributionDeliveryShape shape) : IContributionDelivery

@@ -1357,7 +1357,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         try
         {
             await Task.Delay(200, cancellationToken).ConfigureAwait(true);
-            Assert.False(gate.IsIdeFrontendConnected(sessionId));
+            Assert.False(gate.IsIdeFrontendConnected(sessionId), "a socket without the gating parameter never gates the family");
         }
         finally
         {

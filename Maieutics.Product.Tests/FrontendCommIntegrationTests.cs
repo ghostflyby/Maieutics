@@ -113,12 +113,18 @@ public sealed class FrontendCommIntegrationTests
         await CommChildSocketStub.SendAsync(child, Open("w2", "tw2", null), deadline.Token);
 
         // The child's open frames are in flight the moment SendAsync returns; the
-        // plane's live set is the observable, and its mutation has a completion
-        // signal: await the second open's registration, then verify the settled live
-        // set synchronously through the router — no throwaway probe connections.
+        // plane's live set is the observable, and each mutation has a completion
+        // signal. Capture the signal BEFORE checking the state (the signal-swap and
+        // the mutation share the plane's lock, so a mutation between the check and
+        // the capture would strand the waiter on an already-consumed signal), then
+        // re-check after every wake — no throwaway probe connections.
         var plane = harness.CommRouter.PlaneFor(sessionId);
-        while (plane.SnapshotLive().Count < 2)
-            await plane.LiveSetChanged.WaitAsync(deadline.Token);
+        while (true)
+        {
+            var changed = plane.LiveSetChanged;
+            if (plane.SnapshotLive().Count >= 2) break;
+            await changed.WaitAsync(deadline.Token);
+        }
 
         using var first = await ConnectCommsAsync(harness, sessionId, deadline.Token);
         var firstHello = await ReceiveHelloAsync(first, deadline.Token);

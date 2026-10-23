@@ -29,6 +29,14 @@ public sealed class SubagentFrontendFramesTests
         // strictly after the terminal frames are published, so the snapshot below is whole.
         await stream.Settled.WaitAsync(deadline.Token);
 
+        // The child frames ride the parent stream through a display tap whose publish
+        // races the parent's terminal pair from another flow. Settled covers the parent's
+        // own frames; the child's tap publishes concurrently, and the join (useTaskWait)
+        // orders the child's completion before the parent's terminal pair — the tap's
+        // last frame is offered by then. The handle's completion is the strict successor
+        // for "the child's frames were all offered"; await it, then assert synchronously.
+        await handle.Completion.WaitAsync(deadline.Token);
+
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
         var initial = initialList.ToList();

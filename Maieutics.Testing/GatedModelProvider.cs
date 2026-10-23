@@ -55,7 +55,17 @@ public sealed class GatedModelProvider : IAsyncDisposable
     private readonly ModelApiFlavor flavor;
     private readonly ProviderGateMode mode;
     private readonly string answer;
+    private readonly string model;
+    private readonly string? reasoning;
     private readonly int requestCount;
+    private readonly bool toolFlow;
+    private readonly bool applyPatchFlow;
+    private readonly string? applyPatchOperationJson;
+    private readonly bool webSearchFlow;
+    private readonly int webSearchCalls;
+    private readonly string toolName;
+    private readonly string toolArgumentsJson;
+    private readonly string? expectedToolResultText;
     private int served;
 
     private int connectionsOpened;
@@ -65,26 +75,71 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// <param name="flavor">The API flavor the fake speaks.</param>
     /// <param name="mode">How answers are handed out.</param>
     /// <param name="answer">The answer text embedded in the SSE stream.</param>
+    /// <param name="model">The model the built-in request check expects.</param>
+    /// <param name="reasoning">Chat-completions only: an optional reasoning-content delta
+    /// before the answer text.</param>
     /// <param name="requestCount">Scripted mode only: how many requests to serve before
-    /// retiring. Other modes serve until disposal.</param>
+    /// retiring; flow shapes default to their two-request round trip. Other modes serve
+    /// until disposal.</param>
+    /// <param name="toolFlow">Serve a tool-call round trip before the final answer.</param>
+    /// <param name="toolName">Tool flow: the called function's name.</param>
+    /// <param name="toolArgumentsJson">Tool flow: the called function's arguments JSON.</param>
+    /// <param name="expectedToolResultText">Tool flow: a substring the tool-result request
+    /// must carry.</param>
+    /// <param name="applyPatchFlow">Responses only: serve an apply-patch call round
+    /// trip.</param>
+    /// <param name="applyPatchOperationJson">Apply-patch flow: the operation JSON.</param>
+    /// <param name="webSearchFlow">Serve a server-executed web-search answer.</param>
+    /// <param name="webSearchCalls">Web-search flow: how many search items to emit.</param>
     public GatedModelProvider(
         ModelApiFlavor flavor = ModelApiFlavor.ChatCompletions,
         ProviderGateMode mode = ProviderGateMode.Gated,
         string answer = "gated answer",
-        int? requestCount = null)
+        string model = "test-model",
+        string? reasoning = null,
+        int? requestCount = null,
+        bool toolFlow = false,
+        string toolName = "echo",
+        string toolArgumentsJson = "{\"text\":\"hello\"}",
+        string? expectedToolResultText = null,
+        bool applyPatchFlow = false,
+        string? applyPatchOperationJson = null,
+        bool webSearchFlow = false,
+        int webSearchCalls = 1,
+        Action<HttpRequest, int>? validateRequest = null)
     {
         this.flavor = flavor;
         this.mode = mode;
         this.answer = answer;
-        this.requestCount = requestCount ?? 1;
+        this.model = model;
+        this.reasoning = reasoning;
+        this.toolFlow = toolFlow;
+        this.toolName = toolName;
+        this.toolArgumentsJson = toolArgumentsJson;
+        this.expectedToolResultText = expectedToolResultText;
+        this.applyPatchFlow = applyPatchFlow;
+        this.applyPatchOperationJson = applyPatchOperationJson;
+        this.webSearchFlow = webSearchFlow;
+        this.webSearchCalls = webSearchCalls;
+        this.requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
+        ValidateRequest = validateRequest;
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
         Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
         serveLoop = ServeAsync(cancellation.Token);
     }
 
+    /// <summary>Optional per-request validation, invoked with the request and its global
+    /// served ordinal before the answer is selected; a throw fails the connection task
+    /// and surfaces through <see cref="Completion" /> instead of hanging the client.</summary>
+    public Action<HttpRequest, int>? ValidateRequest { get; init; }
+
     /// <summary>The provider's base endpoint, for configuration injection.</summary>
     public Uri Endpoint { get; }
+
+    /// <summary>The serve loop's task: scripted retires once the expected request count
+    /// has been served; the other modes complete at disposal.</summary>
+    public Task Completion => serveLoop;
 
     /// <summary>The raw listen port, for tests that drive the TCP surface directly.</summary>
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -354,8 +409,12 @@ public sealed class GatedModelProvider : IAsyncDisposable
                 }
                 else
                 {
-                    await AnswerAsync(stream, cancellationToken).ConfigureAwait(false);
-                    Interlocked.Increment(ref served);
+                    // The global served ordinal claims this request's index before the
+                    // answer is selected, so a flow's two-step sequence stays ordered as
+                    // long as its calls do.
+                    var index = Interlocked.Increment(ref served) - 1;
+                    ValidateRequest?.Invoke(request, index);
+                    await WriteSseAsync(stream, SelectStream(index), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
@@ -385,9 +444,45 @@ public sealed class GatedModelProvider : IAsyncDisposable
         }
     }
 
+    /// <summary>Selects the answer stream for scripted request <paramref name="index" />:
+    /// a flow's first request serves the call (tool, web search, apply patch) and its
+    /// second the final answer.</summary>
+    private string SelectStream(int index) => (flavor, index) switch
+    {
+        (ModelApiFlavor.Responses, 0) when toolFlow =>
+            ModelStreams.CreateResponsesToolStream(toolName, toolArgumentsJson),
+        (ModelApiFlavor.Responses, 0) when webSearchFlow =>
+            ModelStreams.CreateResponsesWebSearchStream(webSearchCalls),
+        (ModelApiFlavor.Responses, 0) when applyPatchFlow && applyPatchOperationJson is { } operation =>
+            ModelStreams.CreateResponsesApplyPatchStream(operation),
+        (ModelApiFlavor.Responses, _) =>
+            ModelStreams.CreateResponsesStream(toolFlow ? "tool-backed answer" : answer),
+        (ModelApiFlavor.ChatCompletions, 0) when toolFlow =>
+            ModelStreams.CreateChatCompletionsToolStream(toolName, toolArgumentsJson),
+        (ModelApiFlavor.ChatCompletions, _) =>
+            ModelStreams.CreateChatCompletionsStream(toolFlow ? "tool-backed answer" : answer, reasoning),
+        (ModelApiFlavor.Anthropic, 0) when toolFlow => ModelStreams.CreateToolStream(),
+        (ModelApiFlavor.Anthropic, 0) when webSearchFlow => ModelStreams.CreateWebSearchStream(),
+        (ModelApiFlavor.Anthropic, _) => ModelStreams.CreateTextStream(answer),
+        _ => throw new InvalidOperationException($"Unsupported test API flavor '{flavor}'."),
+    };
+
     private async Task AnswerAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
-        var body = Encoding.UTF8.GetBytes(CreateAnswerStream(flavor, answer));
+        var body = Encoding.UTF8.GetBytes(
+            "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(answer) + "}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+        var headers = Encoding.ASCII.GetBytes(
+            $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
+        await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Writes one SSE response with keep-alive (no connection close), so the
+    /// client's pooled connection can carry the next request.</summary>
+    private static async Task WriteSseAsync(NetworkStream stream, string data, CancellationToken cancellationToken)
+    {
+        var body = Encoding.UTF8.GetBytes(data);
         var headers = Encoding.ASCII.GetBytes(
             $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
         await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
@@ -405,28 +500,6 @@ public sealed class GatedModelProvider : IAsyncDisposable
             if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) return;
             await Task.Delay(25, cancellationToken).ConfigureAwait(false);
         }
-    }
-
-    private static string CreateAnswerStream(ModelApiFlavor flavor, string text)
-    {
-        return flavor switch
-        {
-            ModelApiFlavor.ChatCompletions or ModelApiFlavor.Responses =>
-                "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(text) + "}}]}\n\n" +
-                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-            ModelApiFlavor.Anthropic =>
-                "event: message_start\n" +
-                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
-                "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
-                "event: content_block_delta\n" +
-                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":" +
-                JsonSerializer.Serialize(text) + "}}\n\n" +
-                "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
-                "event: message_delta\n" +
-                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
-            _ => throw new InvalidOperationException($"Unsupported test API flavor '{flavor}'."),
-        };
     }
 }
 

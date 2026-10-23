@@ -27,7 +27,7 @@ public sealed class FrontendQueueSessionKeyTests
     public FrontendQueueSessionKeyTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        TestTrace.Write(output, "[queue-session-key]", message);
+        TestTrace.Write(output, "queue-session-key", message);
 
     /// <summary>The queue is filled to its committed capacity through the uppercase spelling
     /// of the session id. The worker is held between its submission handshake and the running
@@ -200,16 +200,11 @@ public sealed class FrontendQueueSessionKeyTests
 
     private static Task<Harness> StartHarnessAsync(CancellationToken cancellationToken, GatedProvider provider)
     {
-        // The shared harness extracts the endpoint only from its own provider types, so this
-        // gated server injects it through the configuration transform.
+        // The shared harness extracts the endpoint from the provider instance, gated or not.
         return Harness.StartAsync(
             cancellationToken,
             provider,
-            hanging: false,
-            transformConfiguration: body => body.Replace(
-                "\"Endpoint\": \"\"",
-                $"\"Endpoint\": \"{provider.Endpoint}\"",
-                StringComparison.Ordinal));
+            hanging: false);
     }
 
     /// <summary>Reads the session's queue snapshot through the addressed spelling.</summary>

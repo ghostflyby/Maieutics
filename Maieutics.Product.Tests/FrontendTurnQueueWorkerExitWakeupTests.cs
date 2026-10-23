@@ -123,16 +123,11 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         CancellationToken cancellationToken,
         GatedProvider provider)
     {
-        // The shared harness extracts the endpoint only from its known provider types, so
-        // the gated server injects its endpoint through the configuration transform.
+        // The shared harness extracts the endpoint from the provider instance, gated or not.
         return await Harness.StartAsync(
             cancellationToken,
             provider,
-            hanging: false,
-            transformConfiguration: body => body.Replace(
-                "\"Endpoint\": \"\"",
-                $"\"Endpoint\": \"{provider.Endpoint}\"",
-                StringComparison.Ordinal));
+            hanging: false);
     }
 
 }

@@ -25,7 +25,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        TestTrace.Write(output, "[queue-test]", message);
+        TestTrace.Write(output, "queue-test", message);
 
     [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()
@@ -612,16 +612,11 @@ public sealed class FrontendTurnQueueIntegrationTests
 
     private static async Task<Harness> StartHarnessAsync(CancellationToken cancellationToken, GatedOpenAiServer provider)
     {
-        // The shared harness extracts the endpoint from its known provider types, so the
-        // gated server injects its endpoint through the configuration transform instead.
+        // The shared harness extracts the endpoint from the provider instance, gated or not.
         return await Harness.StartAsync(
             cancellationToken,
             provider,
-            hanging: false,
-            transformConfiguration: body => body.Replace(
-                "\"Endpoint\": \"\"",
-                $"\"Endpoint\": \"{provider.Endpoint}\"",
-                StringComparison.Ordinal));
+            hanging: false);
     }
 
     private static CancellationTokenSource CreateDeadline(

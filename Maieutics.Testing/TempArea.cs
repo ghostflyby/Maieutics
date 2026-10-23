@@ -49,6 +49,8 @@ public sealed class TempArea : IDisposable, IAsyncDisposable
         DeleteTree(Path);
     }
 
+    /// <summary>Deletes the area with the retrying, cause-naming teardown budget,
+    /// independent of any test token.</summary>
     public ValueTask DisposeAsync()
     {
         return new ValueTask(DeleteAsync(Path));

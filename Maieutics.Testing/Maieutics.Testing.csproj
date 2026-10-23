@@ -11,8 +11,4 @@
         <PackageReference Include="xunit.v3.extensibility.core" Version="4.0.2"/>
     </ItemGroup>
 
-    <ItemGroup>
-        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
-    </ItemGroup>
-
 </Project>

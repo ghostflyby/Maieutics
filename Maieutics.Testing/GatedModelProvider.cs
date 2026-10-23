@@ -60,6 +60,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
     private int connectionsOpened;
     private int parkedCount;
+    private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <param name="flavor">The API flavor the fake speaks.</param>
     /// <param name="mode">How answers are handed out.</param>
@@ -91,7 +92,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// <summary>The bodies of the requests served so far, in arrival order.</summary>
     public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
 
-    /// <summary>How many provider requests have arrived and are waiting for release.</summary>
+    /// <summary>How many provider requests have arrived and are waiting for release.
+    /// Gated mode only: Hanging-mode requests are counted once but never listed, because
+    /// they wait on the global release instead of the per-request queue.</summary>
     public int ParkedRequests
     {
         get
@@ -130,10 +133,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
         }
     }
 
-    private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
     /// <summary>Waits until every parked provider request has left the gate (released, or
-    /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync" />.</summary>
+    /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync" />; Gated
+    /// mode only.</summary>
     public async Task WaitForParkedDrainedAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -160,10 +162,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
         parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    /// <summary>Releases the oldest provider request that is still awaiting release. The
-    /// released entry leaves the parked list under the same lock that releases it, so the
-    /// list holds exactly the requests still awaiting a release; a stale (already
-    /// completed) head is skipped instead of silently consuming the release.</summary>
+    /// <summary>Releases the oldest provider request that is still awaiting release
+    /// (Gated mode). The released entry leaves the parked list under the same lock that
+    /// releases it, so the list holds exactly the requests still awaiting a release; a
+    /// stale (already completed) head is skipped instead of silently consuming the
+    /// release.</summary>
     public void ReleaseNext()
     {
         TaskCompletionSource? release = null;
@@ -184,7 +187,8 @@ public sealed class GatedModelProvider : IAsyncDisposable
         release?.TrySetResult();
     }
 
-    /// <summary>Releases every provider request currently awaiting release.</summary>
+    /// <summary>Releases every provider request currently awaiting release (Gated
+    /// mode).</summary>
     public void ReleaseAll()
     {
         TaskCompletionSource[] releases;
@@ -228,6 +232,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
             + $"released={(mode == ProviderGateMode.Hanging ? globalRelease.Task.IsCompleted.ToString() : "n/a")}";
     }
 
+    /// <summary>Stops the listener, releases every parked request, and observes all
+    /// connection and serve-loop tasks; each is observed in its own try so a faulting
+    /// connection task can never leave the serve loop unobserved.</summary>
     public async ValueTask DisposeAsync()
     {
         await cancellation.CancelAsync().ConfigureAwait(false);
@@ -243,6 +250,14 @@ public sealed class GatedModelProvider : IAsyncDisposable
         try
         {
             await Task.WhenAll(connectionTasks).ConfigureAwait(false);
+        }
+        catch (Exception exception) when
+            (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
+        {
+        }
+
+        try
+        {
             await serveLoop.ConfigureAwait(false);
         }
         catch (Exception exception) when
@@ -424,9 +439,15 @@ public sealed record HttpRequest(
     JsonElement Body);
 
 /// <summary>The single HTTP/1.1 request reader for the fake providers: Content-Length
-/// framing with the header dictionary preserved and the body parsed as JSON.</summary>
+/// framing with the header dictionary preserved and the body parsed as JSON. A request
+/// larger than <see cref="MaxRequestBytes" /> fails fast instead of growing the buffer
+/// without bound.</summary>
 public static class HttpRequestReader
 {
+    /// <summary>The request cap: a well-formed provider request is a few KiB, so anything
+    /// past this is garbage from a broken or hostile client.</summary>
+    public const int MaxRequestBytes = 1024 * 1024;
+
     /// <summary>Reads one request in full; throws <see cref="EndOfStreamException" /> when
     /// the connection closes mid-request.</summary>
     public static async Task<HttpRequest> ReadAsync(
@@ -445,6 +466,9 @@ public static class HttpRequestReader
                 throw new EndOfStreamException("The provider request ended before its body was complete.");
 
             request.Write(buffer, 0, count);
+            if (request.Length > MaxRequestBytes)
+                throw new InvalidDataException($"The provider request exceeded {MaxRequestBytes} bytes.");
+
             if (headerLength >= 0) continue;
 
             var bytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));

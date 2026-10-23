@@ -211,7 +211,9 @@ public sealed class WorkspaceEditToolTests
     [Fact(Timeout = 30_000)]
     public async Task EditToolsRefuseSymbolicLinkTargets()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The test exercises symlink semantics, which are POSIX-only.");
+
 
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;

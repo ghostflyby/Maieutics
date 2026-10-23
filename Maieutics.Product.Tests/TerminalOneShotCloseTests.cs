@@ -29,11 +29,7 @@ public sealed class TerminalOneShotCloseTests
         await session.DisposeAsync();
 
         Assert.Equal("closed", session.GetSnapshot().State);
-        var settled = await Task.WhenAny(
-            armedBeforeClose,
-            Task.Delay(ObservationBound, TestContext.Current.CancellationToken));
-        Assert.Same(armedBeforeClose, settled);
-        await armedBeforeClose;
+        await armedBeforeClose.WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
 
         // Resolve-once semantics: a wait armed after the close settles from the same signal.
         var armedAfterClose = session.WaitExitedAsync(TestContext.Current.CancellationToken);
@@ -75,11 +71,11 @@ public sealed class TerminalOneShotCloseTests
         Assert.Equal("cancel", cancelled.Status);
 
         // A wait left on a signal that never settles ends only through its own 30s timeout, so the
-        // bound tells a settled wait from a parked one.
-        var settled = await Task.WhenAny(
-            wait,
-            Task.Delay(ObservationBound, TestContext.Current.CancellationToken));
-        Assert.Same(wait, settled);
+        // bound tells a settled wait from a parked one. The wait's own outcome (a typed miss is
+        // legitimate) stays inside the task for the observation below, so the budget wraps a
+        // normalized copy instead of awaiting the wait itself.
+        await wait.ContinueWith(static _ => { }, TaskScheduler.Default)
+            .WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
 
         // Settling by close has exactly two outcomes: the settled snapshot, or the registry's typed
         // miss when the close already removed the session before the wait resumed. A timeout would

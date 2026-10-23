@@ -12,7 +12,10 @@ public sealed class WorkspaceLinkAtomicityTests
     [Fact(Timeout = 30_000)]
     public void FailedLinkCreationRollsBackTheRegistryWithoutATombstone()
     {
-        if (OperatingSystem.IsWindows()) return; // POSIX-only fault injection: directory mode
+        // POSIX-only fault injection: the directory mode the test strips is a POSIX bit.
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("POSIX-only fault injection through the directory mode.");
+
 
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -25,10 +28,13 @@ public sealed class WorkspaceLinkAtomicityTests
         // Making projects/ unwritable fails exactly the physical link creation: the
         // registry lives in .maieutics/ and keeps committing, RemoveStrayLink on an
         // absent path needs no write, and CreateSymbolicLink needs the write bit.
-        File.SetUnixFileMode(
-            home.ProjectsRoot,
-            UnixFileMode.UserRead | UnixFileMode.UserExecute |
-            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        // The guard is the analyzer-recognized form; the skip at the top declared the
+        // platform variance for the runner.
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(
+                home.ProjectsRoot,
+                UnixFileMode.UserRead | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         try
         {
         var exception = Assert.ThrowsAny<Exception>(() => context.OpenLink(second, null));
@@ -39,11 +45,12 @@ public sealed class WorkspaceLinkAtomicityTests
         }
         finally
         {
-            File.SetUnixFileMode(
-                home.ProjectsRoot,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-                UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(
+                    home.ProjectsRoot,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
         }
 
         // The rolled-back name never entered circulation: no tombstone, so the retry

@@ -18,25 +18,19 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Frontend;
 
 /// <summary>
-///     Maps the frontend web API onto the shared application host: a bearer-token middleware
-///     scoped to the frontend paths (the child-process control bus keeps its own peer-identity
-///     middleware), REST endpoints for sessions/turns/commands, and the per-session events
-///     WebSocket. The events endpoint is half-duplex (executable to frontend only); the
-///     frontend reconnects with <c>sinceSequence</c> after any disconnect, including the
-///     backpressure disconnect the run stream performs instead of dropping frames.
+///     Maps the frontend web API onto the shared application host: a bearer-token gate that
+///     follows the route table (every endpoint the frontend route group mounts carries route
+///     metadata the middleware authenticates; the child-process control bus keeps its own
+///     peer-identity middleware), REST endpoints for sessions/turns/commands, and the
+///     per-session events WebSocket. The events endpoint is half-duplex (executable to
+///     frontend only); the frontend reconnects with <c>sinceSequence</c> after any
+///     disconnect, including the backpressure disconnect the run stream performs instead of
+///     dropping frames.
 /// </summary>
 internal sealed class FrontendHost : IAsyncDisposable
 {
     /// <summary>The native view-family capability version advertised in capabilities (ADR 0038).</summary>
     internal const int FrontendUiCapabilityVersion = 1;
-
-    private static readonly HashSet<string> FrontendPrefixes = new(StringComparer.Ordinal)
-    {
-        "/v1/agent",
-        "/v1/model",
-        "/v1/status",
-        "/v1/objects"
-    };
 
     private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
@@ -139,36 +133,47 @@ internal sealed class FrontendHost : IAsyncDisposable
             }
         });
         application.Use(AuthorizeThenNextAsync);
-        endpoints.MapGet("/v1/agent/capabilities", HandleCapabilities);
-        endpoints.MapGet("/v1/skills", HandleSkills);
-        endpoints.MapGet("/v1/prompts", HandlePrompts);
-        endpoints.MapGet("/v1/agent/session", HandleSession);
-        endpoints.MapPost("/v1/agent/sessions", HandleNewSession);
-        endpoints.MapGet("/v1/agent/sessions", HandleListSessions);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/resume", HandleResumeSession);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/rename", HandleRenameSession);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/fork", HandleForkSession);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/objects", HandleIngestObject);
-        endpoints.MapGet("/v1/agent/sessions/{sessionId}/queue", HandleGetQueue);
-        endpoints.MapPost("/v1/agent/sessions/{sessionId}/queue", HandleEnqueueTurns);
-        endpoints.MapDelete("/v1/agent/sessions/{sessionId}/queue/{itemId}", HandleDeleteQueuedItem);
-        endpoints.MapDelete("/v1/agent/sessions/{sessionId}/queue", HandleClearQueue);
-        endpoints.MapGet("/v1/agent/sessions/{sessionId}/transcript", HandleTranscript);
-        endpoints.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents);
-        endpoints.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms);
-        endpoints.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
-        endpoints.MapPost("/v1/agent/inputs/{requestId}", HandleInput);
-        endpoints.MapPost("/v1/agent/ide/{requestId}", HandleIdeAnswer);
-        endpoints.MapGet("/v1/model/profiles", HandleModelProfiles);
-        endpoints.MapPost("/v1/agent/commands", HandleCommand);
-        endpoints.MapPost("/v1/agent/complete", HandleComplete);
-        endpoints.MapGet("/v1/status", HandleStatus);
-        endpoints.MapGet("/v1/plugins", HandlePlugins);
-        endpoints.MapPost("/v1/plugins/{pluginId}/form", HandlePublishPluginForm);
-        endpoints.MapGet("/v1/objects/{objectId}", HandleObject);
+        // The frontend's routes are mounted through one group and the group marks every
+        // endpoint it registers with FrontendRouteMetadata; the bearer middleware
+        // authenticates exactly the marked endpoints, so coverage follows the route
+        // table — a route added to this group is gated by construction, with no second
+        // prefix list to keep in sync (the previous list had drifted from these routes
+        // and left /v1/skills, /v1/prompts, and /v1/plugins unauthenticated). The empty
+        // group prefix keeps the mapped patterns identical to the documented wire paths.
+        var frontend = endpoints.MapGroup(string.Empty);
+        frontend.WithMetadata(FrontendRouteMetadata.Instance);
+        frontend.MapGet("/v1/agent/capabilities", HandleCapabilities);
+        frontend.MapGet("/v1/skills", HandleSkills);
+        frontend.MapGet("/v1/prompts", HandlePrompts);
+        frontend.MapGet("/v1/agent/session", HandleSession);
+        frontend.MapPost("/v1/agent/sessions", HandleNewSession);
+        frontend.MapGet("/v1/agent/sessions", HandleListSessions);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/resume", HandleResumeSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/rename", HandleRenameSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/fork", HandleForkSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/turns", HandleTurn);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/objects", HandleIngestObject);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/queue", HandleGetQueue);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/queue", HandleEnqueueTurns);
+        frontend.MapDelete("/v1/agent/sessions/{sessionId}/queue/{itemId}", HandleDeleteQueuedItem);
+        frontend.MapDelete("/v1/agent/sessions/{sessionId}/queue", HandleClearQueue);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/transcript", HandleTranscript);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents)
+            .WithMetadata(FrontendQueryTokenMetadata.Instance);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms)
+            .WithMetadata(FrontendQueryTokenMetadata.Instance);
+        frontend.MapPost("/v1/agent/runs/{runId}/cancel", HandleCancel);
+        frontend.MapPost("/v1/agent/inputs/{requestId}", HandleInput);
+        frontend.MapPost("/v1/agent/ide/{requestId}", HandleIdeAnswer);
+        frontend.MapGet("/v1/model/profiles", HandleModelProfiles);
+        frontend.MapPost("/v1/agent/commands", HandleCommand);
+        frontend.MapPost("/v1/agent/complete", HandleComplete);
+        frontend.MapGet("/v1/status", HandleStatus);
+        frontend.MapGet("/v1/plugins", HandlePlugins);
+        frontend.MapPost("/v1/plugins/{pluginId}/form", HandlePublishPluginForm);
+        frontend.MapGet("/v1/objects/{objectId}", HandleObject);
     }
 
     public async ValueTask DisposeAsync()
@@ -176,22 +181,48 @@ internal sealed class FrontendHost : IAsyncDisposable
         if (Interlocked.Exchange(ref disposeState, 1) == 0) await lifetime.CancelAsync().ConfigureAwait(false);
     }
 
+    /// <summary>Endpoint metadata marking an endpoint as part of the frontend web API plane:
+    /// the bearer middleware authenticates exactly the endpoints carrying this marker, so
+    /// coverage follows the route table instead of a hand-maintained prefix list (which had
+    /// drifted from the mapped routes and left some of them unauthenticated).</summary>
+    private sealed record FrontendRouteMetadata
+    {
+        public static readonly FrontendRouteMetadata Instance = new();
+
+        private FrontendRouteMetadata()
+        {
+        }
+    }
+
+    /// <summary>Endpoint metadata marking the frontend endpoints whose token may also arrive
+    /// as a query parameter (the browser-standard WebSocket client API cannot set headers).</summary>
+    private sealed record FrontendQueryTokenMetadata
+    {
+        public static readonly FrontendQueryTokenMetadata Instance = new();
+
+        private FrontendQueryTokenMetadata()
+        {
+        }
+    }
+
     private async Task AuthorizeThenNextAsync(HttpContext context, Func<Task> next)
     {
-        if (!FrontendPrefixes.Any(prefix =>
-                context.Request.Path.StartsWithSegments(prefix, StringComparison.Ordinal)))
+        // The gate is route-table driven: only the endpoints the frontend group mounted
+        // carry FrontendRouteMetadata. Endpoint routing matches paths case-insensitively,
+        // so a variant spelling such as /V1/agent/session resolves to the same marked
+        // endpoint and is authenticated exactly like its canonical form — there is no
+        // path comparison left to mis-case.
+        if (context.GetEndpoint() is not { } endpoint ||
+            endpoint.Metadata.GetMetadata<FrontendRouteMetadata>() is null)
         {
             await next().ConfigureAwait(false);
             return;
         }
 
         // The browser-standard WebSocket client API cannot carry headers, so the token may
-        // arrive as a query parameter on the WebSocket endpoints only.
-        var path = context.Request.Path.Value ?? string.Empty;
-        var isWebSocketPath = context.Request.Path.StartsWithSegments("/v1/agent/sessions", StringComparison.Ordinal) &&
-                              (path.EndsWith("/events", StringComparison.Ordinal) ||
-                               path.EndsWith("/comms", StringComparison.Ordinal));
-        if (!TryGetBearerToken(context, out var provided) && !(isWebSocketPath &&
+        // arrive as a query parameter on the endpoints that opted in via metadata.
+        var acceptsQueryToken = endpoint.Metadata.GetMetadata<FrontendQueryTokenMetadata>() is not null;
+        if (!TryGetBearerToken(context, out var provided) && !(acceptsQueryToken &&
                 TryGetQueryToken(context, out provided)) ||
             !CryptographicOperations.FixedTimeEquals(expectedToken, provided))
         {
@@ -895,8 +926,33 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        using var peer = CancellationTokenSource.CreateLinkedTokenSource(
+            context.RequestAborted,
+            lifetime.Token);
+        // A WebSocket permits a single outstanding send, and this socket has three writers
+        // that run on different flows: the run frame stream served below, its interleaved
+        // queue flush, and the ide.push delegate the announce registration hands to
+        // FrontendIdeSockets (a context-less tool invocation writes through it from
+        // another request). Writes are serialized through this gate — the same discipline
+        // the comm socket applies — because an unserialized second send faults the run
+        // stream (the exception escapes ServeStreamAsync and this handler's catches) and
+        // makes FrontendIdeSockets withdraw the announcer as if the socket had died.
+        using var sendGate = new SemaphoreSlim(1, 1);
+        async Task SendAsync(Func<Task> write, CancellationToken token)
+        {
+            await sendGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                await write().ConfigureAwait(false);
+            }
+            finally
+            {
+                sendGate.Release();
+            }
+        }
+
         Guid? ideRegistration = ideAnnounced && ideSockets is not null
-            ? ideSockets.Announce(sessionId, (frame, token) => SendFrameAsync(socket, frame, token))
+            ? ideSockets.Announce(sessionId, (frame, token) => SendAsync(() => SendFrameAsync(socket, frame, token), token))
             : null;
         logger.LogDebug(
             "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
@@ -904,12 +960,11 @@ internal sealed class FrontendHost : IAsyncDisposable
             context.Request.Path,
             since,
             ideAnnounced);
-        using var peer = CancellationTokenSource.CreateLinkedTokenSource(
-            context.RequestAborted,
-            lifetime.Token);
-        await SendFrameAsync(
-            socket,
-            new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+        await SendAsync(
+            () => SendFrameAsync(
+                socket,
+                new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+                peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
         try
@@ -918,9 +973,11 @@ internal sealed class FrontendHost : IAsyncDisposable
             {
                 if (!service.TryGetRun(singleRunId, out var runStream) || runStream is null)
                 {
-                    await SendFrameAsync(
-                        socket,
-                        new FrontendEventFrame("run.missing", RunId: singleRunId),
+                    await SendAsync(
+                        () => SendFrameAsync(
+                            socket,
+                            new FrontendEventFrame("run.missing", RunId: singleRunId),
+                            peer.Token),
                         peer.Token).ConfigureAwait(false);
                 }
                 else
@@ -929,6 +986,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // its stream, so the interleaving flush is a no-op here.
                     await ServeStreamAsync(
                         socket,
+                        SendAsync,
                         runStream,
                         since,
                         static _ => Task.CompletedTask,
@@ -953,9 +1011,11 @@ internal sealed class FrontendHost : IAsyncDisposable
                         sessionId,
                         queueVersion);
                     if (socket.State == WebSocketState.Open)
-                        await SendFrameAsync(
-                            socket,
-                            new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                        await SendAsync(
+                            () => SendFrameAsync(
+                                socket,
+                                new FrontendEventFrame("queue.updated", Queue: frameSnapshot),
+                                token),
                             token).ConfigureAwait(false);
                 }
 
@@ -992,8 +1052,13 @@ internal sealed class FrontendHost : IAsyncDisposable
                         // the run just served.
                         pendingRunWait = null;
                         var stream = await runWait.ConfigureAwait(false);
-                        await ServeStreamAsync(socket, stream, since, FlushQueueAsync, peer.Token)
-                            .ConfigureAwait(false);
+                        await ServeStreamAsync(
+                            socket,
+                            SendAsync,
+                            stream,
+                            since,
+                            FlushQueueAsync,
+                            peer.Token).ConfigureAwait(false);
                         previous = stream;
                         // Replay offsets are per run; later runs stream live from their start.
                         since = 0;
@@ -1021,10 +1086,26 @@ internal sealed class FrontendHost : IAsyncDisposable
             await drain.ConfigureAwait(false);
             logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await CloseSocketOutputAsync(
-                    socket,
-                    WebSocketCloseStatus.NormalClosure,
-                    "stream ended").ConfigureAwait(false);
+            {
+                // The close frame is a write like any other, so it takes the gate too —
+                // an ide push that was already in flight when the loop ended still holds
+                // it. The peer token is cancelled by now, so the gate wait gets its own
+                // bounded budget: a budget that runs out skips the frame like any other
+                // dead peer instead of holding the teardown open behind a parked writer.
+                using var closeBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await SendAsync(
+                        () => CloseSocketOutputAsync(
+                            socket,
+                            WebSocketCloseStatus.NormalClosure,
+                            "stream ended"),
+                        closeBudget.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
         }
     }
 
@@ -1088,6 +1169,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private async Task ServeStreamAsync(
         WebSocket socket,
+        Func<Func<Task>, CancellationToken, Task> send,
         FrontendRunStream stream,
         long since,
         Func<CancellationToken, Task> flushQueueAsync,
@@ -1100,7 +1182,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         var nextFrame = Task.FromResult(false);
         try
         {
-            foreach (var frame in initial) await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+            foreach (var frame in initial) await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
 
             // Queue frames must interleave with run frames, not defer behind the whole
             // run: a run parked at a gated provider once pinned a worker transition
@@ -1128,7 +1210,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
                 while (channel.Reader.TryRead(out var frame))
                 {
-                    await SendFrameAsync(socket, frame, cancellationToken).ConfigureAwait(false);
+                    await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
                     if (queueWake.IsCompleted)
                     {
                         await queueWake.ConfigureAwait(false);
@@ -1141,10 +1223,12 @@ internal sealed class FrontendHost : IAsyncDisposable
             (exception.InnerException is FrontendRunStream.FrontendBackpressureException)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                await CloseSocketAsync(
-                    socket,
-                    (WebSocketCloseStatus)1011,
-                    "backpressure").ConfigureAwait(false);
+                await send(
+                    () => CloseSocketAsync(
+                        socket,
+                        (WebSocketCloseStatus)1011,
+                        "backpressure"),
+                    cancellationToken).ConfigureAwait(false);
         }
         finally
         {

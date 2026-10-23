@@ -42,9 +42,22 @@ internal static class ProcessEnvironment
     /// <c>TERM</c> is always pinned to the VT terminal name so PTY children render correctly
     /// regardless of the policy.</summary>
     internal static IReadOnlyDictionary<string, string?> Capture(EffectivePolicy policy)
+        => Capture(policy, []);
+
+    /// <summary>Captures the child environment from <paramref name="policy"/> with the call
+    /// site's declared increment over the shared allowlist. When the policy's <c>env</c> kind
+    /// carries an explicit allowlist it is authoritative and the increment is not consulted —
+    /// a call site may keep its own delta, but it may never widen the scope's grants. Otherwise
+    /// the shared base allowlist plus the declared names are the candidates, and a denial still
+    /// removes a candidate however it was declared (AGENTS.md invariant 20).
+    /// <c>TERM</c> is always pinned to the VT terminal name so PTY children render correctly
+    /// regardless of the policy.</summary>
+    internal static IReadOnlyDictionary<string, string?> Capture(
+        EffectivePolicy policy,
+        IReadOnlyList<string> additionalNames)
     {
         ArgumentNullException.ThrowIfNull(policy);
-        var allowed = AllowedNames(policy);
+        var allowed = AllowedNames(policy, additionalNames);
         var result = new Dictionary<string, string?>(
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (var name in allowed)
@@ -57,14 +70,16 @@ internal static class ProcessEnvironment
         return result;
     }
 
-    private static IReadOnlyList<string> AllowedNames(EffectivePolicy policy)
+    private static IReadOnlyList<string> AllowedNames(
+        EffectivePolicy policy,
+        IReadOnlyList<string> additionalNames)
     {
         var rules = policy.For(PermissionKind.Env);
         if (rules.DenyAll) return [];
 
-        var candidates = rules.Allow.Count > 0 && !rules.AllowAll
+        IReadOnlyList<string> candidates = rules.Allow.Count > 0 && !rules.AllowAll
             ? rules.Allow
-            : DefaultAllowedEnvironmentNames;
+            : [.. DefaultAllowedEnvironmentNames, .. additionalNames];
         // The same prefix semantics the Deno permission resolver applies to env values, so a
         // profile deny cannot be widened or narrowed by a second matcher here.
         return candidates

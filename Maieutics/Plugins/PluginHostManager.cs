@@ -9,6 +9,7 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -533,6 +534,14 @@ internal sealed class PluginHostManager(
     /// </summary>
     private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
 
+    /// <summary>The launch policy of each stdio MCP server child, keyed by server id: the
+    /// declaring plugin's process-launch scope, captured when its servers are discovered so
+    /// the generation factory renders it before the child is spawned (AGENTS.md invariant 19).
+    /// Discovery always precedes generation creation for a definition, so the entry exists by
+    /// launch time; a definition without one launches unrestricted, the same default the run
+    /// gate applies everywhere.</summary>
+    private readonly ConcurrentDictionary<string, EffectivePolicy> mcpServerPolicies = new(StringComparer.Ordinal);
+
     private PluginMcpCoordinator? dynamicMcpCoordinator;
     private McpAdjustmentChain? adjustmentChain;
     private PluginHostProcess? process;
@@ -544,13 +553,27 @@ internal sealed class PluginHostManager(
 
     private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        Task stop;
+        Task? inFlightRestart;
+        Task? inFlightStartup;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            // A restart clears `restart` in the same locked transition that swaps in the
+            // successor generation's startup, so past that point the in-flight work is the
+            // startup task itself; capture both under one gate read.
+            inFlightRestart = restart;
+            inFlightStartup = starting;
+            stop = EnsureStoppedAsync();
         }
-        return new ValueTask(EnsureStoppedAsync());
+
+        await stop.ConfigureAwait(false);
+        // A restart in flight is part of this stop: observing it here keeps the stop from
+        // returning while lifecycle state could still be reset or a fresh host generation
+        // started behind the caller's back.
+        await ObserveInFlightRestartAsync(inFlightRestart, inFlightStartup).ConfigureAwait(false);
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -564,9 +587,17 @@ internal sealed class PluginHostManager(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        Task stop;
+        Task? inFlightRestart;
+        Task? inFlightStartup;
         lock (lifecycleGate)
         {
             externallyStopped = true;
+            // Same capture as DisposeAsync: the restart's swap moves the in-flight work from
+            // `restart` to the successor generation's `starting`, so both are read together.
+            inFlightRestart = restart;
+            inFlightStartup = starting;
+            stop = EnsureStoppedAsync();
         }
 
         // Stop must run to completion even if the caller's token cancels: an
@@ -576,12 +607,14 @@ internal sealed class PluginHostManager(
         // EnsureStoppedAsync itself is cancellation-free.
         try
         {
-            await EnsureStoppedAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+            await stop.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await EnsureStoppedAsync().ConfigureAwait(false);
+            await stop.ConfigureAwait(false);
         }
+
+        await ObserveInFlightRestartAsync(inFlightRestart, inFlightStartup).ConfigureAwait(false);
     }
 
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
@@ -1765,12 +1798,16 @@ internal sealed class PluginHostManager(
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         pendingInvokes[correlationId] = tcs;
-        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        // The caller's budget is the handler's, so the wait adds the startup allowance on
-        // top: a short declaration must not time out because the worker was cold.
-        budget.CancelAfter(CallWaitBudget(timeout));
         try
         {
+            // Built inside the guard: a stop that disposed the generation's lifetime source
+            // between the call's entry and this line is a host that is gone, reported as the
+            // typed unavailable outcome below instead of an ObjectDisposedException escaping
+            // the invoke path (AGENTS.md invariant 18).
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            // The caller's budget is the handler's, so the wait adds the startup allowance on
+            // top: a short declaration must not time out because the worker was cold.
+            budget.CancelAfter(CallWaitBudget(timeout));
             await using var registration = budget.Token.Register(
                 static state => (state as TaskCompletionSource<ExtensionCallOutcome>)?.TrySetCanceled(),
                 tcs);
@@ -1793,6 +1830,15 @@ internal sealed class PluginHostManager(
         {
             if (cancellableCallId is not null)
                 await RequestCallCancellationAsync(pluginId, exportName, cancellableCallId).ConfigureAwait(false);
+            return ExtensionCallOutcome.Error(
+                "plugin_unavailable",
+                "The plugin host stopped before the call completed.");
+        }
+        catch (ObjectDisposedException)
+        {
+            // The generation's lifetime source was disposed by StopCoreAsync while this call
+            // was in flight: the host is gone, and the failure stays recoverable within the
+            // turn (AGENTS.md invariant 18) instead of surfacing as a raw exception.
             return ExtensionCallOutcome.Error(
                 "plugin_unavailable",
                 "The plugin host stopped before the call completed.");
@@ -1918,10 +1964,14 @@ internal sealed class PluginHostManager(
         string key,
         CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        timeout.CancelAfter(ReplDeriveTimeout);
         try
         {
+            // Built inside the guard: a stop that disposed the generation's lifetime source
+            // between the call's entry and this line is a host that is gone, reported as the
+            // typed failed outcome below instead of an ObjectDisposedException escaping the
+            // derive path (AGENTS.md invariant 18).
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            timeout.CancelAfter(ReplDeriveTimeout);
             await using var registration = timeout.Token.Register(
                 static state => (state as TaskCompletionSource<ReplDeriveOutcome>)?.TrySetCanceled(),
                 tcs);
@@ -1934,6 +1984,14 @@ internal sealed class PluginHostManager(
                     JsonSerializer.SerializeToElement(derive, ReplControlJsonContext.Default.HostReplDerivePayload)),
                 timeout.Token).ConfigureAwait(false);
             return await tcs.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The generation's lifetime source was disposed by StopCoreAsync while this derive
+            // was in flight: the host is gone, and the failure stays recoverable — the session
+            // factory falls back to a kernel-derived REPL — instead of surfacing as a raw
+            // exception (AGENTS.md invariant 18).
+            return ReplDeriveOutcome.DeriveFailed("The plugin host stopped before the derive completed.");
         }
         finally
         {
@@ -2209,6 +2267,44 @@ internal sealed class PluginHostManager(
             }
 
         lifetime.Dispose();
+    }
+
+    /// <summary>Waits for the in-flight plugin-set restart to unwind, so an external stop
+    /// (dispose or hosted-service stop) never returns while a restart could still reset the
+    /// lifecycle state or start a fresh host generation behind it. Past the restart's
+    /// generation swap the restart field is already cleared and the in-flight work is the
+    /// successor generation's <c>starting</c> startup, which the stop cancels but never
+    /// awaits — its completion is what would move the reported state after the stop
+    /// returns — so both captured tasks are observed here. The restart observes the
+    /// externally-stopped flag at its reset and aborts, so it settles as soon as the stop
+    /// does; the joined startup settles canceled or faulted against this stop (its
+    /// disposal-check failure reports through readiness) and its unwind awaits this very
+    /// stop as its own teardown, which is why the observation happens in the external
+    /// stop's caller and never inside <see cref="StopCoreAsync"/> — awaiting either task
+    /// there would wait on a task that is itself waiting for this stop. Bounded by the
+    /// same 30 s budget the stop uses for its own drains, so a wedged restart cannot hold
+    /// the host stop open.</summary>
+    private async Task ObserveInFlightRestartAsync(Task? inFlightRestart, Task? inFlightStartup)
+    {
+        if (inFlightRestart is null && inFlightStartup is null) return;
+
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            if (inFlightRestart is not null)
+                await inFlightRestart.WaitAsync(budget.Token).ConfigureAwait(false);
+            if (inFlightStartup is not null)
+                await inFlightStartup.WaitAsync(budget.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // The restart handles its own failures, and a joined startup already reported
+            // its outcome through readiness; observing them here must not surface their
+            // cancellation or fault as the stop's own failure.
+            logger.LogWarning(
+                exception,
+                "The plugin host restart or startup was still unwinding when the host stopped.");
+        }
     }
 
     private async Task ObserveExitAsync(PluginHostProcess pluginProcess, string path)
@@ -3451,18 +3547,28 @@ internal sealed class PluginHostManager(
             cancellationToken);
     }
 
-    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue under the
-    /// caller's budget linked with the host lifetime, so a full queue can never block past the
-    /// budget (or past host stop); a reply to a detached host is dropped (the tracked call ends
-    /// with the socket).</summary>
+    /// <summary>Sends one capability reply. Delivery rides the bounded outbound queue under
+    /// the caller's budget linked with the host generation's lifetime, so a full queue can
+    /// never block past the budget (or past host stop); a reply whose generation is already
+    /// retired is dropped (the tracked call ends with the socket).</summary>
     private async Task PushCapabilityReplyAsync(
         WebSocket socket,
         ReplEnvelope envelope,
         CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        // The enqueue rides the linked budget; the bounded writer owns the write.
-        await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            // The enqueue rides the linked budget; the bounded writer owns the write.
+            await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // StopCoreAsync disposes the generation's lifetime source at the end of a stop; a
+            // reply racing that window has no destination (the tracked call ends with the
+            // socket), and the drain awaiting this call must not surface the disposal as a
+            // stop failure.
+        }
     }
 
     /// <summary>Replaces one plugin's capability grants (the kernel-parsed manifest
@@ -3756,6 +3862,85 @@ internal sealed class PluginHostManager(
             logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
     }
 
+    /// <summary>The effective policy of one plugin's process-launch scope: the plugin's
+    /// declared (approval-gated, ADR 0037) grants rendered as a policy, so every child the
+    /// kernel starts on that plugin's behalf — its declared MCP server children — is judged
+    /// and configured by the permission module instead of launching unchecked. Only the kinds
+    /// the kernel-side launch consumes are carried: <c>run</c> (the stdio command gate) and
+    /// <c>env</c> (the child environment); the remaining kinds shape the worker's Deno shell,
+    /// which the plugin host enforces. An absent grant leaves the kind unrestricted — the same
+    /// default the run gate applies everywhere (ADR 0018 §7 decision 2). Callers hold
+    /// <see cref="gate"/>.</summary>
+    private EffectivePolicy? PluginScopePolicy(string pluginId)
+    {
+        var descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
+        if (descriptor is null) return null;
+
+        var run = descriptor.Permissions.Run;
+        var env = descriptor.Permissions.Env;
+        return new EffectivePolicy(
+            new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Run] = new PermissionKindRules
+                {
+                    AllowAll = run.AllowAll,
+                    Allow = ResolvePluginRunGrantValues(descriptor.RootDirectory, run.Values)
+                },
+                [PermissionKind.Env] = new PermissionKindRules
+                {
+                    AllowAll = env.AllowAll,
+                    Allow = env.Values
+                }
+            },
+            manifestVariables ?? new VariableTable(new EmptyPluginScopeVariableSource()));
+    }
+
+    /// <summary>Run grant values as the launch gate compares them. Deno resolves a
+    /// rooted-relative run grant against the worker's working directory — the plugin root —
+    /// so the kernel-side gate resolves the same way; bare command names and absolute paths
+    /// are compared as declared.</summary>
+    private static IReadOnlyList<string> ResolvePluginRunGrantValues(
+        string pluginRoot,
+        IReadOnlyList<string> values)
+    {
+        var resolved = new List<string>(values.Count);
+        foreach (var value in values)
+        {
+            if (value.Length == 0) continue;
+            resolved.Add(
+                value.StartsWith("./", StringComparison.Ordinal) || value.StartsWith("../", StringComparison.Ordinal)
+                    ? Path.GetFullPath(Path.Combine(pluginRoot, value))
+                    : value);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>Whether the owning plugin's launch policy admits the server's child command.
+    /// Only stdio servers start a child — an HTTP server is remote and needs no process grant.
+    /// A server whose owning scope has no policy is unrestricted, the run gate's default.</summary>
+    private static bool ServerCommandPermitted(McpServerDefinition definition, EffectivePolicy? scopePolicy)
+    {
+        if (definition.Transport is not StdioMcpTransportDefinition stdio) return true;
+        if (scopePolicy is not { } launchPolicy) return true;
+        return RunGrant.Allows(launchPolicy, stdio.Command);
+    }
+
+    private void RecordServerPolicies(IReadOnlyList<McpServerDefinition> definitions, EffectivePolicy? scopePolicy)
+    {
+        if (scopePolicy is null) return;
+        foreach (var definition in definitions)
+        {
+            if (definition.Transport is not StdioMcpTransportDefinition) continue;
+            mcpServerPolicies[definition.Id] = scopePolicy;
+        }
+    }
+
+    private sealed class EmptyPluginScopeVariableSource : Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name) => null;
+    }
+
     private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(
         PluginRegistration registration,
         CancellationToken cancellationToken)
@@ -3766,6 +3951,15 @@ internal sealed class PluginHostManager(
             // snapshot is the discovery result. Failures here keep the previous
             // contribution active (the same sticky-last-good semantics as handlers).
             return DiscoverManifestMcpAsync(registration);
+        }
+
+        // The owning scope's launch policy is captured with the discovery: every definition
+        // this discovery produces is judged against the declaring plugin's run grant and
+        // carries the policy into its generation (rendered again at child spawn).
+        EffectivePolicy? scopePolicy;
+        lock (gate)
+        {
+            scopePolicy = PluginScopePolicy(registration.PluginId);
         }
 
         var request = JsonSerializer.SerializeToElement(
@@ -3792,9 +3986,13 @@ internal sealed class PluginHostManager(
                     out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
+            if (!ServerCommandPermitted(definition, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
+
             definitions.Add(definition);
         }
 
+        RecordServerPolicies(definitions, scopePolicy);
         return PluginMcpDiscoveryResult.Success(definitions);
     }
 
@@ -3810,6 +4008,7 @@ internal sealed class PluginHostManager(
     {
         IReadOnlyList<PluginExtensionEntry> entries;
         IReadOnlyList<McpServerDefinition> fileServers;
+        EffectivePolicy? scopePolicy;
         lock (gate)
         {
             var hasEntries = descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
@@ -3824,6 +4023,10 @@ internal sealed class PluginHostManager(
             fileServers = declaration is null
                 ? []
                 : Contributions.ContributionDescriptorUnwrap.McpServers(declaration.Descriptors);
+            // The declaring plugin's launch policy is captured with the manifest snapshot it
+            // authorizes (ADR 0037): its stdio servers are judged against it here and carry it
+            // into their generations.
+            scopePolicy = PluginScopePolicy(registration.PluginId);
         }
 
         var definitions = new List<McpServerDefinition>();
@@ -3836,6 +4039,9 @@ internal sealed class PluginHostManager(
                     manifestVariables,
                     out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
+
+            if (!ServerCommandPermitted(definition, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
 
             definitions.Add(definition);
         }
@@ -3852,9 +4058,13 @@ internal sealed class PluginHostManager(
                 return PluginMcpDiscoveryResult.Failed("conflicting_server_definition");
             }
 
+            if (!ServerCommandPermitted(fileServer, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
+
             definitions.Add(fileServer);
         }
 
+        RecordServerPolicies(definitions, scopePolicy);
         return PluginMcpDiscoveryResult.Success(definitions);
     }
 
@@ -3871,7 +4081,11 @@ internal sealed class PluginHostManager(
         // The same capability wiring the kernel-level servers used (ADR 0029): roots are
         // answered with the live workspace root when the definition opted in, and
         // elicitation flows through the frontend presenter. Capability follows handler
-        // presence, so a null source simply means the server is never asked.
+        // presence, so a null source simply means the server is never asked. The stdio
+        // child's policy is the owning plugin's launch scope, captured at discovery (the
+        // default transport factory renders it — run gate and child environment — before
+        // the child is spawned).
+        mcpServerPolicies.TryGetValue(definition.Id, out var scopePolicy);
         return McpServerGeneration.CreateAsync(
             definition,
             loggerFactory,
@@ -3881,7 +4095,8 @@ internal sealed class PluginHostManager(
             reservedNames,
             workspaceRootsSource,
             elicitationPresenter,
-            adjustmentChain);
+            adjustmentChain,
+            policy: scopePolicy);
     }
 
     private void FailPending(string message)
@@ -3949,21 +4164,29 @@ internal sealed class PluginHostManager(
         };
     }
 
-    /// <summary>Enqueues one frame on the bounded outbound queue. Returns whether the
-    /// frame was accepted; a detached host or a completed queue drops it, and callers
-    /// that report delivery must branch on the result.</summary>
+    /// <summary>Enqueues one frame on the bounded outbound queue of the connection the frame
+    /// was captured for. Returns whether the frame was accepted; a retired connection, a
+    /// detached host, or a completed queue drops it, and callers that report delivery must
+    /// branch on the result. The socket parameter is the generation fence: a call belongs to
+    /// the connection generation that was live when its socket was captured, and a restart
+    /// replaces both the socket and its queue — so a frame belonging to a retired generation
+    /// is refused here instead of being written into the replacement host's queue.</summary>
     private async Task<bool> PushAsync(WebSocket socket, ReplEnvelope envelope, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
         ChannelWriter<byte[]>? writer;
         lock (gate)
         {
-            writer = outbound?.Writer;
+            // Same lock as the capture: the frame is enqueued only while the connection it
+            // belongs to still owns the outbound slot. The replacement host must never receive
+            // a frame that a call issued against the retired connection.
+            writer = ReferenceEquals(socket, Socket) ? outbound?.Writer : null;
         }
 
         if (writer is null)
         {
-            // No attached host writer (detached or never attached): nothing to send to.
+            // No attached host writer for this generation (detached, never attached, or
+            // replaced by a successor): nothing to send to.
             return false;
         }
 

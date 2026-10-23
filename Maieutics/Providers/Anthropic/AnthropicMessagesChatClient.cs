@@ -73,6 +73,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
         var eventData = new StringBuilder();
         var blocks = new Dictionary<int, StreamingBlock>();
+        var messageUsage = new MessageUsage();
         while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
         {
             if (line.Length != 0)
@@ -89,7 +90,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
             if (eventData.Length == 0) continue;
 
-            foreach (var update in ProcessEvent(eventData.ToString(), blocks))
+            foreach (var update in ProcessEvent(eventData.ToString(), blocks, messageUsage))
                 yield return update;
 
             eventData.Clear();
@@ -97,7 +98,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
         if (eventData.Length > 0)
         {
-            foreach (var update in ProcessEvent(eventData.ToString(), blocks))
+            foreach (var update in ProcessEvent(eventData.ToString(), blocks, messageUsage))
                 yield return update;
         }
 
@@ -117,7 +118,8 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
     private static IReadOnlyList<ChatResponseUpdate> ProcessEvent(
         string eventData,
-        IDictionary<int, StreamingBlock> blocks)
+        IDictionary<int, StreamingBlock> blocks,
+        MessageUsage messageUsage)
     {
         using var document = JsonDocument.Parse(eventData);
         var root = document.RootElement;
@@ -134,6 +136,11 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                         ? "Anthropic reported a streaming error."
                         : $"Anthropic reported the streaming error '{errorType}'.");
                 }
+            case "message_start":
+                RecordMessageStartUsage(root, messageUsage);
+                return [];
+            case "message_delta":
+                return FinishMessage(root, messageUsage);
             case "content_block_start":
                 return StartContentBlock(root, blocks);
             case "content_block_delta":
@@ -143,6 +150,55 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             default:
                 return [];
         }
+    }
+
+    /// <summary>Records the usage Anthropic reports when the message opens. Its
+    /// <c>output_tokens</c> is a running count that the message's final
+    /// <c>message_delta</c> supersedes, so nothing is emitted yet.</summary>
+    private static void RecordMessageStartUsage(JsonElement root, MessageUsage usage)
+    {
+        if (!root.TryGetProperty("message", out var message) ||
+            !message.TryGetProperty("usage", out var reported))
+            return;
+
+        usage.InputTokens = ReadTokenCount(reported, "input_tokens");
+        usage.OutputTokens = ReadTokenCount(reported, "output_tokens");
+    }
+
+    /// <summary>Emits the message's usage as one usage content. Anthropic reports input tokens
+    /// on <c>message_start</c> and the message's final output token count on
+    /// <c>message_delta</c>; the runtime sums every usage content it receives, so the message
+    /// must contribute exactly one report covering both sides. Anthropic reports no total, so
+    /// it is derived as input plus output.</summary>
+    private static IReadOnlyList<ChatResponseUpdate> FinishMessage(JsonElement root, MessageUsage usage)
+    {
+        if (root.TryGetProperty("usage", out var reported))
+            usage.OutputTokens = ReadTokenCount(reported, "output_tokens") ?? usage.OutputTokens;
+
+        var inputTokens = usage.InputTokens;
+        var outputTokens = usage.OutputTokens;
+        if (inputTokens is null && outputTokens is null) return [];
+
+        return
+        [
+            new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new UsageContent(new UsageDetails
+                {
+                    InputTokenCount = inputTokens,
+                    OutputTokenCount = outputTokens,
+                    TotalTokenCount = (inputTokens ?? 0) + (outputTokens ?? 0)
+                })])
+        ];
+    }
+
+    /// <summary>Reads one usage count; an absent or non-numeric field stays unset.</summary>
+    private static long? ReadTokenCount(JsonElement usage, string name)
+    {
+        return usage.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number &&
+               value.TryGetInt64(out var count)
+            ? count
+            : null;
     }
 
     /// <summary>Applies one content-block delta. Text and server-tool argument deltas accumulate
@@ -710,6 +766,17 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     {
         var value = endpoint.AbsoluteUri;
         return value.EndsWith('/') ? endpoint : new Uri(value + '/');
+    }
+
+    /// <summary>The usage Anthropic has reported for the message currently streaming. Input
+    /// tokens arrive with <c>message_start</c> and the final output count with
+    /// <c>message_delta</c>; both sides are cumulative for the message, so the latest report
+    /// wins.</summary>
+    private sealed class MessageUsage
+    {
+        internal long? InputTokens { get; set; }
+
+        internal long? OutputTokens { get; set; }
     }
 
     private sealed class StreamingBlock(StreamingBlockKind kind, string callId = "", string name = "")

@@ -1154,8 +1154,13 @@ internal sealed class MaieuticsRuntimeConfiguration :
         var root = configuration.GetSection(MaieuticsOptions.SectionName);
         var options = new MaieuticsOptions();
         root.Bind(options);
-        var appPermissionsDefaults = default(PermissionLayer); // BISECT
-        var workspacePermissionsProfile = default(PermissionLayer); // BISECT
+        // The two configuration-owned layers of the overlay (AGENTS.md invariant 20): the
+        // app-wide defaults bound from Maieutics:Permissions and the workspace permissions.json
+        // profile beside the active maieutics.json. Both are read here so the candidate carries
+        // them into the snapshot the layer source serves; an invalid profile throws the loader's
+        // typed failure, which rejects the reload and keeps the last-known-good snapshot.
+        var appPermissionsDefaults = CreatePermissionsDefaultsLayer(options.Permissions);
+        var workspacePermissionsProfile = LoadWorkspacePermissionsProfile();
         NormalizeAgentHistoryLimit(root, options);
         options.ValidateCommon();
         var capabilityRegistry = CapabilityRegistry.Create(root);

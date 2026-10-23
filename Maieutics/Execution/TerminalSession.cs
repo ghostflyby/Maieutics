@@ -589,6 +589,13 @@ internal sealed class TerminalSession : IAsyncDisposable
                             SessionId);
                     }
 
+                // Clearing the process field above detaches the reaper's Exited event, so this path
+                // must settle the one-shot's exit signal itself: a waiter armed on the session's exit
+                // (the task plane's wait, ADR 0030 decision 5) has to observe the close instead of
+                // blocking to its own timeout, and an already-terminal session's signal is untouched.
+                if (kind == TerminalSessionKind.OneShot)
+                    exitCompletion.TrySetResult();
+
                 SetState(TerminalSessionState.Closed);
             }
             finally
@@ -618,7 +625,18 @@ internal sealed class TerminalSession : IAsyncDisposable
 
         lock (stateGate)
         {
-            if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
+            // The state guard suppresses the state transition only, never the exit signal below:
+            // a close in flight owns the terminal state, but an exit observed while it is in
+            // flight is still a real child exit, and a waiter armed on the one-shot's task
+            // resource must not be left to its own timeout (ADR 0030 decision 5).
+            if (state is TerminalSessionState.Closing or TerminalSessionState.Closed)
+            {
+                if (kind == TerminalSessionKind.OneShot)
+                    exitCompletion.TrySetResult();
+
+                return;
+            }
+
             if (kind == TerminalSessionKind.OneShot)
             {
                 if (state != TerminalSessionState.Completed)
@@ -1014,15 +1032,13 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// <summary>Rejects the configured executable when the effective policy restricts <c>run</c>.
     /// The default policy (and any policy without explicit run rules) grants <c>run</c> fully, so
     /// nothing changes by default (ADR 0018 §7, decision 2); the check engages only when a layer
-    /// contributes an explicit run allowlist or deny.</summary>
+    /// contributes an explicit run allowlist or deny. The verdict comes from the shared
+    /// general-start gate (Maieutics.Processes), so terminal and MCP server children judge
+    /// alike.</summary>
     private void EnsureExecutableAllowed()
     {
-        var run = policy.For(PermissionKind.Run);
-        if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
-
-        foreach (var allowed in run.Allow)
-            if (PermissionMatching.MatchesPath(allowed, executable))
-                return;
+        if (RunGrant.Allows(policy, executable))
+            return;
 
         throw new AgentToolException(
             "terminal_start_failed",

@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Maieutics.Execution;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -242,9 +243,18 @@ internal sealed class McpServerGeneration
         IReadOnlySet<string>? reservedToolNames = null,
         IMcpWorkspaceRootsSource? rootsSource = null,
         IMcpElicitationPresenter? elicitationPresenter = null,
-        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
+        IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null,
+        EffectivePolicy? policy = null)
     {
-        transportFactory ??= CreateTransportAsync;
+        // The default transport factory spawns the server child itself, so it renders the
+        // owning scope's policy for every launch — the run gate judges the command and the
+        // child environment comes from the policy's env grants — instead of silently
+        // authorizing with an empty default (AGENTS.md invariant 19, ADR 0018 §7). An injected
+        // factory owns that decision; when no scope policy was supplied, the default policy
+        // (unrestricted run, ADR 0018 §7 decision 2) applies.
+        var effectivePolicy = policy ?? EffectivePolicy.Default;
+        transportFactory ??= (serverDefinition, factoryLogger, factoryToken) =>
+            CreateTransportAsync(serverDefinition, factoryLogger, factoryToken, effectivePolicy);
         var coordinator = elicitationPresenter is null
             ? null
             : new McpElicitationCoordinator(
@@ -765,7 +775,8 @@ internal sealed class McpServerGeneration
     private static ValueTask<IClientTransport> CreateTransportAsync(
         McpServerDefinition definition,
         ILoggerFactory loggerFactory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        EffectivePolicy policy)
     {
         cancellationToken.ThrowIfCancellationRequested();
         IClientTransport transport = definition.Transport switch
@@ -775,7 +786,7 @@ internal sealed class McpServerGeneration
                 stdio,
                 definition.ShutdownTimeout,
                 loggerFactory,
-                EffectivePolicy.Default),
+                policy),
             HttpMcpTransportDefinition http => CreateHttpTransport(
                 definition.Id,
                 http,
@@ -789,6 +800,16 @@ internal sealed class McpServerGeneration
         return ValueTask.FromResult(transport);
     }
 
+    /// <summary>The MCP child's declared increment over the shared general-start allowlist
+    /// (<see cref="ProcessEnvironment"/>): the names the MCP SDK's curated list forwarded on
+    /// top of it, kept so servers relying on them keep working. It never widens the policy —
+    /// <see cref="ProcessEnvironment.Capture(EffectivePolicy, IReadOnlyList{string})"/> still
+    /// defers to an explicit env allowlist and always applies env denials.</summary>
+    private static readonly IReadOnlyList<string> EnvironmentAllowlistDelta =
+        OperatingSystem.IsWindows()
+            ? ["PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "SYSTEMDRIVE", "USERNAME"]
+            : ["LOGNAME", "SHELL", "USER"];
+
     private static StdioClientTransport CreateStdioTransport(
         string id,
         StdioMcpTransportDefinition transport,
@@ -796,13 +817,16 @@ internal sealed class McpServerGeneration
         ILoggerFactory loggerFactory,
         EffectivePolicy policy)
     {
-        // The MCP server child is a general process start: when the policy restricts run, reject a
-        // command outside the allowlist before the child is spawned (ADR 0018 §7, Phase 6). The
-        // default policy leaves run unrestricted, so nothing changes by default. Environment stays
-        // the MCP SDK's curated allowlist plus explicit overrides; policy env integration is a
-        // follow-up once the allowlists are unified.
+        // The MCP server child is a general process start (AGENTS.md invariant 19, ADR 0018
+        // §7): the owning scope's policy is rendered before the child is spawned — the command
+        // is judged by the shared run gate (Maieutics.Processes) and the environment comes from
+        // the policy's env grants through the shared allowlist with the MCP increment declared
+        // above, not from the MCP SDK's curated list. The server's own declared env entries are
+        // applied on top, exactly as before.
         EnsureCommandAllowed(transport.Command, policy);
-        var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
+        var environment = new Dictionary<string, string?>(
+            ProcessEnvironment.Capture(policy, EnvironmentAllowlistDelta),
+            StringComparer.Ordinal);
         foreach (var pair in transport.EnvironmentVariables ?? new Dictionary<string, string?>(StringComparer.Ordinal))
             environment[pair.Key] = pair.Value;
 
@@ -821,17 +845,13 @@ internal sealed class McpServerGeneration
     }
 
     /// <summary>Rejects an MCP server command when the policy restricts <c>run</c>; the default
-    /// policy leaves it unrestricted (ADR 0018 §7, Phase 6). Internal so tests can exercise the
-    /// check directly.</summary>
+    /// policy leaves it unrestricted (ADR 0018 §7, Phase 6). The verdict comes from the shared
+    /// general-start gate (Maieutics.Processes), so terminal and MCP server children judge
+    /// alike. Internal so tests can exercise the check directly.</summary>
     internal static void EnsureCommandAllowed(string command, EffectivePolicy policy)
     {
-        ArgumentNullException.ThrowIfNull(policy);
-        var run = policy.For(PermissionKind.Run);
-        if (run.AllowAll || (run.Allow.Count == 0 && run.Deny.Count == 0 && !run.DenyAll)) return;
-
-        foreach (var allowed in run.Allow)
-            if (PermissionMatching.MatchesPath(allowed, command))
-                return;
+        if (RunGrant.Allows(policy, command))
+            return;
 
         throw new ArgumentException(
             $"The MCP server command '{command}' is not permitted by the effective policy.",

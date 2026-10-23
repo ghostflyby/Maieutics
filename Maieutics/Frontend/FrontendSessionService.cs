@@ -642,8 +642,10 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var stream = HubFor(sessionId).Latest;
         if (stream is null) return false;
 
-        stream.PublishPresentation(type, null, data, CancellationToken.None);
-        return true;
+        // The stream owns the terminal fence: once it published the run's terminal pair the
+        // frame could only be ordered behind run.status idle, so the answer is false — the
+        // presenters deny or cancel on it instead of waiting for an answer no client can give.
+        return stream.TryPublishPresentationFrame(type, null, data, CancellationToken.None);
     }
 
     /// <summary>Cancels a run cooperatively and waits for its termination. A runId that does

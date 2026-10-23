@@ -21,7 +21,7 @@ public sealed class FrontendEventsSocketRunWaitTests
     public FrontendEventsSocketRunWaitTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        output.WriteLine($"[events-run-wait] {DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)} {message}");
+        TestTrace.Write(output, "[events-run-wait]", message);
 
     /// <summary>A run announced after the turn queue has fully drained must still be served on
     /// a socket that observed the queue's transitions. The drain's queue wakes are what used to

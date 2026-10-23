@@ -24,7 +24,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        output.WriteLine($"[queue-test] {DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)} {message}");
+        TestTrace.Write(output, "[queue-test]", message);
 
     [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()

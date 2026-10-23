@@ -26,7 +26,7 @@ public sealed class FrontendQueueSessionKeyTests
     public FrontendQueueSessionKeyTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        output.WriteLine($"[queue-session-key] {DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)} {message}");
+        TestTrace.Write(output, "[queue-session-key]", message);
 
     /// <summary>The queue is filled to its committed capacity through the uppercase spelling
     /// of the session id. The worker is held between its submission handshake and the running

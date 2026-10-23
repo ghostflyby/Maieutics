@@ -112,24 +112,16 @@ public sealed class FrontendCommIntegrationTests
         await CommChildSocketStub.SendAsync(child, Open("w1", "tw1", null), deadline.Token);
         await CommChildSocketStub.SendAsync(child, Open("w2", "tw2", null), deadline.Token);
 
-        // The child's open frames are in flight the moment SendAsync returns; on a
-        // slow receiver the plane has not processed them yet (the ubuntu CI flake:
-        // hello carried an empty live list). The plane exposes no child-visible ack,
-        // so the test probes with throwaway hello reads until the registry reflects
-        // both opens, then runs the real subscriber against the settled plane.
-        JsonElement firstHello;
-        while (true)
-        {
-            using var probe = await ConnectCommsAsync(harness, sessionId, deadline.Token);
-            firstHello = await ReceiveHelloAsync(probe, deadline.Token);
-            var liveCount = firstHello.GetProperty("live").GetArrayLength();
-            await probe.CloseAsync(WebSocketCloseStatus.NormalClosure, "probe", deadline.Token);
-            if (liveCount >= 2) break;
-            await Task.Delay(50, deadline.Token);
-        }
+        // The child's open frames are in flight the moment SendAsync returns; the
+        // plane's live set is the observable, and its mutation has a completion
+        // signal: await the second open's registration, then verify the settled live
+        // set synchronously through the router — no throwaway probe connections.
+        var plane = harness.CommRouter.PlaneFor(sessionId);
+        while (plane.SnapshotLive().Count < 2)
+            await plane.LiveSetChanged.WaitAsync(deadline.Token);
 
         using var first = await ConnectCommsAsync(harness, sessionId, deadline.Token);
-        firstHello = await ReceiveHelloAsync(first, deadline.Token);
+        var firstHello = await ReceiveHelloAsync(first, deadline.Token);
         Assert.False(firstHello.GetProperty("replayed").GetBoolean());
         Assert.Equal(["w1", "w2"], firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString()));
         var (one, _) = await ReceiveCommAsync(first, deadline.Token);

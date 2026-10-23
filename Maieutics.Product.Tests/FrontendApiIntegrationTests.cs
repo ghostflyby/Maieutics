@@ -1675,10 +1675,23 @@ public sealed class FrontendApiIntegrationTests
         public IdeRequestRegistry IdeRequests =>
             host.Services.GetRequiredService<IdeRequestRegistry>();
 
+        /// <summary>The live comm router, so tests can await a session plane's live-set
+        /// transitions instead of probing with throwaway hello reads.</summary>
+        public Frontend.FrontendCommRouter CommRouter =>
+            host.Services.GetRequiredService<Frontend.FrontendCommRouter>();
+
         /// <summary>The live IDE announcement gate, so tests observe the per-socket
         /// capability lifecycle without driving a run.</summary>
         public Configuration.IIdeFrontendGate IdeGate =>
             host.Services.GetRequiredService<Configuration.IIdeFrontendGate>();
+
+        /// <summary>Waits for the session's announcing sockets to lapse (the last one
+        /// withdrawing is the completion). Capture the task before closing the socket:
+        /// the underlying signal is re-armed by the next announce.</summary>
+        public Task IdeLapsedAsync(string sessionId)
+        {
+            return ((FrontendIdeSockets)IdeGate).Lapsed(sessionId);
+        }
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
@@ -1750,13 +1763,33 @@ public sealed class FrontendApiIntegrationTests
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             wait.CancelAfter(TimeSpan.FromSeconds(20));
+
+            // Completion-driven: the run's settlement is the completion notification for
+            // "the turn finished" — the transcript commit follows it. With a runId the
+            // harness awaits that run's settlement; without one, the session's latest
+            // run's settlement stands in (every caller submits exactly one turn before
+            // waiting). The transcript REST read then verifies the commit and carries the
+            // diagnostic on the failure path.
+            if (runId is not null)
+            {
+                if (SessionService.TryGetRun(runId, out var stream) && stream is not null)
+                    await stream.Settled.WaitAsync(wait.Token);
+            }
+            else if (Guid.TryParseExact(sessionId, "N", out var parsed) &&
+                     SessionService.TryGetLatestRun(
+                         new Agent.AgentSessionId(parsed),
+                         out var latest) &&
+                     latest is not null)
+            {
+                await latest.Settled.WaitAsync(wait.Token);
+            }
+
             while (true)
             {
                 var transcript = await Client.GetFromJsonAsync<JsonElement>(
                     $"/v1/agent/sessions/{sessionId}/transcript",
                     wait.Token);
                 if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
-
                 // A run that already settled can never commit a turn, so polling until the
                 // budget expires only rewrites the real cause as an empty
                 // TaskCanceledException. Name it instead: the run's retained stream carries

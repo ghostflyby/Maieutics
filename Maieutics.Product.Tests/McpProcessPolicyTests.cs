@@ -68,20 +68,13 @@ public sealed class McpProcessPolicyTests
             // The coordinator starts the declared server straight from the manifest snapshot;
             // the probe file is the child's environment dump. The shell creates the file before
             // /usr/bin/env's output lands in it, so on a loaded runner an existence check can
-            // win that race and read an empty dump (observed on ubuntu-24.04 CI) — wait for the
-            // granted line, not for the file.
-            var lines = Array.Empty<string>();
-            for (var attempt = 0; attempt < 200; attempt++)
-            {
-                if (File.Exists(probe))
-                {
-                    lines = await File.ReadAllLinesAsync(probe, TestContext.Current.CancellationToken);
-                    if (lines.Contains($"{grantedName}=granted-value")) break;
-                }
-                await Task.Delay(50, TestContext.Current.CancellationToken);
-            }
-
-            Assert.True(File.Exists(probe), "the plugin-declared MCP stdio child never ran.");
+            // win that race and read an empty dump (observed on ubuntu-24.04 CI) — wait for
+            // the granted line's write event, the file's own completion notification.
+            var lines = await WaitForProbeContentAsync(
+                probe,
+                line => line == $"{grantedName}=granted-value",
+                TestContext.Current.CancellationToken);
+            Assert.NotEmpty(lines);
 
             // The plugin's env grant reaches its child, and TERM is the pinned VT name — on
             // the SDK-curated environment neither holds: the grant is not in the SDK's list
@@ -201,9 +194,7 @@ public sealed class McpProcessPolicyTests
             failure is ArgumentException,
             $"the owning scope's run grant refused a command inside its directory: {failure.Message}");
 
-        for (var attempt = 0; attempt < 100 && !File.Exists(probe); attempt++)
-            await Task.Delay(50, TestContext.Current.CancellationToken);
-
+        await WaitForProbeFileAsync(probe);
         Assert.True(File.Exists(probe), "the MCP stdio child never ran.");
         CleanupDirectory(granted);
     }
@@ -239,11 +230,9 @@ public sealed class McpProcessPolicyTests
                 TestContext.Current.CancellationToken));
             Assert.NotNull(failure);
 
-            for (var attempt = 0; attempt < 100 && !File.Exists(probe); attempt++)
-                await Task.Delay(50, TestContext.Current.CancellationToken);
-
+            await WaitForProbeFileAsync(probe);
             Assert.True(File.Exists(probe), "the MCP stdio child never ran.");
-            var lines = await File.ReadAllLinesAsync(probe, TestContext.Current.CancellationToken);
+            var lines = await ReadProbeLinesAsync(probe);
 
             // A shared-allowlist name the MCP SDK's list does not forward is carried, TERM is
             // the pinned VT name (not the parent's), and the server's declared env still wins.
@@ -257,6 +246,74 @@ public sealed class McpProcessPolicyTests
             Environment.SetEnvironmentVariable("TERM", previousTerm);
             CleanupDirectory(directory);
         }
+    }
+
+    /// <summary>Waits for the probe file to exist (its creation is the OS completion
+    /// event for the child's spawn) — armed before a second existence check, closing
+    /// the create-between-checks race.</summary>
+    private static async Task WaitForProbeFileAsync(string probe)
+    {
+        if (File.Exists(probe)) return;
+
+        using var watcher = new FileSystemWatcher(
+            Path.GetDirectoryName(probe) ?? ".",
+            Path.GetFileName(probe))
+        {
+            EnableRaisingEvents = true,
+            NotifyFilter = NotifyFilters.FileName,
+        };
+        var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.Created += (_, _) => created.TrySetResult();
+
+        if (File.Exists(probe)) return;
+
+        await created.Task.WaitAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Waits for the probe dump to contain the expected line. The watch is
+    /// armed BEFORE the existence check on every pass, so no write can slip between a
+    /// read and the subscription; each write event completes the signal and the content
+    /// is re-read then — never time-sliced. The shell creates the file before the env
+    /// output lands, so creation alone proves nothing about the content.</summary>
+    private static async Task<string[]> WaitForProbeContentAsync(
+        string probe,
+        Func<string, bool> expected,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            using var watcher = new FileSystemWatcher(
+                Path.GetDirectoryName(probe) ?? ".",
+                Path.GetFileName(probe))
+            {
+                EnableRaisingEvents = true,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+            };
+            var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            watcher.Created += (_, _) => written.TrySetResult();
+            watcher.Changed += (_, _) => written.TrySetResult();
+
+            if (File.Exists(probe))
+            {
+                var lines = await File.ReadAllLinesAsync(probe, cancellationToken);
+                if (Array.Exists(lines, line => expected(line))) return lines;
+            }
+
+            await written.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>Reads the probe dump once its expected marker line has landed: the
+    /// marker's write is the content-arrival completion event, and every line the test
+    /// asserts rides the same single redirection that wrote the marker.</summary>
+    private static async Task<string[]> ReadProbeLinesAsync(string probe)
+    {
+        // The dump's own header (PATH=) is written by the same redirection as every
+        // asserted line, so its presence proves the dump completed.
+        return await WaitForProbeContentAsync(
+            probe,
+            line => line.StartsWith("PATH=", StringComparison.Ordinal),
+            TestContext.Current.CancellationToken);
     }
 
     /// <summary>A data-only, loadable plugin whose <c>deno.json</c> declares an

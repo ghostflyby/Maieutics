@@ -273,12 +273,13 @@ public sealed class FrontendRunStreamTests
             NullLogger<FrontendRunStream>.Instance);
         stream.Start(null);
 
-        // Poll until the buffer has been filled to capacity AND the pump has published the
+        // Wait until the buffer has been filled to capacity AND the pump has published the
         // whole held delta range: "count reached the cap" alone also matches mid-fill (the
         // gap frame plus a full window appears as soon as the first eviction fires, while
         // the oldest retained delta is still drifting), which asserted a sequence the run
-        // had not reached yet — a race that only slow runners lost. The oldest retained
-        // delta is stable once every delta is published, so wait for exactly that value.
+        // had not reached yet — a race that only slow runners lost. Each buffer append
+        // completes the replay signal, so the wait is append-driven: one snapshot per
+        // append, and the settled shape is asserted synchronously once observed.
         var oldestRetainedDelta = deltas - FrontendRunStream.ReplayRetention + 1;
         IReadOnlyList<FrontendEventFrame> snapshot;
         while (true)
@@ -290,7 +291,7 @@ public sealed class FrontendRunStreamTests
             stream.Unsubscribe(channel);
             if (settled) break;
 
-            await Task.Delay(10, TestContext.Current.CancellationToken);
+            await stream.ReplayAppended.WaitAsync(TestContext.Current.CancellationToken);
         }
 
         Assert.Equal("run.missing", snapshot[0].Type);
@@ -370,7 +371,7 @@ public sealed class FrontendRunStreamTests
             if (channel.Reader.Completion.IsCompleted) return (initial, channel);
 
             stream.Unsubscribe(channel);
-            await Task.Delay(10, deadline.Token);
+            await stream.ReplayAppended.WaitAsync(deadline.Token);
         }
     }
 

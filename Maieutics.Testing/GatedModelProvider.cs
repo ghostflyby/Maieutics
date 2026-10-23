@@ -135,13 +135,6 @@ public sealed class GatedModelProvider : IAsyncDisposable
         serveLoop = ServeAsync(cancellation.Token);
     }
 
-    /// <summary>Optional per-request validation that REPLACES the built-in checks of
-    /// <see cref="ValidateBuiltIn" />-equivalent behaviour: invoked with the request and
-    /// its global served ordinal before the answer is selected; a throw fails the
-    /// connection task and surfaces through disposal instead of hanging the client. Null
-    /// (the default) keeps the built-in checks.</summary>
-    public Action<HttpRequest, int>? ValidateRequest { get; init; }
-
     /// <summary>The provider's base endpoint, for configuration injection.</summary>
     public Uri Endpoint { get; }
 
@@ -426,7 +419,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     // answer is selected, so a flow's two-step sequence stays ordered as
                     // long as its calls do.
                     var index = Interlocked.Increment(ref served) - 1;
-                    var validate = ValidateRequest ?? ValidateBuiltIn;
+                    var validate = ValidateBuiltIn;
                     validate(request, index);
                     await WriteSseAsync(stream, SelectStream(index), cancellationToken).ConfigureAwait(false);
                     // The accept loop keeps waiting for further connections, so scripted

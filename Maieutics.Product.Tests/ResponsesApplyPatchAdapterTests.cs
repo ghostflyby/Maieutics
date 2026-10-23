@@ -7,6 +7,10 @@ using OpenAI.Responses;
 
 namespace Maieutics.Product.Tests;
 
+// SDK-experimental opt-in (OPENAI001): the OpenAI Responses surface is experimental in
+// this SDK build; the file-scoped pragma below is the SDK's sanctioned opt-in mechanism
+// (there is no analyzer-recognizable guard for an external SDK's experimental API), not
+// a test-defect suppression.
 #pragma warning disable OPENAI001 // The OpenAI .NET Responses surface is currently marked experimental.
 
 /// <summary>Covers the provider-neutral bridging the Responses apply_patch adapter performs: the

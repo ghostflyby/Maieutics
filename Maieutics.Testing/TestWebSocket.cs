@@ -55,12 +55,6 @@ public class TestWebSocket : WebSocket
         return Encoding.UTF8.GetString(frame.Bytes);
     }
 
-    /// <summary>Reads the next message the peer sent with its type, in send order.</summary>
-    public ValueTask<SentFrame> ReadSentFrameAsync(CancellationToken cancellationToken)
-    {
-        return sent.Reader.ReadAsync(cancellationToken);
-    }
-
     public override void Abort()
     {
         state = WebSocketState.Aborted;

@@ -1156,7 +1156,12 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
-        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+        // The announce registration precedes the hello frame, so the hello frame is its
+        // strict successor and the gate read after it is a synchronous state assertion.
+        await events.CollectUntilAsync(
+            static frame => frame.GetProperty("type").GetString() == "hello",
+            cancellationToken);
+        Assert.True(harness.IdeGate.IsIdeFrontendConnected(sessionId), "the announce registration precedes the hello frame");
 
         var runId = await harness.SubmitTurnAsync(sessionId, "list launch configs", cancellationToken);
 
@@ -1338,9 +1343,16 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         Assert.False(gate.HasIdeFrontend, "no socket announced yet");
 
         var connection = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
+        var lapsed = harness.IdeLapsedAsync(sessionId);
         try
         {
-            await WaitForAsync(() => gate.IsIdeFrontendConnected(sessionId), cancellationToken);
+            // The announce registration precedes the hello frame (FrontendHost serves
+            // them in that order), so the hello frame is the registration's strict
+            // successor and the gate read after it is a synchronous state assertion.
+            await connection.CollectUntilAsync(
+                static frame => frame.GetProperty("type").GetString() == "hello",
+                cancellationToken);
+            Assert.True(gate.IsIdeFrontendConnected(sessionId), "the announce registration precedes the hello frame");
             Assert.True(gate.HasIdeFrontend);
             Assert.Contains("ide_diagnostics", harness.RuntimeConfiguration.ReservedToolNames);
         }
@@ -1349,14 +1361,19 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             await connection.DisposeAsync();
         }
 
-        await WaitForAsync(() => !gate.IsIdeFrontendConnected(sessionId), cancellationToken);
+        await lapsed.WaitAsync(cancellationToken);
+        Assert.False(gate.IsIdeFrontendConnected(sessionId), "the announcement lapses with the socket");
         Assert.False(gate.HasIdeFrontend, "the announcement lapses with the socket");
 
-        // A socket without the parameter never gates the family.
+        // A socket without the parameter never gates the family: the plain socket's
+        // hello frame proves the server served its open without registering an
+        // announcer, so the gate read is again synchronous.
         var plain = await harness.OpenEventsAsync(sessionId, cancellationToken);
         try
         {
-            await Task.Delay(200, cancellationToken).ConfigureAwait(true);
+            await plain.CollectUntilAsync(
+                static frame => frame.GetProperty("type").GetString() == "hello",
+                cancellationToken);
             Assert.False(gate.IsIdeFrontendConnected(sessionId), "a socket without the gating parameter never gates the family");
         }
         finally
@@ -1391,7 +1408,12 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
-        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+        // The announce registration precedes the hello frame, so the hello frame is its
+        // strict successor and the gate read after it is a synchronous state assertion.
+        await events.CollectUntilAsync(
+            static frame => frame.GetProperty("type").GetString() == "hello",
+            cancellationToken);
+        Assert.True(harness.IdeGate.IsIdeFrontendConnected(sessionId), "the announce registration precedes the hello frame");
 
         var runId = await harness.SubmitTurnAsync(sessionId, "hover a.cs", cancellationToken);
 
@@ -1468,7 +1490,12 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
-        await WaitForAsync(() => harness.IdeGate.IsIdeFrontendConnected(sessionId), cancellationToken);
+        // The announce registration precedes the hello frame, so the hello frame is its
+        // strict successor and the gate read after it is a synchronous state assertion.
+        await events.CollectUntilAsync(
+            static frame => frame.GetProperty("type").GetString() == "hello",
+            cancellationToken);
+        Assert.True(harness.IdeGate.IsIdeFrontendConnected(sessionId), "the announce registration precedes the hello frame");
 
         var runId = await harness.SubmitTurnAsync(sessionId, "read a.txt", cancellationToken);
 
@@ -1637,16 +1664,6 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             payload.GetProperty("method").GetString()!,
             payloadJson,
             Assert.IsType<JsonElement>(result));
-    }
-
-    private static async Task WaitForAsync(Func<bool> condition, CancellationToken cancellationToken)
-    {
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wait.CancelAfter(TimeSpan.FromSeconds(10));
-        while (!condition())
-        {
-            await Task.Delay(50, wait.Token).ConfigureAwait(true);
-        }
     }
 
     private sealed class FakeGate : IIdeFrontendGate

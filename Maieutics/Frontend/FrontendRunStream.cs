@@ -31,6 +31,28 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly ILogger logger;
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task pump = Task.CompletedTask;
+    private TaskCompletionSource replayAppended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes on the next frame appended to the
+    /// replay buffer. The completed source is swapped for a fresh one under the same lock
+    /// as the append, so a captured task observes exactly one later append — the
+    /// completion notification for "the replay buffer advanced".</summary>
+    internal Task ReplayAppended
+    {
+        get
+        {
+            lock (gate)
+            {
+                return replayAppended.Task;
+            }
+        }
+    }
+
+    private void ReplayAppendedLocked()
+    {
+        replayAppended.TrySetResult();
+        replayAppended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
     private IAsyncDisposable? presentationScope;
     private long oldestSequence;
     private long latestSequence;
@@ -557,6 +579,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             foreach (var subscriber in subscribers) subscriber.Channel.Writer.TryComplete();
 
             subscribers.Clear();
+            // Completion advances every replay-derived observation (the snapshot's
+            // channel completion included), so it notifies the same signal an append
+            // does — a waiter parked awaiting the next append must wake for this.
+            ReplayAppendedLocked();
         }
     }
 
@@ -628,6 +654,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         }
 
         replay.Add(frame);
+        ReplayAppendedLocked();
         if (replay.Count > ReplayRetention)
         {
             var evicted = replay[0];

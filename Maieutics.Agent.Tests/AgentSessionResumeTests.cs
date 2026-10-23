@@ -53,21 +53,6 @@ public sealed class AgentSessionResumeTests
         Assert.ThrowsAny<AgentSessionNotFoundException>(() => resume.Invoke());
     }
 
-    private sealed class FixedProfileProvider(IChatClient client) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(
-                new Lease(new AgentRunProfile(client, new AgentSessionOptions())));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
         => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));

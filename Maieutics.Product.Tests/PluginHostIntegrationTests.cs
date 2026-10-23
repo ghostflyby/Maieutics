@@ -837,9 +837,17 @@ public sealed class PluginHostIntegrationTests
             Assert.Empty(manager.GetRegistrations(ReplExtensionPointName.McpDiscover));
             Assert.Equal(1, manager.GetStatus().PendingApprovals);
 
-            // Re-approval upserts the worker back without a host-process restart.
+            // Re-approval upserts the worker back without a host-process restart. The
+            // approve snapshot's registration copy derives from the STALE pre-revoke
+            // hostRegistrations (the revoke path filters the derived list, not the
+            // source), so the pre-frame state is non-empty but not the truth: the
+            // re-activated worker's registration is only real once its post-boot
+            // registry frame replaces the set (frame handler clears and re-adds from
+            // the live host payload). Waiting on the frame — the completion
+            // notification for the worker's actual registration — closes the window
+            // where the frame's transient clear could race a bare state assert.
             await manager.ApproveAsync(rootPluginId, timeout.Token);
-            await WaitForRegistryConditionAsync(
+            await WaitForRegistryConditionAfterFrameAsync(
                 manager,
                 ReplExtensionPointName.McpDiscover,
                 registrations => registrations.Count > 0,
@@ -1065,6 +1073,34 @@ public sealed class PluginHostIntegrationTests
 
             // A frame was pending or arrived: drain it and re-check the live set next pass.
             while (channel.Reader.TryRead(out _)) { }
+        }
+    }
+
+    /// <summary>Waits for the condition to hold AFTER at least one registry frame has
+    /// been observed — for transitions whose approve snapshot pre-populates the
+    /// registration set from the stale pre-transition host payload. The bare state
+    /// check would return on that stale copy; the frame that replaces it is the
+    /// completion notification for the transition the test is waiting on.</summary>
+    private static async Task WaitForRegistryConditionAfterFrameAsync(
+        PluginHostManager manager,
+        string extensionPoint,
+        Func<IReadOnlyList<PluginRegistration>, bool> condition,
+        CancellationToken cancellationToken)
+    {
+        // Consume one frame unconditionally: the transition's snapshot may already
+        // satisfy the condition, but the frame that follows can transiently clear the
+        // set while the live host reports the transition's actual outcome.
+        while (true)
+        {
+            var channel = manager.RegistryChanges;
+            Task replaced = manager.RegistryChangesReplaced;
+            Task winner = await Task.WhenAny(
+                channel.Reader.WaitToReadAsync(cancellationToken).AsTask(),
+                replaced.WaitAsync(cancellationToken)).ConfigureAwait(false);
+            if (winner == replaced) continue;
+
+            while (channel.Reader.TryRead(out _)) { }
+            if (condition(manager.GetRegistrations(extensionPoint))) return;
         }
     }
 

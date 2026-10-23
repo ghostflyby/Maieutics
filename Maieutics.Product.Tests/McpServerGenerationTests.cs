@@ -1003,6 +1003,9 @@ public sealed class McpServerGenerationTests
             McpServer server,
             CancellationToken cancellationToken)
         {
+            // SDK-experimental opt-in (MCP9005): RequestRootsAsync is the MCP SDK's
+            // experimental surface; the pragma is the SDK's sanctioned opt-in, not a
+            // test-defect suppression.
 #pragma warning disable MCP9005
             var roots = await server.RequestRootsAsync(new ListRootsRequestParams(), cancellationToken)
                 .ConfigureAwait(false);

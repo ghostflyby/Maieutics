@@ -2,6 +2,7 @@ using System.Text.Json;
 using Maieutics.Agent;
 using Microsoft.Extensions.AI;
 
+using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
 namespace Maieutics.Agent.Tests;
 
 /// <summary>
@@ -493,35 +494,4 @@ public sealed class AgentToolApprovalTests
         }
     }
 
-    /// <summary>One scripted streaming response per provider request, in order.</summary>
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var materialized = messages.ToArray();
-            return responses.Dequeue()(materialized, cancellationToken);
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
-    }
 }

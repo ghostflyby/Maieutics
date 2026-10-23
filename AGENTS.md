@@ -272,6 +272,17 @@ When adding behavior:
 Do not mix unrelated formatting, dependency upgrades, protocol refactors, provider behavior, persistence migrations, and
 tool additions. Do not revert unrelated user changes in a dirty worktree.
 
+## Test principles
+
+1. Wait on completion events, never on time.
+2. Time is a budget, never a verdict.
+3. Pin a missing event by its strict successor, then assert state synchronously.
+4. Control interleavings; never race.
+5. Every regression test is provably red on unfixed code.
+6. Failure messages name the violated mechanism.
+7. Declare platform variance; never suppress a warning.
+8. Every resource has one owner; tests share no mutable state.
+
 ## Verification
 
 Standard repository acceptance:

@@ -403,8 +403,9 @@ public sealed class FrontendApiIntegrationTests
     public async Task ToolLoopStreamsToolActivityFramesAndFinalAnswer()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "echo",
             toolArgumentsJson: "{\"text\":\"hello\"}");
@@ -679,7 +680,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         // The Responses flavor's final event carries the provider usage; the
         // chat-completions flavor omits it unless the client asks for it.
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, answer: Answer);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, answer: Answer);
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false,
             transformConfiguration: body => body.Replace("ChatCompletions", "Responses"));
@@ -721,7 +722,7 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -778,7 +779,7 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -817,8 +818,9 @@ public sealed class FrontendApiIntegrationTests
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             answer: "public answer",
             reasoning: "secret chain of thought");
         await using var harness = await FrontendHarness.StartAsync(
@@ -851,12 +853,14 @@ public sealed class FrontendApiIntegrationTests
     public async Task ConfigurationReloadSwitchesTheProviderForTheNextTurn()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var firstProvider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var firstProvider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             model: "model-one",
             answer: "answer from model one");
-        var secondProvider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var secondProvider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             model: "model-two",
             answer: "answer from model two");
         await using var harness = await FrontendHarness.StartAsync(
@@ -964,7 +968,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task AnthropicToolLoopStreamsAndCommitsTheTranscript()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", toolFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", toolFlow: true);
         var anthropicEndpoint = provider.Endpoint.ToString();
         var anthropicConfig = AnthropicConfigTemplate.Replace("{{endpoint}}", anthropicEndpoint);
         var harness = await FrontendHarness.StartAsync(
@@ -1012,8 +1016,9 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var operation = """{"type":"create_file","path":"patched.txt","diff":"+patched body\n"}""";
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.Responses,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.Responses,
+            ProviderGateMode.Scripted,
             applyPatchFlow: true,
             applyPatchOperationJson: operation,
             answer: "tool-backed answer");
@@ -1089,7 +1094,7 @@ public sealed class FrontendApiIntegrationTests
         // canonical-history replay, while the outer attribute still fires with time to report.
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -1142,8 +1147,9 @@ public sealed class FrontendApiIntegrationTests
             "Requires an external stdio MCP test server; set MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE.");
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "echo",
             toolArgumentsJson: "{\"value\":\"native mcp value\"}");
@@ -1356,7 +1362,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task ResponsesWebSearchStreamsTheSearchAndItsCitation()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true);
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapability(
@@ -1400,7 +1406,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task ResponsesBuiltinCallsBeyondTheEndpointLimitFailTheTurn()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true, webSearchCalls: 2);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true, webSearchCalls: 2);
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapabilityWithLimit(
@@ -1433,7 +1439,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task AnthropicWebSearchStreamsTheServerToolAndCommitsTheTranscript()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", webSearchFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", webSearchFlow: true);
         var config = AnthropicConfigTemplate.Replace("{{endpoint}}", provider.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
@@ -1503,8 +1509,9 @@ public sealed class FrontendApiIntegrationTests
     {
         return await FrontendHarness.StartAsync(
             cancellationToken,
-            new FakeOpenAiServer(
-                OpenAiApiFlavor.ChatCompletions,
+            new GatedModelProvider(
+                ModelApiFlavor.ChatCompletions,
+                ProviderGateMode.Scripted,
                 answer: Answer),
             hanging: false);
     }
@@ -1577,8 +1584,7 @@ public sealed class FrontendApiIntegrationTests
                 $"maieutics-frontend-config-{Guid.NewGuid():N}.json");
             // The model and provider endpoint live in the configuration file (not the CLI or
             // in-memory configuration) so the hot-reload test can rewrite them.
-            var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
-                ?? (provider as GatedModelProvider)?.Endpoint.ToString() ?? string.Empty;
+            var endpoint = (provider as GatedModelProvider)?.Endpoint.ToString() ?? string.Empty;
             var configurationFileBody = ConfigurationTemplate
                 .Replace("{{model}}", model)
                 .Replace("{{endpoint}}", endpoint);

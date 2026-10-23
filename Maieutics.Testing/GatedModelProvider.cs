@@ -70,6 +70,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
     private int connectionsOpened;
     private int parkedCount;
+    private readonly TaskCompletionSource scriptedComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <param name="flavor">The API flavor the fake speaks.</param>
@@ -125,7 +126,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
         ValidateRequest = validateRequest;
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
-        Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
+        // The OpenAI SDK joins relative to the /v1/ base; the Anthropic SDK joins to the
+        // bare host, so the flavor decides the endpoint shape.
+        Endpoint = flavor == ModelApiFlavor.Anthropic
+            ? new Uri($"http://127.0.0.1:{endpoint.Port}")
+            : new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
         serveLoop = ServeAsync(cancellation.Token);
     }
 
@@ -137,15 +142,19 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// <summary>The provider's base endpoint, for configuration injection.</summary>
     public Uri Endpoint { get; }
 
-    /// <summary>The serve loop's task: scripted retires once the expected request count
-    /// has been served; the other modes complete at disposal.</summary>
-    public Task Completion => serveLoop;
+    /// <summary>Scripted mode: completes when every expected request has been answered.
+    /// The other modes: the serve loop's task, completing at disposal.</summary>
+    public Task Completion => mode == ProviderGateMode.Scripted ? scriptedComplete.Task : serveLoop;
 
     /// <summary>The raw listen port, for tests that drive the TCP surface directly.</summary>
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
     /// <summary>The bodies of the requests served so far, in arrival order.</summary>
     public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
+
+    /// <summary>The single request body, for the one-request scenarios; throws when more
+    /// or fewer than one request has been served.</summary>
+    public JsonElement RequestBody => RequestBodies.Single();
 
     /// <summary>How many provider requests have arrived and are waiting for release.
     /// Gated mode only: Hanging-mode requests are counted once but never listed, because
@@ -296,6 +305,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
         listener.Stop();
         ReleaseAll();
         globalRelease.TrySetResult();
+        scriptedComplete.TrySetResult();
         Task[] connectionTasks;
         lock (gate)
         {
@@ -413,8 +423,13 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     // answer is selected, so a flow's two-step sequence stays ordered as
                     // long as its calls do.
                     var index = Interlocked.Increment(ref served) - 1;
-                    ValidateRequest?.Invoke(request, index);
+                    var validate = ValidateRequest ?? ValidateBuiltIn;
+                    validate(request, index);
                     await WriteSseAsync(stream, SelectStream(index), cancellationToken).ConfigureAwait(false);
+                    // The accept loop keeps waiting for further connections, so scripted
+                    // retirement is signalled here, after the last expected answer is
+                    // fully written.
+                    if (Volatile.Read(ref served) >= requestCount) scriptedComplete.TrySetResult();
                     continue;
                 }
 
@@ -441,6 +456,56 @@ public sealed class GatedModelProvider : IAsyncDisposable
         finally
         {
             client.Dispose();
+        }
+    }
+
+    /// <summary>The built-in scripted-mode request checks, preserved from the scripted
+    /// fakes: method, per-flavor path, model, streaming, store:false, and the tool round
+    /// trip's shape. A violation throws; the faulted connection task surfaces through
+    /// disposal instead of hanging the client.</summary>
+    private void ValidateBuiltIn(HttpRequest request, int requestIndex)
+    {
+        var expectedPath = flavor switch
+        {
+            ModelApiFlavor.Responses => "/v1/responses",
+            ModelApiFlavor.ChatCompletions => "/v1/chat/completions",
+            ModelApiFlavor.Anthropic => "/v1/messages",
+            _ => throw new InvalidOperationException($"Unsupported test API flavor '{flavor}'."),
+        };
+        if (request.Method != "POST" || request.Path != expectedPath)
+            throw new InvalidOperationException(
+                $"the provider expected POST {expectedPath}, got {request.Method} {request.Path}");
+        if (request.Body.GetProperty("model").GetString() != model)
+            throw new InvalidOperationException(
+                $"the provider expected model '{model}', got '{request.Body.GetProperty("model").GetString()}'");
+        if (!request.Body.GetProperty("stream").GetBoolean())
+            throw new InvalidOperationException("the provider request did not ask to stream.");
+        if (flavor != ModelApiFlavor.Anthropic && request.Body.TryGetProperty("store", out var store) &&
+            store.GetBoolean())
+        {
+            throw new InvalidOperationException("the provider request must not ask the provider to store.");
+        }
+
+        if (!toolFlow) return;
+
+        if (request.Body.GetProperty("tools").GetArrayLength() == 0)
+            throw new InvalidOperationException("the tool flow expected tools in the request.");
+        if (!request.Body.GetRawText().Contains(toolName, StringComparison.Ordinal))
+            throw new InvalidOperationException($"the tool flow expected tool '{toolName}' in the request.");
+        if (requestIndex == 0) return;
+
+        if (!request.Body.GetRawText().Contains("status", StringComparison.Ordinal) ||
+            !request.Body.GetRawText().Contains("ok", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "the tool round trip's second request must carry the tool result with status ok.");
+        }
+
+        if (expectedToolResultText is { } expected &&
+            !request.Body.GetRawText().Contains(expected, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"the tool round trip's second request must carry '{expected}'.");
         }
     }
 

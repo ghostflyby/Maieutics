@@ -12,8 +12,9 @@ public sealed class AnthropicWebSearchTests
     public async Task HostedWebSearchIsDeclaredAsAServerToolAndResultsAreParsed()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
-        await using var provider = new FakeAnthropicServer(
-            "claude-test", "unused", webSearchFlow: true, requestCount: 1);
+        await using var provider = new GatedModelProvider(
+            ModelApiFlavor.Anthropic, ProviderGateMode.Scripted,
+            model: "claude-test", answer: "unused", webSearchFlow: true, requestCount: 1);
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
         var updates = new List<ChatResponseUpdate>();
@@ -52,8 +53,9 @@ public sealed class AnthropicWebSearchTests
     public async Task ConfiguredLimitIsDeclaredAsTheWireMaxUses()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
-        await using var provider = new FakeAnthropicServer(
-            "claude-test", "unused", webSearchFlow: true, requestCount: 1);
+        await using var provider = new GatedModelProvider(
+            ModelApiFlavor.Anthropic, ProviderGateMode.Scripted,
+            model: "claude-test", answer: "unused", webSearchFlow: true, requestCount: 1);
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
         var options = new ChatOptions { Tools = [new HostedWebSearchTool()] };
@@ -76,7 +78,7 @@ public sealed class AnthropicWebSearchTests
     public async Task SearchResultsReplayVerbatimIncludingEncryptedContent()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
-        await using var provider = new FakeAnthropicServer("claude-test", "unused", webSearchFlow: true);
+        await using var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "unused", webSearchFlow: true);
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
         // First turn: the search runs and the assistant turn is captured.
@@ -112,7 +114,7 @@ public sealed class AnthropicWebSearchTests
     public async Task WebSearchCallWithoutItsWireBlockIsRejectedRatherThanMangled()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
-        await using var provider = new FakeAnthropicServer("claude-test", "answer");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "answer");
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
         // A constructed call with no preserved wire block cannot be faithfully replayed.
@@ -135,7 +137,7 @@ public sealed class AnthropicWebSearchTests
 
     /// <summary>Replays a captured turn and returns the second request's body text.</summary>
     private static async Task<string> CaptureSecondRequestAsync(
-        FakeAnthropicServer provider,
+        GatedModelProvider provider,
         IReadOnlyList<ChatMessage> messages,
         IChatClient client,
         CancellationToken cancellationToken)

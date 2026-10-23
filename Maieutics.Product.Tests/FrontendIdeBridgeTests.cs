@@ -1143,8 +1143,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     public async Task RunLoopServesIdeDebugToolsThroughTheBridge()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "ide_debug_configurations",
             toolArgumentsJson: "{}",
@@ -1371,8 +1372,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "a.cs"), "class C {}\n");
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "ide_hover",
             toolArgumentsJson: """{"uri":"workspace://local/a.cs","select":{"line":1,"column":1}}""",
@@ -1447,8 +1449,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         var cancellationToken = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
         File.WriteAllText(Path.Combine(workspace.Path, "a.txt"), "disk state\n");
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "read_text",
             toolArgumentsJson: """{"uri":"workspace://local/a.txt"}""",

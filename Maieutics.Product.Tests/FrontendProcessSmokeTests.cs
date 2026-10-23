@@ -31,8 +31,9 @@ public sealed class FrontendProcessSmokeTests
             Path.GetTempPath(),
             $"maieutics-smoke-workspace-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "write_text",
             toolArgumentsJson: """{"uri":"workspace://local/smoke.txt","content":"smoke body\n"}""",

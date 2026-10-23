@@ -272,62 +272,7 @@ public sealed class SubagentFrontendFramesTests
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
 
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Lock gate = new();
 
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var request = messages.Select(message => message.Clone()).ToArray();
-            Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> response;
-            lock (gate)
-            {
-                response = responses.Dequeue();
-            }
-
-            return response(request, cancellationToken);
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class FixedProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 }
 
 internal sealed record SpawnValue(string Status);

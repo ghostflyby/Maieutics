@@ -312,47 +312,6 @@ public sealed class AgentSubagentFunctionsTests
             ]);
     }
 
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Lock gate = new();
-
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var request = messages.Select(message => message.Clone()).ToArray();
-            Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> response;
-            lock (gate)
-            {
-                response = responses.Dequeue();
-            }
-
-            return response(request, cancellationToken);
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
 }
 
 internal sealed record ProbeValue(string Status);

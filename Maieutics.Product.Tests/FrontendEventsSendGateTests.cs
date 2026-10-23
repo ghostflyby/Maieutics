@@ -14,6 +14,8 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using ScriptedWorkspaceChatClient = Maieutics.Testing.ScriptedChatClient;
+using ParkingChatClient = Maieutics.Testing.ParkedChatClient;
 namespace Maieutics.Product.Tests;
 
 /// <summary>
@@ -508,52 +510,9 @@ public sealed class FrontendEventsSendGateTests
         }
     }
 
-    private sealed class FixedProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 
     /// <summary>A model client whose stream parks at the provider until the run's own
     /// cancellation: the run's frontend stream then holds a finite, already-published
     /// replay and no further frames of its own, so the run writer's sends are exactly the
     /// bounded set the test releases.</summary>
-    private sealed class ParkingChatClient : IChatClient
-    {
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException(
-                "The send-gate fixture never completes a model response."));
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
-            yield break;
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
 }

@@ -9,6 +9,8 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
+using ScriptedWorkspaceChatClient = Maieutics.Testing.ScriptedChatClient;
+using ParkingChatClient = Maieutics.Testing.ParkedChatClient;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
@@ -702,48 +704,4 @@ public sealed class WorkspaceToolsTests
         }
     }
 
-    private sealed class ScriptedWorkspaceChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Lock gate = new();
-
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        internal List<IReadOnlyList<ChatMessage>> Requests { get; } = [];
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var request = messages.Select(static message => message.Clone()).ToArray();
-            Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> response;
-            lock (gate)
-            {
-                Requests.Add(request);
-                response = responses.Dequeue();
-            }
-
-            return response(request, cancellationToken);
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
 }

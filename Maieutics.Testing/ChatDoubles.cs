@@ -124,14 +124,28 @@ public sealed class StubChatClient : IChatClient
     }
 }
 
-/// <summary>A run-profile provider returning one fixed profile; the optional chat client
-/// defaults to a <see cref="StubChatClient" /> for wiring-only scenarios.</summary>
-public sealed class FixedProfileProvider(IChatClient? chatClient = null) : IAgentRunProfileProvider
+/// <summary>A run-profile provider returning one fixed profile: either a prebuilt
+/// profile, or a chat client wrapped in a default profile (a
+/// <see cref="StubChatClient" /> when omitted, for wiring-only scenarios).</summary>
+public sealed class FixedProfileProvider : IAgentRunProfileProvider
 {
+    private readonly AgentRunProfile profile;
+
+    /// <summary>Returns the given profile on every acquire.</summary>
+    public FixedProfileProvider(AgentRunProfile profile)
+    {
+        this.profile = profile;
+    }
+
+    /// <summary>Wraps the given client (or a stub) in a default profile.</summary>
+    public FixedProfileProvider(IChatClient? chatClient = null)
+    {
+        profile = new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions());
+    }
+
     public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IAgentRunProfileLease>(new Lease(
-            new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions())));
+        return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
     }
 
     private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease

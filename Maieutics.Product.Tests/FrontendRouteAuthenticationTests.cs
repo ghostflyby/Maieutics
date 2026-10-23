@@ -250,7 +250,7 @@ public sealed class FrontendRouteAuthenticationTests
 
             var manager = new MaieuticsAgentSessionManager(
                 new FixedProfileProvider(new AgentRunProfile(
-                    new ScriptedChatClient(), new AgentSessionOptions())),
+                    new StubChatClient(), new AgentSessionOptions())),
                 familiesRoot: null,
                 storeFactory: null,
                 NullLogger<MaieuticsAgentSessionManager>.Instance);
@@ -275,20 +275,6 @@ public sealed class FrontendRouteAuthenticationTests
         }
     }
 
-    private sealed class FixedProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 
     /// <summary>A model client the fixture never drives: route authentication tests assert
     /// the gate and the events handshake, never a model turn.</summary>

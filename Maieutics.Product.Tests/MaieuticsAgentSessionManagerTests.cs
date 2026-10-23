@@ -407,21 +407,6 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
             [new ChatMessage(ChatRole.User, userText), new ChatMessage(ChatRole.Assistant, assistantText)]);
     }
 
-    private sealed class FixedProfileProvider(IChatClient? chatClient = null) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(
-                new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions())));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 
     private sealed class HangingChatClient(Task neverComplete) : IChatClient
     {
@@ -449,28 +434,4 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         }
     }
 
-    private sealed class StubChatClient : IChatClient
-    {
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            throw new NotSupportedException();
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
-    }
 }

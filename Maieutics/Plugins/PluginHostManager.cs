@@ -9,6 +9,7 @@ using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -532,6 +533,14 @@ internal sealed class PluginHostManager(
     ///     deliberate choice, never a silent one.
     /// </summary>
     private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
+
+    /// <summary>The launch policy of each stdio MCP server child, keyed by server id: the
+    /// declaring plugin's process-launch scope, captured when its servers are discovered so
+    /// the generation factory renders it before the child is spawned (AGENTS.md invariant 19).
+    /// Discovery always precedes generation creation for a definition, so the entry exists by
+    /// launch time; a definition without one launches unrestricted, the same default the run
+    /// gate applies everywhere.</summary>
+    private readonly ConcurrentDictionary<string, EffectivePolicy> mcpServerPolicies = new(StringComparer.Ordinal);
 
     private PluginMcpCoordinator? dynamicMcpCoordinator;
     private McpAdjustmentChain? adjustmentChain;
@@ -3853,6 +3862,85 @@ internal sealed class PluginHostManager(
             logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
     }
 
+    /// <summary>The effective policy of one plugin's process-launch scope: the plugin's
+    /// declared (approval-gated, ADR 0037) grants rendered as a policy, so every child the
+    /// kernel starts on that plugin's behalf — its declared MCP server children — is judged
+    /// and configured by the permission module instead of launching unchecked. Only the kinds
+    /// the kernel-side launch consumes are carried: <c>run</c> (the stdio command gate) and
+    /// <c>env</c> (the child environment); the remaining kinds shape the worker's Deno shell,
+    /// which the plugin host enforces. An absent grant leaves the kind unrestricted — the same
+    /// default the run gate applies everywhere (ADR 0018 §7 decision 2). Callers hold
+    /// <see cref="gate"/>.</summary>
+    private EffectivePolicy? PluginScopePolicy(string pluginId)
+    {
+        var descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
+        if (descriptor is null) return null;
+
+        var run = descriptor.Permissions.Run;
+        var env = descriptor.Permissions.Env;
+        return new EffectivePolicy(
+            new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Run] = new PermissionKindRules
+                {
+                    AllowAll = run.AllowAll,
+                    Allow = ResolvePluginRunGrantValues(descriptor.RootDirectory, run.Values)
+                },
+                [PermissionKind.Env] = new PermissionKindRules
+                {
+                    AllowAll = env.AllowAll,
+                    Allow = env.Values
+                }
+            },
+            manifestVariables ?? new VariableTable(new EmptyPluginScopeVariableSource()));
+    }
+
+    /// <summary>Run grant values as the launch gate compares them. Deno resolves a
+    /// rooted-relative run grant against the worker's working directory — the plugin root —
+    /// so the kernel-side gate resolves the same way; bare command names and absolute paths
+    /// are compared as declared.</summary>
+    private static IReadOnlyList<string> ResolvePluginRunGrantValues(
+        string pluginRoot,
+        IReadOnlyList<string> values)
+    {
+        var resolved = new List<string>(values.Count);
+        foreach (var value in values)
+        {
+            if (value.Length == 0) continue;
+            resolved.Add(
+                value.StartsWith("./", StringComparison.Ordinal) || value.StartsWith("../", StringComparison.Ordinal)
+                    ? Path.GetFullPath(Path.Combine(pluginRoot, value))
+                    : value);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>Whether the owning plugin's launch policy admits the server's child command.
+    /// Only stdio servers start a child — an HTTP server is remote and needs no process grant.
+    /// A server whose owning scope has no policy is unrestricted, the run gate's default.</summary>
+    private static bool ServerCommandPermitted(McpServerDefinition definition, EffectivePolicy? scopePolicy)
+    {
+        if (definition.Transport is not StdioMcpTransportDefinition stdio) return true;
+        if (scopePolicy is not { } launchPolicy) return true;
+        return RunGrant.Allows(launchPolicy, stdio.Command);
+    }
+
+    private void RecordServerPolicies(IReadOnlyList<McpServerDefinition> definitions, EffectivePolicy? scopePolicy)
+    {
+        if (scopePolicy is null) return;
+        foreach (var definition in definitions)
+        {
+            if (definition.Transport is not StdioMcpTransportDefinition) continue;
+            mcpServerPolicies[definition.Id] = scopePolicy;
+        }
+    }
+
+    private sealed class EmptyPluginScopeVariableSource : Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name) => null;
+    }
+
     private async Task<PluginMcpDiscoveryResult> DiscoverDynamicMcpAsync(
         PluginRegistration registration,
         CancellationToken cancellationToken)
@@ -3863,6 +3951,15 @@ internal sealed class PluginHostManager(
             // snapshot is the discovery result. Failures here keep the previous
             // contribution active (the same sticky-last-good semantics as handlers).
             return DiscoverManifestMcpAsync(registration);
+        }
+
+        // The owning scope's launch policy is captured with the discovery: every definition
+        // this discovery produces is judged against the declaring plugin's run grant and
+        // carries the policy into its generation (rendered again at child spawn).
+        EffectivePolicy? scopePolicy;
+        lock (gate)
+        {
+            scopePolicy = PluginScopePolicy(registration.PluginId);
         }
 
         var request = JsonSerializer.SerializeToElement(
@@ -3889,9 +3986,13 @@ internal sealed class PluginHostManager(
                     out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
 
+            if (!ServerCommandPermitted(definition, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
+
             definitions.Add(definition);
         }
 
+        RecordServerPolicies(definitions, scopePolicy);
         return PluginMcpDiscoveryResult.Success(definitions);
     }
 
@@ -3907,6 +4008,7 @@ internal sealed class PluginHostManager(
     {
         IReadOnlyList<PluginExtensionEntry> entries;
         IReadOnlyList<McpServerDefinition> fileServers;
+        EffectivePolicy? scopePolicy;
         lock (gate)
         {
             var hasEntries = descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
@@ -3921,6 +4023,10 @@ internal sealed class PluginHostManager(
             fileServers = declaration is null
                 ? []
                 : Contributions.ContributionDescriptorUnwrap.McpServers(declaration.Descriptors);
+            // The declaring plugin's launch policy is captured with the manifest snapshot it
+            // authorizes (ADR 0037): its stdio servers are judged against it here and carry it
+            // into their generations.
+            scopePolicy = PluginScopePolicy(registration.PluginId);
         }
 
         var definitions = new List<McpServerDefinition>();
@@ -3933,6 +4039,9 @@ internal sealed class PluginHostManager(
                     manifestVariables,
                     out var definition))
                 return PluginMcpDiscoveryResult.Failed("invalid_server_definition");
+
+            if (!ServerCommandPermitted(definition, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
 
             definitions.Add(definition);
         }
@@ -3949,9 +4058,13 @@ internal sealed class PluginHostManager(
                 return PluginMcpDiscoveryResult.Failed("conflicting_server_definition");
             }
 
+            if (!ServerCommandPermitted(fileServer, scopePolicy))
+                return PluginMcpDiscoveryResult.Failed("server_command_not_permitted");
+
             definitions.Add(fileServer);
         }
 
+        RecordServerPolicies(definitions, scopePolicy);
         return PluginMcpDiscoveryResult.Success(definitions);
     }
 
@@ -3968,7 +4081,11 @@ internal sealed class PluginHostManager(
         // The same capability wiring the kernel-level servers used (ADR 0029): roots are
         // answered with the live workspace root when the definition opted in, and
         // elicitation flows through the frontend presenter. Capability follows handler
-        // presence, so a null source simply means the server is never asked.
+        // presence, so a null source simply means the server is never asked. The stdio
+        // child's policy is the owning plugin's launch scope, captured at discovery (the
+        // default transport factory renders it — run gate and child environment — before
+        // the child is spawned).
+        mcpServerPolicies.TryGetValue(definition.Id, out var scopePolicy);
         return McpServerGeneration.CreateAsync(
             definition,
             loggerFactory,
@@ -3978,7 +4095,8 @@ internal sealed class PluginHostManager(
             reservedNames,
             workspaceRootsSource,
             elicitationPresenter,
-            adjustmentChain);
+            adjustmentChain,
+            policy: scopePolicy);
     }
 
     private void FailPending(string message)

@@ -1078,7 +1078,7 @@ public sealed class FrontendApiIntegrationTests
             await harness.DisposeAsync();
             try
             {
-                Directory.Delete(workspace, recursive: true);
+                await TempArea.DeleteAsync(workspace, TestContext.Current.CancellationToken);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {

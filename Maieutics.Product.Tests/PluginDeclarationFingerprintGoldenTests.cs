@@ -80,7 +80,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -125,7 +125,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -199,7 +199,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -236,7 +236,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -260,7 +260,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -304,7 +304,7 @@ public sealed class PluginDeclarationFingerprintGoldenTests
     private static string CreateEmptyGoldenRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "maieutics-fingerprint-golden");
-        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        TempArea.DeleteTree(root);
         Directory.CreateDirectory(root);
         return root;
     }

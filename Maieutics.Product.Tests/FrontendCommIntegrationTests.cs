@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
 

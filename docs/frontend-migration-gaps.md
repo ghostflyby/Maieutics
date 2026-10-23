@@ -112,7 +112,7 @@ transport. Ported to the frontend harness: OpenAI tool loop, reasoning
 privacy, configuration reload provider switch. Still missing:
 
 - Anthropic tool loop (the harness's fake Anthropic server was deleted with
-  the host integration file; extract it the way `FakeOpenAiServer` was).
+  the host integration file; extract it the way GatedModelProvider's ModelStreams builders are).
 - OpenAI↔Anthropic switching with canonical-history assertions.
 - MCP tool-loop E2E (stdio test server wired through the plugin `mcp.json` data file).
 

@@ -3,7 +3,6 @@ using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using System.Net.Http.Json;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 using Maieutics.Mcp;
 
 namespace Maieutics.Product.Tests;

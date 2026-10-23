@@ -7,6 +7,7 @@ namespace Maieutics.Testing;
 /// every flavor and flow shape the suite serves.</summary>
 public static class ModelStreams
 {
+    /// <summary>Serves the raw SSE answer stream for the CreateChatCompletionsStream scenario; see the shape below.</summary>
     public static string CreateChatCompletionsStream(string text, string? reasoning = null)
     {
         return (reasoning is null
@@ -24,6 +25,7 @@ public static class ModelStreams
                "data: [DONE]\n\n";
     }
 
+    /// <summary>Serves the raw SSE answer stream for the CreateChatCompletionsToolStream scenario; see the shape below.</summary>
     public static string CreateChatCompletionsToolStream(string toolName, string argumentsJson)
     {
         return "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
@@ -37,6 +39,7 @@ public static class ModelStreams
                "data: [DONE]\n\n";
     }
 
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesStream scenario; see the shape below.</summary>
     public static string CreateResponsesStream(string text)
     {
         const string inProgressResponse =
@@ -172,6 +175,7 @@ public static class ModelStreams
         return stream.ToString();
     }
 
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesApplyPatchStream scenario; see the shape below.</summary>
     public static string CreateResponsesApplyPatchStream(string operationJson)
     {
         const string inProgressResponse =
@@ -212,6 +216,7 @@ public static class ModelStreams
             "\"response\":" + completedResponse + "}\n\n";
     }
 
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesToolStream scenario; see the shape below.</summary>
     public static string CreateResponsesToolStream(string toolName, string argumentsJson)
     {
         const string inProgressResponse =
@@ -260,6 +265,8 @@ public static class ModelStreams
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":5," +
             "\"response\":" + completedResponse + "}\n\n";
     }
+
+    /// <summary>Serves the raw SSE answer stream for the CreateTextStream scenario; see the shape below.</summary>
     public static string CreateTextStream(string text)
     {
         return """
@@ -331,6 +338,7 @@ public static class ModelStreams
                """;
     }
 
+    /// <summary>Serves the raw SSE answer stream for the CreateToolStream scenario; see the shape below.</summary>
     public static string CreateToolStream()
     {
         return """

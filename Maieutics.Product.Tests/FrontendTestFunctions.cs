@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Maieutics.Testing;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;

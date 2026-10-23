@@ -6,7 +6,6 @@ using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;

@@ -106,9 +106,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
         bool applyPatchFlow = false,
         string? applyPatchOperationJson = null,
         bool webSearchFlow = false,
-        int webSearchCalls = 1,
-        Action<HttpRequest, int>? validateRequest = null)
+        int webSearchCalls = 1)
     {
+        if (applyPatchFlow && applyPatchOperationJson is null)
+            throw new ArgumentException("The apply-patch flow requires an operation JSON.", nameof(applyPatchOperationJson));
+
         this.flavor = flavor;
         this.mode = mode;
         this.answer = answer;
@@ -123,7 +125,6 @@ public sealed class GatedModelProvider : IAsyncDisposable
         this.webSearchFlow = webSearchFlow;
         this.webSearchCalls = webSearchCalls;
         this.requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
-        ValidateRequest = validateRequest;
         listener.Start();
         var endpoint = (IPEndPoint)listener.LocalEndpoint;
         // The OpenAI SDK joins relative to the /v1/ base; the Anthropic SDK joins to the
@@ -134,9 +135,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
         serveLoop = ServeAsync(cancellation.Token);
     }
 
-    /// <summary>Optional per-request validation, invoked with the request and its global
-    /// served ordinal before the answer is selected; a throw fails the connection task
-    /// and surfaces through <see cref="Completion" /> instead of hanging the client.</summary>
+    /// <summary>Optional per-request validation that REPLACES the built-in checks of
+    /// <see cref="ValidateBuiltIn" />-equivalent behaviour: invoked with the request and
+    /// its global served ordinal before the answer is selected; a throw fails the
+    /// connection task and surfaces through disposal instead of hanging the client. Null
+    /// (the default) keeps the built-in checks.</summary>
     public Action<HttpRequest, int>? ValidateRequest { get; init; }
 
     /// <summary>The provider's base endpoint, for configuration injection.</summary>
@@ -428,7 +431,10 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     await WriteSseAsync(stream, SelectStream(index), cancellationToken).ConfigureAwait(false);
                     // The accept loop keeps waiting for further connections, so scripted
                     // retirement is signalled here, after the last expected answer is
-                    // fully written.
+                    // fully written. With concurrent connections the count is satisfied by
+                    // the last claim while an earlier-index write may still be in flight —
+                    // Completion means "all expected answers claimed and written by their
+                    // own tasks", not a barrier across connections.
                     if (Volatile.Read(ref served) >= requestCount) scriptedComplete.TrySetResult();
                     continue;
                 }
@@ -480,10 +486,13 @@ public sealed class GatedModelProvider : IAsyncDisposable
                 $"the provider expected model '{model}', got '{request.Body.GetProperty("model").GetString()}'");
         if (!request.Body.GetProperty("stream").GetBoolean())
             throw new InvalidOperationException("the provider request did not ask to stream.");
-        if (flavor != ModelApiFlavor.Anthropic && request.Body.TryGetProperty("store", out var store) &&
-            store.GetBoolean())
+        if (flavor != ModelApiFlavor.Anthropic &&
+            (!request.Body.TryGetProperty("store", out var store) || store.GetBoolean()))
         {
-            throw new InvalidOperationException("the provider request must not ask the provider to store.");
+            // The product disables stored output on every OpenAI path, so the field is
+            // always on the wire; an omitted field would let the Responses API default
+            // to storing server-side — the regression the strict check catches.
+            throw new InvalidOperationException("the provider request must ask store:false explicitly.");
         }
 
         if (!toolFlow) return;

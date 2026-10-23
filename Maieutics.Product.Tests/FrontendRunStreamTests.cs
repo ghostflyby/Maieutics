@@ -284,6 +284,11 @@ public sealed class FrontendRunStreamTests
         IReadOnlyList<FrontendEventFrame> snapshot;
         while (true)
         {
+            // Capture the append signal BEFORE the snapshot: the signal-swap and the
+            // append share the stream lock, so an append between the snapshot and the
+            // capture cannot strand the waiter on an already-consumed signal. The run
+            // is held mid-flight here, so appends are the only advancing event.
+            var appended = stream.ReplayAppended;
             var (initial, channel) = stream.Subscribe(sinceSequence: 5);
             snapshot = initial;
             var settled = initial.Count >= 1 + FrontendRunStream.ReplayRetention &&
@@ -291,7 +296,7 @@ public sealed class FrontendRunStreamTests
             stream.Unsubscribe(channel);
             if (settled) break;
 
-            await stream.ReplayAppended.WaitAsync(TestContext.Current.CancellationToken);
+            await appended.WaitAsync(TestContext.Current.CancellationToken);
         }
 
         Assert.Equal("run.missing", snapshot[0].Type);
@@ -356,7 +361,10 @@ public sealed class FrontendRunStreamTests
     }
 
     /// <summary>Waits for the run's pump to reach its terminal frame and returns the
-    /// completed-run replay snapshot taken at <paramref name="sinceSequence" />.</summary>
+    /// completed-run replay snapshot taken at <paramref name="sinceSequence" />. The
+    /// append signal is captured before each snapshot (the swap and the append share
+    /// the stream lock, closing the stranded-waiter window); completion is detected by
+    /// the channel the subscription itself holds, which MarkCompleted completes.</summary>
     private static async Task<(IReadOnlyList<FrontendEventFrame> Initial, Channel<FrontendEventFrame> Channel)>
         WaitForCompletedReplayAsync(
             FrontendRunStream stream,
@@ -367,11 +375,15 @@ public sealed class FrontendRunStreamTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         while (true)
         {
+            var appended = stream.ReplayAppended;
             var (initial, channel) = stream.Subscribe(sinceSequence);
             if (channel.Reader.Completion.IsCompleted) return (initial, channel);
 
+            // The run may have completed between the signal capture and this subscribe;
+            // the channel check above catches it. Otherwise one more append (or the
+            // completion transition, which notifies the same signal) re-checks.
             stream.Unsubscribe(channel);
-            await stream.ReplayAppended.WaitAsync(deadline.Token);
+            await appended.WaitAsync(deadline.Token);
         }
     }
 

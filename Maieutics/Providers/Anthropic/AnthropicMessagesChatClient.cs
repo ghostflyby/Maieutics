@@ -3,8 +3,8 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.AI;
 using Maieutics.Agent;
+using Microsoft.Extensions.AI;
 
 namespace Maieutics.Providers.Anthropic;
 
@@ -24,8 +24,8 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     /// indices valid across turns (an altered or dropped value is a 400).</summary>
     internal const string RawBlockProperty = "anthropicRawBlock";
 
-    private readonly HttpClient httpClient;
-    private readonly string model;
+    private readonly HttpClient _httpClient;
+    private readonly string _model;
 
     internal AnthropicMessagesChatClient(
         string model,
@@ -35,11 +35,11 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
-        this.model = model;
-        httpClient = handler is null ? new HttpClient() : new HttpClient(handler, true);
-        httpClient.BaseAddress = NormalizeEndpoint(endpoint ?? new Uri("https://api.anthropic.com/"));
-        httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
-        httpClient.DefaultRequestHeaders.Add("anthropic-version", AnthropicVersion);
+        this._model = model;
+        _httpClient = handler is null ? new HttpClient() : new HttpClient(handler, true);
+        _httpClient.BaseAddress = NormalizeEndpoint(endpoint ?? new Uri("https://api.anthropic.com/"));
+        _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
+        _httpClient.DefaultRequestHeaders.Add("anthropic-version", AnthropicVersion);
     }
 
     public async Task<ChatResponse> GetResponseAsync(
@@ -65,7 +65,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         using var request = new HttpRequestMessage(HttpMethod.Post, "v1/messages");
         request.Content = new ByteArrayContent(requestBody);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        using var response = await httpClient.SendAsync(
+        using var response = await _httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
@@ -115,7 +115,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
     public void Dispose()
     {
-        httpClient.Dispose();
+        _httpClient.Dispose();
     }
 
     private static IReadOnlyList<ChatResponseUpdate> ProcessEvent(
@@ -417,7 +417,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         var buffer = new ArrayBufferWriter<byte>();
         using var writer = new Utf8JsonWriter(buffer);
         writer.WriteStartObject();
-        writer.WriteString("model", model);
+        writer.WriteString("model", _model);
         writer.WriteNumber("max_tokens", options?.MaxOutputTokens ?? DefaultMaxOutputTokens);
         writer.WriteBoolean("stream", true);
 

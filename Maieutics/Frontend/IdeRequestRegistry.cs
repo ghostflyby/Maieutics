@@ -22,9 +22,9 @@ internal sealed record IdeRequestAnswer(JsonElement? Value, string? ErrorCode, s
 /// </summary>
 internal sealed class IdeRequestRegistry
 {
-    private readonly Lock gate = new();
+    private readonly Lock _gate = new();
 
-    private readonly Dictionary<string, TaskCompletionSource<IdeRequestAnswer>> pending =
+    private readonly Dictionary<string, TaskCompletionSource<IdeRequestAnswer>> _pending =
         new(StringComparer.Ordinal);
 
     /// <summary>Registers a new pending request and returns its identifier with the
@@ -33,9 +33,9 @@ internal sealed class IdeRequestRegistry
     {
         var requestId = $"ide-{Guid.NewGuid():N}";
         var completion = new TaskCompletionSource<IdeRequestAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        lock (_gate)
         {
-            pending.Add(requestId, completion);
+            _pending.Add(requestId, completion);
         }
 
         return new IdeRequestRegistration(requestId, completion.Task);
@@ -46,9 +46,9 @@ internal sealed class IdeRequestRegistry
     public bool TryComplete(string requestId, IdeRequestAnswer answer)
     {
         TaskCompletionSource<IdeRequestAnswer>? completion;
-        lock (gate)
+        lock (_gate)
         {
-            if (!pending.Remove(requestId, out completion)) return false;
+            if (!_pending.Remove(requestId, out completion)) return false;
         }
 
         return completion.TrySetResult(answer);
@@ -58,9 +58,9 @@ internal sealed class IdeRequestRegistry
     /// a later answer still 404s.</summary>
     public void Abandon(string requestId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            pending.Remove(requestId);
+            _pending.Remove(requestId);
         }
     }
 }

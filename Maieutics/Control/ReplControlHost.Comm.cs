@@ -19,7 +19,7 @@ namespace Maieutics.Control;
 internal sealed partial class ReplControlHost
 {
     private const string CommHelloProperty = "sessionId";
-    private readonly ConcurrentDictionary<string, CommBusConnection> commConnections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CommBusConnection> _commConnections = new(StringComparer.Ordinal);
 
     private void MapCommEndpoint(WebApplication application)
     {
@@ -55,7 +55,7 @@ internal sealed partial class ReplControlHost
         }
 
         var connection = new CommBusConnection(socket);
-        if (commConnections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
+        if (_commConnections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
         {
             // A replaced connection closes under a bounded budget: a REPL that stopped
             // reading must not stall the new connection's registration for a
@@ -73,7 +73,7 @@ internal sealed partial class ReplControlHost
             }
         }
 
-        commConnections[sessionId] = connection;
+        _commConnections[sessionId] = connection;
         try
         {
             await connection.SendTextAsync(
@@ -90,7 +90,7 @@ internal sealed partial class ReplControlHost
         }
         finally
         {
-            commConnections.TryRemove(KeyValuePair.Create(sessionId, connection));
+            _commConnections.TryRemove(KeyValuePair.Create(sessionId, connection));
         }
     }
 
@@ -117,9 +117,9 @@ internal sealed partial class ReplControlHost
                 session.GetString() is not { } sessionId || sessionId.IsWhiteSpace())
                 return null;
 
-            if ((peerProcessId > 0 && registry.IsOwnedBy(peerProcessId, sessionId)) ||
+            if ((peerProcessId > 0 && _registry.IsOwnedBy(peerProcessId, sessionId)) ||
                 string.Equals(authorizedIdentity, sessionId, StringComparison.Ordinal) ||
-                (peerProcessId <= 0 && authorizedIdentity is null && registry.ContainsSession(sessionId)))
+                (peerProcessId <= 0 && authorizedIdentity is null && _registry.ContainsSession(sessionId)))
                 return sessionId;
         }
         catch (JsonException)
@@ -142,7 +142,7 @@ internal sealed partial class ReplControlHost
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(message);
-        if (!commConnections.TryGetValue(sessionId, out var connection) || connection.State != WebSocketState.Open)
+        if (!_commConnections.TryGetValue(sessionId, out var connection) || connection.State != WebSocketState.Open)
             throw new InvalidOperationException(
                 $"Session '{sessionId}' does not have an open comm connection.");
 
@@ -154,7 +154,7 @@ internal sealed partial class ReplControlHost
         ReplCommMessage message,
         CancellationToken cancellationToken)
     {
-        var sink = commFrontendSink;
+        var sink = _commFrontendSink;
         if (sink is null) return;
 
         await sink(sessionId, message, cancellationToken).ConfigureAwait(false);
@@ -164,28 +164,28 @@ internal sealed partial class ReplControlHost
 
     private sealed class CommBusConnection : IAsyncDisposable
     {
-        private readonly TaskCompletionSource completion =
+        private readonly TaskCompletionSource _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly CancellationTokenSource lifetime = new();
-        private readonly Channel<CommOutgoingMessage> outgoing;
-        private readonly WebSocket socket;
-        private readonly Task writer;
+        private readonly CancellationTokenSource _lifetime = new();
+        private readonly Channel<CommOutgoingMessage> _outgoing;
+        private readonly WebSocket _socket;
+        private readonly Task _writer;
 
         internal CommBusConnection(WebSocket socket)
         {
-            this.socket = socket ?? throw new ArgumentNullException(nameof(socket));
-            outgoing = Channel.CreateBounded<CommOutgoingMessage>(new BoundedChannelOptions(
+            this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+            _outgoing = Channel.CreateBounded<CommOutgoingMessage>(new BoundedChannelOptions(
                 ReplControlLimits.QueueCapacity)
             {
                 SingleReader = true,
                 SingleWriter = false,
                 FullMode = BoundedChannelFullMode.Wait
             });
-            writer = RunWriterAsync();
+            _writer = RunWriterAsync();
         }
 
-        internal WebSocketState State => socket.State;
+        internal WebSocketState State => _socket.State;
 
         internal Task SendTextAsync(string text, CancellationToken cancellationToken)
         {
@@ -210,12 +210,12 @@ internal sealed partial class ReplControlHost
             if (payload.Length > ReplControlLimits.MaximumCommMessageBytes)
                 throw new InvalidOperationException("The comm message exceeds the maximum message size.");
 
-            if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+            if (_socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
                 throw new InvalidOperationException("The comm WebSocket is not open.");
 
             try
             {
-                await outgoing.Writer
+                await _outgoing.Writer
                     .WriteAsync(new CommOutgoingMessage(payload, messageType), cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -230,42 +230,42 @@ internal sealed partial class ReplControlHost
             string statusDescription,
             CancellationToken cancellationToken)
         {
-            if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+            if (_socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
                 return Task.CompletedTask;
-            return socket.CloseAsync(closeStatus, statusDescription, cancellationToken);
+            return _socket.CloseAsync(closeStatus, statusDescription, cancellationToken);
         }
 
         public async ValueTask DisposeAsync()
         {
-            await lifetime.CancelAsync().ConfigureAwait(false);
-            outgoing.Writer.TryComplete();
+            await _lifetime.CancelAsync().ConfigureAwait(false);
+            _outgoing.Writer.TryComplete();
             try
             {
-                await writer.ConfigureAwait(false);
+                await _writer.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
             }
 
-            lifetime.Dispose();
-            completion.TrySetResult();
+            _lifetime.Dispose();
+            _completion.TrySetResult();
         }
 
         private async Task RunWriterAsync()
         {
             try
             {
-                await foreach (var item in outgoing.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
-                    await socket
-                        .SendAsync(item.Payload, item.MessageType, true, lifetime.Token)
+                await foreach (var item in _outgoing.Reader.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
+                    await _socket
+                        .SendAsync(item.Payload, item.MessageType, true, _lifetime.Token)
                         .ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
             }
             catch (Exception exception)
             {
-                completion.TrySetException(exception);
+                _completion.TrySetException(exception);
             }
         }
     }

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
@@ -74,7 +75,7 @@ public sealed class FrontendWorkspaceBridgeTests
     [Fact]
     public void TheOwnerMappingTranslatesThePidVerifiedHelloIdentityForSessionGates()
     {
-        var registry = new Control.ReplControlSessionRegistry();
+        var registry = new ReplControlSessionRegistry();
         var ownerSessionId = AgentSessionId.Create().Value.ToString("N");
         registry.Register(101, "repl-default");
         registry.RegisterOwner(101, ownerSessionId);
@@ -517,7 +518,7 @@ public sealed class FrontendWorkspaceBridgeTests
         public FakeDiskFrontend DiskFrontend { get; }
         public FrontendWorkspaceBridge Bridge { get; private set; }
         public (string Method, string PhysicalUri, JsonElement Params)? LastRequest { get; private set; }
-        private readonly List<Guid> registrations = [];
+        private readonly List<Guid> _registrations = [];
 
         private BridgeHarness()
         {
@@ -540,7 +541,7 @@ public sealed class FrontendWorkspaceBridgeTests
         public void AttachFrontend()
         {
             var frontend = DiskFrontend;
-            registrations.Add(Sockets.Announce(SessionId, (frame, _) =>
+            _registrations.Add(Sockets.Announce(SessionId, (frame, _) =>
             {
                 var payload = frame.Data!.Value;
                 var requestId = payload.GetProperty("requestId").GetString()!;
@@ -574,7 +575,7 @@ public sealed class FrontendWorkspaceBridgeTests
 
         public async ValueTask DisposeAsync()
         {
-            foreach (var registration in registrations) Sockets.Withdraw(SessionId, registration);
+            foreach (var registration in _registrations) Sockets.Withdraw(SessionId, registration);
             // Windows can still hold a file inside the tree for a moment after the last
             // writer; the shared retry turns that into a short wait instead of a teardown
             // failure. A genuinely wedged tree still surfaces after the budget.

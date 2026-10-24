@@ -15,10 +15,10 @@ internal sealed class McpContributionDelivery(
     Func<PluginMcpCoordinator?> coordinator,
     ILogger logger) : IContributionDelivery
 {
-    private readonly Func<PluginMcpCoordinator?> coordinator =
+    private readonly Func<PluginMcpCoordinator?> _coordinator =
         coordinator ?? throw new ArgumentNullException(nameof(coordinator));
 
-    private readonly ILogger logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     /// <summary>The plugin ids of the last delivered MCP snapshot — the face view of
     /// the sticky bag the coordinator derives from the same value. Not consulted by any
@@ -28,9 +28,9 @@ internal sealed class McpContributionDelivery(
     /// reachable from concurrent contexts (the host receive loop, the trigger, the
     /// approval/reload reconcile tasks), so this field carries its own lock — the only
     /// delivery state that does.</summary>
-    private readonly Lock snapshotGate = new();
+    private readonly Lock _snapshotGate = new();
 
-    private IReadOnlyList<string> lastSnapshotPlugins = [];
+    private IReadOnlyList<string> _lastSnapshotPlugins = [];
 
     public string KindName { get; } = kindName;
 
@@ -40,7 +40,7 @@ internal sealed class McpContributionDelivery(
 
     public bool HoldsFace(string pluginId)
     {
-        lock (snapshotGate) return lastSnapshotPlugins.Contains(pluginId);
+        lock (_snapshotGate) return _lastSnapshotPlugins.Contains(pluginId);
     }
 
     public void PublishFrame(ContributionFrameInput frame, bool guardDisposed)
@@ -53,7 +53,7 @@ internal sealed class McpContributionDelivery(
             .Select(static registration => registration.PluginId)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        lock (snapshotGate) lastSnapshotPlugins = snapshotPlugins;
+        lock (_snapshotGate) _lastSnapshotPlugins = snapshotPlugins;
 
         if (frame.ForcedPlugins.Count == 0)
         {
@@ -62,7 +62,7 @@ internal sealed class McpContributionDelivery(
                 // The former registry-frame plain branch: a direct publish — a
                 // coordinator disposed by a concurrent generation switch surfaces here
                 // exactly as it did.
-                if (coordinator() is { } direct)
+                if (_coordinator() is { } direct)
                     direct.PublishRegistry(mcpSnapshot);
                 return;
             }
@@ -90,7 +90,7 @@ internal sealed class McpContributionDelivery(
         PluginRegistration[] mcpSnapshot,
         IReadOnlySet<string>? forcedPlugins)
     {
-        if (coordinator() is not { } target) return;
+        if (_coordinator() is not { } target) return;
         try
         {
             if (forcedPlugins is null || forcedPlugins.Count == 0)
@@ -100,7 +100,7 @@ internal sealed class McpContributionDelivery(
         }
         catch (ObjectDisposedException)
         {
-            logger.LogDebug(
+            _logger.LogDebug(
                 "RepublishRegistry skipped: the plugin MCP coordinator was disposed by a concurrent generation switch.");
         }
     }

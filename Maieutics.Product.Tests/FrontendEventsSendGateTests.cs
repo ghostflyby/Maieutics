@@ -177,47 +177,47 @@ public sealed class FrontendEventsSendGateTests
         /// retained whole for delivery fidelity even where the assertions read the type.</summary>
         // ReSharper disable NotAccessedPositionalProperty.Local
         public sealed record RecordedSend(
-            byte[] Payload,
-            string FrameType,
-            bool EndOfMessage,
-            WebSocketMessageType MessageType)
-        // ReSharper restore NotAccessedPositionalProperty.Local
+                byte[] Payload,
+                string FrameType,
+                bool EndOfMessage,
+                WebSocketMessageType MessageType)
+            // ReSharper restore NotAccessedPositionalProperty.Local
         {
-            private readonly TaskCompletionSource release = NewSignal();
+            private readonly TaskCompletionSource _release = NewSignal();
 
             /// <summary>The task the sending writer awaits until the test releases it.</summary>
-            public Task Parking => release.Task;
+            public Task Parking => _release.Task;
 
             public bool Released { get; private set; }
 
             public void MarkReleased()
             {
                 Released = true;
-                release.TrySetResult();
+                _release.TrySetResult();
             }
         }
 
-        private readonly Lock gate = new();
-        private readonly List<RecordedSend> sends = [];
-        private TaskCompletionSource arrival = NewSignal();
-        private long inFlight;
-        private long overlapping;
+        private readonly Lock _gate = new();
+        private readonly List<RecordedSend> _sends = [];
+        private TaskCompletionSource _arrival = NewSignal();
+        private long _inFlight;
+        private long _overlapping;
 
         // Set once when the probe ends: later sends complete on arrival instead of
         // parking, so the delivery phase needs no release protocol a slow writer could
         // fall behind.
-        private bool passThrough;
+        private bool _passThrough;
 
         /// <summary>Entries observed while a previous send had not completed: the overlap
         /// a real WebSocket faults on, recorded instead of thrown so the assertion is the
         /// failure rather than a racing exception.</summary>
-        public long OverlappingSendEntries => Interlocked.Read(ref overlapping);
+        public long OverlappingSendEntries => Interlocked.Read(ref _overlapping);
 
         public IReadOnlyList<RecordedSend> Sends
         {
             get
             {
-                lock (gate) return sends.ToArray();
+                lock (_gate) return _sends.ToArray();
             }
         }
 
@@ -232,10 +232,10 @@ public sealed class FrontendEventsSendGateTests
                 throw new InvalidOperationException("The events transport fake requires a filled buffer.");
             }
 
-            Interlocked.Increment(ref inFlight);
-            if (Interlocked.Read(ref inFlight) > 1)
+            Interlocked.Increment(ref _inFlight);
+            if (Interlocked.Read(ref _inFlight) > 1)
             {
-                Interlocked.Increment(ref overlapping);
+                Interlocked.Increment(ref _overlapping);
             }
 
             try
@@ -247,19 +247,19 @@ public sealed class FrontendEventsSendGateTests
                     FrameTypeOf(payload),
                     endOfMessage,
                     messageType);
-                lock (gate)
+                lock (_gate)
                 {
-                    if (passThrough) recorded.MarkReleased();
-                    sends.Add(recorded);
-                    arrival.TrySetResult();
-                    arrival = NewSignal();
+                    if (_passThrough) recorded.MarkReleased();
+                    _sends.Add(recorded);
+                    _arrival.TrySetResult();
+                    _arrival = NewSignal();
                 }
 
                 await recorded.Parking.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
-                Interlocked.Decrement(ref inFlight);
+                Interlocked.Decrement(ref _inFlight);
             }
         }
 
@@ -277,10 +277,10 @@ public sealed class FrontendEventsSendGateTests
             while (true)
             {
                 TaskCompletionSource signal;
-                lock (gate)
+                lock (_gate)
                 {
                     if (CountParked() >= count) return true;
-                    signal = arrival;
+                    signal = _arrival;
                 }
 
                 try
@@ -289,16 +289,16 @@ public sealed class FrontendEventsSendGateTests
                 }
                 catch (OperationCanceledException) when (budgetCts.IsCancellationRequested)
                 {
-                    lock (gate) return CountParked() >= count;
+                    lock (_gate) return CountParked() >= count;
                 }
             }
         }
 
         public void ReleaseAllParked()
         {
-            lock (gate)
+            lock (_gate)
             {
-                foreach (var send in sends)
+                foreach (var send in _sends)
                 {
                     if (!send.Released) send.MarkReleased();
                 }
@@ -311,10 +311,10 @@ public sealed class FrontendEventsSendGateTests
         /// its budget.</summary>
         public void EnterPassThrough()
         {
-            lock (gate)
+            lock (_gate)
             {
-                passThrough = true;
-                foreach (var send in sends)
+                _passThrough = true;
+                foreach (var send in _sends)
                 {
                     if (!send.Released) send.MarkReleased();
                 }
@@ -324,7 +324,7 @@ public sealed class FrontendEventsSendGateTests
         private int CountParked()
         {
             var count = 0;
-            foreach (var send in sends)
+            foreach (var send in _sends)
             {
                 if (!send.Released) count++;
             }
@@ -348,20 +348,20 @@ public sealed class FrontendEventsSendGateTests
 
         public override string? SubProtocol => null;
 
-        private WebSocketState state = WebSocketState.Open;
+        private WebSocketState _state = WebSocketState.Open;
 
-        public override WebSocketState State => state;
+        public override WebSocketState State => _state;
 
-        public override void Abort() => state = WebSocketState.Aborted;
+        public override void Abort() => _state = WebSocketState.Aborted;
 
-        public override void Dispose() => state = WebSocketState.Closed;
+        public override void Dispose() => _state = WebSocketState.Closed;
 
         public override Task CloseAsync(
             WebSocketCloseStatus closeStatus,
             string? statusDescription,
             CancellationToken cancellationToken)
         {
-            state = WebSocketState.Closed;
+            _state = WebSocketState.Closed;
             return Task.CompletedTask;
         }
 
@@ -370,7 +370,7 @@ public sealed class FrontendEventsSendGateTests
             string? statusDescription,
             CancellationToken cancellationToken)
         {
-            state = WebSocketState.CloseSent;
+            _state = WebSocketState.CloseSent;
             return Task.CompletedTask;
         }
 
@@ -406,11 +406,11 @@ public sealed class FrontendEventsSendGateTests
     /// is reached as routed and accepts the fake transport through the feature seam.</summary>
     private sealed class SendGateFixture : IAsyncDisposable
     {
-        private readonly WebApplication application;
-        private readonly FrontendOptions options;
-        private readonly FrontendHost host;
-        private readonly HttpClient client;
-        private volatile BlockableEventsSocket? eventsSocket;
+        private readonly WebApplication _application;
+        private readonly FrontendOptions _options;
+        private readonly FrontendHost _host;
+        private readonly HttpClient _client;
+        private volatile BlockableEventsSocket? _eventsSocket;
 
         private SendGateFixture(
             WebApplication application,
@@ -420,13 +420,13 @@ public sealed class FrontendEventsSendGateTests
             FrontendSessionService service,
             FrontendIdeSockets ideSockets)
         {
-            this.application = application;
-            this.options = options;
-            this.host = host;
+            this._application = application;
+            this._options = options;
+            this._host = host;
             Manager = manager;
             Service = service;
             IdeSockets = ideSockets;
-            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
+            _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
         }
 
         public MaieuticsAgentSessionManager Manager { get; }
@@ -435,27 +435,27 @@ public sealed class FrontendEventsSendGateTests
 
         public FrontendIdeSockets IdeSockets { get; }
 
-        public string Token => options.Token;
+        public string Token => _options.Token;
 
-        public string BaseUrl => $"http://127.0.0.1:{options.Port}";
+        public string BaseUrl => $"http://127.0.0.1:{_options.Port}";
 
         public string SessionId => Manager.Id.Value.ToString("N");
 
         public BlockableEventsSocket ArmEventsSocket()
         {
             var socket = new BlockableEventsSocket();
-            eventsSocket = socket;
+            _eventsSocket = socket;
             return socket;
         }
 
         public async ValueTask DisposeAsync()
         {
-            client.Dispose();
+            _client.Dispose();
             Service.BeginShutdown();
-            await application.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            await host.DisposeAsync().ConfigureAwait(false);
+            await _application.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            await _host.DisposeAsync().ConfigureAwait(false);
             Manager.Dispose();
-            await application.DisposeAsync().ConfigureAwait(false);
+            await _application.DisposeAsync().ConfigureAwait(false);
         }
 
         public static async Task<SendGateFixture> StartAsync(CancellationToken cancellationToken)
@@ -499,7 +499,7 @@ public sealed class FrontendEventsSendGateTests
             application.Use(async (context, next) =>
             {
                 if (context.Request.Path.Value?.EndsWith("/events", StringComparison.Ordinal) == true &&
-                    fixture.eventsSocket is { } events &&
+                    fixture._eventsSocket is { } events &&
                     context.Features.Get<IHttpWebSocketFeature>() is { } inner)
                 {
                     context.Features.Set<IHttpWebSocketFeature>(new FixedWebSocketFeature(inner, events));

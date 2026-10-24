@@ -283,8 +283,8 @@ public sealed class DenoReplSessionTests
 
     internal sealed class ControlledFactory(Func<ControlledGeneration>? create = null) : IDenoReplSessionFactory
     {
-        private readonly Func<ControlledGeneration> create = create ?? (static () => new ControlledGeneration());
-        private readonly Channel<ControlledGeneration> started = Channel.CreateUnbounded<ControlledGeneration>();
+        private readonly Func<ControlledGeneration> _create = create ?? (static () => new ControlledGeneration());
+        private readonly Channel<ControlledGeneration> _started = Channel.CreateUnbounded<ControlledGeneration>();
 
         internal List<ControlledGeneration> Generations { get; } = [];
 
@@ -298,29 +298,29 @@ public sealed class DenoReplSessionTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var value = create();
+            var value = _create();
             value.Generation = generation;
             Generations.Add(value);
             Starts.Add((workingDirectory, sessionId, generation));
-            started.Writer.TryWrite(value);
+            _started.Writer.TryWrite(value);
             return Task.FromResult<IDenoReplGeneration>(value);
         }
 
         internal ValueTask<ControlledGeneration> NextGenerationAsync(CancellationToken cancellationToken)
         {
-            return started.Reader.ReadAsync(cancellationToken);
+            return _started.Reader.ReadAsync(cancellationToken);
         }
     }
 
     internal sealed class ControlledGeneration : IDenoReplGeneration
     {
-        private readonly TaskCompletionSource completion =
+        private readonly TaskCompletionSource _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly TaskCompletionSource disposalCompletion =
+        private readonly TaskCompletionSource _disposalCompletion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private int disposeState;
+        private int _disposeState;
 
         internal ControlledGeneration(ConcurrencyProbe? probe = null, ControlledOutputConnection? output = null)
         {
@@ -336,7 +336,7 @@ public sealed class DenoReplSessionTests
 
         public IDenoReplConnection Connection => ConnectionImpl;
 
-        public Task Completion => completion.Task;
+        public Task Completion => _completion.Task;
 
         public int? ExitCode { get; private set; }
 
@@ -361,7 +361,7 @@ public sealed class DenoReplSessionTests
             cancellationToken.ThrowIfCancellationRequested();
             ShutdownCount++;
             ConnectionImpl.CompleteConnection();
-            completion.TrySetResult();
+            _completion.TrySetResult();
             return Task.CompletedTask;
         }
 
@@ -370,13 +370,13 @@ public sealed class DenoReplSessionTests
             TerminateCount++;
             ConnectionImpl.TerminateExecutions();
             ConnectionImpl.CompleteConnection();
-            completion.TrySetResult();
+            _completion.TrySetResult();
             return Task.CompletedTask;
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.CompareExchange(ref disposeState, 1, 0) == 0)
+            if (Interlocked.CompareExchange(ref _disposeState, 1, 0) == 0)
             {
                 try
                 {
@@ -386,37 +386,37 @@ public sealed class DenoReplSessionTests
                         await AllowDisposal.Task.ConfigureAwait(false);
                     ConnectionImpl.TerminateExecutions();
                     ConnectionImpl.CompleteConnection();
-                    completion.TrySetResult();
-                    disposalCompletion.TrySetResult();
+                    _completion.TrySetResult();
+                    _disposalCompletion.TrySetResult();
                 }
                 catch (Exception exception)
                 {
-                    disposalCompletion.TrySetException(exception);
+                    _disposalCompletion.TrySetException(exception);
                 }
             }
 
-            await disposalCompletion.Task.ConfigureAwait(false);
+            await _disposalCompletion.Task.ConfigureAwait(false);
         }
 
         internal void Complete(int? exitCode = 0)
         {
             ExitCode = exitCode;
             ConnectionImpl.CompleteConnection();
-            completion.TrySetResult();
+            _completion.TrySetResult();
         }
     }
 
     internal sealed class ControlledConnection(ConcurrencyProbe? probe = null) : IDenoReplConnection
     {
-        private readonly TaskCompletionSource completion =
+        private readonly TaskCompletionSource _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly Lock gate = new();
-        private readonly List<ControlledEval> executions = [];
-        private readonly Channel<ControlledEval> started = Channel.CreateUnbounded<ControlledEval>();
-        private int nextExecutionId;
+        private readonly Lock _gate = new();
+        private readonly List<ControlledEval> _executions = [];
+        private readonly Channel<ControlledEval> _started = Channel.CreateUnbounded<ControlledEval>();
+        private int _nextExecutionId;
 
-        public Task Completion => completion.Task;
+        public Task Completion => _completion.Task;
 
         internal bool ReleaseOnCancel { get; set; }
 
@@ -429,12 +429,12 @@ public sealed class DenoReplSessionTests
         public Task<ReplEvalExecution> ExecuteAsync(string code, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var execution = new ControlledEval($"execution-{Interlocked.Increment(ref nextExecutionId)}", probe);
-            lock (gate)
+            var execution = new ControlledEval($"execution-{Interlocked.Increment(ref _nextExecutionId)}", probe);
+            lock (_gate)
             {
-                executions.Add(execution);
+                _executions.Add(execution);
             }
-            started.Writer.TryWrite(execution);
+            _started.Writer.TryWrite(execution);
             return Task.FromResult(execution.Execution);
         }
 
@@ -461,52 +461,52 @@ public sealed class DenoReplSessionTests
             cancellationToken.ThrowIfCancellationRequested();
             ShutdownCount++;
             TerminateExecutions();
-            completion.TrySetResult();
+            _completion.TrySetResult();
             return Task.CompletedTask;
         }
 
         internal ValueTask<ControlledEval> NextExecutionAsync(CancellationToken cancellationToken)
         {
-            return started.Reader.ReadAsync(cancellationToken);
+            return _started.Reader.ReadAsync(cancellationToken);
         }
 
         internal void TerminateExecutions()
         {
             ControlledEval[] snapshot;
-            lock (gate)
+            lock (_gate)
             {
-                snapshot = [.. executions];
+                snapshot = [.. _executions];
             }
             foreach (var execution in snapshot) execution.CompleteCancelled();
         }
 
         internal void CompleteConnection()
         {
-            completion.TrySetResult();
+            _completion.TrySetResult();
         }
 
         private ControlledEval Find(string executionId)
         {
-            lock (gate)
+            lock (_gate)
             {
-                return executions.Single(execution => execution.Execution.ExecutionId == executionId);
+                return _executions.Single(execution => execution.Execution.ExecutionId == executionId);
             }
         }
     }
 
     internal sealed class ControlledEval
     {
-        private readonly TaskCompletionSource<ReplEvalTerminal> completion =
+        private readonly TaskCompletionSource<ReplEvalTerminal> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly ConcurrencyProbe? probe;
-        private readonly Channel<ReplEvalEvent> events = Channel.CreateUnbounded<ReplEvalEvent>();
-        private int terminalState;
+        private readonly ConcurrencyProbe? _probe;
+        private readonly Channel<ReplEvalEvent> _events = Channel.CreateUnbounded<ReplEvalEvent>();
+        private int _terminalState;
 
         internal ControlledEval(string executionId, ConcurrencyProbe? probe = null)
         {
-            this.probe = probe;
-            Execution = new ReplEvalExecution(executionId, events.Reader, completion.Task);
+            this._probe = probe;
+            Execution = new ReplEvalExecution(executionId, _events.Reader, _completion.Task);
             probe?.Enter();
         }
 
@@ -514,7 +514,7 @@ public sealed class DenoReplSessionTests
 
         internal bool Publish(ReplEvalEvent replEvent)
         {
-            return events.Writer.TryWrite(replEvent);
+            return _events.Writer.TryWrite(replEvent);
         }
 
         internal void CompleteResult(JsonElement? value = null)
@@ -537,35 +537,35 @@ public sealed class DenoReplSessionTests
             Complete(new ReplEvalCancelledTerminal(Execution.ExecutionId));
         }
 
-        internal bool EventsCompleted => events.Reader.Completion.IsCompleted;
+        internal bool EventsCompleted => _events.Reader.Completion.IsCompleted;
 
-        internal TaskStatus TerminalStatus => completion.Task.Status;
+        internal TaskStatus TerminalStatus => _completion.Task.Status;
 
         private void Complete(ReplEvalTerminal terminal)
         {
-            if (Interlocked.Exchange(ref terminalState, 1) != 0) return;
-            events.Writer.TryComplete();
-            probe?.Exit();
-            completion.TrySetResult(terminal);
+            if (Interlocked.Exchange(ref _terminalState, 1) != 0) return;
+            _events.Writer.TryComplete();
+            _probe?.Exit();
+            _completion.TrySetResult(terminal);
         }
     }
 
     internal sealed class ConcurrencyProbe
     {
-        private int active;
-        private int maximum;
+        private int _active;
+        private int _maximum;
 
-        internal int Active => Volatile.Read(ref active);
+        internal int Active => Volatile.Read(ref _active);
 
-        internal int Maximum => Volatile.Read(ref maximum);
+        internal int Maximum => Volatile.Read(ref _maximum);
 
         internal void Enter()
         {
-            var current = Interlocked.Increment(ref active);
-            var observed = Volatile.Read(ref maximum);
+            var current = Interlocked.Increment(ref _active);
+            var observed = Volatile.Read(ref _maximum);
             while (current > observed)
             {
-                var previous = Interlocked.CompareExchange(ref maximum, current, observed);
+                var previous = Interlocked.CompareExchange(ref _maximum, current, observed);
                 if (previous == observed) break;
                 observed = previous;
             }
@@ -573,14 +573,14 @@ public sealed class DenoReplSessionTests
 
         internal void Exit()
         {
-            Interlocked.Decrement(ref active);
+            Interlocked.Decrement(ref _active);
         }
     }
 
     internal sealed class ImmediatePresentationRouter(IDenoReplPresentationSink? currentSink = null)
         : IDenoReplPresentationRouter
     {
-        private readonly IDenoReplPresentationSink sink = currentSink ?? new NoopPresentationSink();
+        private readonly IDenoReplPresentationSink _sink = currentSink ?? new NoopPresentationSink();
 
         public ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
             AgentSessionId sessionId,
@@ -588,7 +588,7 @@ public sealed class DenoReplSessionTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(sink);
+            return ValueTask.FromResult(_sink);
         }
     }
 
@@ -636,24 +636,24 @@ public sealed class DenoReplSessionTests
     /// does not block on the read.</summary>
     internal sealed class ControlledOutputConnection : IAsyncEnumerable<ReplOutputFrame>
     {
-        private readonly Channel<ReplOutputFrame> frames = Channel.CreateUnbounded<ReplOutputFrame>();
+        private readonly Channel<ReplOutputFrame> _frames = Channel.CreateUnbounded<ReplOutputFrame>();
 
         internal void Publish(ReplOutputFrame frame)
         {
-            frames.Writer.TryWrite(frame);
+            _frames.Writer.TryWrite(frame);
         }
 
         public bool TryCompleteInput(string requestId, string value) => false;
 
         internal void End()
         {
-            frames.Writer.TryComplete();
+            _frames.Writer.TryComplete();
         }
 
         public IAsyncEnumerator<ReplOutputFrame> GetAsyncEnumerator(
             CancellationToken cancellationToken = default)
         {
-            return frames.Reader.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            return _frames.Reader.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
         }
     }
 }

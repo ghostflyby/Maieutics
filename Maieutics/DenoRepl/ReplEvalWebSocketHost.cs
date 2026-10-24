@@ -11,18 +11,18 @@ internal sealed class ReplEvalWebSocketHost(
     ReplControlSessionRegistry sessionRegistry,
     ReplControlCredentialRegistry credentialRegistry) : IAsyncDisposable
 {
-    private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly CancellationTokenSource lifetime = new();
+    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenSource _lifetime = new();
 
-    private readonly ReplControlCredentialRegistry credentialRegistry =
+    private readonly ReplControlCredentialRegistry _credentialRegistry =
         credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
 
-    private readonly ReplControlSessionRegistry sessionRegistry =
+    private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
-    private readonly ConcurrentDictionary<ReplEvalConnectionKey, ConnectionSlot> slots = new();
-    private int disposeState;
-    private int shutdownState;
+    private readonly ConcurrentDictionary<ReplEvalConnectionKey, ConnectionSlot> _slots = new();
+    private int _disposeState;
+    private int _shutdownState;
 
     /// <summary>
     ///     Terminates every eval connection so Kestrel shutdown does not wait for the upgraded
@@ -30,8 +30,8 @@ internal sealed class ReplEvalWebSocketHost(
     /// </summary>
     internal void BeginShutdown()
     {
-        if (Interlocked.Exchange(ref shutdownState, 1) != 0) return;
-        _ = lifetime.CancelAsync();
+        if (Interlocked.Exchange(ref _shutdownState, 1) != 0) return;
+        _ = _lifetime.CancelAsync();
     }
 
     internal void MapEndpoint(WebApplication application)
@@ -51,9 +51,9 @@ internal sealed class ReplEvalWebSocketHost(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentOutOfRangeException.ThrowIfNegative(generation);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-        var slot = slots.GetOrAdd(new ReplEvalConnectionKey(sessionId, generation), static _ => new ConnectionSlot());
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+        var slot = _slots.GetOrAdd(new ReplEvalConnectionKey(sessionId, generation), static _ => new ConnectionSlot());
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         return await slot.Connection.Task.WaitAsync(wait.Token).ConfigureAwait(false);
     }
 
@@ -63,7 +63,7 @@ internal sealed class ReplEvalWebSocketHost(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(socket);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
 
         (ReplEvalIdentity Identity, string CorrelationId) hello;
         try
@@ -82,7 +82,7 @@ internal sealed class ReplEvalWebSocketHost(
         {
             try
             {
-                await sessionRegistry.WaitForIdentityAsync(peerProcessId, cancellationToken)
+                await _sessionRegistry.WaitForIdentityAsync(peerProcessId, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -98,7 +98,7 @@ internal sealed class ReplEvalWebSocketHost(
         }
 
         var key = new ReplEvalConnectionKey(hello.Identity.SessionId, hello.Identity.Generation);
-        var slot = slots.GetOrAdd(key, static _ => new ConnectionSlot());
+        var slot = _slots.GetOrAdd(key, static _ => new ConnectionSlot());
         if (!slot.TryReserve())
         {
             await CloseRejectedAsync(socket, "REPL eval connection already attached").ConfigureAwait(false);
@@ -111,7 +111,7 @@ internal sealed class ReplEvalWebSocketHost(
             // The WebSocket session must not follow the HTTP request or connection token: Kestrel
             // fires both as soon as the upgrade completes. The connection ends when the peer closes
             // (detected by the receive loop) or the host begins shutdown (lifetime token).
-            using var owner = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            using var owner = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             connection = new ReplEvalWebSocketConnection(socket, hello.Identity, hello.CorrelationId);
             await connection.StartAsync(owner.Token).ConfigureAwait(false);
             slot.Publish(connection);
@@ -125,21 +125,21 @@ internal sealed class ReplEvalWebSocketHost(
         finally
         {
             slot.Release(connection);
-            slots.TryRemove(KeyValuePair.Create(key, slot));
+            _slots.TryRemove(KeyValuePair.Create(key, slot));
             if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0)
         {
             try
             {
-                await lifetime.CancelAsync().ConfigureAwait(false);
+                await _lifetime.CancelAsync().ConfigureAwait(false);
                 var failure = new ObjectDisposedException(nameof(ReplEvalWebSocketHost));
                 var connections = new List<ReplEvalWebSocketConnection>();
-                foreach (var slot in slots.Values)
+                foreach (var slot in _slots.Values)
                 {
                     slot.Fail(failure);
                     if (slot.GetConnection() is { } connection) connections.Add(connection);
@@ -147,19 +147,19 @@ internal sealed class ReplEvalWebSocketHost(
 
                 await Task.WhenAll(connections.Select(static connection => connection.DisposeAsync().AsTask()))
                     .ConfigureAwait(false);
-                disposed.TrySetResult();
+                _disposed.TrySetResult();
             }
             catch (Exception exception)
             {
-                disposed.TrySetException(exception);
+                _disposed.TrySetException(exception);
             }
             finally
             {
-                lifetime.Dispose();
+                _lifetime.Dispose();
             }
         }
 
-        await disposed.Task.ConfigureAwait(false);
+        await _disposed.Task.ConfigureAwait(false);
     }
 
     private async Task HandleWebSocketAsync(HttpContext context)
@@ -189,9 +189,9 @@ internal sealed class ReplEvalWebSocketHost(
         ReplEvalIdentity identity,
         int peerProcessId)
     {
-        if (peerProcessId > 0 && sessionRegistry.IsOwnedBy(peerProcessId, identity.SessionId)) return true;
+        if (peerProcessId > 0 && _sessionRegistry.IsOwnedBy(peerProcessId, identity.SessionId)) return true;
         return !string.IsNullOrWhiteSpace(identity.Credential) &&
-               credentialRegistry.TryResolve(identity.Credential, out var credentialIdentity) &&
+               _credentialRegistry.TryResolve(identity.Credential, out var credentialIdentity) &&
                string.Equals(credentialIdentity, identity.SessionId, StringComparison.Ordinal);
     }
 
@@ -208,30 +208,30 @@ internal sealed class ReplEvalWebSocketHost(
 
     private sealed class ConnectionSlot
     {
-        private readonly Lock gate = new();
-        private ReplEvalWebSocketConnection? connection;
-        private bool reserved;
+        private readonly Lock _gate = new();
+        private ReplEvalWebSocketConnection? _connection;
+        private bool _reserved;
 
         internal TaskCompletionSource<ReplEvalWebSocketConnection> Connection { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal bool TryReserve()
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (reserved || connection is not null) return false;
-                reserved = true;
+                if (_reserved || _connection is not null) return false;
+                _reserved = true;
                 return true;
             }
         }
 
         internal void Publish(ReplEvalWebSocketConnection value)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (!reserved || connection is not null)
+                if (!_reserved || _connection is not null)
                     throw new InvalidOperationException("The REPL eval connection slot is not reserved.");
-                connection = value;
+                _connection = value;
             }
 
             Connection.TrySetResult(value);
@@ -244,18 +244,18 @@ internal sealed class ReplEvalWebSocketHost(
 
         internal void Release(ReplEvalWebSocketConnection? value)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (value is not null && ReferenceEquals(connection, value)) connection = null;
-                reserved = false;
+                if (value is not null && ReferenceEquals(_connection, value)) _connection = null;
+                _reserved = false;
             }
         }
 
         internal ReplEvalWebSocketConnection? GetConnection()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return connection;
+                return _connection;
             }
         }
     }

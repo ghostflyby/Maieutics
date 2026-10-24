@@ -12,9 +12,9 @@ namespace Maieutics.Permissions;
 /// environment variable expanding differently on another machine.</summary>
 internal sealed class VariableTable
 {
-    private readonly IPermissionVariableSource source;
-    private readonly IReadOnlyDictionary<string, string> fixedVariables;
-    private readonly Func<string, string?> getEnvironmentVariable;
+    private readonly IPermissionVariableSource _source;
+    private readonly IReadOnlyDictionary<string, string> _fixedVariables;
+    private readonly Func<string, string?> _getEnvironmentVariable;
 
     internal VariableTable(
         IPermissionVariableSource source,
@@ -22,9 +22,9 @@ internal sealed class VariableTable
         Func<string, string?>? getEnvironmentVariable = null)
     {
         ArgumentNullException.ThrowIfNull(source);
-        this.source = source;
-        this.fixedVariables = fixedVariables ?? new Dictionary<string, string>(StringComparer.Ordinal);
-        this.getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        this._source = source;
+        this._fixedVariables = fixedVariables ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        this._getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
     }
 
     /// <summary>Expands every <c>${...}</c> token in <paramref name="pattern"/>. Patterns without
@@ -65,7 +65,7 @@ internal sealed class VariableTable
             var environmentName = name["env.".Length..];
             if (environmentName.Length == 0) throw Malformed(name);
 
-            return getEnvironmentVariable(environmentName)
+            return _getEnvironmentVariable(environmentName)
                    ?? throw Unknown($"Environment variable {environmentName} is not set.");
         }
 
@@ -74,9 +74,9 @@ internal sealed class VariableTable
             var variableName = name["var.".Length..];
             if (variableName.Length == 0) throw Malformed(name);
 
-            if (fixedVariables.TryGetValue(variableName, out var fixedValue)) return fixedValue;
+            if (_fixedVariables.TryGetValue(variableName, out var fixedValue)) return fixedValue;
 
-            var liveValue = source.GetVariable(variableName);
+            var liveValue = _source.GetVariable(variableName);
             if (liveValue is not null) return liveValue;
 
             throw Unknown($"Internal variable {variableName} is not defined.");

@@ -77,17 +77,17 @@ public sealed class AgentSessionResumeTests
 
     private sealed class InMemoryTranscriptStore : IAgentTranscriptStore
     {
-        private readonly Lock gate = new();
-        private readonly Dictionary<string, List<AgentTranscriptTurn>> sessions = new(StringComparer.Ordinal);
+        private readonly Lock _gate = new();
+        private readonly Dictionary<string, List<AgentTranscriptTurn>> _sessions = new(StringComparer.Ordinal);
 
         public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (!sessions.TryGetValue(sessionId.Value.ToString("N"), out var turns))
+                if (!_sessions.TryGetValue(sessionId.Value.ToString("N"), out var turns))
                 {
                     turns = [];
-                    sessions[sessionId.Value.ToString("N")] = turns;
+                    _sessions[sessionId.Value.ToString("N")] = turns;
                 }
 
                 turns.Add(new AgentTranscriptTurn(
@@ -100,9 +100,9 @@ public sealed class AgentSessionResumeTests
 
         public AgentTranscript? LoadTranscript(AgentSessionId sessionId)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (!sessions.TryGetValue(sessionId.Value.ToString("N"), out var turns)) return null;
+                if (!_sessions.TryGetValue(sessionId.Value.ToString("N"), out var turns)) return null;
 
                 return new AgentTranscript(sessionId, turns.Count, turns.ToImmutableArray());
             }
@@ -110,9 +110,9 @@ public sealed class AgentSessionResumeTests
 
         public IReadOnlyList<AgentSessionDescriptor> ListSessions()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return sessions
+                return _sessions
                     .Select(pair => new AgentSessionDescriptor(
                         new AgentSessionId(Guid.ParseExact(pair.Key, "N")),
                         DateTimeOffset.MinValue,

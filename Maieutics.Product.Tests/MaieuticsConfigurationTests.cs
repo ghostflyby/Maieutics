@@ -2404,13 +2404,13 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed class TrackingChatClient(string model) : IChatClient
     {
-        private int disposalCount;
+        private int _disposalCount;
 
         public string Model { get; } = model;
 
         public bool Disposed => DisposalCount != 0;
 
-        public int DisposalCount => Volatile.Read(ref disposalCount);
+        public int DisposalCount => Volatile.Read(ref _disposalCount);
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -2435,7 +2435,7 @@ public sealed class MaieuticsConfigurationTests
 
         public void Dispose()
         {
-            Interlocked.Increment(ref disposalCount);
+            Interlocked.Increment(ref _disposalCount);
         }
     }
 
@@ -2615,28 +2615,28 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed class EnvironmentVariableScope : IDisposable
     {
-        private readonly Dictionary<string, string?> original = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _original = new(StringComparer.Ordinal);
 
         public EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
         {
             foreach (var (name, value) in values)
             {
-                original.Add(name, Environment.GetEnvironmentVariable(name));
+                _original.Add(name, Environment.GetEnvironmentVariable(name));
                 Environment.SetEnvironmentVariable(name, value);
             }
         }
 
         public void Dispose()
         {
-            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
+            foreach (var (name, value) in _original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 
     private sealed class CoordinatedDiscoveryChatClientFactory : IConfiguredChatClientFactory
     {
-        private int discoveryCount;
+        private int _discoveryCount;
 
-        public int DiscoveryCount => Volatile.Read(ref discoveryCount);
+        public int DiscoveryCount => Volatile.Read(ref _discoveryCount);
 
         public TaskCompletionSource FirstDiscoveryStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2658,7 +2658,7 @@ public sealed class MaieuticsConfigurationTests
             string revision,
             CancellationToken cancellationToken)
         {
-            if (Interlocked.Increment(ref discoveryCount) == 1)
+            if (Interlocked.Increment(ref _discoveryCount) == 1)
             {
                 FirstDiscoveryStarted.TrySetResult();
                 await ReleaseFirstDiscovery.Task.WaitAsync(cancellationToken);

@@ -122,9 +122,9 @@ public sealed class McpResourceIntegrationTests
 
     private sealed class ResourceServerHarness : IAsyncDisposable
     {
-        private readonly CancellationTokenSource lifetime;
-        private readonly McpServerGeneration generation;
-        private readonly Task serverTask;
+        private readonly CancellationTokenSource _lifetime;
+        private readonly McpServerGeneration _generation;
+        private readonly Task _serverTask;
 
         private ResourceServerHarness(
             CancellationTokenSource lifetime,
@@ -132,32 +132,32 @@ public sealed class McpResourceIntegrationTests
             Task serverTask,
             CatalogSource catalogSource)
         {
-            this.lifetime = lifetime;
-            this.generation = generation;
-            this.serverTask = serverTask;
+            this._lifetime = lifetime;
+            this._generation = generation;
+            this._serverTask = serverTask;
             Source = catalogSource;
         }
 
         internal string ServerId => "test-server";
 
-        internal McpServerGeneration Generation => generation;
+        internal McpServerGeneration Generation => _generation;
 
         internal IMcpResourceCatalogSource Source { get; }
 
         public async ValueTask DisposeAsync()
         {
-            var retirement = generation.Retire();
-            await lifetime.CancelAsync();
+            var retirement = _generation.Retire();
+            await _lifetime.CancelAsync();
             try
             {
-                await serverTask;
+                await _serverTask;
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
             }
 
             await retirement.WaitAsync(TimeSpan.FromSeconds(10));
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal static async Task<ResourceServerHarness> StartAsync(CancellationToken cancellationToken)
@@ -269,16 +269,16 @@ public sealed class McpResourceIntegrationTests
 
         private sealed class CatalogSource : IMcpResourceCatalogSource
         {
-            private volatile McpServerGeneration? currentGeneration;
+            private volatile McpServerGeneration? _currentGeneration;
 
             internal void Attach(McpServerGeneration generation)
             {
-                currentGeneration = generation;
+                _currentGeneration = generation;
             }
 
             public IReadOnlyList<McpResourceServerAccess> GetResourceServers()
             {
-                return currentGeneration is { } value
+                return _currentGeneration is { } value
                     ? [new McpResourceServerAccess("test-server", value.GetResourceCatalog(), value)]
                     : [];
             }

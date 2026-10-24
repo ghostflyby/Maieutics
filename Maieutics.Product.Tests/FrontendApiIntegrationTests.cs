@@ -6,7 +6,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Maieutics.Agent;
+using Maieutics.Commands;
+using Maieutics.Configuration;
+using Maieutics.Control;
 using Maieutics.Frontend;
+using Maieutics.Persistence;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -1532,11 +1536,11 @@ public sealed class FrontendApiIntegrationTests
     /// fake model provider. Shared with the comm-plane integration tests.</summary>
     internal sealed class FrontendHarness : IAsyncDisposable
     {
-        private readonly IHost host;
-        private readonly IAsyncDisposable provider;
-        private readonly string configurationFile;
-        private readonly string dataRoot;
-        private readonly GatedModelProvider? hangingProvider;
+        private readonly IHost _host;
+        private readonly IAsyncDisposable _provider;
+        private readonly string _configurationFile;
+        private readonly string _dataRoot;
+        private readonly GatedModelProvider? _hangingProvider;
 
         private FrontendHarness(
             IHost host,
@@ -1547,11 +1551,11 @@ public sealed class FrontendApiIntegrationTests
             JsonElement discovery,
             bool hanging)
         {
-            this.host = host;
-            this.provider = provider;
-            this.configurationFile = configurationFile;
-            this.dataRoot = dataRoot;
-            hangingProvider = hanging ? (GatedModelProvider)provider : null;
+            this._host = host;
+            this._provider = provider;
+            this._configurationFile = configurationFile;
+            this._dataRoot = dataRoot;
+            _hangingProvider = hanging ? (GatedModelProvider)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;
             Client = CreateClient();
@@ -1559,7 +1563,7 @@ public sealed class FrontendApiIntegrationTests
 
         public string DiscoveryPath { get; }
 
-        public string ConfigurationFile => configurationFile;
+        public string ConfigurationFile => _configurationFile;
 
         public JsonElement Discovery { get; }
 
@@ -1571,8 +1575,8 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The content-addressed object store backing <c>/v1/objects</c>, so tests
         /// can ingest real objects without driving a full turn.</summary>
-        public Persistence.ObjectStore ObjectStore =>
-            host.Services.GetRequiredService<Persistence.ObjectStore>();
+        public ObjectStore ObjectStore =>
+            _host.Services.GetRequiredService<ObjectStore>();
 
         public static async Task<FrontendHarness> StartAsync(
             CancellationToken cancellationToken,
@@ -1650,44 +1654,44 @@ public sealed class FrontendApiIntegrationTests
         /// <summary>Registers the test process as the owning peer of a session so a raw
         /// child socket stub can pass the /comm handshake.</summary>
         public void RegisterControlPeer(string sessionId) =>
-            host.Services.GetRequiredService<Control.ReplControlSessionRegistry>()
+            _host.Services.GetRequiredService<ReplControlSessionRegistry>()
                 .Register(Environment.ProcessId, sessionId);
 
         /// <summary>The live frontend session service, for direct service-level tests
         /// that need precise control over inputs such as cancellation tokens.</summary>
         public FrontendSessionService SessionService =>
-            host.Services.GetRequiredService<FrontendSessionService>();
+            _host.Services.GetRequiredService<FrontendSessionService>();
 
         /// <summary>The live session manager, so tests can observe eviction-pin state
         /// that the server-side turn queue drives (ADR 0025).</summary>
-        public Commands.MaieuticsAgentSessionManager SessionManager =>
-            host.Services.GetRequiredService<Commands.MaieuticsAgentSessionManager>();
+        public MaieuticsAgentSessionManager SessionManager =>
+            _host.Services.GetRequiredService<MaieuticsAgentSessionManager>();
 
         /// <summary>The live turn queue, so tests can arm its worker seams (the
         /// queue.updated liveness contract, ADR 0025).</summary>
         public FrontendTurnQueue TurnQueue =>
-            host.Services.GetRequiredService<FrontendTurnQueue>();
+            _host.Services.GetRequiredService<FrontendTurnQueue>();
 
         /// <summary>The live runtime configuration, so tests can await hot-reload completion
         /// (each completed reload swaps a fresh completion task) instead of polling the
         /// status surface.</summary>
-        public Configuration.MaieuticsRuntimeConfiguration RuntimeConfiguration =>
-            host.Services.GetRequiredService<Configuration.MaieuticsRuntimeConfiguration>();
+        public MaieuticsRuntimeConfiguration RuntimeConfiguration =>
+            _host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>();
 
         /// <summary>The IDE request registry, so endpoint tests can place pending requests
         /// and complete them through the real answer route (ADR 0042).</summary>
         public IdeRequestRegistry IdeRequests =>
-            host.Services.GetRequiredService<IdeRequestRegistry>();
+            _host.Services.GetRequiredService<IdeRequestRegistry>();
 
         /// <summary>The live comm router, so tests can await a session plane's live-set
         /// transitions instead of probing with throwaway hello reads.</summary>
         public FrontendCommRouter CommRouter =>
-            host.Services.GetRequiredService<FrontendCommRouter>();
+            _host.Services.GetRequiredService<FrontendCommRouter>();
 
         /// <summary>The live IDE announcement gate, so tests observe the per-socket
         /// capability lifecycle without driving a run.</summary>
-        public Configuration.IIdeFrontendGate IdeGate =>
-            host.Services.GetRequiredService<Configuration.IIdeFrontendGate>();
+        public IIdeFrontendGate IdeGate =>
+            _host.Services.GetRequiredService<IIdeFrontendGate>();
 
         /// <summary>Waits for the session's announcing sockets to lapse (the last one
         /// withdrawing is the completion). Capture the task before closing the socket:
@@ -1704,13 +1708,13 @@ public sealed class FrontendApiIntegrationTests
             string sessionId,
             IFrontendPresentationTarget target)
         {
-            return host.Services.GetRequiredService<FrontendDenoReplPresentationRouter>()
+            return _host.Services.GetRequiredService<FrontendDenoReplPresentationRouter>()
                 .Attach(new AgentSessionId(Guid.ParseExact(sessionId, "N")), target);
         }
 
         /// <summary>The control host address (the Unix socket path on Unix).</summary>
         public string ControlAddress =>
-            host.Services.GetRequiredService<Control.ReplControlHost>().ControlAddress;
+            _host.Services.GetRequiredService<ReplControlHost>().ControlAddress;
 
         public HttpClient CreateClient(string? token = null)
         {
@@ -1758,7 +1762,7 @@ public sealed class FrontendApiIntegrationTests
             return new FrontendEventsConnection(socket);
         }
 
-        public void ReleaseProvider() => hangingProvider?.Release();
+        public void ReleaseProvider() => _hangingProvider?.Release();
 
         public async Task WaitForTurnCommittedAsync(
             string sessionId,
@@ -1811,7 +1815,7 @@ public sealed class FrontendApiIntegrationTests
                     var retained = SessionService.TryGetRun(runId, out var settledStream) && settledStream is not null
                         ? string.Join(" | ", settledStream.DescribeFrames())
                         : "(evicted)";
-                    var providerState = hangingProvider?.DescribeState() ?? "(none)";
+                    var providerState = _hangingProvider?.DescribeState() ?? "(none)";
                     throw new InvalidOperationException(
                         $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; "
                         + $"the turn can never appear in the transcript. transcript={confirmation.GetRawText()} "
@@ -1859,17 +1863,17 @@ public sealed class FrontendApiIntegrationTests
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
-                await host.StopAsync(cleanup.Token);
+                await _host.StopAsync(cleanup.Token);
             }
             catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
             {
             }
 
-            await ((IAsyncDisposable)host).DisposeAsync();
-            await provider.DisposeAsync();
+            await ((IAsyncDisposable)_host).DisposeAsync();
+            await _provider.DisposeAsync();
             try
             {
-                await TempArea.DeleteAsync(dataRoot, CancellationToken.None);
+                await TempArea.DeleteAsync(_dataRoot, CancellationToken.None);
             }
             catch (TimeoutException)
             {
@@ -1879,7 +1883,7 @@ public sealed class FrontendApiIntegrationTests
             }
             try
             {
-                File.Delete(configurationFile);
+                File.Delete(_configurationFile);
             }
             catch (IOException)
             {

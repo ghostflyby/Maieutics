@@ -9,11 +9,11 @@ namespace Maieutics.Product.Tests;
 /// is idempotent, and never links to absent objects.</summary>
 public sealed class AgentObjectViewTests : IAsyncDisposable
 {
-    private readonly string agentRoot;
+    private readonly string _agentRoot;
 
     public AgentObjectViewTests()
     {
-        agentRoot = Path.Combine(
+        _agentRoot = Path.Combine(
             Path.GetTempPath(),
             "maieutics-object-view-tests",
             Guid.NewGuid().ToString("N"));
@@ -24,27 +24,27 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
         // The transcript store's SQLite handle can linger briefly past its dispose on
         // Windows (WAL teardown, external scanners); retry with an asynchronous
         // backoff so a teardown lock never masks the test result.
-        await TempArea.DeleteAsync(agentRoot, TestContext.Current.CancellationToken);
+        await TempArea.DeleteAsync(_agentRoot, TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public void RepairCreatesIdempotentRelativeLinksForReferencedObjects()
     {
-        var objectsRoot = Path.Combine(agentRoot, "objects");
-        var viewSessionsRoot = Path.Combine(agentRoot, "view", "sessions");
+        var objectsRoot = Path.Combine(_agentRoot, "objects");
+        var viewSessionsRoot = Path.Combine(_agentRoot, "view", "sessions");
         var objectStore = new ObjectStore(objectsRoot);
         var sessionId = AgentSessionId.Create();
         var familyId = sessionId;
         var ingested = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("inspectable bytes")));
         using var store = new SqliteTranscriptStore(
-            SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(agentRoot, "families"), familyId));
+            SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(_agentRoot, "families"), familyId));
         store.AppendTurn(sessionId, Turn(ingested.Sha256), [ingested.Sha256]);
 
         var ensured = AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]);
 
         // The view degrades on platforms without symlink privileges (Windows CI); the
         // degradation contract is an empty view, never a failed repair.
-        if (!SymlinksSupported(agentRoot))
+        if (!SymlinksSupported(_agentRoot))
         {
             Assert.Equal(0, ensured);
             return;
@@ -62,12 +62,12 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
     [Fact]
     public void RepairSkipsReferencesToAbsentObjects()
     {
-        var objectsRoot = Path.Combine(agentRoot, "objects");
-        var viewSessionsRoot = Path.Combine(agentRoot, "view", "sessions");
+        var objectsRoot = Path.Combine(_agentRoot, "objects");
+        var viewSessionsRoot = Path.Combine(_agentRoot, "view", "sessions");
         var sessionId = AgentSessionId.Create();
         var missing = new string('a', 64);
         using var store = new SqliteTranscriptStore(
-            SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(agentRoot, "families"), sessionId));
+            SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(_agentRoot, "families"), sessionId));
         store.AppendTurn(sessionId, Turn(missing), [missing]);
 
         Assert.Equal(0, AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]));

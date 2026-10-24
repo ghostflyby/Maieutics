@@ -15,11 +15,11 @@ namespace Maieutics.Control;
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDisposable
 {
-    private readonly ReplControlCredentialRegistry credentialRegistry;
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger<WindowsPipeBootstrap> logger;
-    private readonly Task loop;
-    private readonly ReplControlSessionRegistry sessionRegistry;
+    private readonly ReplControlCredentialRegistry _credentialRegistry;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger<WindowsPipeBootstrap> _logger;
+    private readonly Task _loop;
+    private readonly ReplControlSessionRegistry _sessionRegistry;
 
     public WindowsPipeBootstrap(
         string pipeName,
@@ -28,18 +28,18 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
         ILogger<WindowsPipeBootstrap> logger)
     {
         PipeName = pipeName;
-        this.sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
-        this.credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        loop = RunAsync();
+        this._sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+        this._credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _loop = RunAsync();
     }
 
     public async ValueTask DisposeAsync()
     {
-        await lifetime.CancelAsync();
+        await _lifetime.CancelAsync();
         try
         {
-            await loop.ConfigureAwait(false);
+            await _loop.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -51,7 +51,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
 
     private async Task RunAsync()
     {
-        while (!lifetime.IsCancellationRequested)
+        while (!_lifetime.IsCancellationRequested)
         {
             await using var pipe = new NamedPipeServerStream(
                 PipeName,
@@ -61,7 +61,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
                 PipeOptions.Asynchronous);
             try
             {
-                await pipe.WaitForConnectionAsync(lifetime.Token).ConfigureAwait(false);
+                await pipe.WaitForConnectionAsync(_lifetime.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -72,7 +72,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
             {
                 await ServeConnectionAsync(pipe).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
                 return;
             }
@@ -81,7 +81,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
                 // One client vanishing mid-bootstrap must not fault the accept loop: later
                 // REPL children would never receive a control credential. The pipe instance
                 // is disposed by the await using above; keep serving.
-                logger.LogWarning(exception, "Named-pipe bootstrap of a control credential failed.");
+                _logger.LogWarning(exception, "Named-pipe bootstrap of a control credential failed.");
             }
         }
     }
@@ -89,19 +89,19 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
     private async Task ServeConnectionAsync(NamedPipeServerStream pipe)
     {
         var processId = GetClientProcessId(pipe);
-        if (processId <= 0 || !sessionRegistry.TryGetSession(processId, out var sessionId))
+        if (processId <= 0 || !_sessionRegistry.TryGetSession(processId, out var sessionId))
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Rejected named-pipe bootstrap from an unexpected process (pid {ProcessId}).",
                 processId);
             return;
         }
 
-        var credential = credentialRegistry.Issue(sessionId);
+        var credential = _credentialRegistry.Issue(sessionId);
         var payload = Encoding.UTF8.GetBytes($"{{\"sessionId\":\"{sessionId}\",\"credential\":\"{credential}\"}}");
-        await pipe.WriteAsync(payload, lifetime.Token).ConfigureAwait(false);
-        await pipe.FlushAsync(lifetime.Token).ConfigureAwait(false);
-        logger.LogInformation("Issued a control credential to session {SessionId}.", sessionId);
+        await pipe.WriteAsync(payload, _lifetime.Token).ConfigureAwait(false);
+        await pipe.FlushAsync(_lifetime.Token).ConfigureAwait(false);
+        _logger.LogInformation("Issued a control credential to session {SessionId}.", sessionId);
     }
 
     private static int GetClientProcessId(NamedPipeServerStream pipe)

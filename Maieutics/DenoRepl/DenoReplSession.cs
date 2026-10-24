@@ -5,34 +5,34 @@ namespace Maieutics.DenoRepl;
 
 internal sealed class DenoReplSession : IAsyncDisposable
 {
-    private readonly TaskCompletionSource disposalCompletion =
+    private readonly TaskCompletionSource _disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly Dictionary<string, ReplDisplayId> displayIds =
+    private readonly Dictionary<string, ReplDisplayId> _displayIds =
         new(StringComparer.Ordinal);
 
-    private readonly SemaphoreSlim executionGate = new(1, 1);
-    private readonly IDenoReplSessionFactory factory;
-    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger<DenoReplSession> logger;
-    private readonly DenoReplOptions options;
-    private readonly IDenoReplPresentationRouter presentationRouter;
-    private readonly IReplDisplayObjectStore? displayObjectStore;
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    private readonly IDenoReplSessionFactory _factory;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger<DenoReplSession> _logger;
+    private readonly DenoReplOptions _options;
+    private readonly IDenoReplPresentationRouter _presentationRouter;
+    private readonly IReplDisplayObjectStore? _displayObjectStore;
 
     /// <summary>Session-lifetime display rate limiter, shared by every execution so the sliding
     /// budget accumulates across turns (aligned with jupyter_server's global iopub rate limit).
     /// A restart intentionally keeps the window: it is not a new frontend, and the window prunes
     /// stale samples within <see cref="DenoReplOptions.DisplayRateLimitWindow"/>.</summary>
-    private readonly ReplOutputRateLimiter rateLimiter;
+    private readonly ReplOutputRateLimiter _rateLimiter;
 
-    private readonly Lock stateGate = new();
-    private int disposeState;
-    private int generation = 1;
-    private CancellationTokenSource? generationLifetime;
-    private Task? generationMonitor;
-    private IDenoReplGeneration? runtime;
-    private DenoReplSessionState state = DenoReplSessionState.Created;
+    private readonly Lock _stateGate = new();
+    private int _disposeState;
+    private int _generation = 1;
+    private CancellationTokenSource? _generationLifetime;
+    private Task? _generationMonitor;
+    private IDenoReplGeneration? _runtime;
+    private DenoReplSessionState _state = DenoReplSessionState.Created;
 
     internal DenoReplSession(
         AgentSessionId ownerSessionId,
@@ -49,12 +49,12 @@ internal sealed class DenoReplSession : IAsyncDisposable
         SessionId = sessionId;
         IsDefault = isDefault;
         WorkingDirectory = workingDirectory;
-        this.options = options;
-        this.factory = factory;
-        this.presentationRouter = presentationRouter;
-        this.logger = logger;
-        this.displayObjectStore = displayObjectStore;
-        rateLimiter = new ReplOutputRateLimiter(options);
+        this._options = options;
+        this._factory = factory;
+        this._presentationRouter = presentationRouter;
+        this._logger = logger;
+        this._displayObjectStore = displayObjectStore;
+        _rateLimiter = new ReplOutputRateLimiter(options);
     }
 
     internal AgentSessionId OwnerSessionId { get; }
@@ -67,16 +67,16 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0)
         {
-            await disposalCompletion.Task.ConfigureAwait(false);
+            await _disposalCompletion.Task.ConfigureAwait(false);
             return;
         }
 
         Exception? failure = null;
         try
         {
-            await lifetime.CancelAsync().ConfigureAwait(false);
+            await _lifetime.CancelAsync().ConfigureAwait(false);
             await CloseAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -85,26 +85,26 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
         finally
         {
-            lifetime.Dispose();
-            lifecycleGate.Dispose();
-            executionGate.Dispose();
+            _lifetime.Dispose();
+            _lifecycleGate.Dispose();
+            _executionGate.Dispose();
         }
 
         if (failure is null)
-            disposalCompletion.TrySetResult();
+            _disposalCompletion.TrySetResult();
         else
-            disposalCompletion.TrySetException(failure);
-        await disposalCompletion.Task.ConfigureAwait(false);
+            _disposalCompletion.TrySetException(failure);
+        await _disposalCompletion.Task.ConfigureAwait(false);
     }
 
     internal DenoReplSessionResult GetSnapshot()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
             return new DenoReplSessionResult(
                 SessionId,
-                generation,
-                ToWireState(state),
+                _generation,
+                ToWireState(_state),
                 WorkingDirectory,
                 IsDefault);
         }
@@ -112,7 +112,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -122,13 +122,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
             SetState(DenoReplSessionState.Starting);
             try
             {
-                var started = await factory.StartAsync(
+                var started = await _factory.StartAsync(
                     WorkingDirectory,
                     SessionId,
                     OwnerSessionId,
                     GetGeneration(),
                     cancellationToken).ConfigureAwait(false);
-                runtime = started;
+                _runtime = started;
                 StartGenerationMonitor(started);
                 SetStateIdleIfInTransition(DenoReplSessionState.Starting);
             }
@@ -140,7 +140,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             catch (Exception exception)
             {
                 SetState(DenoReplSessionState.Faulted);
-                logger.LogWarning(exception, "Could not start Deno REPL session {SessionId}.", SessionId);
+                _logger.LogWarning(exception, "Could not start Deno REPL session {SessionId}.", SessionId);
                 throw new AgentToolException(
                     "repl_start_failed",
                     $"Deno REPL session '{SessionId}' could not be started: {GetSafeMessage(exception)}");
@@ -148,7 +148,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
         finally
         {
-            lifecycleGate.Release();
+            _lifecycleGate.Release();
         }
     }
 
@@ -159,34 +159,34 @@ internal sealed class DenoReplSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(code);
         await StartAsync(cancellationToken).ConfigureAwait(false);
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
             if (GetState() == DenoReplSessionState.Faulted) throw CreateFaultedException();
-            var activeRuntime = runtime ?? throw CreateFaultedException();
+            var activeRuntime = _runtime ?? throw CreateFaultedException();
             SetState(DenoReplSessionState.Busy);
-            var sink = await presentationRouter.WaitForCallAsync(
+            var sink = await _presentationRouter.WaitForCallAsync(
                 OwnerSessionId,
                 callId,
                 cancellationToken).ConfigureAwait(false);
             var execution = await activeRuntime.Connection.ExecuteAsync(code, cancellationToken).ConfigureAwait(false);
-            using var timeout = new CancellationTokenSource(options.ExecutionTimeout);
+            using var timeout = new CancellationTokenSource(_options.ExecutionTimeout);
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
-                lifetime.Token,
+                _lifetime.Token,
                 timeout.Token);
             var outputEvents = await ResolveOutputEventsAsync(wait.Token).ConfigureAwait(false);
             var collector = new DenoReplExecutionCollector(
                 SessionId,
                 GetGeneration(),
-                options,
+                _options,
                 sink,
-                displayIds,
+                _displayIds,
                 execution.ExecutionId,
-                rateLimiter,
-                displayObjectStore,
-                logger: logger);
+                _rateLimiter,
+                _displayObjectStore,
+                logger: _logger);
             var completion = collector.ConsumeAsync(activeRuntime.Connection, execution, outputEvents, wait.Token);
             try
             {
@@ -199,9 +199,9 @@ internal sealed class DenoReplSession : IAsyncDisposable
             {
                 var escalated = await CancelAndDrainAsync(activeRuntime, execution, completion).ConfigureAwait(false);
                 if (escalated) MarkFaulted();
-                if (cancellationToken.IsCancellationRequested || lifetime.IsCancellationRequested)
+                if (cancellationToken.IsCancellationRequested || _lifetime.IsCancellationRequested)
                     throw new OperationCanceledException(
-                        cancellationToken.IsCancellationRequested ? cancellationToken : lifetime.Token);
+                        cancellationToken.IsCancellationRequested ? cancellationToken : _lifetime.Token);
                 if (timeout.IsCancellationRequested)
                     throw new AgentToolException(
                         "repl_timeout",
@@ -215,7 +215,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             catch (Exception exception)
             {
                 MarkFaulted();
-                logger.LogWarning(exception, "Deno execution failed for session {SessionId}.", SessionId);
+                _logger.LogWarning(exception, "Deno execution failed for session {SessionId}.", SessionId);
                 throw new AgentToolException(
                     "repl_faulted",
                     $"Deno REPL session '{SessionId}' failed during execution: {GetSafeMessage(exception)}");
@@ -223,42 +223,42 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
         finally
         {
-            lock (stateGate)
+            lock (_stateGate)
             {
-                if (state == DenoReplSessionState.Busy) state = DenoReplSessionState.Idle;
+                if (_state == DenoReplSessionState.Busy) _state = DenoReplSessionState.Idle;
             }
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
     internal async Task<DenoReplSessionResult> RestartAsync(CancellationToken cancellationToken)
     {
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 ThrowIfDisposed();
                 SetState(DenoReplSessionState.Restarting);
                 await StopGenerationMonitorAsync().ConfigureAwait(false);
-                if (runtime is { } previous)
+                if (_runtime is { } previous)
                 {
-                    runtime = null;
+                    _runtime = null;
                     await previous.DisposeAsync().ConfigureAwait(false);
                 }
-                lock (stateGate)
+                lock (_stateGate)
                 {
-                    displayIds.Clear();
-                    generation = checked(generation + 1);
+                    _displayIds.Clear();
+                    _generation = checked(_generation + 1);
                 }
-                var started = await factory.StartAsync(
+                var started = await _factory.StartAsync(
                     WorkingDirectory,
                     SessionId,
                     OwnerSessionId,
                     GetGeneration(),
                     cancellationToken).ConfigureAwait(false);
-                runtime = started;
+                _runtime = started;
                 StartGenerationMonitor(started);
                 SetStateIdleIfInTransition(DenoReplSessionState.Restarting);
                 return GetSnapshot();
@@ -271,48 +271,48 @@ internal sealed class DenoReplSession : IAsyncDisposable
             catch (Exception exception)
             {
                 MarkFaulted();
-                logger.LogWarning(exception, "Could not restart Deno REPL session {SessionId}.", SessionId);
+                _logger.LogWarning(exception, "Could not restart Deno REPL session {SessionId}.", SessionId);
                 throw new AgentToolException(
                     "repl_restart_failed",
                     $"Deno REPL session '{SessionId}' could not be restarted: {GetSafeMessage(exception)}");
             }
             finally
             {
-                lifecycleGate.Release();
+                _lifecycleGate.Release();
             }
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
     private async Task CloseAsync()
     {
-        await executionGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        await _executionGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            await _lifecycleGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
                 if (GetState() == DenoReplSessionState.Closed) return;
                 SetState(DenoReplSessionState.Closing);
                 await StopGenerationMonitorAsync().ConfigureAwait(false);
-                if (runtime is { } activeRuntime)
+                if (_runtime is { } activeRuntime)
                 {
-                    runtime = null;
+                    _runtime = null;
                     await activeRuntime.DisposeAsync().ConfigureAwait(false);
                 }
                 SetState(DenoReplSessionState.Closed);
             }
             finally
             {
-                lifecycleGate.Release();
+                _lifecycleGate.Release();
             }
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
@@ -326,7 +326,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private async Task<IAsyncEnumerable<ReplOutputFrame>> ResolveOutputEventsAsync(
         CancellationToken cancellationToken)
     {
-        var activeRuntime = runtime ?? throw CreateFaultedException();
+        var activeRuntime = _runtime ?? throw CreateFaultedException();
         var output = activeRuntime.OutputEvents;
         if (output is null) return EmptyOutputEvents();
         return await output.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -347,7 +347,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         {
             var cancellation = activeRuntime.Connection.CancelAsync(execution.ExecutionId, CancellationToken.None);
             await Task.WhenAll(cancellation, completion)
-                .WaitAsync(options.InterruptGracePeriod, CancellationToken.None)
+                .WaitAsync(_options.InterruptGracePeriod, CancellationToken.None)
                 .ConfigureAwait(false);
             return false;
         }
@@ -358,7 +358,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            logger.LogDebug(exception, "Deno REPL session {SessionId} did not drain after cancellation.", SessionId);
+            _logger.LogDebug(exception, "Deno REPL session {SessionId} did not drain after cancellation.", SessionId);
             await activeRuntime.TerminateAsync().ConfigureAwait(false);
             return true;
         }
@@ -366,8 +366,8 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private void StartGenerationMonitor(IDenoReplGeneration value)
     {
-        generationLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        generationMonitor = ObserveGenerationAsync(value, generationLifetime.Token);
+        _generationLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _generationMonitor = ObserveGenerationAsync(value, _generationLifetime.Token);
     }
 
     private async Task ObserveGenerationAsync(IDenoReplGeneration value, CancellationToken cancellationToken)
@@ -378,7 +378,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
             if (!cancellationToken.IsCancellationRequested)
             {
                 MarkFaulted();
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Deno REPL session {SessionId} process exited unexpectedly with code {ExitCode}.",
                     SessionId,
                     value.ExitCode);
@@ -392,17 +392,17 @@ internal sealed class DenoReplSession : IAsyncDisposable
             if (!cancellationToken.IsCancellationRequested)
             {
                 MarkFaulted();
-                logger.LogWarning(exception, "Deno REPL session {SessionId} channel failed.", SessionId);
+                _logger.LogWarning(exception, "Deno REPL session {SessionId} channel failed.", SessionId);
             }
         }
     }
 
     private async Task StopGenerationMonitorAsync()
     {
-        var cancellation = generationLifetime;
-        var monitor = generationMonitor;
-        generationLifetime = null;
-        generationMonitor = null;
+        var cancellation = _generationLifetime;
+        var monitor = _generationMonitor;
+        _generationLifetime = null;
+        _generationMonitor = null;
         if (cancellation is null) return;
         await cancellation.CancelAsync().ConfigureAwait(false);
         if (monitor is not null) await monitor.ConfigureAwait(false);
@@ -411,17 +411,17 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private int GetGeneration()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            return generation;
+            return _generation;
         }
     }
 
     private DenoReplSessionState GetState()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            return state;
+            return _state;
         }
     }
 
@@ -431,26 +431,26 @@ internal sealed class DenoReplSession : IAsyncDisposable
     /// the startup handshake reports Faulted before the startup code completes.</summary>
     private void SetStateIdleIfInTransition(DenoReplSessionState expected)
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            if (state == expected) state = DenoReplSessionState.Idle;
+            if (_state == expected) _state = DenoReplSessionState.Idle;
         }
     }
 
     private void SetState(DenoReplSessionState value)
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            state = value;
+            _state = value;
         }
     }
 
     private void MarkFaulted()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            if (state is not DenoReplSessionState.Closing and not DenoReplSessionState.Closed)
-                state = DenoReplSessionState.Faulted;
+            if (_state is not DenoReplSessionState.Closing and not DenoReplSessionState.Closed)
+                _state = DenoReplSessionState.Faulted;
         }
     }
 
@@ -463,7 +463,7 @@ internal sealed class DenoReplSession : IAsyncDisposable
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 
     private static string ToWireState(DenoReplSessionState value)

@@ -28,32 +28,32 @@ internal sealed class DenoReplExecutionCollector
     /// the terminal at the host.</summary>
     internal static readonly TimeSpan OutputTailDrainWindow = TimeSpan.FromMilliseconds(100);
 
-    private readonly Dictionary<string, int> digestIndexByDisplayId = new(StringComparer.Ordinal);
-    private readonly List<DenoReplDisplayDigest> digests = [];
-    private readonly Dictionary<string, ReplDisplayId> displayIds;
-    private readonly string executionId;
-    private readonly int generation;
-    private readonly DenoReplOptions options;
-    private readonly List<DenoReplOutputItem> outputs = [];
-    private readonly IDenoReplPresentationSink presentation;
-    private readonly ReplOutputRateLimiter rateLimiter;
-    private readonly string sessionId;
-    private int bundleSkippedCount;
-    private int clearCount;
-    private int digestBytes;
-    private bool digestTruncated;
-    private int displayCount;
-    private int displaySkippedCount;
-    private readonly ILogger? logger;
-    private int modelBytes;
-    private int omittedBytes;
-    private bool presentationBudgetWarned;
-    private int presentationEvents;
-    private int presentationTextBytes;
-    private bool presentationTextTruncated;
-    private int rateSkippedCount;
-    private bool truncated;
-    private int updateCount;
+    private readonly Dictionary<string, int> _digestIndexByDisplayId = new(StringComparer.Ordinal);
+    private readonly List<DenoReplDisplayDigest> _digests = [];
+    private readonly Dictionary<string, ReplDisplayId> _displayIds;
+    private readonly string _executionId;
+    private readonly int _generation;
+    private readonly DenoReplOptions _options;
+    private readonly List<DenoReplOutputItem> _outputs = [];
+    private readonly IDenoReplPresentationSink _presentation;
+    private readonly ReplOutputRateLimiter _rateLimiter;
+    private readonly string _sessionId;
+    private int _bundleSkippedCount;
+    private int _clearCount;
+    private int _digestBytes;
+    private bool _digestTruncated;
+    private int _displayCount;
+    private int _displaySkippedCount;
+    private readonly ILogger? _logger;
+    private int _modelBytes;
+    private int _omittedBytes;
+    private bool _presentationBudgetWarned;
+    private int _presentationEvents;
+    private int _presentationTextBytes;
+    private bool _presentationTextTruncated;
+    private int _rateSkippedCount;
+    private bool _truncated;
+    private int _updateCount;
 
     internal DenoReplExecutionCollector(
         string sessionId,
@@ -66,18 +66,18 @@ internal sealed class DenoReplExecutionCollector
         IReplDisplayObjectStore? displayObjectStore = null,
         ILogger? logger = null)
     {
-        this.sessionId = sessionId;
-        this.generation = generation;
-        this.options = options;
-        this.presentation = presentation;
-        this.displayIds = displayIds;
-        this.executionId = executionId;
-        this.rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
-        this.displayObjectStore = displayObjectStore;
-        this.logger = logger;
+        this._sessionId = sessionId;
+        this._generation = generation;
+        this._options = options;
+        this._presentation = presentation;
+        this._displayIds = displayIds;
+        this._executionId = executionId;
+        this._rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
+        this._displayObjectStore = displayObjectStore;
+        this._logger = logger;
     }
 
-    private readonly IReplDisplayObjectStore? displayObjectStore;
+    private readonly IReplDisplayObjectStore? _displayObjectStore;
 
     internal async Task<DenoReplExecutionResult> ConsumeAsync(
         IDenoReplConnection connection,
@@ -178,7 +178,7 @@ internal sealed class DenoReplExecutionCollector
             // endpoint and are observed through the ReplOutputFrame overload. Input requests
             // remain on the eval channel.
             case ReplEvalInputRequestEvent input:
-                var value = await presentation.RequestInputAsync(
+                var value = await _presentation.RequestInputAsync(
                     input.Prompt,
                     input.Password,
                     cancellationToken).ConfigureAwait(false);
@@ -194,7 +194,7 @@ internal sealed class DenoReplExecutionCollector
         ReplOutputFrame frame,
         CancellationToken cancellationToken)
     {
-        if (!string.Equals(frame.ExecutionId, executionId, StringComparison.Ordinal)) return;
+        if (!string.Equals(frame.ExecutionId, _executionId, StringComparison.Ordinal)) return;
 
         switch (frame)
         {
@@ -206,7 +206,7 @@ internal sealed class DenoReplExecutionCollector
                 await PresentStderrAsync(stderr.Text, cancellationToken).ConfigureAwait(false);
                 break;
             case ReplOutputDisplayFrame display:
-                if (!rateLimiter.TryReserve(display))
+                if (!_rateLimiter.TryReserve(display))
                 {
                     // The display exceeded the sliding display rate budget (jupyter_server iopub
                     // rate-limit semantics): it is dropped from both the notebook presentation and
@@ -214,7 +214,7 @@ internal sealed class DenoReplExecutionCollector
                     // signal that its display was rate-limited and can retry with a smaller
                     // payload. Dropping the event does not disturb stream order: the output
                     // stream is still consumed in order and later frames present normally.
-                    rateSkippedCount++;
+                    _rateSkippedCount++;
                     return;
                 }
                 await PresentDisplayAsync(display, cancellationToken).ConfigureAwait(false);
@@ -222,8 +222,8 @@ internal sealed class DenoReplExecutionCollector
             case ReplOutputClearOutputFrame clear:
                 if (TryReservePresentationEvent())
                 {
-                    await presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
-                    clearCount++;
+                    await _presentation.ClearOutputAsync(clear.Wait, cancellationToken).ConfigureAwait(false);
+                    _clearCount++;
                 }
                 break;
         }
@@ -241,22 +241,22 @@ internal sealed class DenoReplExecutionCollector
             _ => throw new InvalidOperationException($"Unknown REPL eval terminal '{terminal.GetType().Name}'.")
         };
         return new DenoReplExecutionResult(
-            sessionId,
-            generation,
+            _sessionId,
+            _generation,
             null,
             status,
-            outputs,
+            _outputs,
             new DenoReplPresentationResult(
-                displayCount,
-                updateCount,
-                clearCount,
-                RateSkippedCount: rateSkippedCount,
-                bundleSkippedCount,
-                displaySkippedCount,
-                digestTruncated,
-                digests),
-            truncated,
-            omittedBytes);
+                _displayCount,
+                _updateCount,
+                _clearCount,
+                RateSkippedCount: _rateSkippedCount,
+                _bundleSkippedCount,
+                _displaySkippedCount,
+                _digestTruncated,
+                _digests),
+            _truncated,
+            _omittedBytes);
     }
 
     private string AddResult(JsonElement? value)
@@ -265,7 +265,7 @@ internal sealed class DenoReplExecutionCollector
         var bytes = Encoding.UTF8.GetByteCount(result.GetRawText());
         if (TryReserveModelBytes(bytes))
         {
-            outputs.Add(new DenoReplOutputItem(
+            _outputs.Add(new DenoReplOutputItem(
                 "result",
                 MediaType: "application/json",
                 Value: result.Clone()));
@@ -298,9 +298,9 @@ internal sealed class DenoReplExecutionCollector
         // An update that cannot target a previous display is skipped from presentation and has no
         // digest entry to fold into.
         if (display.IsUpdate &&
-            (display.DisplayId is null || !displayIds.ContainsKey(display.DisplayId)))
+            (display.DisplayId is null || !_displayIds.ContainsKey(display.DisplayId)))
         {
-            displaySkippedCount++;
+            _displaySkippedCount++;
             return;
         }
 
@@ -330,7 +330,7 @@ internal sealed class DenoReplExecutionCollector
                     placeholder.TryGetInt32(out var index))
                 {
                     var bytes = display.ResolveBuffer(index);
-                    if (displayObjectStore is { } objects)
+                    if (_displayObjectStore is { } objects)
                     {
                         // Binary payloads become immutable content-addressed objects: the
                         // bundle carries a URL the frontend fetches natively over HTTP —
@@ -369,26 +369,26 @@ internal sealed class DenoReplExecutionCollector
     {
         if (isUpdate)
         {
-            if (innerDisplayId is null || !displayIds.TryGetValue(innerDisplayId, out var displayId))
+            if (innerDisplayId is null || !_displayIds.TryGetValue(innerDisplayId, out var displayId))
             {
-                displaySkippedCount++;
+                _displaySkippedCount++;
                 return;
             }
 
-            await presentation.UpdateDisplayAsync(displayId, bundle, metadata, cancellationToken).ConfigureAwait(false);
-            updateCount++;
+            await _presentation.UpdateDisplayAsync(displayId, bundle, metadata, cancellationToken).ConfigureAwait(false);
+            _updateCount++;
             return;
         }
 
         if (innerDisplayId is { } tracked)
         {
-            if (!displayIds.TryGetValue(tracked, out var outerDisplayId))
+            if (!_displayIds.TryGetValue(tracked, out var outerDisplayId))
             {
                 outerDisplayId = new ReplDisplayId(Guid.NewGuid().ToString("N"));
-                displayIds.Add(tracked, outerDisplayId);
+                _displayIds.Add(tracked, outerDisplayId);
             }
 
-            await presentation.DisplayTrackedAsync(
+            await _presentation.DisplayTrackedAsync(
                 bundle,
                 outerDisplayId,
                 metadata,
@@ -396,28 +396,28 @@ internal sealed class DenoReplExecutionCollector
         }
         else
         {
-            await presentation.DisplayAsync(bundle, metadata, cancellationToken).ConfigureAwait(false);
+            await _presentation.DisplayAsync(bundle, metadata, cancellationToken).ConfigureAwait(false);
         }
 
-        displayCount++;
+        _displayCount++;
     }
 
     /// <summary>Adds one bounded model digest for a display or update. Updates fold into the
     /// entry of their display id instead of creating a new one; displays without an id are not
-    /// deduplicated. When the digest budget is exhausted, <see cref="digestTruncated" /> is set and
+    /// deduplicated. When the digest budget is exhausted, <see cref="_digestTruncated" /> is set and
     /// later displays are counted (they still present) but not digested.</summary>
     private void AddDisplayDigest(ReplOutputDisplayFrame display, ReplDisplayBundle bundle)
     {
         var displayId = display.DisplayId;
-        if (display.IsUpdate && (displayId is null || !digestIndexByDisplayId.ContainsKey(displayId)))
+        if (display.IsUpdate && (displayId is null || !_digestIndexByDisplayId.ContainsKey(displayId)))
             return; // targeting failure already counted by PresentDisplayAsync
 
         var mediaTypes = bundle.Data.Keys.ToArray();
         var preview = SelectPreview(bundle);
 
-        if (displayId is { } id && digestIndexByDisplayId.TryGetValue(id, out var index))
+        if (displayId is { } id && _digestIndexByDisplayId.TryGetValue(id, out var index))
         {
-            var existing = digests[index];
+            var existing = _digests[index];
             var updated = existing with
             {
                 MediaTypes = mediaTypes,
@@ -425,32 +425,32 @@ internal sealed class DenoReplExecutionCollector
                 IsUpdate = existing.IsUpdate || display.IsUpdate
             };
             var updatedCost = DigestCost(updated);
-            if (digestBytes - DigestCost(existing) + updatedCost <= options.MaxModelDisplayDigestBytes)
+            if (_digestBytes - DigestCost(existing) + updatedCost <= _options.MaxModelDisplayDigestBytes)
             {
-                digests[index] = updated;
-                digestBytes = digestBytes - DigestCost(existing) + updatedCost;
+                _digests[index] = updated;
+                _digestBytes = _digestBytes - DigestCost(existing) + updatedCost;
             }
             else
             {
-                digestTruncated = true;
+                _digestTruncated = true;
             }
 
             return;
         }
 
-        if (digestTruncated) return;
+        if (_digestTruncated) return;
 
         var entry = new DenoReplDisplayDigest(mediaTypes, preview, displayId, display.IsUpdate);
         var cost = DigestCost(entry);
-        if (digestBytes + cost > options.MaxModelDisplayDigestBytes)
+        if (_digestBytes + cost > _options.MaxModelDisplayDigestBytes)
         {
-            digestTruncated = true;
+            _digestTruncated = true;
             return;
         }
 
-        digestBytes += cost;
-        digests.Add(entry);
-        if (displayId is { } tracked) digestIndexByDisplayId[tracked] = digests.Count - 1;
+        _digestBytes += cost;
+        _digests.Add(entry);
+        if (displayId is { } tracked) _digestIndexByDisplayId[tracked] = _digests.Count - 1;
     }
 
     /// <summary>Picks the digest preview: text/plain first, then the first string <c>text/*</c> or
@@ -476,9 +476,9 @@ internal sealed class DenoReplExecutionCollector
     {
         if (value is null || value.Length == 0) return value;
         var bytes = Encoding.UTF8.GetByteCount(value);
-        return bytes <= options.MaxDisplayDigestPreviewBytes
+        return bytes <= _options.MaxDisplayDigestPreviewBytes
             ? value
-            : TruncateUtf8(value, options.MaxDisplayDigestPreviewBytes, out _);
+            : TruncateUtf8(value, _options.MaxDisplayDigestPreviewBytes, out _);
     }
 
     private static bool IsBinaryMime(string mime)
@@ -505,22 +505,22 @@ internal sealed class DenoReplExecutionCollector
             return;
         }
 
-        var available = options.MaxPresentationTextBytes - presentationTextBytes;
+        var available = _options.MaxPresentationTextBytes - _presentationTextBytes;
         if (available <= 0)
         {
-            displaySkippedCount++;
+            _displaySkippedCount++;
             WarnStderrPresentationBudgetExhausted();
             return;
         }
 
         var fullBytes = Encoding.UTF8.GetByteCount(text);
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out _);
-        presentationTextBytes += Encoding.UTF8.GetByteCount(selected);
-        if (selected.Length > 0) await presentation.WriteStderrAsync(selected, cancellationToken).ConfigureAwait(false);
-        if (fullBytes > available && !presentationTextTruncated)
+        _presentationTextBytes += Encoding.UTF8.GetByteCount(selected);
+        if (selected.Length > 0) await _presentation.WriteStderrAsync(selected, cancellationToken).ConfigureAwait(false);
+        if (fullBytes > available && !_presentationTextTruncated)
         {
-            presentationTextTruncated = true;
-            displaySkippedCount++;
+            _presentationTextTruncated = true;
+            _displaySkippedCount++;
             WarnStderrPresentationBudgetExhausted();
         }
     }
@@ -530,13 +530,13 @@ internal sealed class DenoReplExecutionCollector
     /// content was previously silent, which made diagnosis require ad-hoc capture.</summary>
     private void WarnStderrPresentationBudgetExhausted()
     {
-        if (presentationBudgetWarned || logger is null) return;
+        if (_presentationBudgetWarned || _logger is null) return;
 
-        presentationBudgetWarned = true;
-        logger.LogWarning(
+        _presentationBudgetWarned = true;
+        _logger.LogWarning(
             "Stderr presentation for REPL session {SessionId} execution {ExecutionId} stopped early: the presentation budget is exhausted.",
-            sessionId,
-            executionId);
+            _sessionId,
+            _executionId);
     }
 
     private async ValueTask PresentErrorAsync(
@@ -546,33 +546,33 @@ internal sealed class DenoReplExecutionCollector
         CancellationToken cancellationToken)
     {
         if (!TryReservePresentationEvent()) return;
-        var available = options.MaxPresentationTextBytes - presentationTextBytes;
+        var available = _options.MaxPresentationTextBytes - _presentationTextBytes;
         if (available <= 0)
         {
-            displaySkippedCount++;
+            _displaySkippedCount++;
             return;
         }
 
         var selected = TruncateUtf8(value, available, out var selectedBytes);
-        presentationTextBytes += selectedBytes;
-        if (selectedBytes < Encoding.UTF8.GetByteCount(value)) displaySkippedCount++;
-        await presentation.PublishErrorAsync(name, selected, traceback, cancellationToken).ConfigureAwait(false);
+        _presentationTextBytes += selectedBytes;
+        if (selectedBytes < Encoding.UTF8.GetByteCount(value)) _displaySkippedCount++;
+        await _presentation.PublishErrorAsync(name, selected, traceback, cancellationToken).ConfigureAwait(false);
     }
 
     private bool CanPresentBundle(ReplDisplayBundle bundle, IReadOnlyDictionary<string, JsonElement> metadata)
     {
         if (!TryReservePresentationEvent()) return false;
         var bytes = CountJsonBytes(bundle.Data) + CountJsonBytes(metadata);
-        if (bytes <= options.MaxPresentationBundleBytes) return true;
-        bundleSkippedCount++;
+        if (bytes <= _options.MaxPresentationBundleBytes) return true;
+        _bundleSkippedCount++;
         return false;
     }
 
     private bool TryReservePresentationEvent()
     {
-        if (presentationEvents < options.MaxPresentationEventsPerExecution)
+        if (_presentationEvents < _options.MaxPresentationEventsPerExecution)
         {
-            presentationEvents++;
+            _presentationEvents++;
             return true;
         }
 
@@ -580,13 +580,13 @@ internal sealed class DenoReplExecutionCollector
         // stderr writes). It is counted under the display skip counter: the per-category breakdown
         // distinguishes bundle-size skips (BundleSkippedCount) from every other presentation skip
         // (DisplaySkippedCount); display rate-limit drops are counted separately (RateSkippedCount).
-        displaySkippedCount++;
+        _displaySkippedCount++;
         return false;
     }
 
     private void AddText(string kind, string text)
     {
-        var available = options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes;
+        var available = _options.MaxModelOutputBytes - _modelBytes - ModelItemOverheadBytes;
         var fullBytes = Encoding.UTF8.GetByteCount(text);
         if (available <= 0)
         {
@@ -596,14 +596,14 @@ internal sealed class DenoReplExecutionCollector
 
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out _);
         var selectedBytes = Encoding.UTF8.GetByteCount(selected);
-        outputs.Add(new DenoReplOutputItem(kind, selected));
-        modelBytes += ModelItemOverheadBytes + selectedBytes;
+        _outputs.Add(new DenoReplOutputItem(kind, selected));
+        _modelBytes += ModelItemOverheadBytes + selectedBytes;
         if (selectedBytes < fullBytes) MarkOmitted(fullBytes - selectedBytes);
     }
 
     private void AddTextResult(string text)
     {
-        var available = options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes;
+        var available = _options.MaxModelOutputBytes - _modelBytes - ModelItemOverheadBytes;
         var fullBytes = Encoding.UTF8.GetByteCount(text);
         if (available <= 0)
         {
@@ -613,8 +613,8 @@ internal sealed class DenoReplExecutionCollector
 
         var selected = fullBytes <= available ? text : TruncateUtf8(text, available, out _);
         var selectedBytes = Encoding.UTF8.GetByteCount(selected);
-        outputs.Add(new DenoReplOutputItem("result", selected, "text/plain"));
-        modelBytes += ModelItemOverheadBytes + selectedBytes;
+        _outputs.Add(new DenoReplOutputItem("result", selected, "text/plain"));
+        _modelBytes += ModelItemOverheadBytes + selectedBytes;
         if (selectedBytes < fullBytes) MarkOmitted(fullBytes - selectedBytes);
     }
 
@@ -624,7 +624,7 @@ internal sealed class DenoReplExecutionCollector
                     traceback.Sum(Encoding.UTF8.GetByteCount);
         if (TryReserveModelBytes(bytes))
         {
-            outputs.Add(new DenoReplOutputItem(
+            _outputs.Add(new DenoReplOutputItem(
                 "error",
                 value,
                 Name: name,
@@ -632,27 +632,27 @@ internal sealed class DenoReplExecutionCollector
             return;
         }
 
-        var available = Math.Max(0, options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes);
+        var available = Math.Max(0, _options.MaxModelOutputBytes - _modelBytes - ModelItemOverheadBytes);
         var selected = TruncateUtf8(value, available, out var selectedBytes);
         if (selected.Length > 0)
         {
-            outputs.Add(new DenoReplOutputItem("error", selected, Name: name));
-            modelBytes += ModelItemOverheadBytes + selectedBytes;
+            _outputs.Add(new DenoReplOutputItem("error", selected, Name: name));
+            _modelBytes += ModelItemOverheadBytes + selectedBytes;
         }
         MarkOmitted(Math.Max(0, bytes - selectedBytes));
     }
 
     private bool TryReserveModelBytes(int contentBytes)
     {
-        if (contentBytes > options.MaxModelOutputBytes - modelBytes - ModelItemOverheadBytes) return false;
-        modelBytes += ModelItemOverheadBytes + contentBytes;
+        if (contentBytes > _options.MaxModelOutputBytes - _modelBytes - ModelItemOverheadBytes) return false;
+        _modelBytes += ModelItemOverheadBytes + contentBytes;
         return true;
     }
 
     private void MarkOmitted(int bytes)
     {
-        truncated = true;
-        omittedBytes = checked(omittedBytes + bytes);
+        _truncated = true;
+        _omittedBytes = checked(_omittedBytes + bytes);
     }
 
     internal static int CountJsonBytes(IReadOnlyDictionary<string, JsonElement> values)

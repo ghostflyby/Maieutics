@@ -27,7 +27,7 @@ internal sealed partial class ReplControlHost
             return;
         }
 
-        var provider = resources!.Resolve(parsed);
+        var provider = _resources!.Resolve(parsed);
         if (provider is null)
         {
             await WriteResourceErrorAsync(
@@ -80,7 +80,7 @@ internal sealed partial class ReplControlHost
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Resource read for '{Uri}' via provider {ProviderId} failed.",
                 uri,

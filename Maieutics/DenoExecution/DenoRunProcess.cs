@@ -24,15 +24,15 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     /// <see cref="Start"/>; layered shutdown paths compose their own total budget on top.</summary>
     internal static readonly TimeSpan DefaultStopBudget = TimeSpan.FromSeconds(10);
 
-    private readonly Lock gate = new();
-    private readonly Process process;
-    private readonly string processDescription;
-    private readonly int processId;
-    private readonly ILogger logger;
-    private readonly TimeSpan stopBudget;
-    private readonly TaskCompletionSource<string>? standardError;
-    private int exitCode = int.MinValue;
-    private Task? stopping;
+    private readonly Lock _gate = new();
+    private readonly Process _process;
+    private readonly string _processDescription;
+    private readonly int _processId;
+    private readonly ILogger _logger;
+    private readonly TimeSpan _stopBudget;
+    private readonly TaskCompletionSource<string>? _standardError;
+    private int _exitCode = int.MinValue;
+    private Task? _stopping;
 
     private DenoRunProcess(
         Process process,
@@ -43,12 +43,12 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         DenoPermissionBroker? broker,
         ChildSlotLease slot)
     {
-        this.process = process;
-        this.logger = logger;
-        this.stopBudget = stopBudget;
-        processDescription = Describe(kind);
-        processId = process.Id;
-        this.standardError = standardError;
+        this._process = process;
+        this._logger = logger;
+        this._stopBudget = stopBudget;
+        _processDescription = Describe(kind);
+        _processId = process.Id;
+        this._standardError = standardError;
         var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", null);
         var stderrDrain = DrainAsync(process.StandardError, "stderr", standardError);
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
@@ -84,14 +84,14 @@ internal sealed class DenoRunProcess : IAsyncDisposable
                     var registration = (PolicyRegistration)state!;
                     registration.Broker.UnregisterProcess(registration.ProcessId);
                 },
-                new PolicyRegistration(broker, processId),
+                new PolicyRegistration(broker, _processId),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
     }
 
-    internal int ProcessId => processId;
+    internal int ProcessId => _processId;
 
     /// <summary>What a child's completion must retire from the permission broker: the policy
     /// registration is keyed by pid, so it has to leave with the process that owns it.</summary>
@@ -103,14 +103,14 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     {
         get
         {
-            var value = Volatile.Read(ref exitCode);
+            var value = Volatile.Read(ref _exitCode);
             return value == int.MinValue ? null : value;
         }
     }
 
     /// <summary>Captured stderr text (bounded to 32 KiB), or null when the caller did not request
     /// capture. The task completes when the stderr drain reaches EOF.</summary>
-    internal Task<string>? StandardError => standardError?.Task;
+    internal Task<string>? StandardError => _standardError?.Task;
 
     public ValueTask DisposeAsync()
     {
@@ -156,9 +156,9 @@ internal sealed class DenoRunProcess : IAsyncDisposable
 
     internal Task StopAsync()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return stopping ??= StopCoreAsync();
+            return _stopping ??= StopCoreAsync();
         }
     }
 
@@ -167,7 +167,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         await Task.Yield();
         try
         {
-            if (!Completion.IsCompleted && !process.HasExited) process.Kill(true);
+            if (!Completion.IsCompleted && !_process.HasExited) _process.Kill(true);
         }
         catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {
@@ -180,7 +180,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
             // exit/drain observation. A re-parented grandchild holding an inherited stdout pipe
             // keeps the drain open forever; without the bound every StopAsync caller (plugin host
             // stop, REPL shutdown, session factory, DisposeAsync) would block indefinitely.
-            await Completion.WaitAsync(stopBudget).ConfigureAwait(false);
+            await Completion.WaitAsync(_stopBudget).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -193,18 +193,18 @@ internal sealed class DenoRunProcess : IAsyncDisposable
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted,
                 TaskScheduler.Default);
-            logger.LogWarning(
+            _logger.LogWarning(
                 "{ProcessDescription} {ProcessId} did not drain within {Budget}; abandoning its completion.",
-                processDescription,
-                processId,
-                stopBudget);
+                _processDescription,
+                _processId,
+                _stopBudget);
         }
         catch
         {
             // Exit observation must not mask shutdown.
         }
 
-        process.Dispose();
+        _process.Dispose();
     }
 
     /// <summary>Drains one child stream, emitting each output line at Debug under the
@@ -219,7 +219,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         TaskCompletionSource<string>? capturedOutput)
     {
         var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
-        var loggingEnabled = logger.IsEnabled(LogLevel.Debug);
+        var loggingEnabled = _logger.IsEnabled(LogLevel.Debug);
         var remainingLogBudget = loggingEnabled ? MaximumLoggedCharactersPerStream : 0;
         var pendingLine = loggingEnabled ? new StringBuilder() : null;
         var truncatedLogged = false;
@@ -229,10 +229,10 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         {
             if (line.Length == 0) return;
 
-            logger.LogDebug(
+            _logger.LogDebug(
                 "{ProcessDescription} {ProcessId} {StreamName}: {Line}",
-                processDescription,
-                processId,
+                _processDescription,
+                _processId,
                 streamName,
                 line.ToString());
             line.Clear();
@@ -297,11 +297,11 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {
-            logger.LogDebug(
+            _logger.LogDebug(
                 exception,
                 "{ProcessDescription} {ProcessId} {StreamName} drain ended before EOF.",
-                processDescription,
-                processId,
+                _processDescription,
+                _processId,
                 streamName);
         }
         finally
@@ -313,23 +313,23 @@ internal sealed class DenoRunProcess : IAsyncDisposable
 
     private void LogStreamSummary(string streamName, bool truncated)
     {
-        if (!logger.IsEnabled(LogLevel.Debug)) return;
+        if (!_logger.IsEnabled(LogLevel.Debug)) return;
 
-        logger.LogDebug(
+        _logger.LogDebug(
             truncated
                 ? "{ProcessDescription} {ProcessId} {StreamName} logging was truncated after {CharacterLimit} characters; remaining output is still drained."
                 : "{ProcessDescription} {ProcessId} {StreamName} drain completed.",
-            processDescription,
-            processId,
+            _processDescription,
+            _processId,
             streamName,
             MaximumLoggedCharactersPerStream);
     }
 
     private async Task ObserveCompletionAsync(Task stdoutDrain, Task stderrDrain)
     {
-        await process.WaitForExitAsync().ConfigureAwait(false);
+        await _process.WaitForExitAsync().ConfigureAwait(false);
         await Task.WhenAll(stdoutDrain, stderrDrain).ConfigureAwait(false);
-        Volatile.Write(ref exitCode, process.ExitCode);
+        Volatile.Write(ref _exitCode, _process.ExitCode);
     }
 
     private static string Describe(InternalDenoProcessKind kind)

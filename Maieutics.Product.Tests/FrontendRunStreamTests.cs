@@ -454,16 +454,16 @@ public sealed class FrontendRunStreamTests
     {
         // The pump thread appends while the test thread asserts; a plain list would
         // both tear enumerations and race the settlement records into the snapshot.
-        private readonly Lock gate = new();
-        private List<(LogLevel Level, string Message, Exception? Exception)> records = [];
+        private readonly Lock _gate = new();
+        private List<(LogLevel Level, string Message, Exception? Exception)> _records = [];
 
         public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Records
         {
             get
             {
-                lock (gate)
+                lock (_gate)
                 {
-                    return records.ToArray();
+                    return _records.ToArray();
                 }
             }
         }
@@ -480,9 +480,9 @@ public sealed class FrontendRunStreamTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            lock (gate)
+            lock (_gate)
             {
-                records.Add((logLevel, formatter(state, exception), exception));
+                _records.Add((logLevel, formatter(state, exception), exception));
             }
         }
     }
@@ -517,31 +517,31 @@ public sealed class FrontendRunStreamTests
     /// producer parked in the bounded events channel — never on its own after a fault.</summary>
     private sealed class ScriptedRun : IAgentRun
     {
-        private readonly Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events;
+        private readonly Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> _events;
 
-        private readonly TaskCompletionSource<AgentRunResult> completion =
+        private readonly TaskCompletionSource<AgentRunResult> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int cancelCount;
-        private int disposeCount;
+        private readonly TaskCompletionSource _hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _cancelCount;
+        private int _disposeCount;
 
-        private ScriptedRun(Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events) => this.events = events;
+        private ScriptedRun(Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events) => this._events = events;
 
         public AgentRunId Id { get; } = AgentRunId.Create();
 
         public AgentSessionId SessionId { get; } = AgentSessionId.Create();
 
-        public IAsyncEnumerable<AgentEvent> Events => events(this);
+        public IAsyncEnumerable<AgentEvent> Events => _events(this);
 
-        public Task<AgentRunResult> Completion => completion.Task;
+        public Task<AgentRunResult> Completion => _completion.Task;
 
-        public int CancelCount => Volatile.Read(ref cancelCount);
+        public int CancelCount => Volatile.Read(ref _cancelCount);
 
-        public int DisposeCount => Volatile.Read(ref disposeCount);
+        public int DisposeCount => Volatile.Read(ref _disposeCount);
 
         /// <summary>Releases a run held mid-flight by <see cref="HeldDeltas" />.</summary>
-        public void Release() => hold.TrySetResult();
+        public void Release() => _hold.TrySetResult();
 
         /// <summary>A run streaming <paramref name="count" /> text deltas and completing.</summary>
         public static ScriptedRun Deltas(int count)
@@ -553,7 +553,7 @@ public sealed class FrontendRunStreamTests
         /// hold gate before completing, so tests can inspect mid-run replay state.</summary>
         public static ScriptedRun HeldDeltas(int count)
         {
-            return new ScriptedRun(run => Iterate(run, count, gate: run.hold, faultAfter: null));
+            return new ScriptedRun(run => Iterate(run, count, gate: run._hold, faultAfter: null));
         }
 
         /// <summary>A run that throws after <paramref name="count" /> deltas and never
@@ -573,16 +573,16 @@ public sealed class FrontendRunStreamTests
 
         public async Task CancelAsync(CancellationToken cancellationToken = default)
         {
-            Interlocked.Increment(ref cancelCount);
+            Interlocked.Increment(ref _cancelCount);
             // Mirrors the real run: cancellation unblocks the parked producer, whose
             // termination settles the completion task and releases the session's turn gate.
             await Task.Yield();
-            completion.TrySetResult(BuildResult());
+            _completion.TrySetResult(BuildResult());
         }
 
         public ValueTask DisposeAsync()
         {
-            Interlocked.Increment(ref disposeCount);
+            Interlocked.Increment(ref _disposeCount);
             return ValueTask.CompletedTask;
         }
 
@@ -611,7 +611,7 @@ public sealed class FrontendRunStreamTests
             }
 
             if (gate is not null) await gate.Task.ConfigureAwait(false);
-            run.completion.TrySetResult(run.BuildResult());
+            run._completion.TrySetResult(run.BuildResult());
         }
     }
 }

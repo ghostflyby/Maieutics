@@ -8,18 +8,18 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplOperationRegistry
 {
-    private readonly ConcurrentDictionary<string, CancellationTokenSource> operations = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _operations = new(StringComparer.Ordinal);
 
     public bool TryRegister(string correlationId, CancellationTokenSource operation)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(correlationId);
         ArgumentNullException.ThrowIfNull(operation);
-        return operations.TryAdd(correlationId, operation);
+        return _operations.TryAdd(correlationId, operation);
     }
 
     public bool TryCancel(string correlationId)
     {
-        if (!operations.TryGetValue(correlationId, out var operation)) return false;
+        if (!_operations.TryGetValue(correlationId, out var operation)) return false;
 
         operation.Cancel();
         return true;
@@ -27,6 +27,6 @@ internal sealed class ReplOperationRegistry
 
     public void Remove(string correlationId)
     {
-        operations.TryRemove(correlationId, out _);
+        _operations.TryRemove(correlationId, out _);
     }
 }

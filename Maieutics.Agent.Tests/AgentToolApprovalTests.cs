@@ -402,18 +402,18 @@ public sealed class AgentToolApprovalTests
     /// overrides <see cref="AIFunction.AdditionalProperties" /> the same way).</summary>
     private sealed class ClassifiedTool : DelegatingAIFunction
     {
-        private readonly AdditionalPropertiesDictionary properties;
+        private readonly AdditionalPropertiesDictionary _properties;
 
         internal ClassifiedTool(AIFunction inner, AgentToolClassification classification)
             : base(inner)
         {
-            properties = new AdditionalPropertiesDictionary
+            _properties = new AdditionalPropertiesDictionary
             {
                 [AgentToolClassification.PropertiesKey] = classification,
             };
         }
 
-        public override IReadOnlyDictionary<string, object?> AdditionalProperties => properties;
+        public override IReadOnlyDictionary<string, object?> AdditionalProperties => _properties;
     }
 
     private static AgentSession CreateSession(
@@ -465,7 +465,7 @@ public sealed class AgentToolApprovalTests
     /// <summary>Records every approval request and answers from the supplied function.</summary>
     private sealed class RecordingGate : IAgentToolApprovalGate
     {
-        private readonly Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> body;
+        private readonly Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> _body;
 
         internal RecordingGate(Func<AgentToolApprovalRequest, AgentToolApprovalDecision> body)
             : this((request, _) => ValueTask.FromResult(body(request)))
@@ -475,7 +475,7 @@ public sealed class AgentToolApprovalTests
         internal RecordingGate(
             Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> body)
         {
-            this.body = body;
+            this._body = body;
         }
 
         internal List<AgentToolApprovalRequest> Requests { get; } = [];
@@ -485,7 +485,7 @@ public sealed class AgentToolApprovalTests
             CancellationToken cancellationToken)
         {
             Requests.Add(request);
-            return body(request, cancellationToken);
+            return _body(request, cancellationToken);
         }
     }
 }

@@ -948,7 +948,7 @@ public sealed class AgentSubagentTests
 
     private sealed class EventCollector : IAgentSubagentEventSink, IAgentSubagentLifecycleSink
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public List<(AgentSessionId SessionId, AgentEvent Event)> Events { get; } = [];
 
@@ -973,7 +973,7 @@ public sealed class AgentSubagentTests
             AgentEvent agentEvent,
             CancellationToken cancellationToken)
         {
-            lock (gate)
+            lock (_gate)
             {
                 Events.Add((childSessionId, agentEvent));
                 if (Events.Count >= FailAfter)
@@ -1002,7 +1002,7 @@ public sealed class AgentSubagentTests
 
     private sealed class OrderedLifecycleSink : IAgentSubagentEventSink, IAgentSubagentLifecycleSink
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public List<string> Order { get; } = [];
 
@@ -1011,14 +1011,14 @@ public sealed class AgentSubagentTests
         public TaskCompletionSource Settled { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private bool seenEvent;
+        private bool _seenEvent;
 
         public ValueTask OnSubagentStartedAsync(
             AgentSessionId childSessionId,
             AgentRunId childRunId,
             CancellationToken cancellationToken)
         {
-            lock (gate)
+            lock (_gate)
             {
                 Order.Add("started");
             }
@@ -1031,11 +1031,11 @@ public sealed class AgentSubagentTests
             AgentEvent agentEvent,
             CancellationToken cancellationToken)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (!seenEvent)
+                if (!_seenEvent)
                 {
-                    seenEvent = true;
+                    _seenEvent = true;
                     Order.Add("event");
                 }
             }
@@ -1049,7 +1049,7 @@ public sealed class AgentSubagentTests
             AgentSubagentStatus status,
             CancellationToken cancellationToken)
         {
-            lock (gate)
+            lock (_gate)
             {
                 Order.Add("settled");
                 SettledStatus = status;

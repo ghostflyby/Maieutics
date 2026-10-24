@@ -34,7 +34,7 @@ public readonly record struct AgentToolCallId
 /// <summary>Provides invocation identity and progress reporting to an Agent tool.</summary>
 public sealed class AgentToolContext
 {
-    private readonly Func<AIContent, CancellationToken, ValueTask> reportProgress;
+    private readonly Func<AIContent, CancellationToken, ValueTask> _reportProgress;
 
     internal AgentToolContext(
         AgentSessionId sessionId,
@@ -45,7 +45,7 @@ public sealed class AgentToolContext
         SessionId = sessionId;
         RunId = runId;
         CallId = callId;
-        this.reportProgress = reportProgress;
+        this._reportProgress = reportProgress;
     }
 
     /// <summary>Gets the owning session identifier.</summary>
@@ -81,7 +81,7 @@ public sealed class AgentToolContext
     {
         ArgumentNullException.ThrowIfNull(content);
         AgentToolContent.Validate(content);
-        return reportProgress(content, cancellationToken);
+        return _reportProgress(content, cancellationToken);
     }
 }
 

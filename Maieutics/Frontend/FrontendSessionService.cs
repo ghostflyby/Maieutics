@@ -31,18 +31,18 @@ internal sealed class FrontendFailureException(string code, string message) : Ex
 /// </summary>
 internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 {
-    private readonly MaieuticsCommandExecutor commandExecutor;
-    private readonly FrontendDenoReplPresentationRouter presentationRouter;
-    private readonly FrontendRunRegistry registry = new();
-    private readonly MaieuticsAgentSessionManager sessionManager;
-    private readonly MaieuticsStatusProvider? statusProvider;
-    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
-    private readonly Func<string?>? workspaceRootAccessor;
-    private readonly SubagentEventBuffer? subagentEvents;
-    private readonly SkillCatalog? skillCatalog;
-    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;
-    private readonly ILogger logger;
-    private readonly ConcurrentDictionary<string, SessionRunHub> hubs = new(StringComparer.Ordinal);
+    private readonly MaieuticsCommandExecutor _commandExecutor;
+    private readonly FrontendDenoReplPresentationRouter _presentationRouter;
+    private readonly FrontendRunRegistry _registry = new();
+    private readonly MaieuticsAgentSessionManager _sessionManager;
+    private readonly MaieuticsStatusProvider? _statusProvider;
+    private readonly IMaieuticsRuntimeConfiguration? _runtimeConfiguration;
+    private readonly Func<string?>? _workspaceRootAccessor;
+    private readonly SubagentEventBuffer? _subagentEvents;
+    private readonly SkillCatalog? _skillCatalog;
+    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? _promptServersAccessor;
+    private readonly ILogger _logger;
+    private readonly ConcurrentDictionary<string, SessionRunHub> _hubs = new(StringComparer.Ordinal);
 
     public FrontendSessionService(
         MaieuticsAgentSessionManager sessionManager,
@@ -56,16 +56,16 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         SkillCatalog? skillCatalog = null,
         Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null)
     {
-        this.sessionManager = sessionManager;
-        this.commandExecutor = commandExecutor;
-        this.presentationRouter = presentationRouter;
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.runtimeConfiguration = runtimeConfiguration;
-        this.statusProvider = statusProvider;
-        this.workspaceRootAccessor = workspaceRootAccessor;
-        this.subagentEvents = subagentEvents;
-        this.skillCatalog = skillCatalog;
-        this.promptServersAccessor = promptServersAccessor;
+        this._sessionManager = sessionManager;
+        this._commandExecutor = commandExecutor;
+        this._presentationRouter = presentationRouter;
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this._runtimeConfiguration = runtimeConfiguration;
+        this._statusProvider = statusProvider;
+        this._workspaceRootAccessor = workspaceRootAccessor;
+        this._subagentEvents = subagentEvents;
+        this._skillCatalog = skillCatalog;
+        this._promptServersAccessor = promptServersAccessor;
     }
 
     /// <summary>Executes a Maieutics command cell and returns its markdown answer plus
@@ -77,7 +77,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         AgentSessionId? session,
         CancellationToken cancellationToken)
     {
-        var answer = await commandExecutor.ExecuteAsync(text, session, cancellationToken).ConfigureAwait(false);
+        var answer = await _commandExecutor.ExecuteAsync(text, session, cancellationToken).ConfigureAwait(false);
         return (answer.Markdown, answer.MovedForeground);
     }
 
@@ -85,45 +85,45 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// <exception cref="FrontendFailureException">The status provider is unavailable.</exception>
     public string CaptureStatusMarkdown()
     {
-        if (statusProvider is null)
+        if (_statusProvider is null)
             throw new FrontendFailureException(
                 FrontendErrors.CommandError, "Status is not available in this host.");
 
-        return MaieuticsStatusRenderer.Render(statusProvider.Capture());
+        return MaieuticsStatusRenderer.Render(_statusProvider.Capture());
     }
 
     /// <summary>Computes command completions for a UTF-16 cursor.</summary>
     /// <exception cref="FrontendFailureException">The model configuration is unavailable.</exception>
     public FrontendCompleteResponse Complete(FrontendCompleteRequest request)
     {
-        if (runtimeConfiguration is null)
+        if (_runtimeConfiguration is null)
             throw new FrontendFailureException(
                 FrontendErrors.CommandError, "Completion is not available in this host.");
 
         var completion = MaieuticsCommandLanguage.Complete(
             request.Text,
             request.Cursor,
-            runtimeConfiguration.GetModelProfileSelection().Profiles,
-            runtimeConfiguration.GetCachedAutomaticModelProfiles(),
-            runtimeConfiguration.GetModelSourceIds());
+            _runtimeConfiguration.GetModelProfileSelection().Profiles,
+            _runtimeConfiguration.GetCachedAutomaticModelProfiles(),
+            _runtimeConfiguration.GetModelSourceIds());
         return new FrontendCompleteResponse(completion.Matches, completion.TokenStart, completion.TokenEnd);
     }
 
     /// <summary>Gets the process workspace root for capabilities; the accessor is live so a
     /// <c>%workspace use</c> switch is reflected without a restart.</summary>
-    public string? WorkspaceRoot => workspaceRootAccessor?.Invoke();
+    public string? WorkspaceRoot => _workspaceRootAccessor?.Invoke();
 
     /// <summary>Gets the foreground session's wire description — the compatibility alias
     /// behind <c>GET /v1/agent/session</c> and the capabilities payload. Identity and turn
     /// count are read atomically; the title lookup follows the captured identity.</summary>
     public FrontendSessionInfo DescribeSession()
     {
-        var (id, turns) = sessionManager.ForegroundInfo;
+        var (id, turns) = _sessionManager.ForegroundInfo;
         return new FrontendSessionInfo(
             id.Value.ToString("N"),
             turns,
-            sessionManager.PersistenceEnabled,
-            sessionManager.FindDescriptor(id)?.Title);
+            _sessionManager.PersistenceEnabled,
+            _sessionManager.FindDescriptor(id)?.Title);
     }
 
     /// <summary>Whether one session has a stored row, without mutating the live set
@@ -131,7 +131,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     public bool SessionExists(string sessionId)
     {
         var id = ParseSessionId(sessionId);
-        return sessionManager.FindDescriptor(id) is not null || sessionManager.IsLive(id);
+        return _sessionManager.FindDescriptor(id) is not null || _sessionManager.IsLive(id);
     }
 
     /// <summary>Gets one session's wire description, resolving it lazily when it is stored
@@ -140,11 +140,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     public FrontendSessionInfo DescribeSession(string sessionId)
     {
         var session = ResolveSession(sessionId);
-        var descriptor = sessionManager.FindDescriptor(session.Id);
+        var descriptor = _sessionManager.FindDescriptor(session.Id);
         return new FrontendSessionInfo(
             session.Id.Value.ToString("N"),
             session.GetTranscriptSnapshot().Turns.Length,
-            sessionManager.PersistenceEnabled,
+            _sessionManager.PersistenceEnabled,
             descriptor?.Title);
     }
 
@@ -155,7 +155,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var id = ParseSessionId(sessionId);
         try
         {
-            return sessionManager.Resolve(id);
+            return _sessionManager.Resolve(id);
         }
         catch (AgentSessionNotFoundException)
         {
@@ -171,7 +171,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// <summary>Lists stored sessions across family databases.</summary>
     public IReadOnlyList<FrontendStoredSession> ListStoredSessions()
     {
-        return sessionManager.ListStoredSessions()
+        return _sessionManager.ListStoredSessions()
             .Select(session => new FrontendStoredSession(
                 session.Id.Value.ToString("N"),
                 session.TurnCount,
@@ -195,7 +195,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         string? stored;
         try
         {
-            stored = sessionManager.SetTitle(id, title);
+            stored = _sessionManager.SetTitle(id, title);
         }
         catch (ArgumentException exception)
         {
@@ -209,7 +209,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// description is always the created session, even under concurrent switches.</summary>
     public FrontendSessionInfo StartNew()
     {
-        var id = sessionManager.StartNew();
+        var id = _sessionManager.StartNew();
         return DescribeSession(id.Value.ToString("N"));
     }
 
@@ -234,11 +234,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         string? profileId = null;
         if (request.ProfileId is { } requestedProfile)
         {
-            if (runtimeConfiguration is null)
+            if (_runtimeConfiguration is null)
                 throw new FrontendFailureException(
                     FrontendErrors.InvalidRequest, "Model profile selection is not available in this host.");
 
-            var selection = runtimeConfiguration.GetModelProfileSelection();
+            var selection = _runtimeConfiguration.GetModelProfileSelection();
             var match = selection.Profiles.FirstOrDefault(profile =>
                 string.Equals(profile.Id, requestedProfile, StringComparison.OrdinalIgnoreCase));
             if (match is null)
@@ -251,15 +251,15 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var forkPointSeq = ResolveForkPointSeq(id, request);
         try
         {
-            var forkId = sessionManager.Fork(id, forkPointSeq);
+            var forkId = _sessionManager.Fork(id, forkPointSeq);
             if (profileId is { } appliedProfile)
             {
                 // The override is the fork's own, not the process selection: the
                 // source session keeps answering on its profile.
-                sessionManager.SetProfileOverride(forkId, appliedProfile);
+                _sessionManager.SetProfileOverride(forkId, appliedProfile);
             }
 
-            var title = sessionManager.FindDescriptor(forkId)?.Title;
+            var title = _sessionManager.FindDescriptor(forkId)?.Title;
             return new FrontendForkResponse(forkId.Value.ToString("N"), title);
         }
         catch (AgentSessionNotFoundException)
@@ -282,11 +282,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// <exception cref="FrontendFailureException">The model configuration is unavailable.</exception>
     public IReadOnlyList<FrontendModelProfile> ListModelProfiles()
     {
-        if (runtimeConfiguration is null)
+        if (_runtimeConfiguration is null)
             throw new FrontendFailureException(
                 FrontendErrors.CommandError, "Model profiles are not available in this host.");
 
-        return runtimeConfiguration.GetModelProfileSelection()
+        return _runtimeConfiguration.GetModelProfileSelection()
             .Profiles
             .Select(profile => new FrontendModelProfile(
                 profile.Id, profile.Provider, profile.Model, profile.IsSelected))
@@ -305,7 +305,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             throw new FrontendFailureException(
                 FrontendErrors.InvalidRequest, "The fork request must carry a runId or a seq.");
 
-        var transcript = sessionManager.LoadStoredTranscript(id);
+        var transcript = _sessionManager.LoadStoredTranscript(id);
         if (transcript is null)
             throw new FrontendFailureException(
                 FrontendErrors.NotFound, $"No stored session matches '{id.Value.ToString("N")}'.");
@@ -328,7 +328,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var id = ParseSessionId(sessionId);
         try
         {
-            sessionManager.Resume(id);
+            _sessionManager.Resume(id);
         }
         catch (AgentSessionNotFoundException)
         {
@@ -349,7 +349,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         ResolveSession(sessionId);
         try
         {
-            return sessionManager.PruneObjects(TimeSpan.FromHours(graceHours));
+            return _sessionManager.PruneObjects(TimeSpan.FromHours(graceHours));
         }
         catch (ArgumentException exception)
         {
@@ -363,7 +363,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         ResolveSession(sessionId);
         try
         {
-            return sessionManager.RepairObjectView();
+            return _sessionManager.RepairObjectView();
         }
         catch (ArgumentException exception)
         {
@@ -412,7 +412,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             // "direct turns are never queued" rejection (invariant 4) and shares its
             // agent_busy code with the still-settling path below, which is a different cause
             // with a different remedy; name which one this is.
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Rejected a direct turn for session {SessionId}: another run holds the single-run gate ({Code}).",
                 sessionId,
                 FrontendErrors.Busy);
@@ -421,7 +421,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         catch (AgentException exception)
         {
             var code = FrontendErrors.MapAgentException(exception);
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Rejected a direct turn for session {SessionId} with agent code {Code}.",
                 sessionId,
@@ -429,11 +429,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             throw new FrontendFailureException(code, exception.Message);
         }
 
-        var stream = FrontendRunStream.Create(session.Id, run, presentationRouter, logger);
+        var stream = FrontendRunStream.Create(session.Id, run, _presentationRouter, _logger);
         FrontendDenoReplPresentationRouter.FrontendPresentationScope scope;
         try
         {
-            scope = presentationRouter.Attach(session.Id, stream);
+            scope = _presentationRouter.Attach(session.Id, stream);
         }
         catch (InvalidOperationException exception)
         {
@@ -442,7 +442,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             // the session's single-run gate and commit its turn with no stream serving
             // it, so fail it (a cancelled run commits nothing) and answer the typed busy
             // code — the submission is recoverable once the settle completes.
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Session {SessionId} rejected run {RunId} as {Code}: the previous run's presentation scope was still attached, so the newly started run was cancelled unwired (it commits nothing).",
                 sessionId,
@@ -455,11 +455,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         }
 
         stream.Start(scope);
-        registry.Add(stream);
+        _registry.Add(stream);
         // Child runs spawned by this run forward their frames into the stream while it is
         // current; children cannot outlive it (join-before-complete), so no detach is needed
         // — the next run re-attaches the tap to its own stream.
-        subagentEvents?.Attach(stream);
+        _subagentEvents?.Attach(stream);
 
         HubFor(session.Id).Announce(stream);
         return new FrontendTurnAccepted(run.Id.Value.ToString("N"));
@@ -481,7 +481,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     {
         ArgumentNullException.ThrowIfNull(content);
         ResolveSession(sessionId);
-        if (sessionManager.IngestObject(content) is not { } descriptor)
+        if (_sessionManager.IngestObject(content) is not { } descriptor)
             throw new FrontendFailureException(
                 FrontendErrors.ConfigurationError,
                 "The object store is not enabled in this host; attachments are unavailable.");
@@ -512,7 +512,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         foreach (var marker in attachmentSplit.Markers)
         {
             if (described.ContainsKey(marker.Sha256)) continue;
-            if (sessionManager.DescribeObject(marker.Sha256) is not { } descriptor)
+            if (_sessionManager.DescribeObject(marker.Sha256) is not { } descriptor)
                 throw new FrontendFailureException(
                     FrontendErrors.NotFound,
                     $"The object referenced by the attachment marker '{marker.Sha256}' is not in the store (pruned or never ingested).");
@@ -531,7 +531,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         }
 
         var budgetRemaining = FrontendSkillExpansion.MaximumTurnSkillBytes;
-        if (skillCatalog is { } catalog)
+        if (_skillCatalog is { } catalog)
         {
             var skillParts = await FrontendSkillExpansion.ExpandAsync(
                 new SkillResourceProvider(catalog),
@@ -554,7 +554,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
         if (promptSplit.Markers.Count > 0)
         {
-            var promptServers = promptServersAccessor?.Invoke() ?? [];
+            var promptServers = _promptServersAccessor?.Invoke() ?? [];
             if (promptServers.Count == 0)
             {
                 throw new FrontendFailureException(
@@ -591,7 +591,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             // teardown must not mask the caller's original failure. It must not vanish
             // either: if the gate is not actually released, every retry keeps answering
             // agent_busy and the cause is otherwise invisible.
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Cancelling unwired run {RunId} did not settle; the session's turn gate may stay held.",
                 run.Id);
@@ -604,7 +604,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         catch (Exception exception)
         {
             // Same: disposal observation must not mask the caller's original failure.
-            logger.LogWarning(exception, "Disposing unwired run {RunId} failed.", run.Id);
+            _logger.LogWarning(exception, "Disposing unwired run {RunId} failed.", run.Id);
         }
     }
 
@@ -614,7 +614,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         stream = null;
         if (!Guid.TryParseExact(runId, "N", out var parsed)) return false;
 
-        return registry.TryGet(new AgentRunId(parsed), out stream);
+        return _registry.TryGet(new AgentRunId(parsed), out stream);
     }
 
     /// <summary>Gets the session's most recently announced run stream without waiting, so
@@ -633,7 +633,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// announced by an <c>input.request</c> frame.</summary>
     public bool TryCompleteInput(string requestId, string value)
     {
-        return presentationRouter.TryCompleteInput(requestId, value);
+        return _presentationRouter.TryCompleteInput(requestId, value);
     }
 
     /// <inheritdoc />
@@ -671,11 +671,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         if (!Guid.TryParseExact(runId, "N", out var childRunValue))
             throw new FrontendFailureException(FrontendErrors.NotFound, $"No retained run matches '{runId}'.");
         var childRunId = new AgentRunId(childRunValue);
-        var childSessionId = subagentEvents?.TryGetParentSession(childRunId, out var mapped)
+        var childSessionId = _subagentEvents?.TryGetParentSession(childRunId, out var mapped)
             is true
             ? mapped
-            : sessionManager.Id;
-        if (sessionManager.Resolve(childSessionId) is not AgentSession session ||
+            : _sessionManager.Id;
+        if (_sessionManager.Resolve(childSessionId) is not AgentSession session ||
             session.SubagentHost.FindChild(childRunId) is not { } child)
             throw new FrontendFailureException(FrontendErrors.NotFound, $"No retained run matches '{runId}'.");
 
@@ -694,7 +694,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// requests are observed by the runs rather than awaited by the caller.</summary>
     internal void BeginShutdown()
     {
-        registry.BeginShutdown();
+        _registry.BeginShutdown();
     }
 
     /// <summary>
@@ -720,7 +720,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
     private SessionRunHub HubFor(AgentSessionId sessionId)
     {
-        return hubs.GetOrAdd(sessionId.Value.ToString("N"), static _ => new SessionRunHub());
+        return _hubs.GetOrAdd(sessionId.Value.ToString("N"), static _ => new SessionRunHub());
     }
 
     /// <summary>One session's run announcements: the latest stream for immediate
@@ -730,9 +730,9 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     /// bound when no socket is listening.</summary>
     private sealed class SessionRunHub
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
-        private readonly Channel<FrontendRunStream> announcements =
+        private readonly Channel<FrontendRunStream> _announcements =
             Channel.CreateBounded<FrontendRunStream>(new BoundedChannelOptions(8)
             {
                 SingleReader = false,
@@ -740,39 +740,39 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
                 FullMode = BoundedChannelFullMode.DropOldest
             });
 
-        private FrontendRunStream? latest;
+        private FrontendRunStream? _latest;
 
         public FrontendRunStream? Latest
         {
             get
             {
-                lock (gate)
+                lock (_gate)
                 {
-                    return latest;
+                    return _latest;
                 }
             }
         }
 
         public void Announce(FrontendRunStream stream)
         {
-            lock (gate)
+            lock (_gate)
             {
-                latest = stream;
+                _latest = stream;
             }
 
-            announcements.Writer.TryWrite(stream);
+            _announcements.Writer.TryWrite(stream);
         }
 
         /// <summary>Drops every buffered announcement, so a waiter that takes
         /// <see cref="Latest" /> directly does not observe superseded streams.</summary>
         public void Drain()
         {
-            while (announcements.Reader.TryRead(out _)) { }
+            while (_announcements.Reader.TryRead(out _)) { }
         }
 
         public async Task<FrontendRunStream> ReadAsync(CancellationToken cancellationToken)
         {
-            var stream = await announcements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var stream = await _announcements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
             Drain();
             return stream;
         }
@@ -788,8 +788,8 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
 
     private void ValidateTurnConfiguration()
     {
-        if (runtimeConfiguration is not null &&
-            runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
+        if (_runtimeConfiguration is not null &&
+            _runtimeConfiguration.GetModelProfileSelection().Profiles.Count == 0)
             throw new FrontendFailureException(
                 FrontendErrors.ConfigurationError,
                 "No model profile is configured. Configure a model before submitting an Agent turn.");

@@ -6,7 +6,7 @@ namespace Maieutics.Product.Tests;
 /// formatting, exception rendering, append semantics, and single-shot disposal.</summary>
 public sealed class FileLoggingTests : IAsyncDisposable
 {
-    private readonly string logDirectory = Path.Combine(
+    private readonly string _logDirectory = Path.Combine(
         Path.GetTempPath(),
         "maieutics-file-logging-tests",
         Guid.NewGuid().ToString("N"));
@@ -17,23 +17,23 @@ public sealed class FileLoggingTests : IAsyncDisposable
     {
         try
         {
-            await TempArea.DeleteAsync(logDirectory, CancellationToken.None);
+            await TempArea.DeleteAsync(_logDirectory, CancellationToken.None);
         }
         catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
         {
         }
     }
 
-    private string LogFilePath => Path.Combine(logDirectory, $"maieutics-{Environment.ProcessId}.log");
+    private string LogFilePath => Path.Combine(_logDirectory, $"maieutics-{Environment.ProcessId}.log");
 
     [Fact]
     public void CreatingTheProviderCreatesTheLogDirectory()
     {
-        Assert.False(Directory.Exists(logDirectory));
+        Assert.False(Directory.Exists(_logDirectory));
 
-        using var provider = new FileLoggerProvider(logDirectory);
+        using var provider = new FileLoggerProvider(_logDirectory);
 
-        Assert.True(Directory.Exists(logDirectory));
+        Assert.True(Directory.Exists(_logDirectory));
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class FileLoggingTests : IAsyncDisposable
     {
         // The mid-test Dispose is the point of the test (the provider holds the log file
         // exclusively), so the provider is owned explicitly instead of a using scope.
-        var provider = new FileLoggerProvider(logDirectory);
+        var provider = new FileLoggerProvider(_logDirectory);
         try
         {
             var first = provider.CreateLogger("Maieutics.Tests.First");
@@ -68,7 +68,7 @@ public sealed class FileLoggingTests : IAsyncDisposable
     {
         // The mid-test Dispose is the point of the test (the provider holds the log file
         // exclusively), so the provider is owned explicitly instead of a using scope.
-        var provider = new FileLoggerProvider(logDirectory);
+        var provider = new FileLoggerProvider(_logDirectory);
         try
         {
             var logger = provider.CreateLogger("Maieutics.Tests.Errors");
@@ -93,12 +93,12 @@ public sealed class FileLoggingTests : IAsyncDisposable
     [Fact]
     public void ASecondProviderOnTheSameDirectoryAppendsWithoutTruncating()
     {
-        using (var first = new FileLoggerProvider(logDirectory))
+        using (var first = new FileLoggerProvider(_logDirectory))
         {
             first.CreateLogger("Maieutics.Tests.Append").LogInformation("first write");
         }
 
-        using (var second = new FileLoggerProvider(logDirectory))
+        using (var second = new FileLoggerProvider(_logDirectory))
         {
             second.CreateLogger("Maieutics.Tests.Append").LogInformation("second write");
         }
@@ -112,7 +112,7 @@ public sealed class FileLoggingTests : IAsyncDisposable
     [Fact]
     public void DisposingTwiceIsIdempotent()
     {
-        var provider = new FileLoggerProvider(logDirectory);
+        var provider = new FileLoggerProvider(_logDirectory);
 
         provider.Dispose();
         provider.Dispose();

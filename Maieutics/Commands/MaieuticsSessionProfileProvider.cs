@@ -13,13 +13,13 @@ namespace Maieutics.Commands;
 /// </summary>
 internal sealed class MaieuticsSessionProfileProvider : IAgentRunProfileProvider
 {
-    private readonly IMaieuticsRuntimeConfiguration runtime;
-    private readonly Lock gate = new();
-    private string? overrideProfileId;
+    private readonly IMaieuticsRuntimeConfiguration _runtime;
+    private readonly Lock _gate = new();
+    private string? _overrideProfileId;
 
     public MaieuticsSessionProfileProvider(IMaieuticsRuntimeConfiguration runtime)
     {
-        this.runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        this._runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
     }
 
     /// <summary>Gets the session's current override, or <see langword="null" /> when the
@@ -28,9 +28,9 @@ internal sealed class MaieuticsSessionProfileProvider : IAgentRunProfileProvider
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return overrideProfileId;
+                return _overrideProfileId;
             }
         }
     }
@@ -38,27 +38,27 @@ internal sealed class MaieuticsSessionProfileProvider : IAgentRunProfileProvider
     /// <summary>Sets or clears the session's profile override (a configured profile id).</summary>
     public void SetOverride(string? profileId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            overrideProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId;
+            _overrideProfileId = string.IsNullOrWhiteSpace(profileId) ? null : profileId;
         }
     }
 
     public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
     {
         string? overrideId;
-        lock (gate)
+        lock (_gate)
         {
-            overrideId = overrideProfileId;
+            overrideId = _overrideProfileId;
         }
 
         if (overrideId is not null &&
-            await runtime.AcquireProfileAsync(overrideId, cancellationToken).ConfigureAwait(false)
+            await _runtime.AcquireProfileAsync(overrideId, cancellationToken).ConfigureAwait(false)
                 is { } overrideLease)
         {
             return overrideLease;
         }
 
-        return await runtime.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        return await _runtime.AcquireAsync(cancellationToken).ConfigureAwait(false);
     }
 }

@@ -141,29 +141,29 @@ internal sealed class McpServerGeneration
 
     private static readonly TimeSpan MaximumReconnectDelay = TimeSpan.FromSeconds(30);
 
-    private readonly McpServerDefinition definition;
-    private readonly Lock gate = new();
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger logger;
-    private readonly ILoggerFactory loggerFactory;
-    private readonly IReadOnlySet<string>? reservedToolNames;
-    private readonly List<Task> retiredConnections = [];
-    private readonly TimeProvider timeProvider;
-    private readonly McpClientTransportFactory transportFactory;
-    private readonly IMcpWorkspaceRootsSource? rootsSource;
-    private readonly McpElicitationCoordinator? elicitationCoordinator;
-    private readonly IMcpToolSurfaceAdjuster? toolSurfaceAdjuster;
-    private McpConnectionGeneration? current;
-    private TimeSpan? nextReconnectDelay;
-    private Task? retirement;
-    private Task supervisor = Task.CompletedTask;
+    private readonly McpServerDefinition _definition;
+    private readonly Lock _gate = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger _logger;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly IReadOnlySet<string>? _reservedToolNames;
+    private readonly List<Task> _retiredConnections = [];
+    private readonly TimeProvider _timeProvider;
+    private readonly McpClientTransportFactory _transportFactory;
+    private readonly IMcpWorkspaceRootsSource? _rootsSource;
+    private readonly McpElicitationCoordinator? _elicitationCoordinator;
+    private readonly IMcpToolSurfaceAdjuster? _toolSurfaceAdjuster;
+    private McpConnectionGeneration? _current;
+    private TimeSpan? _nextReconnectDelay;
+    private Task? _retirement;
+    private Task _supervisor = Task.CompletedTask;
 
     // Internal test observability: one refresh attempt of the live connection has finished
     // (applied, failed closed, or rejected). The counter is the waited fact; the source is
     // swapped per finished attempt so waiters wake without polling (same shape as
     // MaieuticsRuntimeConfiguration's reload signals).
-    private long refreshApplications;
-    private TaskCompletionSource refreshApplication = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _refreshApplications;
+    private TaskCompletionSource _refreshApplication = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // Internal test observability for virtual time: the reconnect wait is registered with the
     // injected time provider before ReconnectDelayRegistered completes, so advancing a fake
@@ -172,8 +172,8 @@ internal sealed class McpServerGeneration
     // replacement. Both completions and the properties' per-read swaps run under the gate,
     // so a reader either observes the completed task or hands the completer the fresh source;
     // a completed task is replaced on the next read (one await observes one occurrence).
-    private TaskCompletionSource reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private TaskCompletionSource reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes when the supervisor's reconnect wait
     /// has been registered with the time provider. Capture a read before disconnecting the
@@ -182,11 +182,11 @@ internal sealed class McpServerGeneration
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (reconnectDelayRegistered.Task.IsCompleted)
-                    reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                return reconnectDelayRegistered.Task;
+                if (_reconnectDelayRegistered.Task.IsCompleted)
+                    _reconnectDelayRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return _reconnectDelayRegistered.Task;
             }
         }
     }
@@ -199,11 +199,11 @@ internal sealed class McpServerGeneration
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (reconnected.Task.IsCompleted)
-                    reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                return reconnected.Task;
+                if (_reconnected.Task.IsCompleted)
+                    _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return _reconnected.Task;
             }
         }
     }
@@ -219,21 +219,21 @@ internal sealed class McpServerGeneration
         McpConnectionGeneration connection,
         IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
-        this.definition = definition;
-        this.loggerFactory = loggerFactory;
-        this.timeProvider = timeProvider;
-        this.transportFactory = transportFactory;
-        this.reservedToolNames = reservedToolNames;
-        this.rootsSource = rootsSource;
-        this.elicitationCoordinator = elicitationCoordinator;
-        logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
-        this.toolSurfaceAdjuster = toolSurfaceAdjuster;
-        current = connection;
+        this._definition = definition;
+        this._loggerFactory = loggerFactory;
+        this._timeProvider = timeProvider;
+        this._transportFactory = transportFactory;
+        this._reservedToolNames = reservedToolNames;
+        this._rootsSource = rootsSource;
+        this._elicitationCoordinator = elicitationCoordinator;
+        _logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
+        this._toolSurfaceAdjuster = toolSurfaceAdjuster;
+        _current = connection;
     }
 
-    internal string Id => definition.Id;
+    internal string Id => _definition.Id;
 
-    internal string GenerationKey => definition.GenerationKey;
+    internal string GenerationKey => _definition.GenerationKey;
 
     internal static async Task<McpServerGeneration> CreateAsync(
         McpServerDefinition definition,
@@ -280,35 +280,35 @@ internal sealed class McpServerGeneration
             coordinator,
             connection,
             toolSurfaceAdjuster);
-        generation.supervisor = generation.SuperviseAsync();
+        generation._supervisor = generation.SuperviseAsync();
         return generation;
     }
 
     internal McpServerLease? TryAcquire()
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (retirement is not null || current is null || current.Client.Completion.IsCompleted) return null;
+            if (_retirement is not null || _current is null || _current.Client.Completion.IsCompleted) return null;
 
-            return current.Acquire();
+            return _current.Acquire();
         }
     }
 
     internal MaieuticsMcpServerInfo GetInfo()
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (current is not { Client.Completion.IsCompleted: false } connection)
+            if (_current is not { Client.Completion.IsCompleted: false } connection)
                 return new MaieuticsMcpServerInfo(
-                    definition.Id,
-                    definition.Transport.Kind.ToString(),
+                    _definition.Id,
+                    _definition.Transport.Kind.ToString(),
                     MaieuticsMcpServerState.Reconnecting,
-                    nextReconnectDelay,
+                    _nextReconnectDelay,
                     []);
             var tools = connection.GetToolInfo();
             return new MaieuticsMcpServerInfo(
-                definition.Id,
-                definition.Transport.Kind.ToString(),
+                _definition.Id,
+                _definition.Transport.Kind.ToString(),
                 tools.Any(static tool => !tool.Available)
                     ? MaieuticsMcpServerState.Degraded
                     : MaieuticsMcpServerState.Connected,
@@ -321,9 +321,9 @@ internal sealed class McpServerGeneration
     /// when the server does not implement the resources capability.</summary>
     internal McpResourceCatalog GetResourceCatalog()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return current is { Client.Completion.IsCompleted: false } connection
+            return _current is { Client.Completion.IsCompleted: false } connection
                 ? connection.GetResourceCatalog()
                 : McpResourceCatalog.Empty;
         }
@@ -335,9 +335,9 @@ internal sealed class McpServerGeneration
     /// loss.</summary>
     internal McpPromptCatalog GetPromptCatalog()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return current is { Client.Completion.IsCompleted: false } connection
+            return _current is { Client.Completion.IsCompleted: false } connection
                 ? connection.GetPromptCatalog()
                 : McpPromptCatalog.Empty;
         }
@@ -355,12 +355,12 @@ internal sealed class McpServerGeneration
         CancellationToken cancellationToken)
     {
         McpConnectionGeneration connection;
-        lock (gate)
+        lock (_gate)
         {
-            if (current is not { Client.Completion.IsCompleted: false } live)
+            if (_current is not { Client.Completion.IsCompleted: false } live)
                 throw new ResourceException(
                     "mcp_prompt_unavailable",
-                    $"MCP server '{definition.Id}' is reconnecting; its prompts are temporarily unavailable.");
+                    $"MCP server '{_definition.Id}' is reconnecting; its prompts are temporarily unavailable.");
 
             connection = live;
         }
@@ -377,18 +377,18 @@ internal sealed class McpServerGeneration
         CancellationToken cancellationToken)
     {
         McpClient client;
-        lock (gate)
+        lock (_gate)
         {
-            if (current is not { Client.Completion.IsCompleted: false } connection)
+            if (_current is not { Client.Completion.IsCompleted: false } connection)
                 throw new ResourceException(
                     "resource_provider_unavailable",
-                    $"MCP server '{definition.Id}' is reconnecting; its resources are temporarily unavailable.");
+                    $"MCP server '{_definition.Id}' is reconnecting; its resources are temporarily unavailable.");
 
             client = connection.Client;
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(definition.RequestTimeout);
+        timeout.CancelAfter(_definition.RequestTimeout);
         var result = await client.ReadResourceAsync(
             new ReadResourceRequestParams { Uri = uri },
             timeout.Token).ConfigureAwait(false);
@@ -400,16 +400,16 @@ internal sealed class McpServerGeneration
     /// re-lists tools and applies the new projection.</summary>
     internal void RequestToolRefresh()
     {
-        lock (gate)
+        lock (_gate)
         {
-            current?.RequestToolRefresh();
+            _current?.RequestToolRefresh();
         }
     }
 
     /// <summary>How many refresh attempts of the live connection have finished — applied,
     /// failed closed, or rejected. Internal test observability: capture it before triggering a
     /// refresh and pass it to <see cref="WaitForToolRefreshApplicationAsync"/>.</summary>
-    internal long ToolRefreshApplications => Interlocked.Read(ref refreshApplications);
+    internal long ToolRefreshApplications => Interlocked.Read(ref _refreshApplications);
 
     /// <summary>Internal test observability: waits until at least one more live-connection
     /// refresh attempt has finished since <paramref name="afterApplications"/> — the same
@@ -426,11 +426,11 @@ internal sealed class McpServerGeneration
             cancellationToken.ThrowIfCancellationRequested();
 
             Task signal;
-            lock (gate)
+            lock (_gate)
             {
-                if (Interlocked.Read(ref refreshApplications) > afterApplications) return;
+                if (Interlocked.Read(ref _refreshApplications) > afterApplications) return;
 
-                signal = refreshApplication.Task;
+                signal = _refreshApplication.Task;
             }
 
             await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -443,11 +443,11 @@ internal sealed class McpServerGeneration
     private void RecordRefreshApplication()
     {
         TaskCompletionSource signal;
-        lock (gate)
+        lock (_gate)
         {
-            Interlocked.Increment(ref refreshApplications);
-            signal = refreshApplication;
-            refreshApplication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Interlocked.Increment(ref _refreshApplications);
+            signal = _refreshApplication;
+            _refreshApplication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         signal.TrySetResult();
@@ -457,15 +457,15 @@ internal sealed class McpServerGeneration
     {
         TaskCompletionSource? completion = null;
         Task result;
-        lock (gate)
+        lock (_gate)
         {
-            if (retirement is null)
+            if (_retirement is null)
             {
                 completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                retirement = completion.Task;
+                _retirement = completion.Task;
             }
 
-            result = retirement;
+            result = _retirement;
         }
 
         if (completion is not null) _ = CompleteRetirementAsync(completion);
@@ -488,43 +488,43 @@ internal sealed class McpServerGeneration
 
     private async Task RetireCoreAsync()
     {
-        await lifetime.CancelAsync().ConfigureAwait(false);
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {
-            await supervisor.ConfigureAwait(false);
+            await _supervisor.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
 
         McpConnectionGeneration? connection;
         Task[] retired;
-        lock (gate)
+        lock (_gate)
         {
-            connection = current;
-            current = null;
-            retired = retiredConnections.ToArray();
+            connection = _current;
+            _current = null;
+            retired = _retiredConnections.ToArray();
         }
 
         var currentRetirement = connection?.Retire() ?? Task.CompletedTask;
         await Task.WhenAll(retired.Append(currentRetirement)).ConfigureAwait(false);
-        lifetime.Dispose();
+        _lifetime.Dispose();
     }
 
     private async Task SuperviseAsync()
     {
         var reconnectDelay = InitialReconnectDelay;
-        while (!lifetime.IsCancellationRequested)
+        while (!_lifetime.IsCancellationRequested)
         {
             McpConnectionGeneration? connection;
-            lock (gate)
+            lock (_gate)
             {
-                connection = current;
+                connection = _current;
             }
 
             if (connection is not null)
             {
-                using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 var refreshWait = connection.WaitForRefreshAsync(refreshCancellation.Token).AsTask();
                 var completed = await Task.WhenAny(connection.Client.Completion, refreshWait).ConfigureAwait(false);
                 if (completed == refreshWait)
@@ -534,18 +534,18 @@ internal sealed class McpServerGeneration
                     connection.DrainRefreshSignals();
                     try
                     {
-                        await connection.RefreshToolsAsync(lifetime.Token)
+                        await connection.RefreshToolsAsync(_lifetime.Token)
                             .ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                    catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                     {
                         break;
                     }
                     catch (Exception exception)
                     {
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             "MCP server {ServerId} rejected a tool-list refresh ({FailureType}); the previous tool list remains active.",
-                            definition.Id,
+                            _definition.Id,
                             exception.GetType().Name);
                     }
 
@@ -565,24 +565,24 @@ internal sealed class McpServerGeneration
                 }
 
                 var details = await connection.Client.Completion.ConfigureAwait(false);
-                lock (gate)
+                lock (_gate)
                 {
-                    if (ReferenceEquals(current, connection))
+                    if (ReferenceEquals(_current, connection))
                     {
-                        current = null;
-                        retiredConnections.Add(connection.Retire());
+                        _current = null;
+                        _retiredConnections.Add(connection.Retire());
                     }
                 }
 
-                logger.LogWarning(
+                _logger.LogWarning(
                     "MCP server {ServerId} disconnected ({FailureType}); its tools are unavailable until reconnection.",
-                    definition.Id,
+                    _definition.Id,
                     details.Exception?.GetType().Name ?? "Closed");
             }
 
-            lock (gate)
+            lock (_gate)
             {
-                nextReconnectDelay = reconnectDelay;
+                _nextReconnectDelay = reconnectDelay;
             }
 
             // The wait rides the injected time provider (a fake clock in tests advances past
@@ -590,51 +590,51 @@ internal sealed class McpServerGeneration
             // ReconnectDelayRegistered fires — Task.Delay creates the provider timer before
             // returning — so advancing a fake clock past the delay after the signal is
             // guaranteed to fire this wait rather than race its registration.
-            Task reconnectWait = Task.Delay(reconnectDelay, timeProvider, lifetime.Token);
-            lock (gate)
+            Task reconnectWait = Task.Delay(reconnectDelay, _timeProvider, _lifetime.Token);
+            lock (_gate)
             {
-                reconnectDelayRegistered.TrySetResult();
+                _reconnectDelayRegistered.TrySetResult();
             }
 
             try
             {
                 await reconnectWait.ConfigureAwait(false);
                 var replacement = await CreateConnectionAsync(
-                    definition,
-                    loggerFactory,
-                    transportFactory,
-                    lifetime.Token,
-                    reservedToolNames,
-                    rootsSource,
-                    elicitationCoordinator,
-                    toolSurfaceAdjuster).ConfigureAwait(false);
-                lock (gate)
+                    _definition,
+                    _loggerFactory,
+                    _transportFactory,
+                    _lifetime.Token,
+                    _reservedToolNames,
+                    _rootsSource,
+                    _elicitationCoordinator,
+                    _toolSurfaceAdjuster).ConfigureAwait(false);
+                lock (_gate)
                 {
-                    if (retirement is null)
+                    if (_retirement is null)
                     {
-                        current = replacement;
-                        nextReconnectDelay = null;
+                        _current = replacement;
+                        _nextReconnectDelay = null;
                     }
                     else
                     {
-                        retiredConnections.Add(replacement.Retire());
+                        _retiredConnections.Add(replacement.Retire());
                     }
 
-                    reconnected.TrySetResult();
+                    _reconnected.TrySetResult();
                 }
 
                 reconnectDelay = InitialReconnectDelay;
-                logger.LogInformation("Reconnected MCP server {ServerId}.", definition.Id);
+                _logger.LogInformation("Reconnected MCP server {ServerId}.", _definition.Id);
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
                 break;
             }
             catch (Exception exception)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Could not reconnect MCP server {ServerId} ({FailureType}); another attempt will be made.",
-                    definition.Id,
+                    _definition.Id,
                     exception.GetType().Name);
                 reconnectDelay = TimeSpan.FromTicks(Math.Min(
                     checked(reconnectDelay.Ticks * 2),
@@ -888,16 +888,16 @@ internal sealed class McpServerGeneration
         McpElicitationCoordinator? elicitationCoordinator = null,
         IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
-        private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly Lock gate = new();
-        private readonly ILogger logger = logger;
-        private CancellationTokenSource? subscriptionLifetime;
-        private int references = 1;
-        private bool retired;
-        private ImmutableArray<MaieuticsMcpToolInfo> toolInfo = [];
-        private ImmutableArray<AIFunction> tools = [];
-        private McpResourceCatalog resourceCatalog = McpResourceCatalog.Empty;
-        private McpPromptCatalog promptCatalog = McpPromptCatalog.Empty;
+        private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Lock _gate = new();
+        private readonly ILogger _logger = logger;
+        private CancellationTokenSource? _subscriptionLifetime;
+        private int _references = 1;
+        private bool _retired;
+        private ImmutableArray<MaieuticsMcpToolInfo> _toolInfo = [];
+        private ImmutableArray<AIFunction> _tools = [];
+        private McpResourceCatalog _resourceCatalog = McpResourceCatalog.Empty;
+        private McpPromptCatalog _promptCatalog = McpPromptCatalog.Empty;
 
         internal McpClient Client { get; } = client;
 
@@ -910,7 +910,7 @@ internal sealed class McpServerGeneration
         internal void StartSubscriptionListener()
         {
             var lifetime = new CancellationTokenSource();
-            Volatile.Write(ref subscriptionLifetime, lifetime);
+            Volatile.Write(ref _subscriptionLifetime, lifetime);
             _ = ListenSubscriptionsAsync(lifetime.Token);
         }
 
@@ -943,7 +943,7 @@ internal sealed class McpServerGeneration
             }
             catch (Exception exception)
             {
-                logger.LogDebug(
+                _logger.LogDebug(
                     exception,
                     "MCP server {ServerId} subscription stream unavailable ({FailureType}); relying on capability-driven notifications.",
                     definition.Id,
@@ -953,36 +953,36 @@ internal sealed class McpServerGeneration
 
         internal McpServerLease Acquire()
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
+                if (_retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
-                references = checked(references + 1);
-                return new McpServerLease(this, definition.Id, tools);
+                _references = checked(_references + 1);
+                return new McpServerLease(this, definition.Id, _tools);
             }
         }
 
         internal ImmutableArray<MaieuticsMcpToolInfo> GetToolInfo()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return toolInfo;
+                return _toolInfo;
             }
         }
 
         internal McpResourceCatalog GetResourceCatalog()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return resourceCatalog;
+                return _resourceCatalog;
             }
         }
 
         internal McpPromptCatalog GetPromptCatalog()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return promptCatalog;
+                return _promptCatalog;
             }
         }
 
@@ -1042,7 +1042,7 @@ internal sealed class McpServerGeneration
                     }
 
                     exposed.Add(new TimeoutAIFunction(
-                        new ProgressReportingAIFunction(tool, definition.Id, logger, elicitationCoordinator),
+                        new ProgressReportingAIFunction(tool, definition.Id, _logger, elicitationCoordinator),
                         definition.RequestTimeout));
                     info.Add(new MaieuticsMcpToolInfo(name, name, true));
                 }
@@ -1055,14 +1055,14 @@ internal sealed class McpServerGeneration
             var catalog = await RefreshResourceCatalogAsync(cancellationToken).ConfigureAwait(false);
             var prompts = await RefreshPromptCatalogAsync(cancellationToken).ConfigureAwait(false);
 
-            lock (gate)
+            lock (_gate)
             {
-                if (retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
+                if (_retired) throw new ObjectDisposedException(nameof(McpConnectionGeneration));
 
-                tools = exposed.ToImmutable();
-                toolInfo = info.ToImmutable();
-                resourceCatalog = catalog;
-                promptCatalog = prompts;
+                _tools = exposed.ToImmutable();
+                _toolInfo = info.ToImmutable();
+                _resourceCatalog = catalog;
+                _promptCatalog = prompts;
             }
         }
 
@@ -1105,7 +1105,7 @@ internal sealed class McpServerGeneration
                 // McpException = unsupported/refused; anything else (a malformed payload
                 // surfacing as JsonException, a listing timeout) is the same tolerance:
                 // the catalog stays empty, the connection lives.
-                logger.LogDebug(
+                _logger.LogDebug(
                     "MCP server {ServerId} does not expose usable prompts ({FailureType}); its prompt catalog stays empty.",
                     definition.Id,
                     exception.GetType().Name);
@@ -1138,7 +1138,7 @@ internal sealed class McpServerGeneration
             }
             catch (McpException exception)
             {
-                logger.LogDebug(
+                _logger.LogDebug(
                     "MCP server {ServerId} does not expose resources ({FailureType}); its resource catalog stays empty.",
                     definition.Id,
                     exception.GetType().Name);
@@ -1163,7 +1163,7 @@ internal sealed class McpServerGeneration
             }
             catch (McpException exception)
             {
-                logger.LogDebug(
+                _logger.LogDebug(
                     "MCP server {ServerId} does not expose resource templates ({FailureType}).",
                     definition.Id,
                     exception.GetType().Name);
@@ -1190,7 +1190,7 @@ internal sealed class McpServerGeneration
                 cancellationToken).ConfigureAwait(false);
             if (adjusted is null)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "The MCP adjustment chain for server '{ServerId}' produced no listing; its tools are not exposed.",
                     definition.Id);
                 return;
@@ -1208,7 +1208,7 @@ internal sealed class McpServerGeneration
                     aliasOfValue.GetString() is not { Length: > 0 } remoteName ||
                     !byName.TryGetValue(remoteName, out var source))
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "The MCP adjustment chain for server '{ServerId}' returned an entry with no input identity; it is dropped.",
                         definition.Id);
                     continue;
@@ -1227,7 +1227,7 @@ internal sealed class McpServerGeneration
 
                 if (!exposedNames.Add(exposedName))
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "The MCP adjustment chain for server '{ServerId}' produced duplicate exposed name '{Name}'; it is dropped.",
                         definition.Id,
                         exposedName);
@@ -1235,7 +1235,7 @@ internal sealed class McpServerGeneration
                 }
 
                 AIFunction surface = new TimeoutAIFunction(
-                    new ProgressReportingAIFunction(source, definition.Id, logger, elicitationCoordinator),
+                    new ProgressReportingAIFunction(source, definition.Id, _logger, elicitationCoordinator),
                     definition.RequestTimeout);
                 if (exposedName != remoteName || description is not null || schema is not null)
                     surface = new RenamingAIFunction(surface, exposedName, description, schema);
@@ -1278,14 +1278,14 @@ internal sealed class McpServerGeneration
         // ReSharper disable once InconsistentNaming
         private sealed class RenamingAIFunction : DelegatingAIFunction
         {
-            private readonly JsonElement? schema;
+            private readonly JsonElement? _schema;
 
             public RenamingAIFunction(AIFunction innerFunction, string name, string? description, JsonElement? schema)
                 : base(innerFunction)
             {
                 Name = name;
                 Description = description;
-                this.schema = schema;
+                this._schema = schema;
             }
 
             public override string Name { get; }
@@ -1293,38 +1293,38 @@ internal sealed class McpServerGeneration
             public override string Description => field ?? base.Description;
 
             public override JsonElement JsonSchema =>
-                schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;
+                _schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;
         }
 
         internal Task Retire()
         {
             var dispose = false;
-            lock (gate)
+            lock (_gate)
             {
-                if (!retired)
+                if (!_retired)
                 {
-                    retired = true;
-                    dispose = --references == 0;
+                    _retired = true;
+                    dispose = --_references == 0;
                 }
             }
 
             if (dispose) StartDisposeClient();
 
-            return disposed.Task;
+            return _disposed.Task;
         }
 
         internal ValueTask ReleaseAsync()
         {
             var dispose = false;
-            lock (gate)
+            lock (_gate)
             {
-                if (references > 0) dispose = --references == 0 && retired;
+                if (_references > 0) dispose = --_references == 0 && _retired;
             }
 
             if (dispose)
             {
                 StartDisposeClient();
-                return new ValueTask(disposed.Task);
+                return new ValueTask(_disposed.Task);
             }
 
             return ValueTask.CompletedTask;
@@ -1340,14 +1340,14 @@ internal sealed class McpServerGeneration
             try
             {
                 refreshSignals.Writer.TryComplete();
-                if (Volatile.Read(ref subscriptionLifetime) is { } subscriptions)
+                if (Volatile.Read(ref _subscriptionLifetime) is { } subscriptions)
                     await subscriptions.CancelAsync().ConfigureAwait(false);
                 await Client.DisposeAsync().ConfigureAwait(false);
-                disposed.TrySetResult();
+                _disposed.TrySetResult();
             }
             catch (Exception exception)
             {
-                disposed.TrySetException(exception);
+                _disposed.TrySetException(exception);
             }
         }
     }
@@ -1371,7 +1371,7 @@ internal sealed class McpServerGeneration
         string serverId,
         ImmutableArray<AIFunction> tools) : IAsyncDisposable
     {
-        private int disposed;
+        private int _disposed;
 
         internal string ServerId { get; } = serverId;
 
@@ -1379,7 +1379,7 @@ internal sealed class McpServerGeneration
 
         public ValueTask DisposeAsync()
         {
-            return Interlocked.Exchange(ref disposed, 1) == 0
+            return Interlocked.Exchange(ref _disposed, 1) == 0
                 ? generation.ReleaseAsync()
                 : ValueTask.CompletedTask;
         }

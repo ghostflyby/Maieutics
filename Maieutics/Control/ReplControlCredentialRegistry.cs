@@ -11,7 +11,7 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplControlCredentialRegistry
 {
-    private readonly ConcurrentDictionary<string, string> credentials = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _credentials = new(StringComparer.Ordinal);
 
     /// <summary>Issues a fresh random credential bound to the control identity.</summary>
     public string Issue(string identity)
@@ -19,14 +19,14 @@ internal sealed class ReplControlCredentialRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(identity);
         var bytes = RandomNumberGenerator.GetBytes(32);
         var token = Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        credentials[token] = identity;
+        _credentials[token] = identity;
         return token;
     }
 
     /// <summary>Resolves a credential to its owning control identity.</summary>
     public bool TryResolve(string credential, out string identity)
     {
-        if (credentials.TryGetValue(credential, out var value))
+        if (_credentials.TryGetValue(credential, out var value))
         {
             identity = value;
             return true;
@@ -39,8 +39,8 @@ internal sealed class ReplControlCredentialRegistry
     /// <summary>Revokes every credential issued to the control identity.</summary>
     public void Remove(string identity)
     {
-        foreach (var pair in credentials)
+        foreach (var pair in _credentials)
             if (string.Equals(pair.Value, identity, StringComparison.Ordinal))
-                credentials.TryRemove(pair.Key, out _);
+                _credentials.TryRemove(pair.Key, out _);
     }
 }

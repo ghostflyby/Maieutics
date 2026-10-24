@@ -5,11 +5,11 @@ namespace Maieutics.Product.Tests;
 /// Disposal delegates to the area's reparse-safe delete.</summary>
 internal sealed class TemporaryWorkspace : IDisposable
 {
-    private readonly TempArea area;
+    private readonly TempArea _area;
 
     private TemporaryWorkspace(TempArea area)
     {
-        this.area = area;
+        this._area = area;
         ParentPath = area.Path;
         Path = System.IO.Path.Combine(area.Path, "workspace");
     }
@@ -20,7 +20,7 @@ internal sealed class TemporaryWorkspace : IDisposable
 
     public void Dispose()
     {
-        area.Dispose();
+        _area.Dispose();
     }
 
     internal static TemporaryWorkspace Create()

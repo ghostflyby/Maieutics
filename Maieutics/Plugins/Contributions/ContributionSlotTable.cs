@@ -39,28 +39,28 @@ internal sealed class SlotSourceKeyComparer : IEqualityComparer<SlotSourceKey>
 /// name shadows by first occurrence — key sorting would flip the winner.</summary>
 internal sealed class ContributionSlotTable
 {
-    private readonly string kindName;
+    private readonly string _kindName;
 
     /// <summary>Sticky generated parts keyed by the full registration triple. Iteration
     /// order is first-write order (Dictionary semantics); a generated part may outlive
     /// its plugin's slot presence (a pass whose commit was declined leaves its sticky
     /// writes behind until a later successful pass composes them) — mirroring the
     /// former flat dictionary exactly.</summary>
-    private readonly Dictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>> generated =
+    private readonly Dictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>> _generated =
         new(SlotSourceKey.Ordinal);
 
     /// <summary>Declared and published parts plus slot presence, per plugin id.</summary>
-    private readonly Dictionary<string, SlotParts> slots = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SlotParts> _slots = new(StringComparer.Ordinal);
 
     public ContributionSlotTable(string kindName)
     {
-        this.kindName = kindName;
+        this._kindName = kindName;
     }
 
-    public string KindName => kindName;
+    public string KindName => _kindName;
 
     public bool HoldsFace(string pluginId) =>
-        slots.TryGetValue(pluginId, out var parts) && parts.Held;
+        _slots.TryGetValue(pluginId, out var parts) && parts.Held;
 
     /// <summary>Upserts one export's generated part (sticky last-good).</summary>
     public void SetGenerated(
@@ -68,7 +68,7 @@ internal sealed class ContributionSlotTable
         SlotSourceKey key,
         IReadOnlyList<ContributionDescriptor> part)
     {
-        generated[key] = part;
+        _generated[key] = part;
     }
 
     /// <summary>Sets or clears (null) the declared part.</summary>
@@ -93,10 +93,10 @@ internal sealed class ContributionSlotTable
     /// generated parts owned by the plugin (bag insertion order) → published.</summary>
     public IReadOnlyList<ContributionDescriptor> Compose(string pluginId)
     {
-        var parts = slots.GetValueOrDefault(pluginId);
+        var parts = _slots.GetValueOrDefault(pluginId);
         var composed = new List<ContributionDescriptor>();
         if (parts?.Declared is { } declared) composed.AddRange(declared);
-        foreach (var (key, part) in generated)
+        foreach (var (key, part) in _generated)
             if (key.PluginId == pluginId)
                 composed.AddRange(part);
         if (parts?.Published is { } published) composed.AddRange(published);
@@ -110,10 +110,10 @@ internal sealed class ContributionSlotTable
     /// for a later pass to compose).</summary>
     public bool Remove(string pluginId)
     {
-        if (!slots.TryGetValue(pluginId, out var parts) || !parts.Held) return false;
-        slots.Remove(pluginId);
-        foreach (var key in generated.Keys.Where(key => key.PluginId == pluginId).ToArray())
-            generated.Remove(key);
+        if (!_slots.TryGetValue(pluginId, out var parts) || !parts.Held) return false;
+        _slots.Remove(pluginId);
+        foreach (var key in _generated.Keys.Where(key => key.PluginId == pluginId).ToArray())
+            _generated.Remove(key);
         return true;
     }
 
@@ -122,16 +122,16 @@ internal sealed class ContributionSlotTable
     /// presence set iterated.</summary>
     public IReadOnlyList<string> ClearAll()
     {
-        var present = slots.Keys.ToArray();
-        slots.Clear();
-        generated.Clear();
+        var present = _slots.Keys.ToArray();
+        _slots.Clear();
+        _generated.Clear();
         return present;
     }
 
     private SlotParts GetOrAdd(string pluginId)
     {
-        if (!slots.TryGetValue(pluginId, out var parts))
-            slots[pluginId] = parts = new SlotParts();
+        if (!_slots.TryGetValue(pluginId, out var parts))
+            _slots[pluginId] = parts = new SlotParts();
         return parts;
     }
 

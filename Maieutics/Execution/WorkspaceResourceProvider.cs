@@ -7,11 +7,11 @@ namespace Maieutics.Execution;
 /// served by <c>list_directory</c>, so this provider has no catalog.</summary>
 internal sealed class WorkspaceResourceProvider : IResourceProvider
 {
-    private readonly Workspace workspace;
+    private readonly Workspace _workspace;
 
     internal WorkspaceResourceProvider(Workspace workspace)
     {
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
     }
 
     public string Id => "workspace.local";
@@ -27,7 +27,7 @@ internal sealed class WorkspaceResourceProvider : IResourceProvider
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(uri);
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = workspace.Capture();
+        var snapshot = _workspace.Capture();
         var path = snapshot.Resolve(uri, allowRoot: false);
         if (path.IsDirectory)
             throw new WorkspaceException(

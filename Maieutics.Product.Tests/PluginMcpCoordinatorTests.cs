@@ -447,8 +447,8 @@ public sealed class PluginMcpCoordinatorTests
 
     private sealed class TestGenerationFactory : IAsyncDisposable
     {
-        private readonly CancellationTokenSource lifetime = new();
-        private readonly List<(McpServer Server, Task Completion)> servers = [];
+        private readonly CancellationTokenSource _lifetime = new();
+        private readonly List<(McpServer Server, Task Completion)> _servers = [];
 
         internal List<McpServerDefinition> Definitions { get; } = [];
 
@@ -458,19 +458,19 @@ public sealed class PluginMcpCoordinatorTests
 
         public async ValueTask DisposeAsync()
         {
-            await lifetime.CancelAsync();
-            foreach (var (server, _) in servers) await server.DisposeAsync();
+            await _lifetime.CancelAsync();
+            foreach (var (server, _) in _servers) await server.DisposeAsync();
 
-            foreach (var (_, completion) in servers)
+            foreach (var (_, completion) in _servers)
                 try
                 {
                     await completion;
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                 {
                 }
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal IMcpToolSurfaceAdjuster? ToolSurfaceAdjuster { get; init; }
@@ -524,7 +524,7 @@ public sealed class PluginMcpCoordinatorTests
                     ]
                 },
                 loggerFactory);
-            servers.Add((server, server.RunAsync(lifetime.Token)));
+            _servers.Add((server, server.RunAsync(_lifetime.Token)));
             IClientTransport transport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),

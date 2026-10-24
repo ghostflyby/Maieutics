@@ -81,28 +81,28 @@ internal interface IContributionDelivery
 /// statements ran. The flight gate is never held across an await.</para></summary>
 internal sealed class ContributionCoordinator
 {
-    private readonly ILogger logger;
-    private readonly Lock flightGate = new();
+    private readonly ILogger _logger;
+    private readonly Lock _flightGate = new();
 
-    private readonly Dictionary<(string KindName, string PluginId), ReconcileFlight> flights =
+    private readonly Dictionary<(string KindName, string PluginId), ReconcileFlight> _flights =
         new(FlightKeyComparer.Ordinal);
 
-    private readonly Dictionary<string, HashSet<string>> retryPending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _retryPending = new(StringComparer.Ordinal);
 
     /// <summary>Reload-epoch baselines and the deferred forced rediscoveries (the
     /// former <c>hostReloadEpochs</c> / <c>pendingReloadForces</c>). Mutated only
     /// under the host gate.</summary>
-    private readonly Dictionary<string, int> hostReloadEpochs = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _hostReloadEpochs = new(StringComparer.Ordinal);
 
-    private readonly Dictionary<string, int> pendingReloadForces = new(StringComparer.Ordinal);
-    private IReadOnlyList<IContributionDelivery> deliveries = [];
+    private readonly Dictionary<string, int> _pendingReloadForces = new(StringComparer.Ordinal);
+    private IReadOnlyList<IContributionDelivery> _deliveries = [];
 
     /// <summary>Internal test observability: completes when the last running flight finishes
     /// and no follow-up is pending, i.e. every scheduled pass has drained. A completed source
-    /// is handed back once and a fresh one installed under <see cref="flightGate"/>, so a test
+    /// is handed back once and a fresh one installed under <see cref="_flightGate"/>, so a test
     /// can assert "nothing further ran" after awaiting this idle edge instead of sleeping out
     /// a settle window.</summary>
-    private TaskCompletionSource flightIdle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _flightIdle = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Completes when the coordinator has no running or pending pass. Returns an
     /// already-completed task when nothing is in flight, so awaiting it before a trigger
@@ -112,16 +112,16 @@ internal sealed class ContributionCoordinator
     {
         get
         {
-            lock (flightGate)
+            lock (_flightGate)
             {
-                return flights.Count == 0 ? Task.CompletedTask : flightIdle.Task;
+                return _flights.Count == 0 ? Task.CompletedTask : _flightIdle.Task;
             }
         }
     }
 
     public ContributionCoordinator(ILogger logger)
     {
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>One-time wiring of the delivery endpoints, after the coordinator and
@@ -131,9 +131,9 @@ internal sealed class ContributionCoordinator
     public void Attach(IReadOnlyList<IContributionDelivery> deliveryList)
     {
         ArgumentNullException.ThrowIfNull(deliveryList);
-        if (deliveries.Count > 0)
+        if (_deliveries.Count > 0)
             throw new InvalidOperationException("The contribution coordinator's deliveries are already attached.");
-        deliveries = deliveryList;
+        _deliveries = deliveryList;
     }
 
     /// <summary>Registry-frame dispatch: RegistryWide kinds receive the full snapshot
@@ -171,7 +171,7 @@ internal sealed class ContributionCoordinator
     public void ReconcilePlugins(string kindName, IReadOnlyList<string> pluginIds)
     {
         ArgumentNullException.ThrowIfNull(pluginIds);
-        foreach (var delivery in deliveries)
+        foreach (var delivery in _deliveries)
         {
             if (delivery.Shape != ContributionDeliveryShape.PerPlugin ||
                 !string.Equals(delivery.KindName, kindName, StringComparison.Ordinal))
@@ -193,9 +193,9 @@ internal sealed class ContributionCoordinator
     /// after the newest text is live.</summary>
     public void MarkReloadForce(string pluginId)
     {
-        pendingReloadForces[pluginId] = Math.Max(
-            pendingReloadForces.GetValueOrDefault(pluginId) + 1,
-            hostReloadEpochs.GetValueOrDefault(pluginId) + 1);
+        _pendingReloadForces[pluginId] = Math.Max(
+            _pendingReloadForces.GetValueOrDefault(pluginId) + 1,
+            _hostReloadEpochs.GetValueOrDefault(pluginId) + 1);
     }
 
     /// <summary>Drains the reload forces a registry frame satisfies and refreshes the
@@ -208,21 +208,21 @@ internal sealed class ContributionCoordinator
     {
         if (epochs is null)
         {
-            var legacyDrained = new List<string>(pendingReloadForces.Keys);
-            pendingReloadForces.Clear();
+            var legacyDrained = new List<string>(_pendingReloadForces.Keys);
+            _pendingReloadForces.Clear();
             return legacyDrained;
         }
 
         var drained = new List<string>();
-        foreach (var (pluginId, required) in pendingReloadForces)
+        foreach (var (pluginId, required) in _pendingReloadForces)
         {
             var observed = epochs.GetValueOrDefault(pluginId);
-            if (observed >= required || observed < hostReloadEpochs.GetValueOrDefault(pluginId))
+            if (observed >= required || observed < _hostReloadEpochs.GetValueOrDefault(pluginId))
                 drained.Add(pluginId);
         }
 
-        foreach (var pluginId in drained) pendingReloadForces.Remove(pluginId);
-        foreach (var (pluginId, epoch) in epochs) hostReloadEpochs[pluginId] = epoch;
+        foreach (var pluginId in drained) _pendingReloadForces.Remove(pluginId);
+        foreach (var (pluginId, epoch) in epochs) _hostReloadEpochs[pluginId] = epoch;
         return drained;
     }
 
@@ -231,9 +231,9 @@ internal sealed class ContributionCoordinator
     /// former field clears (in-flight passes die with their generation token).</summary>
     public void Reset()
     {
-        hostReloadEpochs.Clear();
-        pendingReloadForces.Clear();
-        retryPending.Clear();
+        _hostReloadEpochs.Clear();
+        _pendingReloadForces.Clear();
+        _retryPending.Clear();
     }
 
     /// <summary>Records one pass outcome for the kernel retry set (called by the
@@ -242,8 +242,8 @@ internal sealed class ContributionCoordinator
     /// flag.</summary>
     public void SetRetryPending(string kindName, string pluginId, bool pending)
     {
-        if (!retryPending.TryGetValue(kindName, out var set))
-            retryPending[kindName] = set = new HashSet<string>(StringComparer.Ordinal);
+        if (!_retryPending.TryGetValue(kindName, out var set))
+            _retryPending[kindName] = set = new HashSet<string>(StringComparer.Ordinal);
         if (pending) set.Add(pluginId);
         else set.Remove(pluginId);
     }
@@ -252,7 +252,7 @@ internal sealed class ContributionCoordinator
     /// under the host gate, where the former retry set fed the frame union).</summary>
     public IReadOnlyCollection<string> RetrySnapshot(string kindName)
     {
-        return retryPending.TryGetValue(kindName, out var set)
+        return _retryPending.TryGetValue(kindName, out var set)
             ? set.ToArray()
             : [];
     }
@@ -301,7 +301,7 @@ internal sealed class ContributionCoordinator
 
     private void PublishToRegistryWide(ContributionFrameInput frame, bool guardDisposed)
     {
-        foreach (var delivery in deliveries)
+        foreach (var delivery in _deliveries)
         {
             if (delivery.Shape == ContributionDeliveryShape.RegistryWide)
                 delivery.PublishFrame(frame, guardDisposed);
@@ -314,7 +314,7 @@ internal sealed class ContributionCoordinator
     /// kind; per-kind target routing generalizes with the B 期 kind contract.</summary>
     private void ScheduleTargets(IReadOnlyList<string> pluginIds)
     {
-        foreach (var delivery in deliveries)
+        foreach (var delivery in _deliveries)
         {
             if (delivery.Shape != ContributionDeliveryShape.PerPlugin) continue;
             foreach (var pluginId in pluginIds)
@@ -327,13 +327,13 @@ internal sealed class ContributionCoordinator
     /// for a plugin while its pass runs set that flight's pending flag and the running
     /// pass drains it, so passes coalesce per plugin instead of queueing an unbounded
     /// backlog behind a slow source. The flight map mutates only under
-    /// <see cref="flightGate"/>, which is never held across an await.</summary>
+    /// <see cref="_flightGate"/>, which is never held across an await.</summary>
     private void Schedule(IContributionDelivery delivery, string kindName, string pluginId)
     {
-        lock (flightGate)
+        lock (_flightGate)
         {
-            if (!flights.TryGetValue((kindName, pluginId), out var flight))
-                flights[(kindName, pluginId)] = flight = new ReconcileFlight();
+            if (!_flights.TryGetValue((kindName, pluginId), out var flight))
+                _flights[(kindName, pluginId)] = flight = new ReconcileFlight();
             if (flight.Running)
             {
                 flight.Pending = true;
@@ -357,16 +357,16 @@ internal sealed class ContributionCoordinator
         {
             while (true)
             {
-                lock (flightGate)
+                lock (_flightGate)
                 {
-                    if (flights.TryGetValue((kindName, pluginId), out var drain))
+                    if (_flights.TryGetValue((kindName, pluginId), out var drain))
                         drain.Pending = false;
                 }
 
                 await delivery.ReconcileAsync(pluginId, CancellationToken.None).ConfigureAwait(false);
-                lock (flightGate)
+                lock (_flightGate)
                 {
-                    if (flights.TryGetValue((kindName, pluginId), out var flight) && flight.Pending) continue;
+                    if (_flights.TryGetValue((kindName, pluginId), out var flight) && flight.Pending) continue;
                     return;
                 }
             }
@@ -381,7 +381,7 @@ internal sealed class ContributionCoordinator
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Reconciling plugin '{PluginId}' {Kind} contributions failed; its last contribution stays active.",
                 pluginId,
@@ -390,9 +390,9 @@ internal sealed class ContributionCoordinator
         finally
         {
             var rearm = false;
-            lock (flightGate)
+            lock (_flightGate)
             {
-                if (flights.TryGetValue((kindName, pluginId), out var flight))
+                if (_flights.TryGetValue((kindName, pluginId), out var flight))
                 {
                     flight.Running = false;
                     if (flight.Pending)
@@ -402,16 +402,16 @@ internal sealed class ContributionCoordinator
                     }
                     else
                     {
-                        flights.Remove((kindName, pluginId));
+                        _flights.Remove((kindName, pluginId));
                     }
                 }
 
                 // Quiet means no flight is running and none was re-armed: the pass that
                 // just finished was the last one, so an idle waiter can re-read state.
-                if (!rearm && flights.Count == 0)
+                if (!rearm && _flights.Count == 0)
                 {
-                    var idle = flightIdle;
-                    flightIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var idle = _flightIdle;
+                    _flightIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     idle.TrySetResult();
                 }
             }
@@ -420,7 +420,7 @@ internal sealed class ContributionCoordinator
         }
     }
 
-    /// <summary>The per-plugin in-flight state guarded by <see cref="flightGate"/>:
+    /// <summary>The per-plugin in-flight state guarded by <see cref="ContributionCoordinator._flightGate"/>:
     /// whether a pass is running and whether a later event is waiting on it.</summary>
     private sealed class ReconcileFlight
     {

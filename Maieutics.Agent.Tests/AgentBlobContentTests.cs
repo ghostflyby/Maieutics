@@ -219,7 +219,7 @@ public sealed class AgentBlobContentTests
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public Dictionary<string, byte[]> Objects { get; } = new(StringComparer.Ordinal);
 
@@ -229,7 +229,7 @@ public sealed class AgentBlobContentTests
             content.CopyTo(buffer);
             var bytes = buffer.ToArray();
             var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            lock (gate) Objects[sha256] = bytes;
+            lock (_gate) Objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length);
         }
 
@@ -267,7 +267,7 @@ public sealed class AgentBlobContentTests
     /// triage point must handle without buffering it whole.</summary>
     private sealed class NonSeekableStream(byte[] bytes) : Stream
     {
-        private int position;
+        private int _position;
 
         public int TotalBytesRead { get; private set; }
 
@@ -281,7 +281,7 @@ public sealed class AgentBlobContentTests
 
         public override long Position
         {
-            get => position;
+            get => _position;
             set => throw new NotSupportedException();
         }
 
@@ -292,18 +292,18 @@ public sealed class AgentBlobContentTests
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var read = Math.Min(buffer.Length, bytes.Length - position);
-            bytes.AsSpan(position, read).CopyTo(buffer.Span);
-            position += read;
+            var read = Math.Min(buffer.Length, bytes.Length - _position);
+            bytes.AsSpan(_position, read).CopyTo(buffer.Span);
+            _position += read;
             TotalBytesRead += read;
             return ValueTask.FromResult(read);
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            var read = Math.Min(count, bytes.Length - position);
-            Array.Copy(bytes, position, buffer, offset, read);
-            position += read;
+            var read = Math.Min(count, bytes.Length - _position);
+            Array.Copy(bytes, _position, buffer, offset, read);
+            _position += read;
             TotalBytesRead += read;
             return read;
         }

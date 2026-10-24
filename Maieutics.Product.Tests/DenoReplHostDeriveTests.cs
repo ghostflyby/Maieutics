@@ -1,9 +1,12 @@
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
+using Maieutics.Execution;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
@@ -12,7 +15,6 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
-using System.Text;
 
 namespace Maieutics.Product.Tests;
 
@@ -538,18 +540,18 @@ public sealed class DenoReplHostDeriveTests
 
         internal required PluginHostManager Manager { get; init; }
 
-        private WebApplication? application;
+        private WebApplication? _application;
 
         internal void Initialize(WebApplication app)
         {
-            application = app;
+            _application = app;
         }
 
         public async ValueTask DisposeAsync()
         {
             Host?.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
-            if (application is not null) await application.DisposeAsync().ConfigureAwait(false);
+            if (_application is not null) await _application.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -796,7 +798,7 @@ public sealed class DenoReplHostDeriveTests
         // Client frames must be masked (RFC 6455): the mask bit is 0x80 in the length byte, a
         // 4-byte masking key follows, and the payload is XORed with the key.
         var mask = new byte[4];
-        System.Security.Cryptography.RandomNumberGenerator.Fill(mask);
+        RandomNumberGenerator.Fill(mask);
         var header = new List<byte> { (byte)(0x80 | opcode) };
         var lengthValue = payload.Length;
         if (lengthValue < 126)
@@ -857,7 +859,7 @@ public sealed class DenoReplHostDeriveTests
     }
 
 
-    private sealed class FakeVariableSource : Execution.IPermissionVariableSource
+    private sealed class FakeVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

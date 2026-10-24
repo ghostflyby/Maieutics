@@ -11,11 +11,11 @@ namespace Maieutics.Product.Tests;
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class FileLoggerProviderTests : IAsyncDisposable
 {
-    private readonly string logDirectory;
+    private readonly string _logDirectory;
 
     public FileLoggerProviderTests()
     {
-        logDirectory = Path.Combine(
+        _logDirectory = Path.Combine(
             Path.GetTempPath(),
             "maieutics-file-logger-tests",
             Guid.NewGuid().ToString("N"));
@@ -28,7 +28,7 @@ public sealed class FileLoggerProviderTests : IAsyncDisposable
     {
         try
         {
-            await TempArea.DeleteAsync(logDirectory, CancellationToken.None);
+            await TempArea.DeleteAsync(_logDirectory, CancellationToken.None);
         }
         catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
         {
@@ -47,8 +47,8 @@ public sealed class FileLoggerProviderTests : IAsyncDisposable
         for (var round = 0; round < 200; round++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(logDirectory);
-            var provider = new FileLoggerProvider(logDirectory);
+            Directory.CreateDirectory(_logDirectory);
+            var provider = new FileLoggerProvider(_logDirectory);
             var logger = provider.CreateLogger("Maieutics.Product.Tests.FileLoggerProviderTests");
 
             // RaceAsync rethrows anything a writer or the disposer observes.
@@ -65,8 +65,8 @@ public sealed class FileLoggerProviderTests : IAsyncDisposable
     public async Task ConcurrentDisposalIsSafeAndIdempotent()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        Directory.CreateDirectory(logDirectory);
-        var provider = new FileLoggerProvider(logDirectory);
+        Directory.CreateDirectory(_logDirectory);
+        var provider = new FileLoggerProvider(_logDirectory);
         var logger = provider.CreateLogger("Maieutics.Product.Tests.FileLoggerProviderTests");
         logger.LogInformation("before disposal");
 
@@ -83,7 +83,7 @@ public sealed class FileLoggerProviderTests : IAsyncDisposable
             write: _ => logger.LogInformation("after disposal"),
             release: provider.Dispose);
 
-        var file = Assert.Single(Directory.GetFiles(logDirectory, "maieutics-*.log"));
+        var file = Assert.Single(Directory.GetFiles(_logDirectory, "maieutics-*.log"));
         Assert.Contains("before disposal", File.ReadAllText(file));
     }
 

@@ -20,13 +20,13 @@ namespace Maieutics.DenoRepl;
 /// </summary>
 internal sealed class ReplOutputRateLimiter
 {
-    private readonly Lock gate = new();
-    private readonly int maxDisplayDataRate;
-    private readonly int maxDisplayMessageRate;
-    private readonly LinkedList<Sample> samples = new();
-    private readonly Func<long> timestampProvider;
-    private readonly long windowTicks;
-    private long windowBytes;
+    private readonly Lock _gate = new();
+    private readonly int _maxDisplayDataRate;
+    private readonly int _maxDisplayMessageRate;
+    private readonly LinkedList<Sample> _samples = new();
+    private readonly Func<long> _timestampProvider;
+    private readonly long _windowTicks;
+    private long _windowBytes;
 
     /// <param name="options">Carries the display rate budgets and window.</param>
     /// <param name="timestampProvider">Monotonic timestamp source, defaulting to
@@ -46,12 +46,12 @@ internal sealed class ReplOutputRateLimiter
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 "The display rate limit window must be positive.");
-        maxDisplayMessageRate = options.MaxDisplayMessageRate;
-        maxDisplayDataRate = options.MaxDisplayDataRate;
+        _maxDisplayMessageRate = options.MaxDisplayMessageRate;
+        _maxDisplayDataRate = options.MaxDisplayDataRate;
         var ticksPerSecond = frequency ?? Stopwatch.Frequency;
         ArgumentOutOfRangeException.ThrowIfLessThan(ticksPerSecond, 1);
-        windowTicks = checked((long)(options.DisplayRateLimitWindow.TotalSeconds * ticksPerSecond));
-        this.timestampProvider = timestampProvider ?? Stopwatch.GetTimestamp;
+        _windowTicks = checked((long)(options.DisplayRateLimitWindow.TotalSeconds * ticksPerSecond));
+        this._timestampProvider = timestampProvider ?? Stopwatch.GetTimestamp;
     }
 
     /// <summary>
@@ -68,25 +68,25 @@ internal sealed class ReplOutputRateLimiter
     {
         ArgumentNullException.ThrowIfNull(frame);
         var dataBytes = CountDataBytes(frame);
-        var now = timestampProvider();
+        var now = _timestampProvider();
 
-        lock (gate)
+        lock (_gate)
         {
             PruneExpired(now);
-            if (samples.Count >= maxDisplayMessageRate) return false;
-            if (windowBytes + dataBytes >= maxDisplayDataRate) return false;
-            samples.AddLast(new Sample(now, dataBytes));
-            windowBytes += dataBytes;
+            if (_samples.Count >= _maxDisplayMessageRate) return false;
+            if (_windowBytes + dataBytes >= _maxDisplayDataRate) return false;
+            _samples.AddLast(new Sample(now, dataBytes));
+            _windowBytes += dataBytes;
             return true;
         }
     }
 
     private void PruneExpired(long now)
     {
-        while (samples.First is { } first && now - first.Value.Timestamp >= windowTicks)
+        while (_samples.First is { } first && now - first.Value.Timestamp >= _windowTicks)
         {
-            windowBytes -= first.Value.Bytes;
-            samples.RemoveFirst();
+            _windowBytes -= first.Value.Bytes;
+            _samples.RemoveFirst();
         }
     }
 

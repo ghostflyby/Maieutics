@@ -20,25 +20,25 @@ internal sealed class DenoReplModule
         "maieutics-repl-client"
     ];
 
-    private readonly Lazy<MaterializedModules> modules =
+    private readonly Lazy<MaterializedModules> _modules =
         new(Materialize, LazyThreadSafetyMode.ExecutionAndPublication);
 
-    internal string ClientUrl => modules.Value.ClientUrl;
+    internal string ClientUrl => _modules.Value.ClientUrl;
 
-    internal string MainUrl => modules.Value.MainUrl;
+    internal string MainUrl => _modules.Value.MainUrl;
 
     /// <summary>File URL of the REPL <em>process</em> entry (<c>process_main.ts</c>), the child
     /// module the plugin host derives via worker-actor <c>spawnProcess</c> (ADR 0020). It is
     /// materialized beside <c>deno.json</c>, so the host-derived child resolves its
     /// <c>@ghostflyby/worker-actor</c> import through the config discovered upward from the entry
     /// module.</summary>
-    internal string ProcessMainUrl => modules.Value.ProcessMainUrl;
+    internal string ProcessMainUrl => _modules.Value.ProcessMainUrl;
 
-    internal string ConfigFile => modules.Value.ConfigFile;
+    internal string ConfigFile => _modules.Value.ConfigFile;
 
-    internal string LockFile => modules.Value.LockFile;
+    internal string LockFile => _modules.Value.LockFile;
 
-    internal string ModuleDirectory => modules.Value.ModuleDirectory;
+    internal string ModuleDirectory => _modules.Value.ModuleDirectory;
 
     private static MaterializedModules Materialize()
     {

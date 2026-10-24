@@ -155,18 +155,18 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         string? endpoint,
         string? vendor) : IEquatable<SourceGenerationKey>
     {
-        private readonly OpenAiApiFlavor apiFlavor = apiFlavor;
-        private readonly string apiKey = apiKey;
-        private readonly string? endpoint = endpoint;
-        private readonly string? vendor = vendor;
+        private readonly OpenAiApiFlavor _apiFlavor = apiFlavor;
+        private readonly string _apiKey = apiKey;
+        private readonly string? _endpoint = endpoint;
+        private readonly string? _vendor = vendor;
 
         public bool Equals(SourceGenerationKey? other)
         {
             return other is not null &&
-                   apiFlavor == other.apiFlavor &&
-                   string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
-                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal) &&
-                   string.Equals(vendor, other.vendor, StringComparison.Ordinal);
+                   _apiFlavor == other._apiFlavor &&
+                   string.Equals(_apiKey, other._apiKey, StringComparison.Ordinal) &&
+                   string.Equals(_endpoint, other._endpoint, StringComparison.Ordinal) &&
+                   string.Equals(_vendor, other._vendor, StringComparison.Ordinal);
         }
 
         public override bool Equals(object? obj)
@@ -177,16 +177,16 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         public override int GetHashCode()
         {
             return HashCode.Combine(
-                apiFlavor,
-                StringComparer.Ordinal.GetHashCode(apiKey),
-                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint),
-                vendor is null ? 0 : StringComparer.Ordinal.GetHashCode(vendor));
+                _apiFlavor,
+                StringComparer.Ordinal.GetHashCode(_apiKey),
+                _endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(_endpoint),
+                _vendor is null ? 0 : StringComparer.Ordinal.GetHashCode(_vendor));
         }
 
         public override string ToString()
         {
             return
-                $"SourceGenerationKey {{ ApiFlavor = {apiFlavor}, ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"}, Vendor = {vendor ?? "<none>"} }}";
+                $"SourceGenerationKey {{ ApiFlavor = {_apiFlavor}, ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"}, Vendor = {_vendor ?? "<none>"} }}";
         }
     }
 }

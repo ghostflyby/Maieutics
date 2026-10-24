@@ -44,10 +44,10 @@ internal sealed class IdeDebugTools
         return JsonDocument.Parse(buffer).RootElement.Clone();
     }
 
-    private readonly IdeRequestRegistry requests;
-    private readonly IIdeFrontendGate gate;
-    private readonly FrontendIdeSockets sockets;
-    private readonly Workspace workspace;
+    private readonly IdeRequestRegistry _requests;
+    private readonly IIdeFrontendGate _gate;
+    private readonly FrontendIdeSockets _sockets;
+    private readonly Workspace _workspace;
 
     public IdeDebugTools(
         IdeRequestRegistry requests,
@@ -55,10 +55,10 @@ internal sealed class IdeDebugTools
         FrontendIdeSockets sockets,
         Workspace workspace)
     {
-        this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
-        this.sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        this._gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
 
         Functions =
         [
@@ -132,7 +132,7 @@ internal sealed class IdeDebugTools
         JsonElement parameters,
         CancellationToken cancellationToken)
     {
-        var registration = requests.Begin();
+        var registration = _requests.Begin();
         try
         {
             var envelope = JsonSerializer.SerializeToElement(
@@ -152,7 +152,7 @@ internal sealed class IdeDebugTools
             }
             else
             {
-                var sent = await sockets
+                var sent = await _sockets
                     .TrySendToAnnouncingAsync(
                         new FrontendEventFrame("ide.request", Data: envelope.GetProperty("ideRequest").Clone()),
                         cancellationToken)
@@ -185,7 +185,7 @@ internal sealed class IdeDebugTools
         }
         finally
         {
-            requests.Abandon(registration.RequestId);
+            _requests.Abandon(registration.RequestId);
         }
     }
 
@@ -194,7 +194,7 @@ internal sealed class IdeDebugTools
         if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
             value is AgentToolContext context)
         {
-            if (!gate.IsIdeFrontendConnected(context.SessionId.Value.ToString("N")))
+            if (!_gate.IsIdeFrontendConnected(context.SessionId.Value.ToString("N")))
                 throw new AgentToolException(
                     "ide_unavailable",
                     "No frontend connected to this session has announced IDE capability.");
@@ -204,14 +204,14 @@ internal sealed class IdeDebugTools
         var scriptSession = ScriptInvocationContext.TryGet(arguments)?.SessionId;
         if (scriptSession is { } sessionId)
         {
-            if (!gate.IsIdeFrontendConnected(sessionId))
+            if (!_gate.IsIdeFrontendConnected(sessionId))
                 throw new AgentToolException(
                     "ide_unavailable",
                     "No frontend connected to this session has announced IDE capability.");
             return;
         }
 
-        if (!gate.HasIdeFrontend)
+        if (!_gate.HasIdeFrontend)
             throw new AgentToolException(
                 "ide_unavailable",
                 "No frontend has announced IDE capability; the debug tools need the extension host's events socket.");
@@ -378,14 +378,14 @@ internal sealed class IdeDebugTools
         // Decision 4's translation authority: the kernel maps the workspace URI to
         // the physical address before the request crosses.
         string fullPath;
-        var logicalRoot = workspace.Capture().ResolveLogical(uri, allowRoot: false);
+        var logicalRoot = _workspace.Capture().ResolveLogical(uri, allowRoot: false);
         var displayPath = logicalRoot.DisplayPath;
         if (uri.StartsWith("workspace://local/", StringComparison.Ordinal))
         {
             try
             {
-                var logical = workspace.Capture().ResolveLogical(uri, allowRoot: false);
-                fullPath = workspace.Capture().ToPhysicalPath(logical.Segments);
+                var logical = _workspace.Capture().ResolveLogical(uri, allowRoot: false);
+                fullPath = _workspace.Capture().ToPhysicalPath(logical.Segments);
                 uri = new Uri(fullPath).AbsoluteUri;
             }
             catch (WorkspaceException exception)
@@ -395,7 +395,7 @@ internal sealed class IdeDebugTools
         }
         else
         {
-            fullPath = workspace.Capture().ToPhysicalPath(logicalRoot.Segments);
+            fullPath = _workspace.Capture().ToPhysicalPath(logicalRoot.Segments);
         }
 
         // Selector resolution is kernel-side (the translation authority, decision

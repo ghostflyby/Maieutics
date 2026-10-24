@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -238,23 +240,23 @@ public sealed class TaskResourceTests
 
     private sealed class InMemoryAgentObjectStore : IAgentObjectStore
     {
-        private readonly Dictionary<string, byte[]> objects = [];
+        private readonly Dictionary<string, byte[]> _objects = [];
 
         public AgentObjectDescriptor Ingest(Stream content)
         {
             using var buffered = new MemoryStream();
             content.CopyTo(buffered);
             var bytes = buffered.ToArray();
-            var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes))
                 .ToLowerInvariant();
-            objects[sha256] = bytes;
+            _objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length, "application/json");
         }
 
         public Stream Open(string sha256)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(
-                    sha256, "^[0-9a-f]{64}$") || !objects.TryGetValue(sha256, out var bytes))
+            if (!Regex.IsMatch(
+                    sha256, "^[0-9a-f]{64}$") || !_objects.TryGetValue(sha256, out var bytes))
                 throw new FileNotFoundException("No such object.", sha256);
             return new MemoryStream(bytes, writable: false);
         }

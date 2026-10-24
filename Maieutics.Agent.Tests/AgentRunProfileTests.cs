@@ -535,7 +535,7 @@ public sealed class AgentRunProfileTests
 
     private sealed class QueueProfileProvider(params TrackingProfileLease[] leases) : IAgentRunProfileProvider
     {
-        private readonly Queue<TrackingProfileLease> leases = new(leases);
+        private readonly Queue<TrackingProfileLease> _leases = new(leases);
 
         public int AcquireCount { get; private set; }
 
@@ -543,21 +543,21 @@ public sealed class AgentRunProfileTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             AcquireCount++;
-            return Task.FromResult<IAgentRunProfileLease>(leases.Dequeue());
+            return Task.FromResult<IAgentRunProfileLease>(_leases.Dequeue());
         }
     }
 
     private sealed class AsyncQueueProfileProvider(params Task<IAgentRunProfileLease>[] acquisitions)
         : IAgentRunProfileProvider
     {
-        private readonly Queue<Task<IAgentRunProfileLease>> acquisitions = new(acquisitions);
+        private readonly Queue<Task<IAgentRunProfileLease>> _acquisitions = new(acquisitions);
 
         public int AcquireCount { get; private set; }
 
         public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
             AcquireCount++;
-            return acquisitions.Dequeue().WaitAsync(cancellationToken);
+            return _acquisitions.Dequeue().WaitAsync(cancellationToken);
         }
     }
 
@@ -587,7 +587,7 @@ public sealed class AgentRunProfileTests
         : IChatClient
     {
         private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
+            IAsyncEnumerable<ChatResponseUpdate>>> _responses = new(responses);
 
         public List<IReadOnlyList<ChatMessage>> Requests { get; } = [];
 
@@ -615,7 +615,7 @@ public sealed class AgentRunProfileTests
             Instructions.Add(options?.Instructions);
             ToolNames.Add(options?.Tools?.OfType<AIFunction>().Select(static tool => tool.Name).ToArray() ?? []);
             AllTools.Add(options?.Tools?.ToArray() ?? []);
-            return responses.Dequeue()(Requests[^1], cancellationToken);
+            return _responses.Dequeue()(Requests[^1], cancellationToken);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null)

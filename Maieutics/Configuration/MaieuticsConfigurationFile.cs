@@ -92,13 +92,13 @@ internal sealed record MaieuticsConfigurationFile(string? Path, bool Required, s
 
 internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 {
-    private readonly IDisposable? owner;
-    private int disposed;
+    private readonly IDisposable? _owner;
+    private int _disposed;
 
     private MaieuticsConfigurationFileProvider(IFileProvider provider, string relativePath, IDisposable? owner)
     {
         Provider = provider;
-        this.owner = owner;
+        this._owner = owner;
         RelativePath = relativePath;
     }
 
@@ -106,11 +106,11 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
     internal string RelativePath { get; }
 
-    internal bool IsDisposed => Volatile.Read(ref disposed) != 0;
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) == 0) owner?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0) _owner?.Dispose();
     }
 
     internal static MaieuticsConfigurationFileProvider Create(string? path)
@@ -140,45 +140,45 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
     private sealed class PollingFileProvider : IFileProvider, IDisposable
     {
-        private readonly PhysicalFileProvider inner;
-        private readonly TimeSpan interval;
-        private readonly ConcurrentDictionary<long, PollingChangeToken> tokens = new();
-        private int disposed;
-        private long nextTokenId;
+        private readonly PhysicalFileProvider _inner;
+        private readonly TimeSpan _interval;
+        private readonly ConcurrentDictionary<long, PollingChangeToken> _tokens = new();
+        private int _disposed;
+        private long _nextTokenId;
 
         internal PollingFileProvider(string root, TimeSpan interval)
         {
-            inner = new PhysicalFileProvider(root);
-            this.interval = interval;
+            _inner = new PhysicalFileProvider(root);
+            this._interval = interval;
         }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-            foreach (var token in tokens.Values) token.Dispose();
+            foreach (var token in _tokens.Values) token.Dispose();
 
-            tokens.Clear();
-            inner.Dispose();
+            _tokens.Clear();
+            _inner.Dispose();
         }
 
         public IFileInfo GetFileInfo(string subpath)
         {
-            return inner.GetFileInfo(subpath);
+            return _inner.GetFileInfo(subpath);
         }
 
         public IDirectoryContents GetDirectoryContents(string subpath)
         {
-            return inner.GetDirectoryContents(subpath);
+            return _inner.GetDirectoryContents(subpath);
         }
 
         public IChangeToken Watch(string filter)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-            var id = Interlocked.Increment(ref nextTokenId);
-            var fullPath = Path.Combine(inner.Root, filter);
-            var token = new PollingChangeToken(fullPath, interval, () => tokens.TryRemove(id, out _));
-            if (!tokens.TryAdd(id, token))
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            var id = Interlocked.Increment(ref _nextTokenId);
+            var fullPath = Path.Combine(_inner.Root, filter);
+            var token = new PollingChangeToken(fullPath, _interval, () => _tokens.TryRemove(id, out _));
+            if (!_tokens.TryAdd(id, token))
             {
                 token.Dispose();
                 throw new InvalidOperationException("Could not register a configuration file change token.");
@@ -190,22 +190,22 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
     private sealed class PollingChangeToken : IChangeToken, IDisposable
     {
-        private readonly CancellationTokenSource changed = new();
-        private readonly FileStamp initialStamp;
-        private readonly TimeSpan interval;
-        private readonly Action onChanged;
-        private readonly Timer timer;
-        private int disposed;
+        private readonly CancellationTokenSource _changed = new();
+        private readonly FileStamp _initialStamp;
+        private readonly TimeSpan _interval;
+        private readonly Action _onChanged;
+        private readonly Timer _timer;
+        private int _disposed;
 
         internal PollingChangeToken(string path, TimeSpan interval, Action onChanged)
         {
-            this.onChanged = onChanged;
-            this.interval = interval;
-            initialStamp = FileStamp.Read(path);
-            timer = new Timer(Poll, path, interval, interval);
+            this._onChanged = onChanged;
+            this._interval = interval;
+            _initialStamp = FileStamp.Read(path);
+            _timer = new Timer(Poll, path, interval, interval);
         }
 
-        public bool HasChanged => changed.IsCancellationRequested;
+        public bool HasChanged => _changed.IsCancellationRequested;
 
         public bool ActiveChangeCallbacks => true;
 
@@ -213,7 +213,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
         {
             try
             {
-                return changed.Token.Register(callback, state);
+                return _changed.Token.Register(callback, state);
             }
             catch (ObjectDisposedException)
             {
@@ -227,23 +227,23 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
-            timer.Dispose();
-            changed.Dispose();
+            _timer.Dispose();
+            _changed.Dispose();
         }
 
         private void Poll(object? state)
         {
-            if (Volatile.Read(ref disposed) != 0 || state is not string path) return;
+            if (Volatile.Read(ref _disposed) != 0 || state is not string path) return;
 
-            if (FileStamp.Read(path) == initialStamp) return;
+            if (FileStamp.Read(path) == _initialStamp) return;
 
-            timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             Exception? consumerFailure = null;
             try
             {
-                changed.Cancel();
+                _changed.Cancel();
             }
             catch (Exception exception)
             {
@@ -256,7 +256,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
                 // replaced. Resume polling so the change is retried instead of silently lost.
                 try
                 {
-                    timer.Change(interval, interval);
+                    _timer.Change(_interval, _interval);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -266,7 +266,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
                 return;
             }
 
-            onChanged();
+            _onChanged();
             Dispose();
         }
 
@@ -332,19 +332,19 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
 internal sealed class MaieuticsConfigurationFileErrors
 {
-    private readonly ConcurrentQueue<Exception> errors = new();
-    private Action? signal;
+    private readonly ConcurrentQueue<Exception> _errors = new();
+    private Action? _signal;
 
     internal void Record(Exception exception)
     {
-        errors.Enqueue(exception);
-        Volatile.Read(ref signal)?.Invoke();
+        _errors.Enqueue(exception);
+        Volatile.Read(ref _signal)?.Invoke();
     }
 
     internal IDisposable RegisterSignal(Action callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
-        if (Interlocked.CompareExchange(ref signal, callback, null) is not null)
+        if (Interlocked.CompareExchange(ref _signal, callback, null) is not null)
             throw new InvalidOperationException("A configuration error signal is already registered.");
 
         return new SignalRegistration(this, callback);
@@ -353,19 +353,19 @@ internal sealed class MaieuticsConfigurationFileErrors
     internal Exception? TakeLatest()
     {
         Exception? latest = null;
-        while (errors.TryDequeue(out var error)) latest = error;
+        while (_errors.TryDequeue(out var error)) latest = error;
 
         return latest;
     }
 
     private sealed class SignalRegistration(MaieuticsConfigurationFileErrors owner, Action callback) : IDisposable
     {
-        private int disposed;
+        private int _disposed;
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposed, 1) == 0)
-                Interlocked.CompareExchange(ref owner.signal, null, callback);
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                Interlocked.CompareExchange(ref owner._signal, null, callback);
         }
     }
 }

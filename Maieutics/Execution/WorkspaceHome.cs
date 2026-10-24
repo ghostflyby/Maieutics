@@ -86,17 +86,17 @@ internal sealed class WorkspaceHome
     internal const string ScratchDirectoryName = "scratch";
     internal const string StateDirectoryName = ".maieutics";
 
-    private readonly WorkspaceLinkRegistry registry;
-    private readonly Lock healthGate = new();
+    private readonly WorkspaceLinkRegistry _registry;
+    private readonly Lock _healthGate = new();
 
-    private readonly Dictionary<string, WorkspaceLinkHealth> healthByName =
+    private readonly Dictionary<string, WorkspaceLinkHealth> _healthByName =
         new(StringComparer.OrdinalIgnoreCase);
 
     private WorkspaceHome(string homePath, string projectsRoot, WorkspaceLinkRegistry registry)
     {
         HomePath = homePath;
         ProjectsRoot = projectsRoot;
-        this.registry = registry;
+        this._registry = registry;
     }
 
     internal string HomePath { get; }
@@ -142,7 +142,7 @@ internal sealed class WorkspaceHome
     }
 
     internal WorkspaceLinks LinksView() =>
-        WorkspaceLinks.FromRecords(registry.Entries(), SnapshotHealth());
+        WorkspaceLinks.FromRecords(_registry.Entries(), SnapshotHealth());
 
     /// <summary>Opens an external directory as a managed project link. Opening the same
     /// target twice is idempotent and returns the existing record; opening the same
@@ -167,7 +167,7 @@ internal sealed class WorkspaceHome
 
         var identity = WorkspaceFileIdentityReader.TryRead(target);
 
-        var existing = registry.FindByTarget(target);
+        var existing = _registry.FindByTarget(target);
         if (existing is not null)
         {
             if (existing.Identity is not null && identity is not null &&
@@ -182,7 +182,7 @@ internal sealed class WorkspaceHome
             return existing;
         }
 
-        var moved = identity is null ? null : registry.FindByFingerprint(identity);
+        var moved = identity is null ? null : _registry.FindByFingerprint(identity);
         if (moved is not null)
         {
             // The same project object, opened where it now lives after a rename or move:
@@ -191,18 +191,18 @@ internal sealed class WorkspaceHome
             // describing the state the file system is actually in.
             var record = moved with { Target = target };
             EnsurePhysicalLink(record);
-            registry.UpdateTarget(moved.Name, target);
+            _registry.UpdateTarget(moved.Name, target);
             SetHealth(moved.Name, new WorkspaceLinkHealth(
                 WorkspaceLinkState.Relocated,
                 $"relocated to {target}"));
             return record;
         }
 
-        var name = registry.AllocateName(target, alias, identity);
+        var name = _registry.AllocateName(target, alias, identity);
         var linkPath = LinkPath(name);
         RemoveStrayLink(linkPath);
         var created = new WorkspaceLinkRecord(name, target, alias, DateTimeOffset.UtcNow, identity);
-        registry.CommitNew(created);
+        _registry.CommitNew(created);
         try
         {
             ManagedWorkspaceLink.Create(linkPath, target);
@@ -212,7 +212,7 @@ internal sealed class WorkspaceHome
             // The registry is the authority and the link is derived state (ADR 0027 §4):
             // committing it first means a crash leaves at most a registered link the next
             // startup's remount repairs — never an unregistered link nothing owns.
-            registry.Rollback(name);
+            _registry.Rollback(name);
             ForgetHealth(name);
             throw;
         }
@@ -229,7 +229,7 @@ internal sealed class WorkspaceHome
     internal WorkspaceLinkRecord Close(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var record = registry.FindByName(name)
+        var record = _registry.FindByName(name)
                      ?? throw new ArgumentException($"No open workspace link is named '{name}'.");
 
         var linkPath = LinkPath(record.Name);
@@ -238,7 +238,7 @@ internal sealed class WorkspaceHome
             throw new IOException(
                 $"The workspace link path '{linkPath}' is not a link; refusing to delete it.");
 
-        registry.Remove(record.Name);
+        _registry.Remove(record.Name);
         ForgetHealth(record.Name);
         try
         {
@@ -257,7 +257,7 @@ internal sealed class WorkspaceHome
 
     private void Remount()
     {
-        foreach (var record in registry.Entries())
+        foreach (var record in _registry.Entries())
         {
             try
             {
@@ -292,7 +292,7 @@ internal sealed class WorkspaceHome
 
         if (record.Identity is not null && TryRelocate(record) is { } relocated)
         {
-            registry.UpdateTarget(record.Name, relocated);
+            _registry.UpdateTarget(record.Name, relocated);
             EnsurePhysicalLink(record with { Target = relocated });
             SetHealth(record.Name, new WorkspaceLinkHealth(
                 WorkspaceLinkState.Relocated,
@@ -367,26 +367,26 @@ internal sealed class WorkspaceHome
 
     private void SetHealth(string name, WorkspaceLinkHealth entry)
     {
-        lock (healthGate)
+        lock (_healthGate)
         {
-            healthByName[name] = entry;
+            _healthByName[name] = entry;
         }
     }
 
     private void ForgetHealth(string name)
     {
-        lock (healthGate)
+        lock (_healthGate)
         {
-            healthByName.Remove(name);
+            _healthByName.Remove(name);
         }
     }
 
     private IReadOnlyDictionary<string, WorkspaceLinkHealth> SnapshotHealth()
     {
-        lock (healthGate)
+        lock (_healthGate)
         {
             return new Dictionary<string, WorkspaceLinkHealth>(
-                healthByName,
+                _healthByName,
                 StringComparer.OrdinalIgnoreCase);
         }
     }

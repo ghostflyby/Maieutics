@@ -499,7 +499,7 @@ public sealed class AgentTranscriptSessionTests
         : IChatClient
     {
         private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
+            IAsyncEnumerable<ChatResponseUpdate>>> _responses = new(responses);
 
         public List<IReadOnlyList<ChatMessage>> Requests { get; } = [];
 
@@ -518,7 +518,7 @@ public sealed class AgentTranscriptSessionTests
         {
             var request = messages.Select(static message => message.Clone()).ToArray();
             Requests.Add(request);
-            return responses.Dequeue()(request, cancellationToken);
+            return _responses.Dequeue()(request, cancellationToken);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null)

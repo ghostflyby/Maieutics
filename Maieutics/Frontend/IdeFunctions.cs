@@ -72,11 +72,11 @@ internal sealed class IdeFunctions
 
     private static readonly JsonSerializerOptions SerializerOptions = IdeFunctionJsonContext.Default.Options;
 
-    private readonly Workspace workspace;
-    private readonly IdeRequestRegistry requests;
-    private readonly IIdeFrontendGate gate;
-    private readonly WorkspaceEditFunctions workspaceEdits;
-    private readonly FrontendIdeSockets sockets;
+    private readonly Workspace _workspace;
+    private readonly IdeRequestRegistry _requests;
+    private readonly IIdeFrontendGate _gate;
+    private readonly WorkspaceEditFunctions _workspaceEdits;
+    private readonly FrontendIdeSockets _sockets;
 
     public IdeFunctions(
         Workspace workspace,
@@ -85,11 +85,11 @@ internal sealed class IdeFunctions
         WorkspaceEditFunctions workspaceEdits,
         FrontendIdeSockets sockets)
     {
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
-        this.workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
-        this.sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        this._gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        this._workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
+        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
 
         Functions =
         [
@@ -476,10 +476,10 @@ internal sealed class IdeFunctions
                 var resolved = ResolveDocumentUri(target.WorkspaceUri);
                 var current = await IdeSelector.ReadTextAsync(resolved.FullPath, cancellationToken).ConfigureAwait(true);
                 var content = IdeWorkspaceEdit.ComputeContent(target, current);
-                if (Encoding.UTF8.GetByteCount(content) > workspaceEdits.MaximumWriteBytes)
+                if (Encoding.UTF8.GetByteCount(content) > _workspaceEdits.MaximumWriteBytes)
                     throw new AgentToolException(
                         "ide_edit_rejected",
-                        $"the computed content exceeds the {workspaceEdits.MaximumWriteBytes} byte write bound.");
+                        $"the computed content exceeds the {_workspaceEdits.MaximumWriteBytes} byte write bound.");
                 validated.Add((target, resolved, content));
             }
             catch (AgentToolException exception)
@@ -512,7 +512,7 @@ internal sealed class IdeFunctions
 
             try
             {
-                applied.Add(await workspaceEdits
+                applied.Add(await _workspaceEdits
                     .ApplyComputedContentAsync(resolved.WorkspaceUri, content, arguments, cancellationToken)
                     .ConfigureAwait(true));
             }
@@ -906,7 +906,7 @@ internal sealed class IdeFunctions
         JsonElement parameters,
         CancellationToken cancellationToken)
     {
-        var registration = requests.Begin();
+        var registration = _requests.Begin();
         try
         {
             var envelope = JsonSerializer.SerializeToElement(
@@ -915,7 +915,7 @@ internal sealed class IdeFunctions
                 IdeFunctionJsonContext.Default.IdeRequestEnvelope);
             if (announce is null)
             {
-                var sent = await sockets
+                var sent = await _sockets
                     .TrySendToAnnouncingAsync(new FrontendEventFrame("ide.request", Data: envelope.GetProperty("ideRequest").Clone()), cancellationToken)
                     .ConfigureAwait(false);
                 if (!sent)
@@ -958,7 +958,7 @@ internal sealed class IdeFunctions
         {
             // Every exit — answer, timeout, cancellation — drops the entry, so a late or
             // replayed answer always renders as a typed 404 at the answer endpoint.
-            requests.Abandon(registration.RequestId);
+            _requests.Abandon(registration.RequestId);
         }
     }
 
@@ -983,7 +983,7 @@ internal sealed class IdeFunctions
             return;
         }
 
-        if (!gate.HasIdeFrontend)
+        if (!_gate.HasIdeFrontend)
             throw new AgentToolException(
                 "ide_unavailable",
                 "No frontend has announced IDE capability; the IDE tools need the extension host's events socket (ide=1).");
@@ -991,7 +991,7 @@ internal sealed class IdeFunctions
 
     private void EnsureConnectedCore(string sessionId)
     {
-        if (!gate.IsIdeFrontendConnected(sessionId))
+        if (!_gate.IsIdeFrontendConnected(sessionId))
             throw new AgentToolException(
                 "ide_unavailable",
                 "No frontend connected to this session has announced IDE capability; the IDE tools need the " +
@@ -1002,7 +1002,7 @@ internal sealed class IdeFunctions
     {
         try
         {
-            var resolved = workspace.Capture().Resolve(uri);
+            var resolved = _workspace.Capture().Resolve(uri);
             if (resolved.IsDirectory)
                 throw new WorkspaceException("ide_invalid_arguments", "The uri must address a file, not a directory.");
             return new ResolvedDocument(
@@ -1228,7 +1228,7 @@ internal sealed class IdeFunctions
         var physical = uriElement.GetString();
         if (physical is null || !physical.StartsWith(FileUriPrefix, StringComparison.Ordinal)) return false;
         if (!Uri.TryCreate(physical, UriKind.Absolute, out var parsed) || parsed.Scheme != "file") return false;
-        return workspace.Capture().TryMapPhysicalToWorkspaceUri(parsed.LocalPath, out workspaceUri);
+        return _workspace.Capture().TryMapPhysicalToWorkspaceUri(parsed.LocalPath, out workspaceUri);
     }
 
     private static IEnumerable<JsonElement> EnumerateDiagnostics(JsonElement document)
@@ -1349,7 +1349,7 @@ internal sealed class IdeFunctions
                 return value;
             try
             {
-                return ToFileUri(workspace.Capture().Resolve(value).FullPath);
+                return ToFileUri(_workspace.Capture().Resolve(value).FullPath);
             }
             catch (WorkspaceException exception)
             {
@@ -1361,7 +1361,7 @@ internal sealed class IdeFunctions
 
         if (!value.StartsWith(FileUriPrefix, StringComparison.Ordinal)) return value;
         if (!Uri.TryCreate(value, UriKind.Absolute, out var parsed) || parsed.Scheme != "file") return value;
-        return workspace.Capture().TryMapPhysicalToWorkspaceUri(parsed.LocalPath, out var mapped) && mapped is not null
+        return _workspace.Capture().TryMapPhysicalToWorkspaceUri(parsed.LocalPath, out var mapped) && mapped is not null
             ? mapped
             : value;
     }

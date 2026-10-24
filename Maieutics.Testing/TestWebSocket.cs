@@ -11,54 +11,54 @@ namespace Maieutics.Testing;
 /// and yields the close frame.</summary>
 public class TestWebSocket : WebSocket
 {
-    private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly Channel<InboundFrame> inbound = Channel.CreateUnbounded<InboundFrame>();
-    private readonly Channel<SentFrame> sent = Channel.CreateUnbounded<SentFrame>();
-    private WebSocketCloseStatus? negotiatedCloseStatus;
-    private string? closeStatusDescription;
-    private WebSocketState state = WebSocketState.Open;
+    private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Channel<InboundFrame> _inbound = Channel.CreateUnbounded<InboundFrame>();
+    private readonly Channel<SentFrame> _sent = Channel.CreateUnbounded<SentFrame>();
+    private WebSocketCloseStatus? _negotiatedCloseStatus;
+    private string? _closeStatusDescription;
+    private WebSocketState _state = WebSocketState.Open;
 
     /// <summary>Completes when the socket is closed, aborted, or disposed.</summary>
-    public Task Closed => closed.Task;
+    public Task Closed => _closed.Task;
 
-    public override WebSocketState State => state;
+    public override WebSocketState State => _state;
 
-    public override WebSocketCloseStatus? CloseStatus => negotiatedCloseStatus;
+    public override WebSocketCloseStatus? CloseStatus => _negotiatedCloseStatus;
 
-    public override string? CloseStatusDescription => closeStatusDescription;
+    public override string? CloseStatusDescription => _closeStatusDescription;
 
     public override string? SubProtocol => null;
 
     /// <summary>Queues one complete inbound text message.</summary>
     public void QueueText(string text)
     {
-        inbound.Writer.TryWrite(new InboundFrame(Encoding.UTF8.GetBytes(text), IsClose: false, IsText: true));
+        _inbound.Writer.TryWrite(new InboundFrame(Encoding.UTF8.GetBytes(text), IsClose: false, IsText: true));
     }
 
     /// <summary>Queues one complete inbound binary message.</summary>
     public void QueueBinary(byte[] bytes)
     {
-        inbound.Writer.TryWrite(new InboundFrame(bytes, IsClose: false, IsText: false));
+        _inbound.Writer.TryWrite(new InboundFrame(bytes, IsClose: false, IsText: false));
     }
 
     /// <summary>Queues the inbound close frame: the next receive reports it.</summary>
     public void QueueClose()
     {
-        inbound.Writer.TryWrite(new InboundFrame([], IsClose: true, IsText: false));
+        _inbound.Writer.TryWrite(new InboundFrame([], IsClose: true, IsText: false));
     }
 
     /// <summary>Reads the next text message the peer sent, in send order, decoded as a
     /// UTF-8 string.</summary>
     public async ValueTask<string> ReadSentAsync(CancellationToken cancellationToken)
     {
-        var frame = await sent.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var frame = await _sent.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         return Encoding.UTF8.GetString(frame.Bytes);
     }
 
     public override void Abort()
     {
-        state = WebSocketState.Aborted;
-        closed.TrySetResult();
+        _state = WebSocketState.Aborted;
+        _closed.TrySetResult();
     }
 
     public override Task CloseAsync(
@@ -75,19 +75,19 @@ public class TestWebSocket : WebSocket
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        negotiatedCloseStatus = closeStatus;
-        closeStatusDescription = statusDescription;
-        state = WebSocketState.Closed;
-        closed.TrySetResult();
+        _negotiatedCloseStatus = closeStatus;
+        _closeStatusDescription = statusDescription;
+        _state = WebSocketState.Closed;
+        _closed.TrySetResult();
         return Task.CompletedTask;
     }
 
     public override void Dispose()
     {
-        state = WebSocketState.Closed;
-        inbound.Writer.TryComplete();
-        sent.Writer.TryComplete();
-        closed.TrySetResult();
+        _state = WebSocketState.Closed;
+        _inbound.Writer.TryComplete();
+        _sent.Writer.TryComplete();
+        _closed.TrySetResult();
     }
 
     public override async Task<WebSocketReceiveResult> ReceiveAsync(
@@ -134,7 +134,7 @@ public class TestWebSocket : WebSocket
         cancellationToken.ThrowIfCancellationRequested();
         if (!endOfMessage)
             throw new InvalidOperationException("The test socket only accepts complete messages.");
-        await sent.Writer.WriteAsync(new SentFrame(messageType, buffer.ToArray()), cancellationToken).ConfigureAwait(false);
+        await _sent.Writer.WriteAsync(new SentFrame(messageType, buffer.ToArray()), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Waits for the next queued inbound frame; an empty queue waits for one to
@@ -143,11 +143,11 @@ public class TestWebSocket : WebSocket
     {
         while (true)
         {
-            if (inbound.Reader.TryRead(out var frame)) return frame;
+            if (_inbound.Reader.TryRead(out var frame)) return frame;
 
-            var hasInbound = inbound.Reader.WaitToReadAsync(cancellationToken).AsTask();
-            var winner = await Task.WhenAny(hasInbound, closed.Task).ConfigureAwait(false);
-            if (ReferenceEquals(winner, closed.Task))
+            var hasInbound = _inbound.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            var winner = await Task.WhenAny(hasInbound, _closed.Task).ConfigureAwait(false);
+            if (ReferenceEquals(winner, _closed.Task))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 return CloseFrame;
@@ -165,7 +165,7 @@ public class TestWebSocket : WebSocket
 
     private WebSocketReceiveResult CloseResult()
     {
-        state = WebSocketState.CloseReceived;
+        _state = WebSocketState.CloseReceived;
         return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
     }
 

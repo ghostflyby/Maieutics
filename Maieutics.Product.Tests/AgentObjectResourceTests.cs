@@ -101,12 +101,12 @@ public sealed class AgentObjectResourceTests
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {
-        private readonly Dictionary<string, byte[]> objects = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, byte[]> _objects = new(StringComparer.Ordinal);
 
         public AgentObjectDescriptor Publish(byte[] bytes)
         {
             var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            objects[sha256] = bytes;
+            _objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length);
         }
 
@@ -119,7 +119,7 @@ public sealed class AgentObjectResourceTests
 
         public Stream Open(string sha256)
         {
-            if (!objects.TryGetValue(sha256, out var bytes))
+            if (!_objects.TryGetValue(sha256, out var bytes))
                 throw new FileNotFoundException($"Object '{sha256}' is not present.", sha256);
 
             return new MemoryStream(bytes, writable: false);

@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Providers.OpenAI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
-using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Providers.Anthropic;
 
@@ -97,14 +97,14 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
 
     private sealed class SourceGenerationKey(string apiKey, string? endpoint) : IEquatable<SourceGenerationKey>
     {
-        private readonly string apiKey = apiKey;
-        private readonly string? endpoint = endpoint;
+        private readonly string _apiKey = apiKey;
+        private readonly string? _endpoint = endpoint;
 
         public bool Equals(SourceGenerationKey? other)
         {
             return other is not null &&
-                   string.Equals(apiKey, other.apiKey, StringComparison.Ordinal) &&
-                   string.Equals(endpoint, other.endpoint, StringComparison.Ordinal);
+                   string.Equals(_apiKey, other._apiKey, StringComparison.Ordinal) &&
+                   string.Equals(_endpoint, other._endpoint, StringComparison.Ordinal);
         }
 
         public override bool Equals(object? obj)
@@ -115,13 +115,13 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         public override int GetHashCode()
         {
             return HashCode.Combine(
-                StringComparer.Ordinal.GetHashCode(apiKey),
-                endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(endpoint));
+                StringComparer.Ordinal.GetHashCode(_apiKey),
+                _endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(_endpoint));
         }
 
         public override string ToString()
         {
-            return $"SourceGenerationKey {{ ApiKey = <redacted>, Endpoint = {endpoint ?? "<default>"} }}";
+            return $"SourceGenerationKey {{ ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"} }}";
         }
     }
 }

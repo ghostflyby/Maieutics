@@ -20,16 +20,16 @@ namespace Maieutics.Persistence;
 /// </summary>
 internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
 {
-    private readonly string objectsRoot;
-    private readonly string stagingRoot;
+    private readonly string _objectsRoot;
+    private readonly string _stagingRoot;
 
     public ObjectStore(string objectsRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(objectsRoot);
-        this.objectsRoot = objectsRoot;
-        stagingRoot = Path.Combine(objectsRoot, ".staging");
+        this._objectsRoot = objectsRoot;
+        _stagingRoot = Path.Combine(objectsRoot, ".staging");
         Directory.CreateDirectory(objectsRoot);
-        Directory.CreateDirectory(stagingRoot);
+        Directory.CreateDirectory(_stagingRoot);
     }
 
     /// <summary>One published object: its content address and byte size.</summary>
@@ -47,7 +47,7 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     public IngestedObject Ingest(Stream content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        var tempPath = Path.Combine(stagingRoot, $"{Guid.NewGuid():N}.tmp");
+        var tempPath = Path.Combine(_stagingRoot, $"{Guid.NewGuid():N}.tmp");
         try
         {
             string sha256;
@@ -71,7 +71,7 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
                 sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             }
 
-            var finalPath = ObjectPath(objectsRoot, sha256);
+            var finalPath = ObjectPath(_objectsRoot, sha256);
             var fanout = Path.GetDirectoryName(finalPath);
             if (string.IsNullOrEmpty(fanout))
                 throw new InvalidOperationException("Cannot resolve the object fan-out directory.");
@@ -122,7 +122,7 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     public Stream Open(string sha256)
     {
         ValidateId(sha256);
-        var path = ObjectPath(objectsRoot, sha256);
+        var path = ObjectPath(_objectsRoot, sha256);
         if (!File.Exists(path))
             throw new FileNotFoundException($"Object '{sha256}' is not present in the store.", path);
 
@@ -135,7 +135,7 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     internal AgentObjectDescriptor? Describe(string sha256)
     {
         ValidateId(sha256);
-        var path = ObjectPath(objectsRoot, sha256);
+        var path = ObjectPath(_objectsRoot, sha256);
         if (!File.Exists(path)) return null;
 
         return new AgentObjectDescriptor(sha256, new FileInfo(path).Length);
@@ -145,14 +145,14 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     public bool Exists(string sha256)
     {
         ValidateId(sha256);
-        return File.Exists(ObjectPath(objectsRoot, sha256));
+        return File.Exists(ObjectPath(_objectsRoot, sha256));
     }
 
     /// <summary>Deletes one object. Reclamation is GC work, never part of the write path.</summary>
     public void Delete(string sha256)
     {
         ValidateId(sha256);
-        File.Delete(ObjectPath(objectsRoot, sha256));
+        File.Delete(ObjectPath(_objectsRoot, sha256));
     }
 
     /// <summary>Removes crashed or abandoned staging temporaries older than the cutoff.
@@ -160,11 +160,11 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     /// <returns>The number of temporaries removed.</returns>
     public int SweepStaging(TimeSpan maxAge)
     {
-        if (!Directory.Exists(stagingRoot)) return 0;
+        if (!Directory.Exists(_stagingRoot)) return 0;
 
         var cutoff = DateTime.UtcNow - maxAge;
         var removed = 0;
-        foreach (var file in Directory.EnumerateFiles(stagingRoot, "*.tmp"))
+        foreach (var file in Directory.EnumerateFiles(_stagingRoot, "*.tmp"))
         {
             try
             {
@@ -190,11 +190,11 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     /// <returns>The number of objects removed.</returns>
     public int DeleteExcept(IReadOnlyCollection<string> liveSha256, DateTimeOffset olderThan)
     {
-        if (!Directory.Exists(objectsRoot)) return 0;
+        if (!Directory.Exists(_objectsRoot)) return 0;
 
         var keep = liveSha256.ToHashSet(StringComparer.Ordinal);
         var removed = 0;
-        foreach (var directory in Directory.EnumerateDirectories(objectsRoot))
+        foreach (var directory in Directory.EnumerateDirectories(_objectsRoot))
         {
             // Dot-prefixed directories (.staging, future .trash) are not object fan-out.
             if (Path.GetFileName(directory).StartsWith(".", StringComparison.Ordinal)) continue;

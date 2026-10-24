@@ -104,7 +104,7 @@ public sealed class AgentTranscriptStoreTests
 
     private sealed class RecordingTranscriptStore : IAgentTranscriptStore
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public List<AgentTranscriptTurn> Turns { get; } = [];
 
@@ -114,7 +114,7 @@ public sealed class AgentTranscriptStoreTests
 
         public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
         {
-            lock (gate)
+            lock (_gate)
             {
                 if (FailOnAppend) throw new InvalidOperationException("The transcript store is unavailable.");
                 SessionIds.Add(sessionId);

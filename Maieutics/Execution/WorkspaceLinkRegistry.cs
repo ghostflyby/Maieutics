@@ -46,19 +46,19 @@ internal sealed class WorkspaceLinkRegistry
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     };
 
-    private readonly Lock gate = new();
-    private readonly string path;
-    private readonly List<WorkspaceLinkRecord> links;
-    private readonly List<WorkspaceRetiredLink> retired;
+    private readonly Lock _gate = new();
+    private readonly string _path;
+    private readonly List<WorkspaceLinkRecord> _links;
+    private readonly List<WorkspaceRetiredLink> _retired;
 
     private WorkspaceLinkRegistry(
         string path,
         List<WorkspaceLinkRecord> links,
         List<WorkspaceRetiredLink> retired)
     {
-        this.path = path;
-        this.links = links;
-        this.retired = retired;
+        this._path = path;
+        this._links = links;
+        this._retired = retired;
     }
 
     /// <summary>Loads the registry or starts a fresh one. A file that cannot be parsed is
@@ -120,17 +120,17 @@ internal sealed class WorkspaceLinkRegistry
 
     internal IReadOnlyList<WorkspaceLinkRecord> Entries()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return [.. links];
+            return [.. _links];
         }
     }
 
     internal WorkspaceLinkRecord? FindByTarget(string canonicalTarget)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return links.FirstOrDefault(link => PathsEqual(link.Target, canonicalTarget));
+            return _links.FirstOrDefault(link => PathsEqual(link.Target, canonicalTarget));
         }
     }
 
@@ -138,17 +138,17 @@ internal sealed class WorkspaceLinkRegistry
     /// lives; null when no open record carries a matching fingerprint.</summary>
     internal WorkspaceLinkRecord? FindByFingerprint(WorkspaceFileIdentity identity)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return links.FirstOrDefault(link => link.Identity?.Matches(identity) == true);
+            return _links.FirstOrDefault(link => link.Identity?.Matches(identity) == true);
         }
     }
 
     internal WorkspaceLinkRecord? FindByName(string name)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return links.FirstOrDefault(link =>
+            return _links.FirstOrDefault(link =>
                 string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
         }
     }
@@ -158,16 +158,16 @@ internal sealed class WorkspaceLinkRegistry
     /// fingerprint is what makes this a move and not a re-binding.</summary>
     internal WorkspaceLinkRecord UpdateTarget(string name, string target)
     {
-        lock (gate)
+        lock (_gate)
         {
-            var index = links.FindIndex(link =>
+            var index = _links.FindIndex(link =>
                 string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
             if (index < 0)
                 throw new ArgumentException($"No open workspace link is named '{name}'.");
 
-            links[index] = links[index] with { Target = target };
+            _links[index] = _links[index] with { Target = target };
             Persist();
-            return links[index];
+            return _links[index];
         }
     }
 
@@ -182,9 +182,9 @@ internal sealed class WorkspaceLinkRegistry
         string? alias,
         WorkspaceFileIdentity? identity = null)
     {
-        lock (gate)
+        lock (_gate)
         {
-            var boundName = retired.FirstOrDefault(retiredLink =>
+            var boundName = _retired.FirstOrDefault(retiredLink =>
                     RetiredNameMatches(retiredLink, canonicalTarget, identity) &&
                     !IsOccupied(retiredLink.Name, excludeTarget: canonicalTarget, identity))
                 ?.Name;
@@ -223,25 +223,25 @@ internal sealed class WorkspaceLinkRegistry
 
     internal void CommitNew(WorkspaceLinkRecord record)
     {
-        lock (gate)
+        lock (_gate)
         {
-            links.Add(record);
+            _links.Add(record);
             Persist();
         }
     }
 
     internal WorkspaceLinkRecord Remove(string name)
     {
-        lock (gate)
+        lock (_gate)
         {
-            var index = links.FindIndex(link =>
+            var index = _links.FindIndex(link =>
                 string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
             if (index < 0)
                 throw new ArgumentException($"No open workspace link is named '{name}'.");
 
-            var record = links[index];
-            links.RemoveAt(index);
-            retired.Add(new WorkspaceRetiredLink(record.Name, record.Target, record.Identity));
+            var record = _links[index];
+            _links.RemoveAt(index);
+            _retired.Add(new WorkspaceRetiredLink(record.Name, record.Target, record.Identity));
             Persist();
             return record;
         }
@@ -254,13 +254,13 @@ internal sealed class WorkspaceLinkRegistry
     /// remount repairs it.</summary>
     internal void Rollback(string name)
     {
-        lock (gate)
+        lock (_gate)
         {
-            var index = links.FindIndex(link =>
+            var index = _links.FindIndex(link =>
                 string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase));
             if (index < 0) return;
 
-            links.RemoveAt(index);
+            _links.RemoveAt(index);
             try
             {
                 Persist();
@@ -317,10 +317,10 @@ internal sealed class WorkspaceLinkRegistry
         string? excludeTarget,
         WorkspaceFileIdentity? excludeIdentity = null)
     {
-        return links.Any(link =>
+        return _links.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
                    (excludeTarget is null || !PathsEqual(link.Target, excludeTarget))) ||
-               retired.Any(link =>
+               _retired.Any(link =>
                    string.Equals(link.Name, name, StringComparison.OrdinalIgnoreCase) &&
                    (excludeTarget is null || !PathsEqual(link.Target, excludeTarget)) &&
                    !IsOwnFormerBinding(link, excludeIdentity));
@@ -335,7 +335,7 @@ internal sealed class WorkspaceLinkRegistry
 
     private void Persist()
     {
-        var directory = Path.GetDirectoryName(path);
+        var directory = Path.GetDirectoryName(_path);
         if (directory is null)
             throw new InvalidOperationException(
                 "The workspace link registry path has no directory component.");
@@ -345,7 +345,7 @@ internal sealed class WorkspaceLinkRegistry
         // into the same scratch file, and the flush before the rename keeps a crash from
         // publishing a truncated registry (which would drop the retired-name tombstones and
         // let a retired name be reallocated to a different target).
-        var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+        var temporary = $"{_path}.{Guid.NewGuid():N}.tmp";
         try
         {
             using (var stream = new FileStream(
@@ -356,12 +356,12 @@ internal sealed class WorkspaceLinkRegistry
             {
                 JsonSerializer.Serialize(
                     stream,
-                    new WorkspaceLinkRegistryState(FormatVersion, links, retired),
+                    new WorkspaceLinkRegistryState(FormatVersion, _links, _retired),
                     WorkspaceLinkJsonContext.Default.WorkspaceLinkRegistryState);
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporary, path, true);
+            File.Move(temporary, _path, true);
         }
         catch
         {

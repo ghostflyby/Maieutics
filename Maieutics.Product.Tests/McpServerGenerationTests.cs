@@ -90,9 +90,9 @@ public sealed class McpServerGenerationTests
 
     private sealed class FakeToolSurfaceAdjuster(Func<JsonElement, JsonElement?> handler) : IMcpToolSurfaceAdjuster
     {
-        private readonly Lock gate = new();
-        private int invocations;
-        private TaskCompletionSource invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Lock _gate = new();
+        private int _invocations;
+        private TaskCompletionSource _invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>Waits until the adjuster has completed at least <paramref name="count"/>
         /// invocations. Signal-driven: each completed invocation (the handler has run and its
@@ -105,11 +105,11 @@ public sealed class McpServerGenerationTests
                 cancellationToken.ThrowIfCancellationRequested();
 
                 Task signal;
-                lock (gate)
+                lock (_gate)
                 {
-                    if (invocations >= count) return;
+                    if (_invocations >= count) return;
 
-                    signal = invoked.Task;
+                    signal = _invoked.Task;
                 }
 
                 await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -122,11 +122,11 @@ public sealed class McpServerGenerationTests
             CancellationToken cancellationToken)
         {
             TaskCompletionSource completed;
-            lock (gate)
+            lock (_gate)
             {
-                invocations++;
-                completed = invoked;
-                invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _invocations++;
+                completed = _invoked;
+                _invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
             var result = handler(listing);
@@ -828,11 +828,11 @@ public sealed class McpServerGenerationTests
     private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false, bool elicit = false)
         : IAsyncDisposable
     {
-        private CancellationTokenSource lifetime = new();
+        private CancellationTokenSource _lifetime = new();
 
         // The client-facing pipe ends are kept per connection: disposing the server does not
         // close them, and completing them is what makes the connected client observe a drop.
-        private readonly List<(McpServer Server, Task Completion, PipeWriter ClientSend, PipeWriter ServerSend)> servers = [];
+        private readonly List<(McpServer Server, Task Completion, PipeWriter ClientSend, PipeWriter ServerSend)> _servers = [];
 
         /// <summary>Makes the next transport creation fail, exercising the supervisor's
         /// reconnect backoff without a real server fault.</summary>
@@ -844,15 +844,15 @@ public sealed class McpServerGenerationTests
         /// succeed.</summary>
         internal async Task DisconnectClientsAsync()
         {
-            CancellationTokenSource previous = lifetime;
-            lifetime = new CancellationTokenSource();
+            CancellationTokenSource previous = _lifetime;
+            _lifetime = new CancellationTokenSource();
             await previous.CancelAsync().ConfigureAwait(false);
             previous.Dispose();
 
             // Sequential with the supervisor's reconnect attempts in these tests: a
             // replacement transport is created only after this returns.
-            var disconnected = servers.ToArray();
-            servers.Clear();
+            var disconnected = _servers.ToArray();
+            _servers.Clear();
             foreach (var (server, _, clientSend, serverSend) in disconnected)
             {
                 // ClientSend EOF fails the client's next outbound write; ServerSend EOF ends
@@ -875,19 +875,19 @@ public sealed class McpServerGenerationTests
 
         public async ValueTask DisposeAsync()
         {
-            await lifetime.CancelAsync();
-            foreach (var (server, _, _, _) in servers) await server.DisposeAsync();
+            await _lifetime.CancelAsync();
+            foreach (var (server, _, _, _) in _servers) await server.DisposeAsync();
 
-            foreach (var (_, completion, _, _) in servers)
+            foreach (var (_, completion, _, _) in _servers)
                 try
                 {
                     await completion;
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                 {
                 }
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal ValueTask<IClientTransport> CreateTransportAsync(
@@ -950,7 +950,7 @@ public sealed class McpServerGenerationTests
                     ToolCollection = [tool]
                 },
                 loggerFactory);
-            servers.Add((server, server.RunAsync(lifetime.Token), clientToServer.Writer, serverToClient.Writer));
+            _servers.Add((server, server.RunAsync(_lifetime.Token), clientToServer.Writer, serverToClient.Writer));
             IClientTransport clientTransport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),

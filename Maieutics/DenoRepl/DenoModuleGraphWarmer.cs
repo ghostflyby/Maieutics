@@ -16,27 +16,27 @@ internal sealed class DenoModuleGraphWarmer(
     DenoReplModule modules,
     ILogger<DenoModuleGraphWarmer> logger) : IHostedService
 {
-    private readonly CancellationTokenSource lifetime = new();
-    private Task? warming;
+    private readonly CancellationTokenSource _lifetime = new();
+    private Task? _warming;
 
     /// <summary>Completes when the background warm finishes (success or failure). Test seam; the
     /// host never waits on it.</summary>
-    internal Task? WarmCompletion => warming;
+    internal Task? WarmCompletion => _warming;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        warming = WarmAsync();
+        _warming = WarmAsync();
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await lifetime.CancelAsync();
-        if (warming is not null)
+        await _lifetime.CancelAsync();
+        if (_warming is not null)
         {
             try
             {
-                await warming.ConfigureAwait(false);
+                await _warming.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -72,7 +72,7 @@ internal sealed class DenoModuleGraphWarmer(
             var run = await DenoHelperProcess.RunAsync(
                     startInfo,
                     "to warm the Deno REPL module graph.",
-                    lifetime.Token)
+                    _lifetime.Token)
                 .ConfigureAwait(false);
             if (run.ExitCode != 0)
                 logger.LogDebug(
@@ -82,7 +82,7 @@ internal sealed class DenoModuleGraphWarmer(
             else
                 logger.LogInformation("Deno REPL module graph warmed successfully.");
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
             // Shutdown cancelled the warm; the helper already killed the child tree.
         }

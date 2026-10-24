@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
@@ -25,12 +26,12 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
     /// suite's real-time cost negligible.</summary>
     private static readonly TimeSpan NegativeWindow = TimeSpan.FromMilliseconds(300);
 
-    private readonly string workspaceRoot =
+    private readonly string _workspaceRoot =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-plugin-ws-{Guid.NewGuid():N}");
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
+        await TempArea.DeleteAsync(_workspaceRoot, CancellationToken.None);
     }
 
     private static void WriteSkill(string root, string name, string description)
@@ -193,7 +194,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             """["./"]""");
         WriteSkill(Path.Combine(root, "skills"), "alpha", "declared by the plugin");
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(
             root,
             clock,
@@ -241,7 +242,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             """, TestContext.Current.CancellationToken);
         WriteSkill(Path.Combine(root, "skills"), "delta", "declared in lowercase");
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(
             root,
             clock,
@@ -289,7 +290,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             """["./"]""");
         var variables = CreateVariables(new Dictionary<string, string> { ["SKILL_TEST_ROOT"] = outside });
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var grantedManager = CreateManager(
             granted, clock, catalog, variables, PluginApprovalSeeds.SeedLocalPlugins(granted));
         var ungrantedManager = CreateManager(
@@ -340,7 +341,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = Path.Combine(Path.GetTempPath(), $"mc-approvals-empty-{Guid.NewGuid():N}.json");
         await File.WriteAllTextAsync(approvals, """{"approvals": []}""", TestContext.Current.CancellationToken);
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         try
         {
@@ -386,7 +387,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -477,7 +478,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -578,7 +579,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -624,7 +625,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             """["./"]""");
         WriteSkill(Path.Combine(healthy, "skills"), "epsilon", "after the poison");
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var poisonedManager = CreateManager(
             poisoned, clock, catalog, CreateVariables([]), PluginApprovalSeeds.SeedLocalPlugins(poisoned));
         var healthyManager = CreateManager(
@@ -680,7 +681,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -740,7 +741,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -789,7 +790,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -864,7 +865,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -937,7 +938,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -998,7 +999,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = Path.Combine(Path.GetTempPath(), $"mc-approvals-blocked-{Guid.NewGuid():N}.json");
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -1066,7 +1067,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var pluginId = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -1111,7 +1112,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var root = CreateTwoGeneratorPluginsRoot();
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -1175,7 +1176,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         var root = CreateTwoGeneratorPluginsRoot();
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var clock = new FakeTimeProvider();
-        await using var catalog = CreateCatalog(workspaceRoot);
+        await using var catalog = CreateCatalog(_workspaceRoot);
         var manager = CreateManager(root, clock, catalog, CreateVariables([]), approvals);
         var fakeSocket = new FakeHostWebSocket();
         try
@@ -1390,11 +1391,11 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
     /// readers, and reply helpers.</summary>
     private sealed class FakeHostWebSocket : TestWebSocket
     {
-        private readonly Dictionary<string, int> skillInvokes = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _skillInvokes = new(StringComparer.Ordinal);
 
-        internal int TotalSkillInvokes => skillInvokes.Values.Sum(static count => count);
+        internal int TotalSkillInvokes => _skillInvokes.Values.Sum(static count => count);
 
-        internal int SkillInvokesBy(string pluginId) => skillInvokes.GetValueOrDefault(pluginId, 0);
+        internal int SkillInvokesBy(string pluginId) => _skillInvokes.GetValueOrDefault(pluginId, 0);
 
         public async Task<string> ReadSkillInvokeAsync(CancellationToken cancellationToken)
         {
@@ -1513,7 +1514,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (messageType != WebSocketMessageType.Text || !endOfMessage)
                 throw new InvalidOperationException("The test socket only accepts complete text messages.");
-            CountSkillInvoke(System.Text.Encoding.UTF8.GetString(buffer.Span));
+            CountSkillInvoke(Encoding.UTF8.GetString(buffer.Span));
             return base.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
         }
 
@@ -1529,7 +1530,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             {
                 var pluginId = PluginIdOf(message);
                 if (pluginId.Length == 0) return;
-                skillInvokes[pluginId] = skillInvokes.GetValueOrDefault(pluginId, 0) + 1;
+                _skillInvokes[pluginId] = _skillInvokes.GetValueOrDefault(pluginId, 0) + 1;
             }
             catch (JsonException)
             {

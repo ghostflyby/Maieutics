@@ -83,24 +83,24 @@ internal sealed record FrontendFormHandlers(
 /// </summary>
 internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDisposable
 {
-    private readonly FrontendCommRouter router;
-    private readonly AgentSessionId sessionId;
-    private readonly FrontendFormHandlers handlers;
-    private readonly string commId = Guid.NewGuid().ToString("N");
-    private readonly Lock gate = new();
-    private bool disposed;
+    private readonly FrontendCommRouter _router;
+    private readonly AgentSessionId _sessionId;
+    private readonly FrontendFormHandlers _handlers;
+    private readonly string _commId = Guid.NewGuid().ToString("N");
+    private readonly Lock _gate = new();
+    private bool _disposed;
 
     private FrontendFormModel(
         FrontendCommRouter router,
         AgentSessionId sessionId,
         FrontendFormHandlers handlers)
     {
-        this.router = router;
-        this.sessionId = sessionId;
-        this.handlers = handlers;
+        this._router = router;
+        this._sessionId = sessionId;
+        this._handlers = handlers;
     }
 
-    internal string CommId => commId;
+    internal string CommId => _commId;
 
     /// <summary>Uplink routing (kernel-owned): message frames decode through the native
     /// dialect, close releases the model. Unknown shapes are ignored (invariant 18).</summary>
@@ -125,14 +125,14 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
                 if (payload?.Method == "event" && payload.Name == "submit")
                 {
                     var values = DecodeValues(payload.Payload);
-                    if (handlers.OnSubmit is { } onSubmit)
+                    if (_handlers.OnSubmit is { } onSubmit)
                     {
                         await onSubmit(values, cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else if (payload?.Method == "event" && payload.Name == "cancel")
                 {
-                    if (handlers.OnCancel is { } onCancel)
+                    if (_handlers.OnCancel is { } onCancel)
                     {
                         await onCancel(cancellationToken).ConfigureAwait(false);
                     }
@@ -148,16 +148,16 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
 
     public async ValueTask DisposeAsync()
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
-            disposed = true;
+            if (_disposed) return;
+            _disposed = true;
         }
 
-        handlers.Closed?.Invoke();
-        await router.PublishFromKernelAsync(
-            sessionId.ToString(),
-            new ReplCommMessage(ReplCommKind.Close, commId, null, null, null, []),
+        _handlers.Closed?.Invoke();
+        await _router.PublishFromKernelAsync(
+            _sessionId.ToString(),
+            new ReplCommMessage(ReplCommKind.Close, _commId, null, null, null, []),
             owner: null,
             CancellationToken.None).ConfigureAwait(false);
     }
@@ -179,14 +179,14 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
             FrontendJsonContext.Default.DictionaryStringObject);
         await router.PublishFromKernelAsync(
             sessionId.ToString(),
-            new ReplCommMessage(ReplCommKind.Open, model.commId, FrontendUiWire.FormTarget, open, null, []),
+            new ReplCommMessage(ReplCommKind.Open, model._commId, FrontendUiWire.FormTarget, open, null, []),
             owner: model,
             cancellationToken).ConfigureAwait(false);
 
         var announcement = new Dictionary<string, object?>
         {
             [FrontendUiWire.ViewMime] = new FrontendUiFormAnnouncement(
-                model.commId,
+                model._commId,
                 FrontendUiWire.FormFamily,
                 FrontendUiWire.FormVersion,
                 state),

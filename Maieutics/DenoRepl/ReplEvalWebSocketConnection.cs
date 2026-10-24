@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Control;
 
@@ -23,34 +24,34 @@ internal interface IDenoReplConnection
 
 internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncDisposable
 {
-    private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly Channel<OutgoingMessage> outgoing;
-    private readonly Dictionary<string, string> pendingInputRequests = new(StringComparer.Ordinal);
-    private readonly Lock stateLock = new();
-    private readonly WebSocket socket;
-    private readonly string readyCorrelationId;
-    private ExecutionState? activeExecution;
-    private int disposeState;
-    private Task ownerTask = Task.CompletedTask;
-    private CancellationTokenRegistration ownerCancellation;
-    private string? lastCompletedExecutionId;
-    private ShutdownState? shutdown;
-    private int shutdownAcknowledged;
-    private int startState;
-    private Exception? terminalError;
-    private int terminalState;
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Channel<OutgoingMessage> _outgoing;
+    private readonly Dictionary<string, string> _pendingInputRequests = new(StringComparer.Ordinal);
+    private readonly Lock _stateLock = new();
+    private readonly WebSocket _socket;
+    private readonly string _readyCorrelationId;
+    private ExecutionState? _activeExecution;
+    private int _disposeState;
+    private Task _ownerTask = Task.CompletedTask;
+    private CancellationTokenRegistration _ownerCancellation;
+    private string? _lastCompletedExecutionId;
+    private ShutdownState? _shutdown;
+    private int _shutdownAcknowledged;
+    private int _startState;
+    private Exception? _terminalError;
+    private int _terminalState;
 
     internal ReplEvalWebSocketConnection(
         WebSocket socket,
         ReplEvalIdentity identity,
         string readyCorrelationId)
     {
-        this.socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         ArgumentException.ThrowIfNullOrWhiteSpace(readyCorrelationId);
-        this.readyCorrelationId = readyCorrelationId;
-        outgoing = Channel.CreateBounded<OutgoingMessage>(new BoundedChannelOptions(ReplEvalProtocol.QueueCapacity)
+        this._readyCorrelationId = readyCorrelationId;
+        _outgoing = Channel.CreateBounded<OutgoingMessage>(new BoundedChannelOptions(ReplEvalProtocol.QueueCapacity)
         {
             SingleReader = true,
             SingleWriter = false,
@@ -60,14 +61,14 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
     internal ReplEvalIdentity Identity { get; }
 
-    public Task Completion => completion.Task;
+    public Task Completion => _completion.Task;
 
     internal async Task StartAsync(CancellationToken ownerToken)
     {
-        if (Interlocked.Exchange(ref startState, 1) != 0)
+        if (Interlocked.Exchange(ref _startState, 1) != 0)
             throw new InvalidOperationException("The REPL eval connection is already started.");
 
-        ownerCancellation = ownerToken.UnsafeRegister(
+        _ownerCancellation = ownerToken.UnsafeRegister(
             static state =>
             {
                 if (state is ReplEvalWebSocketConnection connection)
@@ -75,14 +76,14 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                         new OperationCanceledException("The REPL eval connection owner stopped."));
             },
             this);
-        ownerTask = RunOwnerAsync();
+        _ownerTask = RunOwnerAsync();
         try
         {
             var publicIdentity = Identity with { Credential = null };
             await SendAsync(
                 CreateEnvelope(
                     ReplEvalMessageType.Ready,
-                    readyCorrelationId,
+                    _readyCorrelationId,
                     ReplEvalProtocol.Payload(publicIdentity, ReplEvalJsonContext.Default.ReplEvalIdentity)),
                 ownerToken).ConfigureAwait(false);
         }
@@ -103,16 +104,16 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
         var executionId = Guid.NewGuid().ToString("D");
         ExecutionState state;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            if (activeExecution is not null)
+            if (_activeExecution is not null)
                 throw new InvalidOperationException(
-                    $"Execution '{activeExecution.ExecutionId}' is still active.");
-            if (shutdown is not null)
+                    $"Execution '{_activeExecution.ExecutionId}' is still active.");
+            if (_shutdown is not null)
                 throw new InvalidOperationException("The REPL eval connection is shutting down.");
 
             state = new ExecutionState(executionId);
-            activeExecution = state;
+            _activeExecution = state;
         }
 
         try
@@ -148,12 +149,12 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
         ExecutionState state;
         Task send;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            if (activeExecution is not { } active ||
+            if (_activeExecution is not { } active ||
                 !string.Equals(active.ExecutionId, executionId, StringComparison.Ordinal))
             {
-                if (string.Equals(lastCompletedExecutionId, executionId, StringComparison.Ordinal)) return;
+                if (string.Equals(_lastCompletedExecutionId, executionId, StringComparison.Ordinal)) return;
                 throw new InvalidOperationException($"Execution '{executionId}' is not active.");
             }
 
@@ -182,19 +183,19 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         cancellationToken.ThrowIfCancellationRequested();
 
         bool shouldReply;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            if (pendingInputRequests.TryGetValue(request.RequestId, out var executionId) &&
+            if (_pendingInputRequests.TryGetValue(request.RequestId, out var executionId) &&
                 string.Equals(executionId, request.ExecutionId, StringComparison.Ordinal))
             {
-                pendingInputRequests.Remove(request.RequestId);
+                _pendingInputRequests.Remove(request.RequestId);
                 shouldReply = true;
             }
             else
             {
                 // The execution may have already terminated: Deno can finish without
                 // awaiting the input result, so the reply has no recipient anymore.
-                shouldReply = string.Equals(lastCompletedExecutionId, request.ExecutionId, StringComparison.Ordinal);
+                shouldReply = string.Equals(_lastCompletedExecutionId, request.ExecutionId, StringComparison.Ordinal);
             }
         }
 
@@ -215,10 +216,10 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
     {
         cancellationToken.ThrowIfCancellationRequested();
         Task task;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            shutdown ??= new ShutdownState(Guid.NewGuid().ToString("D"));
-            task = shutdown.Task ??= RunShutdownAsync(shutdown);
+            _shutdown ??= new ShutdownState(Guid.NewGuid().ToString("D"));
+            task = _shutdown.Task ??= RunShutdownAsync(_shutdown);
         }
 
         return task.WaitAsync(cancellationToken);
@@ -226,15 +227,15 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0)
             Terminate(new ObjectDisposedException(nameof(ReplEvalWebSocketConnection)));
 
-        await ownerTask.ConfigureAwait(false);
+        await _ownerTask.ConfigureAwait(false);
     }
 
     internal Task WaitForTerminationAsync()
     {
-        return ownerTask;
+        return _ownerTask;
     }
 
     internal static async Task<(ReplEvalIdentity Identity, string CorrelationId)> ReadHelloAsync(
@@ -269,7 +270,7 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         {
             await Task.WhenAll(ReceiveAsync(), SendAsync()).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -278,23 +279,23 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         }
         finally
         {
-            if (Interlocked.CompareExchange(ref terminalState, 1, 0) == 0)
-                terminalError = new IOException("The REPL eval WebSocket owner ended unexpectedly.");
+            if (Interlocked.CompareExchange(ref _terminalState, 1, 0) == 0)
+                _terminalError = new IOException("The REPL eval WebSocket owner ended unexpectedly.");
 
-            outgoing.Writer.TryComplete(terminalError);
-            await lifetime.CancelAsync();
-            await ownerCancellation.DisposeAsync();
+            _outgoing.Writer.TryComplete(_terminalError);
+            await _lifetime.CancelAsync();
+            await _ownerCancellation.DisposeAsync();
 
-            var failure = terminalError ?? new ObjectDisposedException(nameof(ReplEvalWebSocketConnection));
-            while (outgoing.Reader.TryRead(out var message)) message.Sent.TrySetException(failure);
+            var failure = _terminalError ?? new ObjectDisposedException(nameof(ReplEvalWebSocketConnection));
+            while (_outgoing.Reader.TryRead(out var message)) message.Sent.TrySetException(failure);
             FailPending(failure);
 
-            if (terminalError is null && Volatile.Read(ref shutdownAcknowledged) != 0)
-                completion.TrySetResult();
+            if (_terminalError is null && Volatile.Read(ref _shutdownAcknowledged) != 0)
+                _completion.TrySetResult();
             else
-                completion.TrySetException(failure);
+                _completion.TrySetException(failure);
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
     }
 
@@ -302,12 +303,12 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
     {
         try
         {
-            while (!lifetime.IsCancellationRequested)
+            while (!_lifetime.IsCancellationRequested)
             {
-                var text = await ReplControlMessageReader.ReadAsync(socket, lifetime.Token).ConfigureAwait(false);
+                var text = await ReplControlMessageReader.ReadAsync(_socket, _lifetime.Token).ConfigureAwait(false);
                 if (text is null)
                 {
-                    if (Volatile.Read(ref shutdownAcknowledged) != 0)
+                    if (Volatile.Read(ref _shutdownAcknowledged) != 0)
                         Terminate(null);
                     else
                         Terminate(new IOException("The REPL eval WebSocket closed unexpectedly."));
@@ -317,7 +318,7 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                 await HandleEnvelopeAsync(ReplEvalProtocol.Deserialize(text)).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -331,14 +332,14 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
     {
         try
         {
-            await foreach (var message in outgoing.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            await foreach (var message in _outgoing.Reader.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
                 try
                 {
-                    await socket.SendAsync(
+                    await _socket.SendAsync(
                         message.Bytes,
                         WebSocketMessageType.Text,
                         true,
-                        lifetime.Token).ConfigureAwait(false);
+                        _lifetime.Token).ConfigureAwait(false);
                     message.Sent.TrySetResult();
                 }
                 catch (Exception exception)
@@ -347,7 +348,7 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                     throw;
                 }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -366,7 +367,7 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
             new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
         try
         {
-            await outgoing.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
+            await _outgoing.Writer.WriteAsync(message, cancellationToken).ConfigureAwait(false);
         }
         catch (ChannelClosedException)
         {
@@ -425,19 +426,19 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         string? inputRequestId = null)
     {
         ExecutionState state;
-        lock (stateLock)
+        lock (_stateLock)
         {
             state = RequireActive(envelope, replEvent.ExecutionId, requireExecutionCorrelation: inputRequestId is null);
             // Arrival order is the single ordering authority: the Deno client forwards
             // output events through one FIFO pump, so no sequence validation is needed.
-            if (inputRequestId is not null && !pendingInputRequests.TryAdd(inputRequestId, state.ExecutionId))
+            if (inputRequestId is not null && !_pendingInputRequests.TryAdd(inputRequestId, state.ExecutionId))
                 throw new ReplEvalProtocolException(
                     "duplicate_input_request",
                     $"Input request '{inputRequestId}' is already pending.",
                     envelope.CorrelationId);
         }
 
-        await state.Events.Writer.WriteAsync(replEvent, lifetime.Token).ConfigureAwait(false);
+        await state.Events.Writer.WriteAsync(replEvent, _lifetime.Token).ConfigureAwait(false);
     }
 
     private void HandleResult(ReplEvalEnvelope envelope)
@@ -452,15 +453,15 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         }
 
         ShutdownState state;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            state = shutdown is { } pending &&
+            state = _shutdown is { } pending &&
                     string.Equals(pending.CorrelationId, envelope.CorrelationId, StringComparison.Ordinal)
                 ? pending
                 : throw UnknownCorrelation(envelope);
         }
 
-        Interlocked.Exchange(ref shutdownAcknowledged, 1);
+        Interlocked.Exchange(ref _shutdownAcknowledged, 1);
         state.Acknowledged.TrySetResult();
     }
 
@@ -480,9 +481,9 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
             return;
         }
 
-        lock (stateLock)
+        lock (_stateLock)
         {
-            if (shutdown is { } pending &&
+            if (_shutdown is { } pending &&
                 string.Equals(pending.CorrelationId, envelope.CorrelationId, StringComparison.Ordinal))
             {
                 pending.Acknowledged.TrySetException(
@@ -511,12 +512,12 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         ReplEvalTerminal terminal)
     {
         ExecutionState state;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            if (activeExecution is not { } active ||
+            if (_activeExecution is not { } active ||
                 !string.Equals(active.ExecutionId, executionId, StringComparison.Ordinal))
             {
-                var code = string.Equals(lastCompletedExecutionId, executionId, StringComparison.Ordinal)
+                var code = string.Equals(_lastCompletedExecutionId, executionId, StringComparison.Ordinal)
                     ? "duplicate_terminal"
                     : "unknown_correlation";
                 throw new ReplEvalProtocolException(
@@ -531,13 +532,13 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
                     envelope.CorrelationId);
 
             state = active;
-            activeExecution = null;
-            lastCompletedExecutionId = executionId;
-            foreach (var request in pendingInputRequests
+            _activeExecution = null;
+            _lastCompletedExecutionId = executionId;
+            foreach (var request in _pendingInputRequests
                          .Where(pair => string.Equals(pair.Value, executionId, StringComparison.Ordinal))
                          .Select(static pair => pair.Key)
                          .ToArray())
-                pendingInputRequests.Remove(request);
+                _pendingInputRequests.Remove(request);
         }
 
         state.Events.Writer.TryComplete();
@@ -552,7 +553,7 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         string executionId,
         bool requireExecutionCorrelation)
     {
-        if (activeExecution is not { } state ||
+        if (_activeExecution is not { } state ||
             !string.Equals(state.ExecutionId, executionId, StringComparison.Ordinal))
             throw UnknownCorrelation(envelope);
         if (requireExecutionCorrelation &&
@@ -579,12 +580,12 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
     {
         ExecutionState? execution;
         ShutdownState? pendingShutdown;
-        lock (stateLock)
+        lock (_stateLock)
         {
-            execution = activeExecution;
-            activeExecution = null;
-            pendingInputRequests.Clear();
-            pendingShutdown = shutdown;
+            execution = _activeExecution;
+            _activeExecution = null;
+            _pendingInputRequests.Clear();
+            pendingShutdown = _shutdown;
         }
 
         if (execution is not null)
@@ -597,25 +598,25 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
     private void Terminate(Exception? exception)
     {
-        if (Interlocked.CompareExchange(ref terminalState, 1, 0) != 0) return;
-        terminalError = exception;
-        outgoing.Writer.TryComplete(exception);
-        lifetime.Cancel();
+        if (Interlocked.CompareExchange(ref _terminalState, 1, 0) != 0) return;
+        _terminalError = exception;
+        _outgoing.Writer.TryComplete(exception);
+        _lifetime.Cancel();
     }
 
     private void ThrowIfUnavailable()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-        if (Volatile.Read(ref terminalState) != 0)
-            throw new IOException("The REPL eval WebSocket has terminated.", terminalError);
-        if (Volatile.Read(ref startState) == 0)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+        if (Volatile.Read(ref _terminalState) != 0)
+            throw new IOException("The REPL eval WebSocket has terminated.", _terminalError);
+        if (Volatile.Read(ref _startState) == 0)
             throw new InvalidOperationException("The REPL eval connection has not started.");
     }
 
     private static ReplEvalEnvelope CreateEnvelope(
         string type,
         string correlationId,
-        System.Text.Json.JsonElement payload)
+        JsonElement payload)
     {
         return new ReplEvalEnvelope(ReplEvalProtocol.Version, type, correlationId, payload);
     }
@@ -677,8 +678,8 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
 
 internal sealed class ReplEvalExecution
 {
-    private readonly ChannelReader<ReplEvalEvent> events;
-    private int enumerationState;
+    private readonly ChannelReader<ReplEvalEvent> _events;
+    private int _enumerationState;
 
     internal ReplEvalExecution(
         string executionId,
@@ -686,7 +687,7 @@ internal sealed class ReplEvalExecution
         Task<ReplEvalTerminal> completion)
     {
         ExecutionId = executionId;
-        this.events = events;
+        this._events = events;
         Completion = completion;
     }
 
@@ -699,10 +700,10 @@ internal sealed class ReplEvalExecution
     private async IAsyncEnumerable<ReplEvalEvent> ReadEventsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref enumerationState, 1) != 0)
+        if (Interlocked.Exchange(ref _enumerationState, 1) != 0)
             throw new InvalidOperationException("REPL eval execution events are single-consumer.");
 
-        await foreach (var replEvent in events.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var replEvent in _events.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             yield return replEvent;
     }
 }

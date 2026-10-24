@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Agent;
 using Maieutics.DenoRepl;
+using Maieutics.Execution;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -25,19 +26,19 @@ internal sealed partial class ReplControlHost : IDisposable
     private const int EnvelopeVersion = 1;
     private const string AuthorizedIdentityItem = "Maieutics.Control.AuthorizedIdentity";
 
-    private readonly ConcurrentDictionary<string, SessionBusConnection> connections = new(StringComparer.Ordinal);
-    private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink;
-    private readonly ILogger<ReplControlHost> logger;
-    private readonly ReplControlCredentialRegistry? credentialRegistry;
-    private readonly IWindowsPipeBootstrap? windowsPipeBootstrap;
-    private readonly Execution.ResourceRegistry? resources;
+    private readonly ConcurrentDictionary<string, SessionBusConnection> _connections = new(StringComparer.Ordinal);
+    private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask>? _commFrontendSink;
+    private readonly ILogger<ReplControlHost> _logger;
+    private readonly ReplControlCredentialRegistry? _credentialRegistry;
+    private readonly IWindowsPipeBootstrap? _windowsPipeBootstrap;
+    private readonly ResourceRegistry? _resources;
 
-    private readonly ReplOperationRegistry operations = new();
-    private readonly PluginHostManager? pluginHosts;
-    private readonly ReplControlSessionRegistry registry;
-    private readonly IReadOnlyList<AIFunction> scriptTools;
-    private readonly ModelOrchestrationSurface? orchestration;
-    private string? controlAddress;
+    private readonly ReplOperationRegistry _operations = new();
+    private readonly PluginHostManager? _pluginHosts;
+    private readonly ReplControlSessionRegistry _registry;
+    private readonly IReadOnlyList<AIFunction> _scriptTools;
+    private readonly ModelOrchestrationSurface? _orchestration;
+    private string? _controlAddress;
 
     public ReplControlHost(
         string socketPath,
@@ -48,36 +49,36 @@ internal sealed partial class ReplControlHost : IDisposable
         ReplControlCredentialRegistry? credentials = null,
         IWindowsPipeBootstrap? windowsPipeBootstrap = null,
         Func<string, ReplCommMessage, CancellationToken, ValueTask>? commFrontendSink = null,
-        Execution.ResourceRegistry? resources = null,
+        ResourceRegistry? resources = null,
         ModelOrchestrationSurface? orchestration = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
-        this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.scriptTools = scriptTools ?? [];
-        this.pluginHosts = pluginHosts;
-        credentialRegistry = credentials;
-        this.windowsPipeBootstrap = windowsPipeBootstrap;
-        this.commFrontendSink = commFrontendSink;
-        this.resources = resources;
-        this.orchestration = orchestration;
+        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this._scriptTools = scriptTools ?? [];
+        this._pluginHosts = pluginHosts;
+        _credentialRegistry = credentials;
+        this._windowsPipeBootstrap = windowsPipeBootstrap;
+        this._commFrontendSink = commFrontendSink;
+        this._resources = resources;
+        this._orchestration = orchestration;
     }
 
     /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>
     public string SocketPath { get; }
 
     /// <summary>Address REPL and plugin-host children use for the process-wide control channel.</summary>
-    public string ControlAddress => controlAddress ?? SocketPath;
+    public string ControlAddress => _controlAddress ?? SocketPath;
 
     /// <summary>Gets the Windows named pipe used only for credential bootstrap.</summary>
-    public string? WindowsPipeName => windowsPipeBootstrap?.PipeName;
+    public string? WindowsPipeName => _windowsPipeBootstrap?.PipeName;
 
     /// <summary>Updates the concrete loopback address after Kestrel binds its Windows endpoint.</summary>
     internal void SetControlAddress(string address)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(address);
-        controlAddress = address;
+        _controlAddress = address;
     }
 
     public void Dispose()
@@ -126,7 +127,7 @@ internal sealed partial class ReplControlHost : IDisposable
             var identity = await AuthorizeAsync(context).ConfigureAwait(false);
             if (identity is null)
             {
-                logger.LogWarning("Rejected control channel connection with an unexpected peer identity.");
+                _logger.LogWarning("Rejected control channel connection with an unexpected peer identity.");
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
@@ -138,14 +139,14 @@ internal sealed partial class ReplControlHost : IDisposable
         application.MapGet("/health", () => Results.Text("ok"));
         application.Map("/ws", HandleWebSocketAsync);
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
-        if (resources is not null) application.MapGet("/v1/resource", HandleResourceGetAsync);
-        if (orchestration is not null)
+        if (_resources is not null) application.MapGet("/v1/resource", HandleResourceGetAsync);
+        if (_orchestration is not null)
         {
             application.MapPost("/v1/model/subagents", HandleSubagentSpawnAsync);
             application.MapGet("/v1/model/subagents/{runId}", HandleSubagentWaitAsync);
             application.MapPost("/v1/model/subagents/{runId}/cancel", HandleSubagentCancelAsync);
         }
-        if (orchestration is not null)
+        if (_orchestration is not null)
         {
             application.MapGet("/v1/tasks", HandleTaskWaitAsync);
             application.MapPost("/v1/tasks/cancel", HandleTaskCancelAsync);
@@ -181,7 +182,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 using var identityWait = CancellationTokenSource.CreateLinkedTokenSource(
                     context.RequestAborted);
                 identityWait.CancelAfter(ReplControlLimits.PeerRegistrationWait);
-                await registry.WaitForIdentityAsync(peerProcessId, identityWait.Token)
+                await _registry.WaitForIdentityAsync(peerProcessId, identityWait.Token)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
@@ -190,10 +191,10 @@ internal sealed partial class ReplControlHost : IDisposable
                 return null;
             }
 
-            if (registry.TryGetSession(peerProcessId, out var sessionId))
+            if (_registry.TryGetSession(peerProcessId, out var sessionId))
                 return sessionId;
 
-            if (registry.TryGetPluginHost(peerProcessId, out var hostId))
+            if (_registry.TryGetPluginHost(peerProcessId, out var hostId))
                 return hostId;
 
             return null;
@@ -208,7 +209,7 @@ internal sealed partial class ReplControlHost : IDisposable
     private bool TryGetCredentialIdentity(HttpContext context, out string identity)
     {
         identity = string.Empty;
-        if (credentialRegistry is null ||
+        if (_credentialRegistry is null ||
             !context.Request.Headers.TryGetValue("Authorization", out var authorization))
             return false;
 
@@ -217,7 +218,7 @@ internal sealed partial class ReplControlHost : IDisposable
         if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
         var credential = value[prefix.Length..].Trim();
         return !string.IsNullOrWhiteSpace(credential) &&
-               credentialRegistry.TryResolve(credential, out identity);
+               _credentialRegistry.TryResolve(credential, out identity);
     }
 
     private async Task HandleWebSocketAsync(HttpContext context)
@@ -240,7 +241,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 authorizedIdentity,
                 context.RequestAborted)
             .ConfigureAwait(false);
-        logger.LogDebug("Control identity {Identity} peer {PeerProcessId}.", identity?.Id, peerProcessId);
+        _logger.LogDebug("Control identity {Identity} peer {PeerProcessId}.", identity?.Id, peerProcessId);
         if (identity is null)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -255,7 +256,7 @@ internal sealed partial class ReplControlHost : IDisposable
 
         if (identity.Kind == "host")
         {
-            if (pluginHosts is { } manager)
+            if (_pluginHosts is { } manager)
             {
                 await manager.AttachHostAsync(socket, context.RequestAborted).ConfigureAwait(false);
             }
@@ -276,19 +277,19 @@ internal sealed partial class ReplControlHost : IDisposable
         // Session-scoped gates (the IDE workspace bridge, ADR 0042 decision 12) key on
         // the owning agent session the events announce carries, not the REPL-local id
         // the hello claims; the pid-verified owner registration is the translation.
-        var gateSessionId = peerProcessId > 0 && registry.TryGetOwnerSession(peerProcessId, out var ownerSession)
+        var gateSessionId = peerProcessId > 0 && _registry.TryGetOwnerSession(peerProcessId, out var ownerSession)
             ? ownerSession
             : sessionId;
-        logger.LogDebug(
+        _logger.LogDebug(
             "Control-bus connection accepted for session {SessionId} (peer process {PeerProcessId}).",
             sessionId,
             peerProcessId);
         var connection = new SessionBusConnection(socket);
-        if (connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
+        if (_connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
         {
             // A replaced connection drains under a bounded budget: a peer that stops
             // reading must not stall the new connection's registration.
-            logger.LogDebug("Replacing the control-bus connection for session {SessionId}.", sessionId);
+            _logger.LogDebug("Replacing the control-bus connection for session {SessionId}.", sessionId);
             using var replacementBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
@@ -302,7 +303,7 @@ internal sealed partial class ReplControlHost : IDisposable
             }
         }
 
-        connections[sessionId] = connection;
+        _connections[sessionId] = connection;
         using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
         var toolInvocations = new List<Task>();
         try
@@ -318,7 +319,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 if (text is null) break;
 
                 await ObserveCompletedAsync(toolInvocations).ConfigureAwait(false);
-                logger.LogDebug("Control message received: {Message}.", text);
+                _logger.LogDebug("Control message received: {Message}.", text);
                 await HandleBusMessageAsync(
                     gateSessionId,
                     connection,
@@ -327,11 +328,11 @@ internal sealed partial class ReplControlHost : IDisposable
                     owner.Token).ConfigureAwait(false);
             }
 
-            logger.LogDebug("Control-bus receive loop for session {SessionId} ended gracefully.", sessionId);
+            _logger.LogDebug("Control-bus receive loop for session {SessionId} ended gracefully.", sessionId);
         }
         catch (Exception exception)
         {
-            logger.LogDebug(
+            _logger.LogDebug(
                 exception,
                 "Control-bus receive loop for session {SessionId} ended faulted.",
                 sessionId);
@@ -344,7 +345,7 @@ internal sealed partial class ReplControlHost : IDisposable
             // tool invocation rethrown below must not skip them, or pushes keep routing to
             // this dead socket until the child reconnects. The conditional removal keeps a
             // replaced connection from dropping its successor's registration.
-            connections.TryRemove(KeyValuePair.Create(sessionId, connection));
+            _connections.TryRemove(KeyValuePair.Create(sessionId, connection));
 
             // Each connection owns its open-comm registry, so nothing session-scoped is
             // removed here: a successor connection keeps its own registry.
@@ -354,7 +355,7 @@ internal sealed partial class ReplControlHost : IDisposable
             }
             catch (Exception exception)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     exception,
                     "Control-bus tool invocations for session {SessionId} ended faulted.",
                     sessionId);
@@ -376,7 +377,7 @@ internal sealed partial class ReplControlHost : IDisposable
             }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "A control-bus tool invocation failed.");
+                _logger.LogWarning(exception, "A control-bus tool invocation failed.");
             }
 
             toolInvocations.RemoveAt(index);
@@ -394,15 +395,15 @@ internal sealed partial class ReplControlHost : IDisposable
                 ? identity
                 : null;
             return string.Equals(authorizedIdentity, sessionId, StringComparison.Ordinal) &&
-                   registry.ContainsSession(sessionId)
+                   _registry.ContainsSession(sessionId)
                 ? sessionId
                 : null;
         }
 
         var processId = ReplControlPeerProcess.GetProcessId(context);
-        if (processId > 0) return registry.IsOwnedBy(processId, sessionId) ? sessionId : null;
+        if (processId > 0) return _registry.IsOwnedBy(processId, sessionId) ? sessionId : null;
 
-        return registry.ContainsSession(sessionId) ? sessionId : null;
+        return _registry.ContainsSession(sessionId) ? sessionId : null;
     }
 
     /// <summary>Verifies the hello of one control-bus connection. Plugin-host connections are
@@ -440,7 +441,7 @@ internal sealed partial class ReplControlHost : IDisposable
         if (payload.TryGetProperty("hostId", out var host) &&
             host.GetString() is { } hostId && !hostId.IsWhiteSpace())
         {
-            if ((peerProcessId > 0 && registry.IsPluginHostOwnedBy(peerProcessId, hostId)) ||
+            if ((peerProcessId > 0 && _registry.IsPluginHostOwnedBy(peerProcessId, hostId)) ||
                 string.Equals(authorizedIdentity, hostId, StringComparison.Ordinal))
                 return new HelloIdentity("host", hostId);
 
@@ -451,13 +452,13 @@ internal sealed partial class ReplControlHost : IDisposable
             session.GetString() is not { } sessionId || sessionId.IsWhiteSpace())
             return null;
 
-        if ((peerProcessId > 0 && registry.IsOwnedBy(peerProcessId, sessionId)) ||
+        if ((peerProcessId > 0 && _registry.IsOwnedBy(peerProcessId, sessionId)) ||
             string.Equals(authorizedIdentity, sessionId, StringComparison.Ordinal))
             return new HelloIdentity("session", sessionId);
 
         return peerProcessId <= 0 &&
                authorizedIdentity is null &&
-               registry.ContainsSession(sessionId)
+               _registry.ContainsSession(sessionId)
             ? new HelloIdentity("session", sessionId)
             : null;
     }
@@ -488,7 +489,7 @@ internal sealed partial class ReplControlHost : IDisposable
         switch (envelope.Type)
         {
             case ReplMessageType.ControlPing:
-                logger.LogDebug("Control ping {CorrelationId}.", envelope.CorrelationId);
+                _logger.LogDebug("Control ping {CorrelationId}.", envelope.CorrelationId);
                 await PushAsync(
                     connection,
                     new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlPong, envelope.CorrelationId),
@@ -507,7 +508,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     break;
                 }
 
-                var cancelled = operations.TryCancel(cancel.CorrelationId);
+                var cancelled = _operations.TryCancel(cancel.CorrelationId);
                 await PushAsync(
                     connection,
                     new ReplEnvelope(
@@ -703,7 +704,7 @@ internal sealed partial class ReplControlHost : IDisposable
         }
 
         var requestSessionId = ResolveRequestSessionId(context, request.SessionId);
-        connections.TryGetValue(requestSessionId ?? string.Empty, out var progressConnection);
+        _connections.TryGetValue(requestSessionId ?? string.Empty, out var progressConnection);
         var envelope = await InvokeToolAsync(
             request.Tool,
             request.Arguments,
@@ -766,7 +767,7 @@ internal sealed partial class ReplControlHost : IDisposable
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Control WebSocket tool invocation failed for session {SessionId}.",
                 sessionId);
@@ -826,7 +827,7 @@ internal sealed partial class ReplControlHost : IDisposable
         CancellationToken cancellationToken,
         string? sessionId = null)
     {
-        var function = scriptTools.FirstOrDefault(candidate => candidate.Name == tool);
+        var function = _scriptTools.FirstOrDefault(candidate => candidate.Name == tool);
         if (function is null)
             return ToolJson.CreateFailureEnvelope(
                 "tool_not_found",
@@ -841,7 +842,7 @@ internal sealed partial class ReplControlHost : IDisposable
         var invokeToken = cancellationToken;
         if (!string.IsNullOrWhiteSpace(correlationId))
         {
-            if (!operations.TryRegister(correlationId, operation))
+            if (!_operations.TryRegister(correlationId, operation))
                 return ToolJson.CreateFailureEnvelope(
                     "duplicate_correlation",
                     "The correlationId is already in use.");
@@ -905,12 +906,12 @@ internal sealed partial class ReplControlHost : IDisposable
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Script tool '{Tool}' failed.", tool);
+            _logger.LogWarning(exception, "Script tool '{Tool}' failed.", tool);
             envelope = ToolJson.CreateFailureEnvelope("tool_failed", exception.Message);
         }
         finally
         {
-            if (!string.IsNullOrWhiteSpace(correlationId)) operations.Remove(correlationId);
+            if (!string.IsNullOrWhiteSpace(correlationId)) _operations.Remove(correlationId);
         }
 
         if (!InsideCapabilityCall.Value)
@@ -933,7 +934,7 @@ internal sealed partial class ReplControlHost : IDisposable
         string? correlationId,
         CancellationToken cancellationToken)
     {
-        if (pluginHosts is not { } hosts) return arguments;
+        if (_pluginHosts is not { } hosts) return arguments;
 
         var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPreInvoke);
         var current = arguments;
@@ -982,7 +983,7 @@ internal sealed partial class ReplControlHost : IDisposable
         string? sessionId,
         CancellationToken cancellationToken)
     {
-        if (pluginHosts is not { } hosts) return;
+        if (_pluginHosts is not { } hosts) return;
 
         var registrations = hosts.GetRegistrations(ReplExtensionPointName.ToolPostInvoke);
         if (registrations.Count == 0) return;
@@ -995,7 +996,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 // Content observation is a declared surface (ADR 0032): a plugin without the
                 // inspections declaration sees the hook without the result payload. Origin is
                 // always tool — these are script tool invocations from the Deno side.
-                var deliversContent = pluginHosts.DeliversContent(registration.PluginId);
+                var deliversContent = _pluginHosts.DeliversContent(registration.PluginId);
                 var context = new ToolPostHookContextPayload(
                     tool,
                     SerializeArguments(arguments),
@@ -1017,7 +1018,7 @@ internal sealed partial class ReplControlHost : IDisposable
             }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "A post-invoke hook failed for tool '{Tool}'.", tool);
+                _logger.LogWarning(exception, "A post-invoke hook failed for tool '{Tool}'.", tool);
             }
     }
 

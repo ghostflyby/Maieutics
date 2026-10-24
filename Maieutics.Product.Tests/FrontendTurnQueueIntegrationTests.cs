@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Maieutics.Agent;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
 using GatedOpenAiServer = Maieutics.Testing.GatedModelProvider;
@@ -15,17 +16,17 @@ public sealed class FrontendTurnQueueIntegrationTests
 {
     private const string Answer = "queued answer";
 
-    private readonly ITestOutputHelper output;
+    private readonly ITestOutputHelper _output;
 
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
     /// whether the run under test ever reached the provider gate. Null until a test that
     /// needs the diagnostic sets it; one class instance serves exactly one test.</summary>
-    private GatedOpenAiServer? diagnosticProvider;
+    private GatedOpenAiServer? _diagnosticProvider;
 
-    public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
+    public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this._output = output;
 
     private void Trace(string message) =>
-        TestTrace.Write(output, "queue-test", message);
+        TestTrace.Write(_output, "queue-test", message);
 
     [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()
@@ -381,7 +382,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer(answer: Answer);
         // Exposed to the shared wait helpers for their timeout diagnostics.
-        diagnosticProvider = provider;
+        _diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         Trace("harness booted");
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -477,7 +478,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer(answer: Answer);
-        diagnosticProvider = provider;
+        _diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -593,7 +594,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         var manager = harness.SessionManager;
-        var addressed = new Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
+        var addressed = new AgentSessionId(Guid.ParseExact(sessionId, "N"));
 
         // No queue work: no pin. The lease is acquired synchronously with the enqueue
         // commit, so a session with queued work is pinned from that moment.
@@ -665,7 +666,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
         {
             throw new InvalidOperationException(
-                $"the queue state never matched after {polls} polls; provider parked={diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}",
+                $"the queue state never matched after {polls} polls; provider parked={_diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}",
                 exception);
         }
     }
@@ -842,7 +843,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             // whether the run ever reached the provider gate (parked=0 means the
             // submission itself stalled before issuing the provider request).
             throw new InvalidOperationException(
-                $"no matching queue.updated frame; provider parked={diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}; "
+                $"no matching queue.updated frame; provider parked={_diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}; "
                 + $"frames seen: [{string.Join("; ", seen)}]",
                 exception);
         }

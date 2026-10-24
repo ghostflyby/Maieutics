@@ -11,11 +11,11 @@ public sealed class ObjectStoreTests : IAsyncDisposable
     // SHA-256 of the UTF-8 bytes "abc" (RFC 9160 test vector).
     private const string AbcDigest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
-    private readonly string objectsRoot;
+    private readonly string _objectsRoot;
 
     public ObjectStoreTests()
     {
-        objectsRoot = Path.Combine(
+        _objectsRoot = Path.Combine(
             Path.GetTempPath(),
             "maieutics-object-store-tests",
             Guid.NewGuid().ToString("N"));
@@ -23,10 +23,10 @@ public sealed class ObjectStoreTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(objectsRoot, CancellationToken.None);
+        await TempArea.DeleteAsync(_objectsRoot, CancellationToken.None);
     }
 
-    private ObjectStore CreateStore() => new(objectsRoot);
+    private ObjectStore CreateStore() => new(_objectsRoot);
 
     [Fact]
     public void IngestPublishesTheObjectAtItsHashAddress()
@@ -36,7 +36,7 @@ public sealed class ObjectStoreTests : IAsyncDisposable
 
         Assert.Equal(AbcDigest, ingested.Sha256);
         Assert.Equal(3, ingested.Size);
-        Assert.True(File.Exists(Path.Combine(objectsRoot, "ba", AbcDigest)));
+        Assert.True(File.Exists(Path.Combine(_objectsRoot, "ba", AbcDigest)));
 
         using var read = store.Open(AbcDigest);
         using var reader = new StreamReader(read);
@@ -51,8 +51,8 @@ public sealed class ObjectStoreTests : IAsyncDisposable
         var second = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("abc")));
 
         Assert.Equal(first, second);
-        Assert.Single(Directory.GetFiles(Path.Combine(objectsRoot, "ba")));
-        Assert.Empty(Directory.GetFiles(Path.Combine(objectsRoot, ".staging")));
+        Assert.Single(Directory.GetFiles(Path.Combine(_objectsRoot, "ba")));
+        Assert.Empty(Directory.GetFiles(Path.Combine(_objectsRoot, ".staging")));
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class ObjectStoreTests : IAsyncDisposable
     public void SweepStagingReclaimsOnlyExpiredTemporaries()
     {
         var store = CreateStore();
-        var staging = Path.Combine(objectsRoot, ".staging");
+        var staging = Path.Combine(_objectsRoot, ".staging");
         var stale = Path.Combine(staging, "00000000000000000000000000000000.tmp");
         var fresh = Path.Combine(staging, "11111111111111111111111111111111.tmp");
         File.WriteAllBytes(stale, [1]);

@@ -45,41 +45,41 @@ internal sealed class McpElicitationCoordinator
     private const int MaximumMessageCharacters = 4 * 1024;
     private const int MaximumSchemaBytes = 16 * 1024;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentToolCallId, AgentSessionId> inFlightCalls = [];
-    private readonly IMcpElicitationPresenter? presenter;
-    private readonly ILogger logger;
-    private readonly TimeSpan waitTimeout;
-    private int inFlightElicitations;
-    private bool refused;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentToolCallId, AgentSessionId> _inFlightCalls = [];
+    private readonly IMcpElicitationPresenter? _presenter;
+    private readonly ILogger _logger;
+    private readonly TimeSpan _waitTimeout;
+    private int _inFlightElicitations;
+    private bool _refused;
 
     public McpElicitationCoordinator(
         IMcpElicitationPresenter? presenter,
         ILogger logger,
         TimeSpan? waitTimeout = null)
     {
-        this.presenter = presenter;
-        this.logger = logger;
-        this.waitTimeout = waitTimeout ?? TimeSpan.FromSeconds(120);
+        this._presenter = presenter;
+        this._logger = logger;
+        this._waitTimeout = waitTimeout ?? TimeSpan.FromSeconds(120);
     }
 
-    internal bool IsEnabled => presenter is not null;
+    internal bool IsEnabled => _presenter is not null;
 
     /// <summary>Records one in-flight tool call so a concurrent elicitation can be attributed.</summary>
     public void RegisterCall(AgentToolCallId callId, AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            inFlightCalls[callId] = sessionId;
+            _inFlightCalls[callId] = sessionId;
         }
     }
 
     /// <summary>Removes a finished tool call's attribution.</summary>
     public void UnregisterCall(AgentToolCallId callId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            inFlightCalls.Remove(callId);
+            _inFlightCalls.Remove(callId);
         }
     }
 
@@ -91,14 +91,14 @@ internal sealed class McpElicitationCoordinator
         ElicitRequestParams request,
         CancellationToken cancellationToken)
     {
-        if (presenter is null || Volatile.Read(ref refused))
+        if (_presenter is null || Volatile.Read(ref _refused))
             return CancelResult();
 
         // One in-flight elicitation per server: a second concurrent request is refused rather
         // than queued, so a chatty server cannot stack prompts.
-        if (Interlocked.CompareExchange(ref inFlightElicitations, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _inFlightElicitations, 1, 0) != 0)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "MCP server {ServerId} raised an elicitation while another is pending; answered cancel.",
                 serverId);
             return CancelResult();
@@ -112,7 +112,7 @@ internal sealed class McpElicitationCoordinator
             var message = request.Message ?? string.Empty;
             if (message.Length > MaximumMessageCharacters)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "MCP server {ServerId} sent an oversized elicitation message; answered cancel.",
                     serverId);
                 return CancelResult();
@@ -129,7 +129,7 @@ internal sealed class McpElicitationCoordinator
                     McpJsonUtilities.GetTypeInfo<ElicitRequestParams.RequestSchema>(McpJsonUtilities.DefaultOptions));
                 if (bytes.Length > MaximumSchemaBytes)
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "MCP server {ServerId} sent an oversized elicitation schema; answered cancel.",
                         serverId);
                     return CancelResult();
@@ -138,7 +138,7 @@ internal sealed class McpElicitationCoordinator
                 using var schemaDocument = JsonDocument.Parse(bytes);
                 if (schemaDocument.RootElement.ValueKind != JsonValueKind.Object)
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "MCP server {ServerId} sent a non-object elicitation schema; answered cancel.",
                         serverId);
                     return CancelResult();
@@ -154,19 +154,19 @@ internal sealed class McpElicitationCoordinator
             // The wait is bounded (ADR 0029 decision 3): an absent user answers cancel inside
             // the budget, and the wait still honours the caller's cancellation for shutdown.
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            waitCts.CancelAfter(waitTimeout);
+            waitCts.CancelAfter(_waitTimeout);
             McpElicitationAnswer answer;
             try
             {
                 // The bounded wait is the coordinator's responsibility, not the presenter's:
                 // an implementation that ignores the token still cannot hang this request.
-                answer = await presenter.PresentAsync(
+                answer = await _presenter.PresentAsync(
                     new McpElicitationRequest(serverId, sessionId.Value.ToString(), message, schema, Password: false),
                     waitCts.Token).AsTask().WaitAsync(waitCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (waitCts.IsCancellationRequested)
             {
-                logger.LogInformation(
+                _logger.LogInformation(
                     "MCP server {ServerId} elicitation timed out unanswered; answered cancel.",
                     serverId);
                 return CancelResult();
@@ -183,7 +183,7 @@ internal sealed class McpElicitationCoordinator
             // A presenter that fails outside a terminal answer is refused for the rest of the
             // generation so a broken frontend cannot be probed repeatedly.
             Refuse();
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "MCP server {ServerId} elicitation presentation failed; answered cancel and refusing further requests.",
                 serverId);
@@ -191,7 +191,7 @@ internal sealed class McpElicitationCoordinator
         }
         finally
         {
-            Interlocked.Exchange(ref inFlightElicitations, 0);
+            Interlocked.Exchange(ref _inFlightElicitations, 0);
         }
     }
 
@@ -199,7 +199,7 @@ internal sealed class McpElicitationCoordinator
     /// outside a terminal answer, so a broken frontend cannot be probed repeatedly.</summary>
     internal void Refuse()
     {
-        Volatile.Write(ref refused, true);
+        Volatile.Write(ref _refused, true);
     }
 
     /// <summary>Returns the single Agent session with an in-flight call on this generation,
@@ -207,13 +207,13 @@ internal sealed class McpElicitationCoordinator
     private AgentSessionId? AttributeSession(string serverId)
     {
         AgentSessionId? attributed = null;
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var sessionId in inFlightCalls.Values.Distinct())
+            foreach (var sessionId in _inFlightCalls.Values.Distinct())
             {
                 if (attributed is not null)
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "MCP server {ServerId} raised an elicitation with calls in flight from several sessions; answered cancel.",
                         serverId);
                     return null;
@@ -224,7 +224,7 @@ internal sealed class McpElicitationCoordinator
         }
 
         if (attributed is null)
-            logger.LogWarning(
+            _logger.LogWarning(
                 "MCP server {ServerId} raised an elicitation outside any in-flight tool call; answered cancel.",
                 serverId);
 
@@ -238,7 +238,7 @@ internal sealed class McpElicitationCoordinator
             var action = string.Equals(answer.Action, "decline", StringComparison.Ordinal)
                 ? "decline"
                 : "cancel";
-            logger.LogInformation(
+            _logger.LogInformation(
                 "MCP server {ServerId} elicitation answered {Action}.",
                 serverId,
                 action);
@@ -258,7 +258,7 @@ internal sealed class McpElicitationCoordinator
             }
         }
 
-        logger.LogInformation(
+        _logger.LogInformation(
             "MCP server {ServerId} elicitation accepted with {FieldCount} field(s).",
             serverId,
             content.Count);

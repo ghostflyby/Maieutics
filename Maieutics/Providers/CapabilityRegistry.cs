@@ -49,15 +49,15 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
             ["Anthropic"] = "api.anthropic.com"
         };
 
-    private readonly IReadOnlyDictionary<string, EndpointCapabilityProfile> endpointProfiles;
-    private readonly IReadOnlyDictionary<string, VendorCapabilityProfile> vendorProfiles;
+    private readonly IReadOnlyDictionary<string, EndpointCapabilityProfile> _endpointProfiles;
+    private readonly IReadOnlyDictionary<string, VendorCapabilityProfile> _vendorProfiles;
 
     private CapabilityRegistry(
         IReadOnlyDictionary<string, EndpointCapabilityProfile> endpointProfiles,
         IReadOnlyDictionary<string, VendorCapabilityProfile> vendorProfiles)
     {
-        this.endpointProfiles = endpointProfiles;
-        this.vendorProfiles = vendorProfiles;
+        this._endpointProfiles = endpointProfiles;
+        this._vendorProfiles = vendorProfiles;
     }
 
     /// <summary>
@@ -122,7 +122,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
 
         if (TryResolveHost(source) is not { } host) return null;
 
-        foreach (var pair in vendorProfiles)
+        foreach (var pair in _vendorProfiles)
             if (pair.Value.EndpointHosts.Contains(host, StringComparer.OrdinalIgnoreCase))
                 return pair.Key;
 
@@ -150,7 +150,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
         // capabilities themselves are the aggregate.
         if (vendorId is null) return source.FormatCapabilities;
 
-        if (vendorProfiles.TryGetValue(vendorId, out var vendorProfile))
+        if (_vendorProfiles.TryGetValue(vendorId, out var vendorProfile))
         {
             if (vendorProfile.ModelCapabilities.TryGetValue(model, out var modelCapabilities))
                 return modelCapabilities;
@@ -170,7 +170,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     {
         if (vendorId is null) return false;
 
-        if (vendorProfiles.ContainsKey(vendorId)) return true;
+        if (_vendorProfiles.ContainsKey(vendorId)) return true;
 
         foreach (var builtIn in BuiltInVendors.Values)
             if (string.Equals(builtIn.VendorId, vendorId, StringComparison.OrdinalIgnoreCase))
@@ -182,7 +182,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     private EndpointCapabilityProfile? GetEndpointProfile(Uri? endpoint)
     {
         if (endpoint is null || !TryNormalizeEndpoint(endpoint, out var normalized) ||
-            !endpointProfiles.TryGetValue(normalized, out var profile))
+            !_endpointProfiles.TryGetValue(normalized, out var profile))
             return null;
 
         return profile;
@@ -191,7 +191,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     private bool IsKnown(Uri? endpoint)
     {
         return endpoint is not null && TryNormalizeEndpoint(endpoint, out var normalized) &&
-               endpointProfiles.ContainsKey(normalized);
+               _endpointProfiles.ContainsKey(normalized);
     }
 
     /// <summary>Normalizes a configured capability URL, rejecting non-HTTP URLs and URL components that would make matching ambiguous.</summary>
@@ -236,17 +236,17 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     public bool Equals(CapabilityRegistry? other)
     {
         if (other is null ||
-            endpointProfiles.Count != other.endpointProfiles.Count ||
-            vendorProfiles.Count != other.vendorProfiles.Count)
+            _endpointProfiles.Count != other._endpointProfiles.Count ||
+            _vendorProfiles.Count != other._vendorProfiles.Count)
             return false;
 
-        foreach (var pair in endpointProfiles)
-            if (!other.endpointProfiles.TryGetValue(pair.Key, out var otherProfile) ||
+        foreach (var pair in _endpointProfiles)
+            if (!other._endpointProfiles.TryGetValue(pair.Key, out var otherProfile) ||
                 !EndpointProfilesEqual(pair.Value, otherProfile))
                 return false;
 
-        foreach (var pair in vendorProfiles)
-            if (!other.vendorProfiles.TryGetValue(pair.Key, out var otherProfile) ||
+        foreach (var pair in _vendorProfiles)
+            if (!other._vendorProfiles.TryGetValue(pair.Key, out var otherProfile) ||
                 !VendorProfilesEqual(pair.Value, otherProfile))
                 return false;
 
@@ -261,14 +261,14 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     public override int GetHashCode()
     {
         var hash = new HashCode();
-        foreach (var pair in endpointProfiles.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+        foreach (var pair in _endpointProfiles.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
             hash.Add(pair.Key);
             hash.Add(pair.Value.Limits);
             foreach (var capability in pair.Value.Capabilities) hash.Add(capability);
         }
 
-        foreach (var pair in vendorProfiles.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (var pair in _vendorProfiles.OrderBy(static pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
             hash.Add(pair.Key);
             foreach (var host in pair.Value.EndpointHosts) hash.Add(host);

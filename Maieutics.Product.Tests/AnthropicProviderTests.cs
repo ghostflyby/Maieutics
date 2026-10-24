@@ -161,15 +161,15 @@ public sealed class AnthropicProviderTests
 
     private sealed class FakeAnthropicServer : IAsyncDisposable
     {
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _cancellation = new();
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
 
         public FakeAnthropicServer(string response)
         {
-            listener.Start();
-            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            _listener.Start();
+            var endpoint = (IPEndPoint)_listener.LocalEndpoint;
             Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}");
-            Request = ServeAsync(response, cancellation.Token);
+            Request = ServeAsync(response, _cancellation.Token);
         }
 
         public Uri Endpoint { get; }
@@ -178,25 +178,25 @@ public sealed class AnthropicProviderTests
 
         public async ValueTask DisposeAsync()
         {
-            await cancellation.CancelAsync();
-            listener.Stop();
+            await _cancellation.CancelAsync();
+            _listener.Stop();
             try
             {
                 await Request.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
             {
             }
-            catch (SocketException) when (cancellation.IsCancellationRequested)
+            catch (SocketException) when (_cancellation.IsCancellationRequested)
             {
             }
 
-            cancellation.Dispose();
+            _cancellation.Dispose();
         }
 
         private async Task<ObservedRequest> ServeAsync(string response, CancellationToken cancellationToken)
         {
-            using var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+            using var client = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
             await using var stream = client.GetStream();
             var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
 
@@ -266,7 +266,7 @@ public sealed class AnthropicProviderTests
 
     private sealed class BlockingSseStream(byte[] contents) : Stream
     {
-        private int offset;
+        private int _offset;
 
         public override bool CanRead => true;
 
@@ -291,11 +291,11 @@ public sealed class AnthropicProviderTests
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-            if (offset < contents.Length)
+            if (_offset < contents.Length)
             {
-                var count = Math.Min(buffer.Length, contents.Length - offset);
-                contents.AsMemory(offset, count).CopyTo(buffer);
-                offset += count;
+                var count = Math.Min(buffer.Length, contents.Length - _offset);
+                contents.AsMemory(_offset, count).CopyTo(buffer);
+                _offset += count;
                 return count;
             }
 

@@ -1397,13 +1397,13 @@ public sealed class PluginHostIntegrationTests
 
     private sealed class CollectingLogger<T> : ILogger<T>, ILoggerFactory
     {
-        private readonly object gate = new();
-        private readonly List<string> lines = [];
+        private readonly object _gate = new();
+        private readonly List<string> _lines = [];
         public IReadOnlyList<string> Lines
         {
             get
             {
-                lock (gate) return [.. lines];
+                lock (_gate) return [.. _lines];
             }
         }
 
@@ -1416,7 +1416,7 @@ public sealed class PluginHostIntegrationTests
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             var line = formatter(state, exception);
-            lock (gate) lines.Add($"{logLevel}: {line}");
+            lock (_gate) _lines.Add($"{logLevel}: {line}");
         }
     }
 

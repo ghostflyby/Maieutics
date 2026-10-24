@@ -1,8 +1,8 @@
 using System.IO.Pipelines;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -159,8 +159,8 @@ public sealed class McpPromptIntegrationTests
 
 file sealed class PromptServerHarness : IAsyncDisposable
 {
-    private readonly CancellationTokenSource lifetime;
-    private readonly Task serverTask;
+    private readonly CancellationTokenSource _lifetime;
+    private readonly Task _serverTask;
 
     private PromptServerHarness(
         McpServerGeneration generation,
@@ -170,8 +170,8 @@ file sealed class PromptServerHarness : IAsyncDisposable
     {
         Generation = generation;
         Access = access;
-        this.lifetime = lifetime;
-        this.serverTask = serverTask;
+        this._lifetime = lifetime;
+        this._serverTask = serverTask;
     }
 
     internal McpServerGeneration Generation { get; }
@@ -187,14 +187,14 @@ file sealed class PromptServerHarness : IAsyncDisposable
         }
         catch (TimeoutException) { }
 
-        await lifetime.CancelAsync();
+        await _lifetime.CancelAsync();
         try
         {
-            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await _serverTask.WaitAsync(TimeSpan.FromSeconds(5));
         }
         catch (TimeoutException) { }
 
-        lifetime.Dispose();
+        _lifetime.Dispose();
     }
 
     internal static async Task<PromptServerHarness> StartAsync(CancellationToken cancellationToken)

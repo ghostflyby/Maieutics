@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -107,10 +109,8 @@ internal static partial class PluginToolProtocol
         string pluginId,
         string exportName,
         JsonElement? value,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)]
-        out PluginToolDefinition? definition,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
-        out string? error)
+        [NotNullWhen(true)] out PluginToolDefinition? definition,
+        [NotNullWhen(false)] out string? error)
     {
         definition = null;
         if (value is not { ValueKind: JsonValueKind.Object } payload)
@@ -153,7 +153,7 @@ internal static partial class PluginToolProtocol
             return false;
         }
 
-        if (System.Text.Encoding.UTF8.GetByteCount(schema.GetRawText()) > MaximumSchemaBytes)
+        if (Encoding.UTF8.GetByteCount(schema.GetRawText()) > MaximumSchemaBytes)
         {
             error = $"The tool '{name}' input schema exceeds {MaximumSchemaBytes} bytes.";
             return false;
@@ -197,10 +197,8 @@ internal static partial class PluginToolProtocol
     private static bool TryReadAnnotations(
         string name,
         JsonElement payload,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)]
-        out PluginToolAnnotations? annotations,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
-        out string? error)
+        [NotNullWhen(true)] out PluginToolAnnotations? annotations,
+        [NotNullWhen(false)] out string? error)
     {
         annotations = PluginToolAnnotations.Default;
         error = null;
@@ -258,8 +256,7 @@ internal static partial class PluginToolProtocol
         string member,
         bool fallback,
         out bool value,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
-        out string? error)
+        [NotNullWhen(false)] out string? error)
     {
         value = fallback;
         error = null;
@@ -347,7 +344,7 @@ internal sealed class PluginToolAIFunction(
     /// surfaces without widening the provider wire.</summary>
     internal const string AnnotationsKey = "maieutics.pluginTool.annotations";
 
-    private readonly AdditionalPropertiesDictionary additionalProperties = CreateProperties(definition);
+    private readonly AdditionalPropertiesDictionary _additionalProperties = CreateProperties(definition);
 
     public override string Name => definition.Name;
 
@@ -355,7 +352,7 @@ internal sealed class PluginToolAIFunction(
 
     public override JsonElement JsonSchema => definition.InputSchema;
 
-    public override IReadOnlyDictionary<string, object?> AdditionalProperties => additionalProperties;
+    public override IReadOnlyDictionary<string, object?> AdditionalProperties => _additionalProperties;
 
     private static AdditionalPropertiesDictionary CreateProperties(PluginToolDefinition definition)
     {
@@ -449,39 +446,39 @@ internal sealed class PluginToolAIFunction(
 /// across a host invoke.</summary>
 internal sealed class PluginToolCoordinator : IAsyncDisposable
 {
-    private readonly Func<string, string, string, JsonElement?, CancellationToken, TimeSpan?, string?, Task<ExtensionCallOutcome>> invoke;
-    private readonly Func<IReadOnlySet<string>> reservedToolNames;
-    private readonly ILogger logger;
-    private readonly Lock gate = new();
+    private readonly Func<string, string, string, JsonElement?, CancellationToken, TimeSpan?, string?, Task<ExtensionCallOutcome>> _invoke;
+    private readonly Func<IReadOnlySet<string>> _reservedToolNames;
+    private readonly ILogger _logger;
+    private readonly Lock _gate = new();
 
-    private readonly Dictionary<(string PluginId, string ExportName), PluginToolDefinition> definitions =
+    private readonly Dictionary<(string PluginId, string ExportName), PluginToolDefinition> _definitions =
         new(new KeyComparer());
 
-    private readonly HashSet<(string PluginId, string ExportName)> pending = new(new KeyComparer());
-    private readonly HashSet<(string PluginId, string ExportName)> retryPending = new(new KeyComparer());
-    private readonly CancellationTokenSource lifetime = new();
+    private readonly HashSet<(string PluginId, string ExportName)> _pending = new(new KeyComparer());
+    private readonly HashSet<(string PluginId, string ExportName)> _retryPending = new(new KeyComparer());
+    private readonly CancellationTokenSource _lifetime = new();
 
     /// <summary>The token of the currently valid describe generation. A reset cancels it so
     /// passes still awaiting the old host unwind instead of publishing into the new one.
     /// Cancelled sources are retained until disposal: a pass may hold the token across an
     /// await, and disposing it early would turn a benign cancellation into an
     /// <see cref="ObjectDisposedException"/> at the next linked-source creation.</summary>
-    private CancellationTokenSource passes = new();
+    private CancellationTokenSource _passes = new();
 
-    private readonly List<CancellationTokenSource> retiredPasses = [];
+    private readonly List<CancellationTokenSource> _retiredPasses = [];
 
-    private TaskCompletionSource idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private Task? flight;
-    private int disposed;
+    private TaskCompletionSource _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Task? _flight;
+    private int _disposed;
 
     internal PluginToolCoordinator(
         Func<string, string, string, JsonElement?, CancellationToken, TimeSpan?, string?, Task<ExtensionCallOutcome>> invoke,
         Func<IReadOnlySet<string>> reservedToolNames,
         ILogger logger)
     {
-        this.invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
-        this.reservedToolNames = reservedToolNames ?? throw new ArgumentNullException(nameof(reservedToolNames));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this._invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
+        this._reservedToolNames = reservedToolNames ?? throw new ArgumentNullException(nameof(reservedToolNames));
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>Completes when no describe pass is running or queued. Tests await this to
@@ -490,7 +487,7 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
     {
         get
         {
-            lock (gate) return flight is null ? Task.CompletedTask : idle.Task;
+            lock (_gate) return _flight is null ? Task.CompletedTask : _idle.Task;
         }
     }
 
@@ -503,9 +500,9 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentNullException.ThrowIfNull(forcedPlugins);
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposed) != 0) return;
+            if (Volatile.Read(ref _disposed) != 0) return;
 
             var current = new HashSet<(string, string)>(new KeyComparer());
             foreach (var registration in registrations)
@@ -515,22 +512,22 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
                 current.Add((registration.PluginId, registration.ExportName));
             }
 
-            foreach (var key in definitions.Keys.Where(key => !current.Contains(key)).ToArray())
-                definitions.Remove(key);
-            pending.RemoveWhere(key => !current.Contains(key));
-            retryPending.RemoveWhere(key => !current.Contains(key));
+            foreach (var key in _definitions.Keys.Where(key => !current.Contains(key)).ToArray())
+                _definitions.Remove(key);
+            _pending.RemoveWhere(key => !current.Contains(key));
+            _retryPending.RemoveWhere(key => !current.Contains(key));
 
             foreach (var key in current)
             {
-                if (!definitions.ContainsKey(key) ||
-                    retryPending.Contains(key) ||
+                if (!_definitions.ContainsKey(key) ||
+                    _retryPending.Contains(key) ||
                     forcedPlugins.Contains(key.Item1))
                 {
-                    pending.Add(key);
+                    _pending.Add(key);
                 }
             }
 
-            if (pending.Count > 0 && flight is null) StartFlightLocked();
+            if (_pending.Count > 0 && _flight is null) StartFlightLocked();
         }
     }
 
@@ -540,15 +537,15 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
     internal void Reset()
     {
         CancellationTokenSource abandoned;
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposed) != 0) return;
-            definitions.Clear();
-            pending.Clear();
-            retryPending.Clear();
-            abandoned = passes;
-            passes = new CancellationTokenSource();
-            retiredPasses.Add(abandoned);
+            if (Volatile.Read(ref _disposed) != 0) return;
+            _definitions.Clear();
+            _pending.Clear();
+            _retryPending.Clear();
+            abandoned = _passes;
+            _passes = new CancellationTokenSource();
+            _retiredPasses.Add(abandoned);
         }
 
         // Cancelled outside the gate so a linked host invoke observes the token immediately.
@@ -559,20 +556,20 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
     /// plugin and export so a run's tool list is deterministic.</summary>
     internal IReadOnlyList<AIFunction> SnapshotTools()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return definitions.Values
+            return _definitions.Values
                 .OrderBy(static definition => definition.PluginId, StringComparer.Ordinal)
                 .ThenBy(static definition => definition.ExportName, StringComparer.Ordinal)
-                .Select(definition => (AIFunction)new PluginToolAIFunction(definition, invoke))
+                .Select(definition => (AIFunction)new PluginToolAIFunction(definition, _invoke))
                 .ToArray();
         }
     }
 
     private void StartFlightLocked()
     {
-        idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        flight = Task.Run(DrainAsync, CancellationToken.None);
+        _idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _flight = Task.Run(DrainAsync, CancellationToken.None);
     }
 
     private async Task DrainAsync()
@@ -581,18 +578,18 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
         {
             (string PluginId, string ExportName)[] batch;
             CancellationToken passToken;
-            lock (gate)
+            lock (_gate)
             {
-                if (pending.Count == 0 || Volatile.Read(ref disposed) != 0)
+                if (_pending.Count == 0 || Volatile.Read(ref _disposed) != 0)
                 {
-                    flight = null;
-                    idle.TrySetResult();
+                    _flight = null;
+                    _idle.TrySetResult();
                     return;
                 }
 
-                batch = pending.ToArray();
-                pending.Clear();
-                passToken = passes.Token;
+                batch = _pending.ToArray();
+                _pending.Clear();
+                passToken = _passes.Token;
             }
 
             try
@@ -604,14 +601,14 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
                 }
             }
             catch (OperationCanceledException) when (
-                passToken.IsCancellationRequested || lifetime.IsCancellationRequested)
+                passToken.IsCancellationRequested || _lifetime.IsCancellationRequested)
             {
                 // The host generation behind these passes is gone; Reset already cleared the
                 // declarations, and any queued work belongs to the new generation's token.
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "The plugin tool describe pass failed unexpectedly.");
+                _logger.LogError(exception, "The plugin tool describe pass failed unexpectedly.");
             }
         }
     }
@@ -621,7 +618,7 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
         ExtensionCallOutcome outcome;
         try
         {
-            outcome = await invoke(
+            outcome = await _invoke(
                 pluginId,
                 exportName,
                 ReplExtensionPointName.Tool,
@@ -630,13 +627,13 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
                 null,
                 null).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (passToken.IsCancellationRequested || lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (passToken.IsCancellationRequested || _lifetime.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Describing the tool export '{PluginId}/{ExportName}' failed.",
                 pluginId,
@@ -647,7 +644,7 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
 
         if (outcome.IsError)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Describing the tool export '{PluginId}/{ExportName}' failed: {Code}: {Message}",
                 pluginId,
                 exportName,
@@ -664,7 +661,7 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
                 out var definition,
                 out var error))
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "The tool export '{PluginId}/{ExportName}' declared an invalid tool: {Error}",
                 pluginId,
                 exportName,
@@ -673,10 +670,10 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
             return;
         }
 
-        var reserved = reservedToolNames();
+        var reserved = _reservedToolNames();
         if (reserved.Contains(definition.Name))
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "The tool export '{PluginId}/{ExportName}' declared the reserved tool name '{Name}'; the tool is hidden.",
                 pluginId,
                 exportName,
@@ -685,40 +682,40 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
             return;
         }
 
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposed) != 0 || passToken.IsCancellationRequested) return;
-            definitions[(pluginId, exportName)] = definition;
-            retryPending.Remove((pluginId, exportName));
+            if (Volatile.Read(ref _disposed) != 0 || passToken.IsCancellationRequested) return;
+            _definitions[(pluginId, exportName)] = definition;
+            _retryPending.Remove((pluginId, exportName));
         }
     }
 
     private void MarkRetry(string pluginId, string exportName)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposed) != 0) return;
-            retryPending.Add((pluginId, exportName));
+            if (Volatile.Read(ref _disposed) != 0) return;
+            _retryPending.Add((pluginId, exportName));
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         Task? running;
         CancellationTokenSource current;
-        lock (gate)
+        lock (_gate)
         {
-            pending.Clear();
-            running = flight;
-            current = passes;
-            idle.TrySetResult();
+            _pending.Clear();
+            running = _flight;
+            current = _passes;
+            _idle.TrySetResult();
         }
 
         // Resolve the running pass first so disposing never waits on a describe that the
         // cancelled generation cannot complete.
         await current.CancelAsync().ConfigureAwait(false);
-        await lifetime.CancelAsync().ConfigureAwait(false);
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         if (running is not null)
         {
             try
@@ -727,14 +724,14 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "The plugin tool coordinator failed during disposal.");
+                _logger.LogError(exception, "The plugin tool coordinator failed during disposal.");
             }
         }
 
         current.Dispose();
-        foreach (var retired in retiredPasses) retired.Dispose();
-        retiredPasses.Clear();
-        lifetime.Dispose();
+        foreach (var retired in _retiredPasses) retired.Dispose();
+        _retiredPasses.Clear();
+        _lifetime.Dispose();
     }
 
     private sealed class KeyComparer : IEqualityComparer<(string PluginId, string ExportName)>

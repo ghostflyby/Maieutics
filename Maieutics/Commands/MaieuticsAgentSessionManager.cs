@@ -31,21 +31,21 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// else). Eviction only drops the registry entry — in-flight runs keep their session.</summary>
     internal const int LiveSessionCapacity = 8;
 
-    private readonly IAgentRunProfileProvider profileProvider;
-    private readonly IMaieuticsRuntimeConfiguration? runtimeConfiguration;
-    private readonly string? familiesRoot;
-    private readonly Func<AgentSessionId, SqliteTranscriptStore>? storeFactory;
-    private readonly IAgentObjectStore? objectStore;
-    private readonly IObjectReclaimer? reclaimer;
-    private readonly string? viewSessionsRoot;
-    private readonly string? objectsRoot;
-    private readonly ILogger<MaieuticsAgentSessionManager> logger;
-    private readonly AgentSubagentOptions? subagents;
-    private readonly SkillCatalog? skillCatalog;
-    private readonly Lock gate = new();
-    private readonly Dictionary<string, LiveSession> live = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, SqliteTranscriptStore> stores = new(StringComparer.Ordinal);
-    private IAgentSession foreground;
+    private readonly IAgentRunProfileProvider _profileProvider;
+    private readonly IMaieuticsRuntimeConfiguration? _runtimeConfiguration;
+    private readonly string? _familiesRoot;
+    private readonly Func<AgentSessionId, SqliteTranscriptStore>? _storeFactory;
+    private readonly IAgentObjectStore? _objectStore;
+    private readonly IObjectReclaimer? _reclaimer;
+    private readonly string? _viewSessionsRoot;
+    private readonly string? _objectsRoot;
+    private readonly ILogger<MaieuticsAgentSessionManager> _logger;
+    private readonly AgentSubagentOptions? _subagents;
+    private readonly SkillCatalog? _skillCatalog;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, LiveSession> _live = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SqliteTranscriptStore> _stores = new(StringComparer.Ordinal);
+    private IAgentSession _foreground;
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
@@ -60,30 +60,30 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         AgentSubagentOptions? subagents = null,
         SkillCatalog? skillCatalog = null)
     {
-        this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this.runtimeConfiguration = runtimeConfiguration;
-        this.familiesRoot = familiesRoot;
-        this.storeFactory = storeFactory;
-        this.objectStore = objectStore;
-        this.reclaimer = reclaimer;
-        this.viewSessionsRoot = viewSessionsRoot;
-        this.objectsRoot = objectsRoot;
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.subagents = subagents;
-        this.skillCatalog = skillCatalog;
-        foreground = CreateLive(AgentSessionId.Create());
+        this._profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        this._runtimeConfiguration = runtimeConfiguration;
+        this._familiesRoot = familiesRoot;
+        this._storeFactory = storeFactory;
+        this._objectStore = objectStore;
+        this._reclaimer = reclaimer;
+        this._viewSessionsRoot = viewSessionsRoot;
+        this._objectsRoot = objectsRoot;
+        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this._subagents = subagents;
+        this._skillCatalog = skillCatalog;
+        _foreground = CreateLive(AgentSessionId.Create());
     }
 
-    public bool PersistenceEnabled => storeFactory is not null;
+    public bool PersistenceEnabled => _storeFactory is not null;
 
     /// <summary>Gets how many sessions are currently live. Exposed for diagnostics.</summary>
     public int LiveCount
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return live.Count;
+                return _live.Count;
             }
         }
     }
@@ -109,9 +109,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <summary>Whether the session currently has a live instance, without creating one.</summary>
     public bool IsLive(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return live.ContainsKey(sessionId.Value.ToString("N"));
+            return _live.ContainsKey(sessionId.Value.ToString("N"));
         }
     }
 
@@ -120,9 +120,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// (ADR 0028 decision 5).</summary>
     internal AgentSessionId[] ListLiveSessionIds()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return [.. live.Keys.Select(static key => new AgentSessionId(Guid.ParseExact(key, "N")))];
+            return [.. _live.Keys.Select(static key => new AgentSessionId(Guid.ParseExact(key, "N")))];
         }
     }
 
@@ -132,16 +132,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     public IAgentSession Resolve(AgentSessionId sessionId)
     {
         var key = sessionId.Value.ToString("N");
-        lock (gate)
+        lock (_gate)
         {
-            if (live.TryGetValue(key, out var existing))
+            if (_live.TryGetValue(key, out var existing))
             {
                 existing.Touch();
                 return existing.Session;
             }
         }
 
-        if (storeFactory is null)
+        if (_storeFactory is null)
         {
             throw new AgentSessionNotFoundException(sessionId);
         }
@@ -153,22 +153,22 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             ProviderFor(wrapper),
             RequiredStore(familyId),
             sessionId,
-            objectStore: objectStore);
+            objectStore: _objectStore);
 
-        lock (gate)
+        lock (_gate)
         {
-            if (live.TryGetValue(key, out var raced))
+            if (_live.TryGetValue(key, out var raced))
             {
                 raced.Touch();
                 return raced.Session;
             }
 
             var entry = new LiveSession(restored, wrapper);
-            live[key] = entry;
+            _live[key] = entry;
             entry.Touch();
         }
 
-        logger.LogDebug("Resolved session {SessionId} from stored history.", sessionId);
+        _logger.LogDebug("Resolved session {SessionId} from stored history.", sessionId);
         EnforceLiveCapacity(sessionId);
         return restored;
     }
@@ -180,14 +180,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <exception cref="AgentSessionNotFoundException">No family database holds the session.</exception>
     public AgentSessionId Resume(AgentSessionId sessionId)
     {
-        if (storeFactory is null)
+        if (_storeFactory is null)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (live.TryGetValue(sessionId.Value.ToString("N"), out var existing))
+                if (_live.TryGetValue(sessionId.Value.ToString("N"), out var existing))
                 {
                     MoveForegroundLocked(existing.Session);
-                    logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
+                    _logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
                     return sessionId;
                 }
             }
@@ -197,7 +197,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         }
 
         MoveForeground(Resolve(sessionId));
-        logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
+        _logger.LogDebug("Resumed session {SessionId} as the foreground.", sessionId);
         return sessionId;
     }
 
@@ -210,15 +210,15 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         var session = new AgentSession(
             ProviderFor(wrapper),
             transcriptStore: OpenStore(sessionId),
-            objectStore: objectStore,
+            objectStore: _objectStore,
             sessionId: sessionId);
-        lock (gate)
+        lock (_gate)
         {
-            live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
+            _live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
             MoveForegroundLocked(session);
         }
 
-        logger.LogDebug("Created session {SessionId}.", sessionId);
+        _logger.LogDebug("Created session {SessionId}.", sessionId);
         EnforceLiveCapacity(sessionId);
         return sessionId;
     }
@@ -239,7 +239,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <exception cref="ArgumentOutOfRangeException">The fork point is negative or beyond the source's committed turns.</exception>
     public AgentSessionId Fork(AgentSessionId sourceId, int forkPointSeq, string? title = null)
     {
-        if (storeFactory is null)
+        if (_storeFactory is null)
         {
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to fork sessions.");
@@ -264,14 +264,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             sourceId,
             forkId,
             forkPointSeq,
-            objectStore: objectStore);
-        lock (gate)
+            objectStore: _objectStore);
+        lock (_gate)
         {
-            live[forkId.Value.ToString("N")] = new LiveSession(forked, wrapper);
+            _live[forkId.Value.ToString("N")] = new LiveSession(forked, wrapper);
             MoveForegroundLocked(forked);
         }
 
-        logger.LogDebug(
+        _logger.LogDebug(
             "Forked session {SourceSessionId} to {SessionId} at turn {ForkPoint}.",
             sourceId,
             forkId,
@@ -295,7 +295,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             return;
         }
 
-        var selection = runtimeConfiguration!.GetModelProfileSelection();
+        var selection = _runtimeConfiguration!.GetModelProfileSelection();
         var match = selection.Profiles.FirstOrDefault(profile =>
             string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
         if (match is null)
@@ -320,10 +320,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// name survives.</summary>
     public IReadOnlyList<AgentSessionDescriptor> ListStoredSessions()
     {
-        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return [];
+        if (_storeFactory is null || _familiesRoot is null || !Directory.Exists(_familiesRoot)) return [];
 
         var descriptors = new List<AgentSessionDescriptor>();
-        foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+        foreach (var directory in Directory.EnumerateDirectories(_familiesRoot))
         {
             if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
@@ -346,7 +346,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// exceeds the length cap.</exception>
     public string? SetTitle(AgentSessionId sessionId, string? title)
     {
-        if (storeFactory is null)
+        if (_storeFactory is null)
         {
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to rename sessions.");
@@ -378,7 +378,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <see langword="null" /> when the session has no stored row.</summary>
     public AgentSessionDescriptor? FindDescriptor(AgentSessionId sessionId)
     {
-        if (storeFactory is null || familiesRoot is null || !Directory.Exists(familiesRoot)) return null;
+        if (_storeFactory is null || _familiesRoot is null || !Directory.Exists(_familiesRoot)) return null;
 
         var familyId = ResolveFamily(sessionId);
         if (familyId is not { } resolved) return null;
@@ -392,7 +392,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// ancestor prefix plus their own turns.</summary>
     public AgentTranscript? LoadStoredTranscript(AgentSessionId sessionId)
     {
-        if (storeFactory is null) return null;
+        if (_storeFactory is null) return null;
 
         var familyId = ResolveFamily(sessionId);
         if (familyId is not { } resolved) return null;
@@ -402,14 +402,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     public void Dispose()
     {
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var store in stores.Values)
+            foreach (var store in _stores.Values)
             {
                 if (store is IDisposable disposable) disposable.Dispose();
             }
 
-            stores.Clear();
+            _stores.Clear();
         }
     }
 
@@ -419,7 +419,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     public AgentObjectDescriptor? IngestObject(Stream content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        return objectStore?.Ingest(content);
+        return _objectStore?.Ingest(content);
     }
 
     /// <summary>Describes a published object without opening it; null when the store is absent
@@ -427,7 +427,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// this so a pruned or never-ingested address fails typed instead of entering a run.</summary>
     public AgentObjectDescriptor? DescribeObject(string sha256)
     {
-        return objectStore is ObjectStore store ? store.Describe(sha256) : null;
+        return _objectStore is ObjectStore store ? store.Describe(sha256) : null;
     }
 
     /// <summary>Maintenance pass: deletes stored objects that no committed turn references and
@@ -435,14 +435,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
     public int PruneObjects(TimeSpan gracePeriod)
     {
-        if (reclaimer is null || storeFactory is null)
+        if (_reclaimer is null || _storeFactory is null)
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to reclaim objects.");
 
         var liveIds = new HashSet<string>(StringComparer.Ordinal);
-        if (familiesRoot is not null && Directory.Exists(familiesRoot))
+        if (_familiesRoot is not null && Directory.Exists(_familiesRoot))
         {
-            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+            foreach (var directory in Directory.EnumerateDirectories(_familiesRoot))
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
@@ -450,7 +450,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             }
         }
 
-        return reclaimer.DeleteExcept(liveIds, DateTimeOffset.UtcNow - gracePeriod);
+        return _reclaimer.DeleteExcept(liveIds, DateTimeOffset.UtcNow - gracePeriod);
     }
 
     /// <summary>Maintenance pass: rebuilds the derived inspection view (one relative link per
@@ -459,14 +459,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// <exception cref="ArgumentException">Transcript persistence is disabled.</exception>
     public int RepairObjectView()
     {
-        if (storeFactory is null || familiesRoot is null || viewSessionsRoot is null || objectsRoot is null)
+        if (_storeFactory is null || _familiesRoot is null || _viewSessionsRoot is null || _objectsRoot is null)
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to build the object view.");
 
         var familyStores = new List<SqliteTranscriptStore>();
-        if (Directory.Exists(familiesRoot))
+        if (Directory.Exists(_familiesRoot))
         {
-            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+            foreach (var directory in Directory.EnumerateDirectories(_familiesRoot))
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
@@ -474,7 +474,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             }
         }
 
-        return AgentObjectView.Repair(viewSessionsRoot, objectsRoot, familyStores);
+        return AgentObjectView.Repair(_viewSessionsRoot, _objectsRoot, familyStores);
     }
 
     /// <summary>Derives the fork's display title: the source's title or preview, collapsed to
@@ -502,9 +502,9 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return (foreground.Id, foreground.GetTranscriptSnapshot().Turns.Length);
+                return (_foreground.Id, _foreground.GetTranscriptSnapshot().Turns.Length);
             }
         }
     }
@@ -513,16 +513,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return foreground;
+                return _foreground;
             }
         }
     }
 
     private void MoveForeground(IAgentSession session)
     {
-        lock (gate)
+        lock (_gate)
         {
             MoveForegroundLocked(session);
         }
@@ -530,23 +530,23 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     private void MoveForegroundLocked(IAgentSession session)
     {
-        foreground = session;
+        _foreground = session;
     }
 
     /// <summary>Creates the per-session profile wrapper, or returns
     /// <see langword="null" /> when no runtime configuration backs per-session overrides.</summary>
     private MaieuticsSessionProfileProvider? CreateWrapper()
     {
-        return runtimeConfiguration is null ? null : new MaieuticsSessionProfileProvider(runtimeConfiguration);
+        return _runtimeConfiguration is null ? null : new MaieuticsSessionProfileProvider(_runtimeConfiguration);
     }
 
     private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper)
     {
-        var inner = wrapper ?? profileProvider;
-        var composed = subagents is null ? inner : new SubagentsProfileProvider(inner, subagents);
+        var inner = wrapper ?? _profileProvider;
+        var composed = _subagents is null ? inner : new SubagentsProfileProvider(inner, _subagents);
         // The skills decorator is outermost so both record rewrites (`with`) compose: the
         // catalog rides every lease regardless of the per-session override path.
-        return skillCatalog is null ? composed : new SkillsProfileProvider(composed, skillCatalog);
+        return _skillCatalog is null ? composed : new SkillsProfileProvider(composed, _skillCatalog);
     }
 
     /// <summary>Decorates every lease with the composition-root subagent configuration while
@@ -588,11 +588,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         var session = new AgentSession(
             ProviderFor(wrapper),
             transcriptStore: OpenStore(sessionId),
-            objectStore: objectStore,
+            objectStore: _objectStore,
             sessionId: sessionId);
-        lock (gate)
+        lock (_gate)
         {
-            live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
+            _live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
             MoveForegroundLocked(session);
         }
 
@@ -603,16 +603,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// session so addressed <c>%model</c> commands work on a freshly reopened notebook.</summary>
     private MaieuticsSessionProfileProvider RequireWrapper(AgentSessionId sessionId)
     {
-        if (runtimeConfiguration is null)
+        if (_runtimeConfiguration is null)
         {
             throw new ArgumentException("Model profile selection is not available in this host.");
         }
 
         Resolve(sessionId);
 
-        lock (gate)
+        lock (_gate)
         {
-            if (live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.Profile is { } profile)
+            if (_live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.Profile is { } profile)
             {
                 return profile;
             }
@@ -631,14 +631,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     internal IDisposable? TryPinSession(AgentSessionId sessionId)
     {
         var key = sessionId.Value.ToString("N");
-        lock (gate)
+        lock (_gate)
         {
-            if (!live.TryGetValue(key, out var entry)) return null;
+            if (!_live.TryGetValue(key, out var entry)) return null;
 
             entry.AddPin();
         }
 
-        logger.LogDebug("Pinned session {SessionId} against eviction.", sessionId);
+        _logger.LogDebug("Pinned session {SessionId} against eviction.", sessionId);
         return new SessionPin(this, key);
     }
 
@@ -647,23 +647,23 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// disposal. An unknown or unpinned session is not pinned.</summary>
     internal bool IsPinned(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.IsPinned;
+            return _live.TryGetValue(sessionId.Value.ToString("N"), out var entry) && entry.IsPinned;
         }
     }
 
     private void ReleasePin(string key)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (live.TryGetValue(key, out var entry)) entry.RemovePin();
+            if (_live.TryGetValue(key, out var entry)) entry.RemovePin();
 
             // An evicted or replaced entry has no pin left to release; the lease is
             // cooperative and never resurrects a session.
         }
 
-        logger.LogDebug("Released the eviction pin for session {SessionId}.", key);
+        _logger.LogDebug("Released the eviction pin for session {SessionId}.", key);
     }
 
     /// <summary>Keeps the live set bounded, evicting the least recently used sessions that
@@ -679,16 +679,16 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     {
         List<(string Key, long Touched, AgentSessionId Id)> candidates;
         List<(AgentSessionId Id, string Reason)> skipped;
-        lock (gate)
+        lock (_gate)
         {
-            if (live.Count <= LiveSessionCapacity) return;
+            if (_live.Count <= LiveSessionCapacity) return;
 
             candidates = [];
             skipped = [];
-            foreach (var entry in live.Values)
+            foreach (var entry in _live.Values)
             {
                 var skipReason =
-                    ReferenceEquals(entry.Session, foreground) ? "foreground" :
+                    ReferenceEquals(entry.Session, _foreground) ? "foreground" :
                     entry.Session.IsRunInProgress ? "run-in-flight" :
                     entry.IsPinned ? "pinned" :
                     protectedId is not null && entry.Session.Id == protectedId.Value ? "protected" :
@@ -710,7 +710,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
         foreach (var (id, reason) in skipped)
         {
-            logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
+            _logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
         }
 
         foreach (var (key, touched, id) in candidates)
@@ -719,26 +719,26 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
             var evicted = false;
             string? recheckSkipReason = null;
-            lock (gate)
+            lock (_gate)
             {
-                if (live.Count <= LiveSessionCapacity) return;
+                if (_live.Count <= LiveSessionCapacity) return;
                 // Still the stale entry we evaluated: not foreground or protected,
                 // not pinned, not touched since candidacy, and with no run in flight.
-                if (live.TryGetValue(key, out var entry) &&
+                if (_live.TryGetValue(key, out var entry) &&
                     entry.Touched == touched &&
-                    !ReferenceEquals(entry.Session, foreground) &&
+                    !ReferenceEquals(entry.Session, _foreground) &&
                     !entry.Session.IsRunInProgress &&
                     !entry.IsPinned &&
                     (protectedId is null || entry.Session.Id != protectedId.Value))
                 {
-                    live.Remove(key);
+                    _live.Remove(key);
                     evicted = true;
                 }
-                else if (live.TryGetValue(key, out var current))
+                else if (_live.TryGetValue(key, out var current))
                 {
                     recheckSkipReason =
                         current.Touched != touched ? "touched-since-candidacy" :
-                        ReferenceEquals(current.Session, foreground) ? "foreground" :
+                        ReferenceEquals(current.Session, _foreground) ? "foreground" :
                         current.Session.IsRunInProgress ? "run-in-flight" :
                         current.IsPinned ? "pinned" :
                         "protected";
@@ -747,28 +747,28 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
             if (evicted)
             {
-                logger.LogInformation(
+                _logger.LogInformation(
                     "Evicted session {SessionId} from the live set (last touched at {TouchedAt}).",
                     id,
                     touched);
             }
             else if (recheckSkipReason is { } reason)
             {
-                logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
+                _logger.LogDebug("Eviction skipped session {SessionId}: {Reason}.", id, reason);
             }
         }
     }
 
     private SqliteTranscriptStore? OpenStore(AgentSessionId familyId)
     {
-        if (storeFactory is null) return null;
+        if (_storeFactory is null) return null;
 
-        lock (gate)
+        lock (_gate)
         {
-            if (stores.TryGetValue(familyId.Value.ToString("N"), out var existing)) return existing;
+            if (_stores.TryGetValue(familyId.Value.ToString("N"), out var existing)) return existing;
 
-            var store = storeFactory(familyId);
-            stores[familyId.Value.ToString("N")] = store;
+            var store = _storeFactory(familyId);
+            _stores[familyId.Value.ToString("N")] = store;
             return store;
         }
     }
@@ -784,12 +784,12 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     /// scan that covers fork members living in their ancestor's family file.</summary>
     private AgentSessionId? ResolveFamily(AgentSessionId sessionId)
     {
-        if (familiesRoot is null) return null;
-        if (File.Exists(SqliteTranscriptStore.FamilyDatabasePath(familiesRoot, sessionId))) return sessionId;
+        if (_familiesRoot is null) return null;
+        if (File.Exists(SqliteTranscriptStore.FamilyDatabasePath(_familiesRoot, sessionId))) return sessionId;
 
-        if (Directory.Exists(familiesRoot))
+        if (Directory.Exists(_familiesRoot))
         {
-            foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
+            foreach (var directory in Directory.EnumerateDirectories(_familiesRoot))
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
@@ -805,7 +805,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
     private sealed class LiveSession(IAgentSession session, MaieuticsSessionProfileProvider? profile)
     {
-        private int pins;
+        private int _pins;
 
         public IAgentSession Session { get; } = session;
 
@@ -815,7 +815,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
         /// <summary>Whether an eviction-pin lease is held. Read and written under the
         /// manager gate.</summary>
-        public bool IsPinned => pins > 0;
+        public bool IsPinned => _pins > 0;
 
         public void Touch()
         {
@@ -824,23 +824,23 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
         public void AddPin()
         {
-            pins++;
+            _pins++;
         }
 
         public void RemovePin()
         {
-            pins--;
+            _pins--;
         }
     }
 
     /// <summary>One eviction-pin lease; disposal releases the pin exactly once.</summary>
     private sealed class SessionPin(MaieuticsAgentSessionManager owner, string key) : IDisposable
     {
-        private int disposeState;
+        private int _disposeState;
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+            if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
 
             owner.ReleasePin(key);
         }

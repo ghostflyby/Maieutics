@@ -46,22 +46,22 @@ internal sealed class PluginHostProcess : IAsyncDisposable
         "PATHEXT"
     ];
 
-    private readonly DenoRunProcess inner;
+    private readonly DenoRunProcess _inner;
 
     private PluginHostProcess(DenoRunProcess inner)
     {
-        this.inner = inner;
+        this._inner = inner;
     }
 
-    public int ProcessId => inner.ProcessId;
+    public int ProcessId => _inner.ProcessId;
 
-    public Task Completion => inner.Completion;
+    public Task Completion => _inner.Completion;
 
-    public int? ExitCode => inner.ExitCode;
+    public int? ExitCode => _inner.ExitCode;
 
     public ValueTask DisposeAsync()
     {
-        return inner.DisposeAsync();
+        return _inner.DisposeAsync();
     }
 
     public static PluginHostProcess Start(
@@ -133,6 +133,6 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
     public Task StopAsync()
     {
-        return inner.StopAsync();
+        return _inner.StopAsync();
     }
 }

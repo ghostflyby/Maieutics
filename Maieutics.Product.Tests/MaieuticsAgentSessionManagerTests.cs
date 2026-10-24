@@ -12,16 +12,16 @@ namespace Maieutics.Product.Tests;
 /// disabled-persistence guard, and object pruning. No automatic restore exists by design.</summary>
 public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 {
-    private readonly string databaseDirectory;
-    private readonly string objectsRoot;
+    private readonly string _databaseDirectory;
+    private readonly string _objectsRoot;
 
     public MaieuticsAgentSessionManagerTests()
     {
-        databaseDirectory = Path.Combine(
+        _databaseDirectory = Path.Combine(
             Path.GetTempPath(),
             "maieutics-session-manager-tests",
             Guid.NewGuid().ToString("N"));
-        objectsRoot = Path.Combine(databaseDirectory, "objects");
+        _objectsRoot = Path.Combine(_databaseDirectory, "objects");
     }
 
     public async ValueTask DisposeAsync()
@@ -29,19 +29,19 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         // WAL teardown and external scanners (antivirus, indexer) can hold the database
         // handle past the last close on Windows; the shared helper retries with an
         // asynchronous backoff so a teardown lock never masks the test result.
-        await TempArea.DeleteAsync(databaseDirectory, TestContext.Current.CancellationToken);
+        await TempArea.DeleteAsync(_databaseDirectory, TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public void PruneObjectsRemovesOnlyUnreferencedObjectsPastTheGrace()
     {
         var sessionId = AgentSessionId.Create();
-        var objectStore = new ObjectStore(objectsRoot);
+        var objectStore = new ObjectStore(_objectsRoot);
         var keep = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("keep")));
         var freshOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("fresh")));
         var staleOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("stale")));
         File.SetLastWriteTimeUtc(
-            Path.Combine(objectsRoot, staleOrphan.Sha256[..2], staleOrphan.Sha256),
+            Path.Combine(_objectsRoot, staleOrphan.Sha256[..2], staleOrphan.Sha256),
             DateTime.UtcNow - TimeSpan.FromHours(2));
 
         using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
@@ -51,7 +51,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 
         using var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance,
             reclaimer: objectStore);
@@ -220,7 +220,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var neverComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(new HangingChatClient(neverComplete.Task)),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance);
 
@@ -388,13 +388,13 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
     {
         return new MaieuticsAgentSessionManager(
             new FixedProfileProvider(),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance);
     }
 
     private string FamilyPath(AgentSessionId familyId) =>
-        SqliteTranscriptStore.FamilyDatabasePath(databaseDirectory, familyId);
+        SqliteTranscriptStore.FamilyDatabasePath(_databaseDirectory, familyId);
 
     private static AgentTranscriptTurn Turn(
         string runIdSuffix,

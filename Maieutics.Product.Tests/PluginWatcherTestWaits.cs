@@ -58,7 +58,7 @@ internal static class PluginWatcherTestWaits
     /// test logs. Runs once per process.</summary>
     private static void StartHangDumpWatchdog()
     {
-        if (Interlocked.Exchange(ref hangDumpStarted, 1) == 1) return;
+        if (Interlocked.Exchange(ref _hangDumpStarted, 1) == 1) return;
         if (Environment.GetEnvironmentVariable("MAIEUTICS_HANG_DUMP") is not "1") return;
         var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
         if (string.IsNullOrEmpty(logDirectory)) return;
@@ -113,5 +113,5 @@ internal static class PluginWatcherTestWaits
         });
     }
 
-    private static int hangDumpStarted;
+    private static int _hangDumpStarted;
 }

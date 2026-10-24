@@ -33,13 +33,13 @@ internal sealed class WorkspaceFunctions
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
         };
 
-    private readonly int maximumDirectoryEntries;
-    private readonly int maximumFileBytes;
-    private readonly int maximumFiles;
-    private readonly long maximumSearchBytes;
-    private readonly Workspace workspace;
-    private readonly ResourceRegistry? resources;
-    private readonly IWorkspaceIoBridge? bridge;
+    private readonly int _maximumDirectoryEntries;
+    private readonly int _maximumFileBytes;
+    private readonly int _maximumFiles;
+    private readonly long _maximumSearchBytes;
+    private readonly Workspace _workspace;
+    private readonly ResourceRegistry? _resources;
+    private readonly IWorkspaceIoBridge? _bridge;
 
     internal WorkspaceFunctions(
         Workspace workspace,
@@ -50,17 +50,17 @@ internal sealed class WorkspaceFunctions
         ResourceRegistry? resources = null,
         IWorkspaceIoBridge? bridge = null)
     {
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this.resources = resources;
-        this.bridge = bridge;
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._resources = resources;
+        this._bridge = bridge;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDirectoryEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSearchBytes);
-        this.maximumFiles = maximumFiles;
-        this.maximumDirectoryEntries = maximumDirectoryEntries;
-        this.maximumFileBytes = maximumFileBytes;
-        this.maximumSearchBytes = maximumSearchBytes;
+        this._maximumFiles = maximumFiles;
+        this._maximumDirectoryEntries = maximumDirectoryEntries;
+        this._maximumFileBytes = maximumFileBytes;
+        this._maximumSearchBytes = maximumSearchBytes;
 
         Functions =
         [
@@ -115,7 +115,7 @@ internal sealed class WorkspaceFunctions
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var snapshot = workspace.Capture();
+            var snapshot = _workspace.Capture();
             var requestedPageSize = pageSize ?? DefaultPageSize;
             if (requestedPageSize is < 1 or > MaximumPageSize)
                 throw new WorkspaceException(
@@ -124,18 +124,18 @@ internal sealed class WorkspaceFunctions
 
             var logicalRoot = snapshot.ResolveLogical(uri, allowRoot: true);
             List<WorkspaceDirectoryEntry> entries;
-            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
             {
                 try
                 {
                     var listing = await channel
-                        .ListAsync(logicalRoot.Segments, maximumDirectoryEntries, cancellationToken)
+                        .ListAsync(logicalRoot.Segments, _maximumDirectoryEntries, cancellationToken)
                         .ConfigureAwait(false);
                     if (listing.Truncated)
                         throw new WorkspaceException(
                             "workspace_directory_too_large",
-                            $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
+                            $"A directory cannot contain more than {_maximumDirectoryEntries} visible entries.");
 
                     entries = listing.Entries
                         .Select(entry => new WorkspaceDirectoryEntry(
@@ -225,10 +225,10 @@ internal sealed class WorkspaceFunctions
         {
             cancellationToken.ThrowIfCancellationRequested();
             entries.Add(CreateEntry(snapshot, entry, directory.Segments));
-            if (entries.Count > maximumDirectoryEntries)
+            if (entries.Count > _maximumDirectoryEntries)
                 throw new WorkspaceException(
                     "workspace_directory_too_large",
-                    $"A directory cannot contain more than {maximumDirectoryEntries} visible entries.");
+                    $"A directory cannot contain more than {_maximumDirectoryEntries} visible entries.");
         }
 
         return entries;
@@ -257,7 +257,7 @@ internal sealed class WorkspaceFunctions
                     "workspace_invalid_arguments",
                     $"startLine must be positive and maxLines must be between 1 and {MaximumLines}.");
 
-            if (resources is not null)
+            if (_resources is not null)
             {
                 var resource = await ResolveResourceAsync(
                     uri,
@@ -267,8 +267,8 @@ internal sealed class WorkspaceFunctions
                 if (resource is { } result) return result;
             }
 
-            var snapshot = workspace.Capture();
-            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var snapshot = _workspace.Capture();
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
             {
                 // The bridge answers the IDE's authoritative text state (dirty buffers
@@ -346,7 +346,7 @@ internal sealed class WorkspaceFunctions
                 "resource_invalid_uri",
                 "The value must be an absolute resource URI without a fragment.");
 
-        var provider = resources!.Resolve(parsed);
+        var provider = _resources!.Resolve(parsed);
         if (provider is null)
             throw new AgentToolException(
                 "resource_unknown_scheme",
@@ -426,7 +426,7 @@ internal sealed class WorkspaceFunctions
                 }
             }
 
-            var snapshot = workspace.Capture();
+            var snapshot = _workspace.Capture();
             var searchRoot = snapshot.Resolve(uri);
 
             // The search generalization (ADR 0042 stage F-II): like the file
@@ -434,7 +434,7 @@ internal sealed class WorkspaceFunctions
             // provider-mediated scan — one bounded contract both sides implement. A
             // frontend predating the method, a root outside its folders, or no
             // frontend at all falls back to the local disk scan.
-            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
             {
                 var bridgedRoot = snapshot.ResolveLogical(uri, allowRoot: true);
@@ -654,7 +654,7 @@ internal sealed class WorkspaceFunctions
         foreach (var (file, fileSegments) in EnumerateFiles(snapshot, searchRoot, statistics, cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (statistics.VisitedFiles >= maximumFiles)
+            if (statistics.VisitedFiles >= _maximumFiles)
             {
                 truncated = true;
                 break;
@@ -670,14 +670,14 @@ internal sealed class WorkspaceFunctions
             }
 
             statistics.VisitedFiles++;
-            if (statistics.ScannedBytes >= maximumSearchBytes)
+            if (statistics.ScannedBytes >= _maximumSearchBytes)
             {
                 truncated = true;
                 break;
             }
 
-            var remainingSearchBytes = maximumSearchBytes - statistics.ScannedBytes;
-            var maximumReadBytes = (int)Math.Min(maximumFileBytes, remainingSearchBytes);
+            var remainingSearchBytes = _maximumSearchBytes - statistics.ScannedBytes;
+            var maximumReadBytes = (int)Math.Min(_maximumFileBytes, remainingSearchBytes);
             BoundedFileContent bounded;
             try
             {
@@ -696,7 +696,7 @@ internal sealed class WorkspaceFunctions
 
             if (bounded.ExceededLimit)
             {
-                if (maximumReadBytes < maximumFileBytes)
+                if (maximumReadBytes < _maximumFileBytes)
                 {
                     truncated = true;
                     break;
@@ -706,7 +706,7 @@ internal sealed class WorkspaceFunctions
                 continue;
             }
 
-            if (statistics.ScannedBytes + bounded.Bytes.Length > maximumSearchBytes)
+            if (statistics.ScannedBytes + bounded.Bytes.Length > _maximumSearchBytes)
             {
                 truncated = true;
                 break;
@@ -883,10 +883,10 @@ internal sealed class WorkspaceFunctions
         {
             cancellationToken.ThrowIfCancellationRequested();
             statistics.VisitedEntries++;
-            if (statistics.VisitedEntries > maximumDirectoryEntries)
+            if (statistics.VisitedEntries > _maximumDirectoryEntries)
                 throw new WorkspaceException(
                     "workspace_directory_too_large",
-                    $"A search cannot enumerate more than {maximumDirectoryEntries} workspace entries.");
+                    $"A search cannot enumerate more than {_maximumDirectoryEntries} workspace entries.");
 
             entries.Add(entry);
         }
@@ -963,19 +963,19 @@ internal sealed class WorkspaceFunctions
 
     private sealed class BoundedUtf8LineReader(Stream stream)
     {
-        private readonly byte[] buffer = new byte[4_096];
-        private readonly byte[] lineBuffer = new byte[MaximumLineUtf8Bytes + 3];
-        private int bufferCount;
-        private int bufferOffset;
-        private bool firstLine = true;
-        private int scannedBytes;
+        private readonly byte[] _buffer = new byte[4_096];
+        private readonly byte[] _lineBuffer = new byte[MaximumLineUtf8Bytes + 3];
+        private int _bufferCount;
+        private int _bufferOffset;
+        private bool _firstLine = true;
+        private int _scannedBytes;
 
         internal async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
         {
             var lineLength = 0;
             while (await EnsureBufferAsync(cancellationToken).ConfigureAwait(false))
             {
-                var value = buffer[bufferOffset++];
+                var value = _buffer[_bufferOffset++];
                 if (value == 0)
                     throw new WorkspaceException(
                         "workspace_binary_file",
@@ -983,9 +983,9 @@ internal sealed class WorkspaceFunctions
 
                 if (value == (byte)'\n') return DecodeLine(lineLength);
 
-                if (lineLength == lineBuffer.Length) throw LineTooLong();
+                if (lineLength == _lineBuffer.Length) throw LineTooLong();
 
-                lineBuffer[lineLength++] = value;
+                _lineBuffer[lineLength++] = value;
             }
 
             return lineLength == 0 ? null : DecodeLine(lineLength);
@@ -998,30 +998,30 @@ internal sealed class WorkspaceFunctions
 
         private async ValueTask<bool> EnsureBufferAsync(CancellationToken cancellationToken)
         {
-            if (bufferOffset < bufferCount) return true;
+            if (_bufferOffset < _bufferCount) return true;
 
-            var remaining = MaximumReadScanBytes - scannedBytes;
-            var requested = Math.Min(buffer.Length, remaining + 1);
-            bufferCount = await stream.ReadAsync(buffer.AsMemory(0, requested), cancellationToken)
+            var remaining = MaximumReadScanBytes - _scannedBytes;
+            var requested = Math.Min(_buffer.Length, remaining + 1);
+            _bufferCount = await stream.ReadAsync(_buffer.AsMemory(0, requested), cancellationToken)
                 .ConfigureAwait(false);
-            bufferOffset = 0;
-            scannedBytes += bufferCount;
-            if (scannedBytes > MaximumReadScanBytes)
+            _bufferOffset = 0;
+            _scannedBytes += _bufferCount;
+            if (_scannedBytes > MaximumReadScanBytes)
                 throw new WorkspaceException(
                     "workspace_file_too_large",
                     $"read_text scans at most {MaximumReadScanBytes} bytes per call.");
 
-            return bufferCount != 0;
+            return _bufferCount != 0;
         }
 
         private string DecodeLine(int length)
         {
-            if (length > 0 && lineBuffer[length - 1] == (byte)'\r') length--;
+            if (length > 0 && _lineBuffer[length - 1] == (byte)'\r') length--;
 
-            var line = StrictUtf8.GetString(lineBuffer, 0, length);
-            if (firstLine)
+            var line = StrictUtf8.GetString(_lineBuffer, 0, length);
+            if (_firstLine)
             {
-                firstLine = false;
+                _firstLine = false;
                 if (line.Length > 0 && line[0] == '\uFEFF') line = line[1..];
             }
 
@@ -1046,30 +1046,30 @@ internal sealed class WorkspaceFunctions
     private sealed class TextLineMap
     {
         private const int MaximumPreviewCharacters = 512;
-        private readonly string content;
-        private readonly int[] lineStarts;
+        private readonly string _content;
+        private readonly int[] _lineStarts;
 
         internal TextLineMap(string content)
         {
-            this.content = content;
+            this._content = content;
             var starts = new List<int> { 0 };
             for (var index = 0; index < content.Length; index++)
                 if (content[index] == '\n' && index + 1 < content.Length)
                     starts.Add(index + 1);
 
-            lineStarts = starts.ToArray();
+            _lineStarts = starts.ToArray();
         }
 
         internal WorkspaceSearchMatch CreateMatch(int index, string uri)
         {
-            var lineIndex = Array.BinarySearch(lineStarts, index);
+            var lineIndex = Array.BinarySearch(_lineStarts, index);
             if (lineIndex < 0) lineIndex = ~lineIndex - 1;
 
-            var lineStart = lineStarts[lineIndex];
-            var lineEnd = lineIndex + 1 < lineStarts.Length
-                ? lineStarts[lineIndex + 1] - 1
-                : content.Length;
-            if (lineEnd > lineStart && content[lineEnd - 1] == '\r') lineEnd--;
+            var lineStart = _lineStarts[lineIndex];
+            var lineEnd = lineIndex + 1 < _lineStarts.Length
+                ? _lineStarts[lineIndex + 1] - 1
+                : _content.Length;
+            if (lineEnd > lineStart && _content[lineEnd - 1] == '\r') lineEnd--;
 
             var previewStart = lineStart;
             if (lineEnd - lineStart > MaximumPreviewCharacters)
@@ -1079,16 +1079,16 @@ internal sealed class WorkspaceFunctions
                     lineEnd - MaximumPreviewCharacters);
 
             var previewEnd = Math.Min(lineEnd, previewStart + MaximumPreviewCharacters);
-            if (previewStart > lineStart && char.IsLowSurrogate(content[previewStart])) previewStart++;
+            if (previewStart > lineStart && char.IsLowSurrogate(_content[previewStart])) previewStart++;
 
             if (previewEnd > previewStart && previewEnd < lineEnd &&
-                char.IsHighSurrogate(content[previewEnd - 1])) previewEnd--;
+                char.IsHighSurrogate(_content[previewEnd - 1])) previewEnd--;
 
             return new WorkspaceSearchMatch(
                 uri,
                 lineIndex + 1,
                 index - lineStart + 1,
-                content[previewStart..previewEnd]);
+                _content[previewStart..previewEnd]);
         }
     }
 

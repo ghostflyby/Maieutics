@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.Permissions;
@@ -26,20 +27,20 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private const int MaximumPendingConnections = 8;
     private const int ReadBufferBytes = 4 * 1024;
     private static readonly TimeSpan PolicyRegistrationWait = TimeSpan.FromSeconds(10);
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger<DenoPermissionBroker> logger;
-    private readonly TimeSpan policyRegistrationWait;
-    private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> registrations = new();
-    private readonly string? socketPath;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger<DenoPermissionBroker> _logger;
+    private readonly TimeSpan _policyRegistrationWait;
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> _registrations = new();
+    private readonly string? _socketPath;
 
-    private readonly string? pipeName;
+    private readonly string? _pipeName;
 
     // Serializes the pipe listener's replacement (the accept loop) with its shutdown release (the
     // accept loop's cleanup), so a release can never race a replacement.
-    private readonly Lock listenerGate = new();
-    private Task loop = Task.CompletedTask;
-    private Socket? unixListener;
-    private NamedPipeServerStream? pipeListener;
+    private readonly Lock _listenerGate = new();
+    private Task _loop = Task.CompletedTask;
+    private Socket? _unixListener;
+    private NamedPipeServerStream? _pipeListener;
 
     private DenoPermissionBroker(
         string? socketPath,
@@ -47,10 +48,10 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         ILogger<DenoPermissionBroker> logger,
         TimeSpan policyRegistrationWait)
     {
-        this.socketPath = socketPath;
-        this.pipeName = pipeName;
-        this.logger = logger;
-        this.policyRegistrationWait = policyRegistrationWait;
+        this._socketPath = socketPath;
+        this._pipeName = pipeName;
+        this._logger = logger;
+        this._policyRegistrationWait = policyRegistrationWait;
     }
 
     /// <summary>Number of pid registration slots currently held. A request may create a pending
@@ -58,7 +59,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     /// <see cref="UnregisterProcess"/>, on the policy-arrival timeout in
     /// <see cref="GetPolicyAsync"/>, and on broker disposal. Exposed for tests to assert that a
     /// timed-out unknown pid leaves no slot behind.</summary>
-    internal int RegistrationCount => registrations.Count;
+    internal int RegistrationCount => _registrations.Count;
 
     /// <summary>Address REPL and plugin-host children use to reach the broker via
     /// <c>DENO_PERMISSION_BROKER_PATH</c>: a unix socket path on unix, the full named-pipe path
@@ -70,7 +71,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         {
             // The listener is bound synchronously by Create before this is ever handed to a
             // child, so the address is unconditionally safe to spawn against.
-            return socketPath ?? (pipeName is { } name ? $@"\\.\pipe\{name}" : string.Empty);
+            return _socketPath ?? (_pipeName is { } name ? $@"\\.\pipe\{name}" : string.Empty);
         }
     }
 
@@ -98,13 +99,13 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 $"maieutics-broker-{Guid.NewGuid():N}",
                 logger,
                 policyRegistrationWait);
-            windowsBroker.pipeListener = new NamedPipeServerStream(
-                windowsBroker.pipeName!,
+            windowsBroker._pipeListener = new NamedPipeServerStream(
+                windowsBroker._pipeName!,
                 PipeDirection.InOut,
                 MaximumPendingConnections,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
-            windowsBroker.loop = windowsBroker.AcceptLoopAsync();
+            windowsBroker._loop = windowsBroker.AcceptLoopAsync();
             return windowsBroker;
         }
 
@@ -113,8 +114,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         listener.Bind(new UnixDomainSocketEndPoint(socketPath));
         listener.Listen(MaximumPendingConnections);
-        broker.unixListener = listener;
-        broker.loop = broker.AcceptLoopAsync();
+        broker._unixListener = listener;
+        broker._loop = broker.AcceptLoopAsync();
         return broker;
     }
 
@@ -134,7 +135,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentNullException.ThrowIfNull(policy);
-        var slot = registrations.GetOrAdd(
+        var slot = _registrations.GetOrAdd(
             processId,
             static _ => new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously));
         if (slot.TrySetResult(policy)) return;
@@ -144,7 +145,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         // to this pid: TryUpdate compares by reference, so a concurrent replacement wins and this
         // registration re-runs against the winner instead of clobbering a live sibling's slot.
         var fresh = new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (registrations.TryUpdate(processId, fresh, slot))
+        if (_registrations.TryUpdate(processId, fresh, slot))
         {
             fresh.TrySetResult(policy);
             return;
@@ -155,27 +156,27 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
 
     internal void UnregisterProcess(int processId)
     {
-        if (!registrations.TryRemove(processId, out var slot)) return;
+        if (!_registrations.TryRemove(processId, out var slot)) return;
 
         slot.TrySetCanceled();
     }
 
     public async ValueTask DisposeAsync()
     {
-        await lifetime.CancelAsync();
+        await _lifetime.CancelAsync();
         try
         {
-            await loop.ConfigureAwait(false);
+            await _loop.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Expected at shutdown.
         }
 
-        if (socketPath is not null)
+        if (_socketPath is not null)
             try
             {
-                File.Delete(socketPath);
+                File.Delete(_socketPath);
             }
             catch
             {
@@ -195,22 +196,22 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         {
             if (OperatingSystem.IsWindows())
             {
-                while (!lifetime.IsCancellationRequested)
+                while (!_lifetime.IsCancellationRequested)
                 {
                     try
                     {
-                        await pipeListener!.WaitForConnectionAsync(lifetime.Token).ConfigureAwait(false);
+                        await _pipeListener!.WaitForConnectionAsync(_lifetime.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
                         return;
                     }
 
-                    _ = ServePipeConnectionAsync(pipeListener, lifetime.Token);
-                    lock (listenerGate)
+                    _ = ServePipeConnectionAsync(_pipeListener, _lifetime.Token);
+                    lock (_listenerGate)
                     {
-                        pipeListener = new NamedPipeServerStream(
-                            pipeName!,
+                        _pipeListener = new NamedPipeServerStream(
+                            _pipeName!,
                             PipeDirection.InOut,
                             MaximumPendingConnections,
                             PipeTransmissionMode.Byte,
@@ -221,12 +222,12 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 return;
             }
 
-            var listener = unixListener;
+            var listener = _unixListener;
             if (listener is null) return;
-            while (!lifetime.IsCancellationRequested)
+            while (!_lifetime.IsCancellationRequested)
             {
-                var connection = await listener.AcceptAsync(lifetime.Token).ConfigureAwait(false);
-                _ = ServeSocketConnectionAsync(connection, lifetime.Token);
+                var connection = await listener.AcceptAsync(_lifetime.Token).ConfigureAwait(false);
+                _ = ServeSocketConnectionAsync(connection, _lifetime.Token);
             }
         }
         catch (OperationCanceledException)
@@ -234,17 +235,17 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         }
         finally
         {
-            unixListener?.Dispose();
+            _unixListener?.Dispose();
 
             // The unix cleanup cannot release the Windows named-pipe listener: this loop creates
             // and replaces it, and DisposeAsync only awaits this loop. Swap it out under the same
             // lock the replacement takes so a release never races a replacement, then dispose the
             // captured instance so shutdown cannot leave the pipe handle open.
             NamedPipeServerStream? pipe;
-            lock (listenerGate)
+            lock (_listenerGate)
             {
-                pipe = pipeListener;
-                pipeListener = null;
+                pipe = _pipeListener;
+                _pipeListener = null;
             }
 
             pipe?.Dispose();
@@ -258,12 +259,12 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     /// default.</summary>
     private async Task<EffectivePolicy> GetPolicyAsync(int processId, CancellationToken cancellationToken)
     {
-        var slot = registrations.GetOrAdd(
+        var slot = _registrations.GetOrAdd(
             processId,
             static _ => new TaskCompletionSource<EffectivePolicy>(TaskCreationOptions.RunContinuationsAsynchronously));
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(policyRegistrationWait);
+        timeout.CancelAfter(_policyRegistrationWait);
         try
         {
             return await slot.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
@@ -275,16 +276,16 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             if (slot.Task.IsCompletedSuccessfully)
                 return slot.Task.Result;
 
-            logger.LogDebug(
+            _logger.LogDebug(
                 "Permission broker policy for process {ProcessId} did not arrive within {Wait}; denying by default.",
                 processId,
-                policyRegistrationWait);
+                _policyRegistrationWait);
             // The owner never registered the policy, so no UnregisterProcess will clean this pid
             // up (that only runs on a reported exit). Remove the pending slot to avoid a permanent
             // leak for an unknown pid. The removal is safe under concurrency: TryRemove returns the
             // winning slot, and a concurrent RegisterPolicy that just completed it is observed
             // through the slot's task — TrySetCanceled is a no-op on an already-completed task.
-            if (registrations.TryRemove(processId, out var removed))
+            if (_registrations.TryRemove(processId, out var removed))
                 removed.TrySetCanceled();
             return EffectivePolicy.Default;
         }
@@ -297,7 +298,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             if (!PeerProcessCredentials.TryGetPeerIdentity(connection, out var processId, out _) ||
                 processId <= 0)
             {
-                logger.LogWarning("Rejected permission broker connection with an unexpected peer identity.");
+                _logger.LogWarning("Rejected permission broker connection with an unexpected peer identity.");
                 return;
             }
 
@@ -308,7 +309,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         catch (Exception exception) when (
             exception is IOException or ObjectDisposedException or SocketException or OperationCanceledException)
         {
-            logger.LogDebug(exception, "Permission broker connection ended before EOF.");
+            _logger.LogDebug(exception, "Permission broker connection ended before EOF.");
         }
         finally
         {
@@ -323,7 +324,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             var processId = GetClientProcessId(pipe);
             if (processId <= 0)
             {
-                logger.LogWarning("Rejected permission broker named-pipe connection with an unexpected peer identity.");
+                _logger.LogWarning("Rejected permission broker named-pipe connection with an unexpected peer identity.");
                 return;
             }
 
@@ -333,7 +334,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         catch (Exception exception) when (
             exception is IOException or ObjectDisposedException or OperationCanceledException)
         {
-            logger.LogDebug(exception, "Permission broker named-pipe connection ended before EOF.");
+            _logger.LogDebug(exception, "Permission broker named-pipe connection ended before EOF.");
         }
         finally
         {
@@ -347,8 +348,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         return GetNamedPipeClientProcessId(handle, out var processId) ? unchecked((int)processId) : 0;
     }
 
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
-    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern bool GetNamedPipeClientProcessId(IntPtr pipeHandle, out uint clientProcessId);
 
     private async Task ServeConnectionAsync(
@@ -403,7 +404,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         }
         catch (JsonException)
         {
-            logger.LogDebug("Ignored a malformed permission broker request.");
+            _logger.LogDebug("Ignored a malformed permission broker request.");
             return;
         }
 
@@ -419,7 +420,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         await stream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
         await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-        logger.LogDebug(
+        _logger.LogDebug(
             "Permission broker {Decision} {Permission} {Value} for process.",
             decision.IsAllowed ? "allowed" : "denied",
             request.Permission,

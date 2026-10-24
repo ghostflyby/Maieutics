@@ -97,7 +97,7 @@ public static class AgentContentTriage
     /// point ever materializing it whole. The caller keeps ownership of the source stream.</summary>
     private sealed class PrefixedStream(byte[] prefix, int prefixLength, Stream remainder) : Stream
     {
-        private int position;
+        private int _position;
 
         public override bool CanRead => true;
 
@@ -109,7 +109,7 @@ public static class AgentContentTriage
 
         public override long Position
         {
-            get => position;
+            get => _position;
             set => throw new NotSupportedException();
         }
 
@@ -120,11 +120,11 @@ public static class AgentContentTriage
         public override int Read(byte[] buffer, int offset, int count)
         {
             var copied = 0;
-            if (position < prefixLength)
+            if (_position < prefixLength)
             {
-                copied = Math.Min(count, prefixLength - position);
-                Array.Copy(prefix, position, buffer, offset, copied);
-                position += copied;
+                copied = Math.Min(count, prefixLength - _position);
+                Array.Copy(prefix, _position, buffer, offset, copied);
+                _position += copied;
             }
 
             while (copied < count)
@@ -132,7 +132,7 @@ public static class AgentContentTriage
                 var read = remainder.Read(buffer, offset + copied, count - copied);
                 if (read == 0) break;
 
-                position += read;
+                _position += read;
                 copied += read;
             }
 

@@ -1,7 +1,7 @@
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
 using Maieutics.Agent;
 using Maieutics.Mcp;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Maieutics.Frontend;
 
@@ -29,9 +29,9 @@ internal sealed class FrontendElicitationPresenter(
     /// <summary>The maximum number of form fields derived from one elicitation schema.</summary>
     private const int MaxFormFields = 16;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<string, TaskCompletionSource<McpElicitationAnswer>> pending = [];
-    private readonly Dictionary<string, FrontendFormModel> forms = [];
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, TaskCompletionSource<McpElicitationAnswer>> _pending = [];
+    private readonly Dictionary<string, FrontendFormModel> _forms = [];
 
     public ValueTask<McpElicitationAnswer> PresentAsync(
         McpElicitationRequest request,
@@ -42,9 +42,9 @@ internal sealed class FrontendElicitationPresenter(
         var requestId = $"elicit-{Guid.NewGuid().ToString("N")}";
         var completion = new TaskCompletionSource<McpElicitationAnswer>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        lock (_gate)
         {
-            pending[requestId] = completion;
+            _pending[requestId] = completion;
         }
 
         var published = publisher.TryPublishPresentation(
@@ -60,9 +60,9 @@ internal sealed class FrontendElicitationPresenter(
                 FrontendJsonContext.Default.FrontendInputRequest));
         if (!published)
         {
-            lock (gate)
+            lock (_gate)
             {
-                pending.Remove(requestId);
+                _pending.Remove(requestId);
             }
 
             // No live stream to present on (the run already settled): cancel, never hang.
@@ -106,9 +106,9 @@ internal sealed class FrontendElicitationPresenter(
                 cancellationToken).ConfigureAwait(false);
             if (model is not null)
             {
-                lock (gate)
+                lock (_gate)
                 {
-                    forms[requestId] = model;
+                    _forms[requestId] = model;
                 }
             }
         }
@@ -132,9 +132,9 @@ internal sealed class FrontendElicitationPresenter(
         finally
         {
             await CloseFormAsync(requestId).ConfigureAwait(false);
-            lock (gate)
+            lock (_gate)
             {
-                pending.Remove(requestId);
+                _pending.Remove(requestId);
             }
         }
     }
@@ -236,9 +236,9 @@ internal sealed class FrontendElicitationPresenter(
     private void Complete(string requestId, string action, string? contentJson)
     {
         TaskCompletionSource<McpElicitationAnswer>? completion;
-        lock (gate)
+        lock (_gate)
         {
-            if (!pending.Remove(requestId, out completion)) return;
+            if (!_pending.Remove(requestId, out completion)) return;
         }
 
         completion.TrySetResult(new McpElicitationAnswer(action, contentJson));
@@ -247,9 +247,9 @@ internal sealed class FrontendElicitationPresenter(
     private ValueTask CloseFormAsync(string requestId)
     {
         FrontendFormModel? model;
-        lock (gate)
+        lock (_gate)
         {
-            if (!forms.Remove(requestId, out model)) return ValueTask.CompletedTask;
+            if (!_forms.Remove(requestId, out model)) return ValueTask.CompletedTask;
         }
 
         return model.DisposeAsync();
@@ -261,9 +261,9 @@ internal sealed class FrontendElicitationPresenter(
     public bool TryCompleteInput(string requestId, string? action, string value)
     {
         TaskCompletionSource<McpElicitationAnswer>? completion;
-        lock (gate)
+        lock (_gate)
         {
-            if (!pending.Remove(requestId, out completion)) return false;
+            if (!_pending.Remove(requestId, out completion)) return false;
         }
 
         var normalizedAction =

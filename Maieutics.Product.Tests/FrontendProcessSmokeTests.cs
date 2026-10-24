@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -243,7 +244,7 @@ public sealed class FrontendProcessSmokeTests
     {
         // Teardown must run at most once: the explicit finally dispose would
         // otherwise double-kill.
-        private int disposeState;
+        private int _disposeState;
 
         public string DiscoveryPath { get; } = discoveryPath;
 
@@ -264,7 +265,7 @@ public sealed class FrontendProcessSmokeTests
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+            if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
 
             try
             {
@@ -274,7 +275,7 @@ public sealed class FrontendProcessSmokeTests
                 }
             }
             catch (Exception exception) when (
-                exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+                exception is InvalidOperationException or Win32Exception)
             {
                 // The process instance lost its association (already reaped by the OS)
                 // or the OS refused the kill because the child just exited.

@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.ComponentModel;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Maieutics.Agent;
 using Microsoft.Extensions.AI;
 
@@ -11,17 +13,17 @@ namespace Maieutics.Execution;
 /// children and plugins can enumerate the same catalog the model sees.</summary>
 internal sealed class ResourceFunctions
 {
-    private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions =
+    private static readonly JsonSerializerOptions SerializerOptions =
         new(ResourceJsonSerializerContext.Default.Options)
         {
-            UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
         };
 
-    private readonly ResourceRegistry registry;
+    private readonly ResourceRegistry _registry;
 
     internal ResourceFunctions(ResourceRegistry registry)
     {
-        this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
 
         Functions =
         [
@@ -46,11 +48,11 @@ internal sealed class ResourceFunctions
         try
         {
             var resources = ImmutableArray.CreateBuilder<ResourceCatalogEntry>();
-            foreach (var provider in registry.Providers)
+            foreach (var provider in _registry.Providers)
                 if (provider is IResourceCatalogProvider catalogProvider)
                     resources.AddRange(await catalogProvider.ListAsync(cancellationToken).ConfigureAwait(false));
 
-            return new ResourceCatalogResult(resources.ToImmutable(), registry.GetConflicts());
+            return new ResourceCatalogResult(resources.ToImmutable(), _registry.GetConflicts());
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -16,23 +17,23 @@ internal sealed class Workspace : IPermissionVariableSource
 {
     private const string WorkspaceVariableName = "workspace";
     private const string ProjectVariablePrefix = "project.";
-    private readonly Lock gate = new();
-    private readonly WorkspaceHome? home;
-    private readonly string rootPath;
-    private WorkspaceSnapshot current;
+    private readonly Lock _gate = new();
+    private readonly WorkspaceHome? _home;
+    private readonly string _rootPath;
+    private WorkspaceSnapshot _current;
 
     private Workspace(WorkspaceHome? home, string rootPath)
     {
-        this.home = home;
-        this.rootPath = rootPath;
-        current = new WorkspaceSnapshot(rootPath, 0, home?.LinksView());
+        this._home = home;
+        this._rootPath = rootPath;
+        _current = new WorkspaceSnapshot(rootPath, 0, home?.LinksView());
     }
 
-    internal string RootPath => rootPath;
+    internal string RootPath => _rootPath;
 
     string? IPermissionVariableSource.GetVariable(string name)
     {
-        if (string.Equals(name, WorkspaceVariableName, StringComparison.Ordinal)) return rootPath;
+        if (string.Equals(name, WorkspaceVariableName, StringComparison.Ordinal)) return _rootPath;
 
         if (name.StartsWith(ProjectVariablePrefix, StringComparison.Ordinal))
         {
@@ -63,15 +64,15 @@ internal sealed class Workspace : IPermissionVariableSource
 
     internal WorkspaceSnapshot Capture()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return current;
+            return _current;
         }
     }
 
     internal WorkspaceSnapshot OpenLink(string path, string? alias)
     {
-        var owner = home
+        var owner = _home
                     ?? throw new InvalidOperationException(
                         "Workspace links require the fixed workspace home.");
         _ = owner.Open(path, alias);
@@ -80,7 +81,7 @@ internal sealed class Workspace : IPermissionVariableSource
 
     internal WorkspaceSnapshot CloseLink(string name)
     {
-        var owner = home
+        var owner = _home
                     ?? throw new InvalidOperationException(
                         "Workspace links require the fixed workspace home.");
         _ = owner.Close(name);
@@ -89,13 +90,13 @@ internal sealed class Workspace : IPermissionVariableSource
 
     private WorkspaceSnapshot CommitLinksChanged()
     {
-        lock (gate)
+        lock (_gate)
         {
-            current = new WorkspaceSnapshot(
-                rootPath,
-                checked(current.Version + 1),
-                home?.LinksView());
-            return current;
+            _current = new WorkspaceSnapshot(
+                _rootPath,
+                checked(_current.Version + 1),
+                _home?.LinksView());
+            return _current;
         }
     }
 
@@ -246,7 +247,7 @@ internal sealed partial record WorkspaceSnapshot(
         }
         catch (Exception exception) when
             (exception is ArgumentException or NotSupportedException or PathTooLongException
-                 or System.Security.SecurityException)
+                 or SecurityException)
         {
             return false;
         }

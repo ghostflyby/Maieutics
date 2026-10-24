@@ -45,33 +45,33 @@ public enum ProviderGateMode
 /// queue.</summary>
 public sealed class GatedModelProvider : IAsyncDisposable
 {
-    private readonly CancellationTokenSource cancellation = new();
-    private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-    private readonly Task serveLoop;
-    private readonly Lock gate = new();
-    private readonly List<TaskCompletionSource> parked = [];
-    private readonly TaskCompletionSource globalRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly List<Task> connections = [];
-    private readonly ModelApiFlavor flavor;
-    private readonly ProviderGateMode mode;
-    private readonly string answer;
-    private readonly string model;
-    private readonly string? reasoning;
-    private readonly int requestCount;
-    private readonly bool toolFlow;
-    private readonly bool applyPatchFlow;
-    private readonly string? applyPatchOperationJson;
-    private readonly bool webSearchFlow;
-    private readonly int webSearchCalls;
-    private readonly string toolName;
-    private readonly string toolArgumentsJson;
-    private readonly string? expectedToolResultText;
-    private int served;
+    private readonly CancellationTokenSource _cancellation = new();
+    private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+    private readonly Task _serveLoop;
+    private readonly Lock _gate = new();
+    private readonly List<TaskCompletionSource> _parked = [];
+    private readonly TaskCompletionSource _globalRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly List<Task> _connections = [];
+    private readonly ModelApiFlavor _flavor;
+    private readonly ProviderGateMode _mode;
+    private readonly string _answer;
+    private readonly string _model;
+    private readonly string? _reasoning;
+    private readonly int _requestCount;
+    private readonly bool _toolFlow;
+    private readonly bool _applyPatchFlow;
+    private readonly string? _applyPatchOperationJson;
+    private readonly bool _webSearchFlow;
+    private readonly int _webSearchCalls;
+    private readonly string _toolName;
+    private readonly string _toolArgumentsJson;
+    private readonly string? _expectedToolResultText;
+    private int _served;
 
-    private int connectionsOpened;
-    private int parkedCount;
-    private readonly TaskCompletionSource scriptedComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _connectionsOpened;
+    private int _parkedCount;
+    private readonly TaskCompletionSource _scriptedComplete = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <param name="flavor">The API flavor the fake speaks.</param>
     /// <param name="mode">How answers are handed out.</param>
@@ -111,28 +111,28 @@ public sealed class GatedModelProvider : IAsyncDisposable
         if (applyPatchFlow && applyPatchOperationJson is null)
             throw new ArgumentException("The apply-patch flow requires an operation JSON.", nameof(applyPatchOperationJson));
 
-        this.flavor = flavor;
-        this.mode = mode;
-        this.answer = answer;
-        this.model = model;
-        this.reasoning = reasoning;
-        this.toolFlow = toolFlow;
-        this.toolName = toolName;
-        this.toolArgumentsJson = toolArgumentsJson;
-        this.expectedToolResultText = expectedToolResultText;
-        this.applyPatchFlow = applyPatchFlow;
-        this.applyPatchOperationJson = applyPatchOperationJson;
-        this.webSearchFlow = webSearchFlow;
-        this.webSearchCalls = webSearchCalls;
-        this.requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
-        listener.Start();
-        var endpoint = (IPEndPoint)listener.LocalEndpoint;
+        this._flavor = flavor;
+        this._mode = mode;
+        this._answer = answer;
+        this._model = model;
+        this._reasoning = reasoning;
+        this._toolFlow = toolFlow;
+        this._toolName = toolName;
+        this._toolArgumentsJson = toolArgumentsJson;
+        this._expectedToolResultText = expectedToolResultText;
+        this._applyPatchFlow = applyPatchFlow;
+        this._applyPatchOperationJson = applyPatchOperationJson;
+        this._webSearchFlow = webSearchFlow;
+        this._webSearchCalls = webSearchCalls;
+        this._requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
+        _listener.Start();
+        var endpoint = (IPEndPoint)_listener.LocalEndpoint;
         // The OpenAI SDK joins relative to the /v1/ base; the Anthropic SDK joins to the
         // bare host, so the flavor decides the endpoint shape.
         Endpoint = flavor == ModelApiFlavor.Anthropic
             ? new Uri($"http://127.0.0.1:{endpoint.Port}")
             : new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-        serveLoop = ServeAsync(cancellation.Token);
+        _serveLoop = ServeAsync(_cancellation.Token);
     }
 
     /// <summary>The provider's base endpoint, for configuration injection.</summary>
@@ -140,10 +140,10 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
     /// <summary>Scripted mode: completes when every expected request has been answered.
     /// The other modes: the serve loop's task, completing at disposal.</summary>
-    public Task Completion => mode == ProviderGateMode.Scripted ? scriptedComplete.Task : serveLoop;
+    public Task Completion => _mode == ProviderGateMode.Scripted ? _scriptedComplete.Task : _serveLoop;
 
     /// <summary>The raw listen port, for tests that drive the TCP surface directly.</summary>
-    public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
+    public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
     /// <summary>The bodies of the requests served so far, in arrival order.</summary>
     public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
@@ -159,9 +159,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return parked.Count;
+                return _parked.Count;
             }
         }
     }
@@ -182,11 +182,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             Task signal;
-            lock (gate)
+            lock (_gate)
             {
-                if (parked.Count >= minimum) return;
+                if (_parked.Count >= minimum) return;
 
-                signal = parkedChanged.Task;
+                signal = _parkedChanged.Task;
             }
 
             await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -203,11 +203,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             Task signal;
-            lock (gate)
+            lock (_gate)
             {
-                if (parked.Count == 0) return;
+                if (_parked.Count == 0) return;
 
-                signal = parkedChanged.Task;
+                signal = _parkedChanged.Task;
             }
 
             await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -215,11 +215,11 @@ public sealed class GatedModelProvider : IAsyncDisposable
     }
 
     /// <summary>Completes the parked-count signal and swaps in a fresh source, under the
-    /// caller's hold of <see cref="gate" />.</summary>
+    /// caller's hold of <see cref="_gate" />.</summary>
     private void NotifyParkedChangedLocked()
     {
-        parkedChanged.TrySetResult();
-        parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _parkedChanged.TrySetResult();
+        _parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>Releases the oldest provider request that is still awaiting release
@@ -230,12 +230,12 @@ public sealed class GatedModelProvider : IAsyncDisposable
     public void ReleaseNext()
     {
         TaskCompletionSource? release = null;
-        lock (gate)
+        lock (_gate)
         {
-            while (parked.Count > 0)
+            while (_parked.Count > 0)
             {
-                var next = parked[0];
-                parked.RemoveAt(0);
+                var next = _parked[0];
+                _parked.RemoveAt(0);
                 if (next.Task.IsCompleted) continue;
                 release = next;
                 break;
@@ -252,10 +252,10 @@ public sealed class GatedModelProvider : IAsyncDisposable
     public void ReleaseAll()
     {
         TaskCompletionSource[] releases;
-        lock (gate)
+        lock (_gate)
         {
-            releases = [.. parked];
-            parked.Clear();
+            releases = [.. _parked];
+            _parked.Clear();
             if (releases.Length > 0) NotifyParkedChangedLocked();
         }
 
@@ -266,7 +266,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// release.</summary>
     public void Release()
     {
-        globalRelease.TrySetResult();
+        _globalRelease.TrySetResult();
     }
 
     /// <summary>Parks a synthetic request so the release bookkeeping can be exercised
@@ -274,9 +274,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
     public TaskCompletionSource ParkForTest()
     {
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        lock (_gate)
         {
-            parked.Add(release);
+            _parked.Add(release);
             NotifyParkedChangedLocked();
         }
 
@@ -287,9 +287,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// many reached the park point, and how the gate stands.</summary>
     public string DescribeState()
     {
-        return $"connections={Volatile.Read(ref connectionsOpened)} "
-               + $"parkedTotal={Volatile.Read(ref parkedCount)} parkedNow={ParkedRequests} "
-               + $"released={(mode == ProviderGateMode.Hanging ? globalRelease.Task.IsCompleted.ToString() : "n/a")}";
+        return $"connections={Volatile.Read(ref _connectionsOpened)} "
+               + $"parkedTotal={Volatile.Read(ref _parkedCount)} parkedNow={ParkedRequests} "
+               + $"released={(_mode == ProviderGateMode.Hanging ? _globalRelease.Task.IsCompleted.ToString() : "n/a")}";
     }
 
     /// <summary>Stops the listener, releases every parked request, and observes all
@@ -297,15 +297,15 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// connection task can never leave the serve loop unobserved.</summary>
     public async ValueTask DisposeAsync()
     {
-        await cancellation.CancelAsync().ConfigureAwait(false);
-        listener.Stop();
+        await _cancellation.CancelAsync().ConfigureAwait(false);
+        _listener.Stop();
         ReleaseAll();
-        globalRelease.TrySetResult();
-        scriptedComplete.TrySetResult();
+        _globalRelease.TrySetResult();
+        _scriptedComplete.TrySetResult();
         Task[] connectionTasks;
-        lock (gate)
+        lock (_gate)
         {
-            connectionTasks = [.. connections];
+            connectionTasks = [.. _connections];
         }
 
         try
@@ -319,14 +319,14 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
         try
         {
-            await serveLoop.ConfigureAwait(false);
+            await _serveLoop.ConfigureAwait(false);
         }
         catch (Exception exception) when
             (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
         {
         }
 
-        cancellation.Dispose();
+        _cancellation.Dispose();
     }
 
     private async Task ServeAsync(CancellationToken cancellationToken)
@@ -338,13 +338,13 @@ public sealed class GatedModelProvider : IAsyncDisposable
             // connections (keep-alive by default), so connections are served
             // concurrently, each staying open for reuse until the expected count is
             // reached.
-            while (mode != ProviderGateMode.Scripted || Volatile.Read(ref served) < requestCount)
+            while (_mode != ProviderGateMode.Scripted || Volatile.Read(ref _served) < _requestCount)
             {
-                var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                var client = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
                 Task connection = ServeClientAsync(client, cancellationToken);
-                lock (gate)
+                lock (_gate)
                 {
-                    connections.Add(connection);
+                    _connections.Add(connection);
                 }
             }
         }
@@ -359,9 +359,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
         try
         {
             await using var stream = client.GetStream();
-            Interlocked.Increment(ref connectionsOpened);
+            Interlocked.Increment(ref _connectionsOpened);
             while (!cancellationToken.IsCancellationRequested &&
-                   (mode != ProviderGateMode.Scripted || Volatile.Read(ref served) < requestCount))
+                   (_mode != ProviderGateMode.Scripted || Volatile.Read(ref _served) < _requestCount))
             {
                 // The request is read in full before the gate registers, so release order
                 // matches request order and a release can never land while the client is
@@ -381,18 +381,18 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
                 RequestBodies.Enqueue(request.Body);
                 Task wait;
-                if (mode == ProviderGateMode.Hanging)
+                if (_mode == ProviderGateMode.Hanging)
                 {
-                    Interlocked.Increment(ref parkedCount);
-                    wait = globalRelease.Task;
+                    Interlocked.Increment(ref _parkedCount);
+                    wait = _globalRelease.Task;
                 }
-                else if (mode == ProviderGateMode.Gated)
+                else if (_mode == ProviderGateMode.Gated)
                 {
                     var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    lock (gate)
+                    lock (_gate)
                     {
-                        parked.Add(release);
-                        Interlocked.Increment(ref parkedCount);
+                        _parked.Add(release);
+                        Interlocked.Increment(ref _parkedCount);
                         NotifyParkedChangedLocked();
                     }
 
@@ -404,9 +404,9 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     var disconnected = WaitDisconnectedAsync(client, parkedWait.Token);
                     var settled = await Task.WhenAny(release.Task, disconnected).ConfigureAwait(false);
                     await parkedWait.CancelAsync().ConfigureAwait(false);
-                    lock (gate)
+                    lock (_gate)
                     {
-                        if (parked.Remove(release)) NotifyParkedChangedLocked();
+                        if (_parked.Remove(release)) NotifyParkedChangedLocked();
                     }
 
                     if (cancellationToken.IsCancellationRequested || !ReferenceEquals(settled, release.Task)) return;
@@ -418,7 +418,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     // The global served ordinal claims this request's index before the
                     // answer is selected, so a flow's two-step sequence stays ordered as
                     // long as its calls do.
-                    var index = Interlocked.Increment(ref served) - 1;
+                    var index = Interlocked.Increment(ref _served) - 1;
                     var validate = ValidateBuiltIn;
                     validate(request, index);
                     await WriteSseAsync(stream, SelectStream(index), cancellationToken).ConfigureAwait(false);
@@ -428,13 +428,13 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     // the last claim while an earlier-index write may still be in flight —
                     // Completion means "all expected answers claimed and written by their
                     // own tasks", not a barrier across connections.
-                    if (Volatile.Read(ref served) >= requestCount) scriptedComplete.TrySetResult();
+                    if (Volatile.Read(ref _served) >= _requestCount) _scriptedComplete.TrySetResult();
                     continue;
                 }
 
                 await wait.WaitAsync(cancellationToken).ConfigureAwait(false);
                 await AnswerAsync(stream, cancellationToken).ConfigureAwait(false);
-                if (mode == ProviderGateMode.Hanging)
+                if (_mode == ProviderGateMode.Hanging)
                 {
                     // Hold the connection open (keep-alive, like a real HTTP server)
                     // instead of disposing it right after the response: the close races
@@ -464,22 +464,22 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// disposal instead of hanging the client.</summary>
     private void ValidateBuiltIn(HttpRequest request, int requestIndex)
     {
-        var expectedPath = flavor switch
+        var expectedPath = _flavor switch
         {
             ModelApiFlavor.Responses => "/v1/responses",
             ModelApiFlavor.ChatCompletions => "/v1/chat/completions",
             ModelApiFlavor.Anthropic => "/v1/messages",
-            _ => throw new InvalidOperationException($"Unsupported test API flavor '{flavor}'."),
+            _ => throw new InvalidOperationException($"Unsupported test API flavor '{_flavor}'."),
         };
         if (request.Method != "POST" || request.Path != expectedPath)
             throw new InvalidOperationException(
                 $"the provider expected POST {expectedPath}, got {request.Method} {request.Path}");
-        if (request.Body.GetProperty("model").GetString() != model)
+        if (request.Body.GetProperty("model").GetString() != _model)
             throw new InvalidOperationException(
-                $"the provider expected model '{model}', got '{request.Body.GetProperty("model").GetString()}'");
+                $"the provider expected model '{_model}', got '{request.Body.GetProperty("model").GetString()}'");
         if (!request.Body.GetProperty("stream").GetBoolean())
             throw new InvalidOperationException("the provider request did not ask to stream.");
-        if (flavor != ModelApiFlavor.Anthropic &&
+        if (_flavor != ModelApiFlavor.Anthropic &&
             (!request.Body.TryGetProperty("store", out var store) || store.GetBoolean()))
         {
             // The product disables stored output on every OpenAI path, so the field is
@@ -488,12 +488,12 @@ public sealed class GatedModelProvider : IAsyncDisposable
             throw new InvalidOperationException("the provider request must ask store:false explicitly.");
         }
 
-        if (!toolFlow) return;
+        if (!_toolFlow) return;
 
         if (request.Body.GetProperty("tools").GetArrayLength() == 0)
             throw new InvalidOperationException("the tool flow expected tools in the request.");
-        if (!request.Body.GetRawText().Contains(toolName, StringComparison.Ordinal))
-            throw new InvalidOperationException($"the tool flow expected tool '{toolName}' in the request.");
+        if (!request.Body.GetRawText().Contains(_toolName, StringComparison.Ordinal))
+            throw new InvalidOperationException($"the tool flow expected tool '{_toolName}' in the request.");
         if (requestIndex == 0) return;
 
         if (!request.Body.GetRawText().Contains("status", StringComparison.Ordinal) ||
@@ -503,7 +503,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
                 "the tool round trip's second request must carry the tool result with status ok.");
         }
 
-        if (expectedToolResultText is { } expected &&
+        if (_expectedToolResultText is { } expected &&
             !request.Body.GetRawText().Contains(expected, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
@@ -514,30 +514,30 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// <summary>Selects the answer stream for scripted request <paramref name="index" />:
     /// a flow's first request serves the call (tool, web search, apply patch) and its
     /// second the final answer.</summary>
-    private string SelectStream(int index) => (flavor, index) switch
+    private string SelectStream(int index) => (flavor: _flavor, index) switch
     {
-        (ModelApiFlavor.Responses, 0) when toolFlow =>
-            ModelStreams.CreateResponsesToolStream(toolName, toolArgumentsJson),
-        (ModelApiFlavor.Responses, 0) when webSearchFlow =>
-            ModelStreams.CreateResponsesWebSearchStream(webSearchCalls),
-        (ModelApiFlavor.Responses, 0) when applyPatchFlow && applyPatchOperationJson is { } operation =>
+        (ModelApiFlavor.Responses, 0) when _toolFlow =>
+            ModelStreams.CreateResponsesToolStream(_toolName, _toolArgumentsJson),
+        (ModelApiFlavor.Responses, 0) when _webSearchFlow =>
+            ModelStreams.CreateResponsesWebSearchStream(_webSearchCalls),
+        (ModelApiFlavor.Responses, 0) when _applyPatchFlow && _applyPatchOperationJson is { } operation =>
             ModelStreams.CreateResponsesApplyPatchStream(operation),
         (ModelApiFlavor.Responses, _) =>
-            ModelStreams.CreateResponsesStream(toolFlow ? "tool-backed answer" : answer),
-        (ModelApiFlavor.ChatCompletions, 0) when toolFlow =>
-            ModelStreams.CreateChatCompletionsToolStream(toolName, toolArgumentsJson),
+            ModelStreams.CreateResponsesStream(_toolFlow ? "tool-backed answer" : _answer),
+        (ModelApiFlavor.ChatCompletions, 0) when _toolFlow =>
+            ModelStreams.CreateChatCompletionsToolStream(_toolName, _toolArgumentsJson),
         (ModelApiFlavor.ChatCompletions, _) =>
-            ModelStreams.CreateChatCompletionsStream(toolFlow ? "tool-backed answer" : answer, reasoning),
-        (ModelApiFlavor.Anthropic, 0) when toolFlow => ModelStreams.CreateToolStream(),
-        (ModelApiFlavor.Anthropic, 0) when webSearchFlow => ModelStreams.CreateWebSearchStream(),
-        (ModelApiFlavor.Anthropic, _) => ModelStreams.CreateTextStream(answer),
-        _ => throw new InvalidOperationException($"Unsupported test API flavor '{flavor}'."),
+            ModelStreams.CreateChatCompletionsStream(_toolFlow ? "tool-backed answer" : _answer, _reasoning),
+        (ModelApiFlavor.Anthropic, 0) when _toolFlow => ModelStreams.CreateToolStream(),
+        (ModelApiFlavor.Anthropic, 0) when _webSearchFlow => ModelStreams.CreateWebSearchStream(),
+        (ModelApiFlavor.Anthropic, _) => ModelStreams.CreateTextStream(_answer),
+        _ => throw new InvalidOperationException($"Unsupported test API flavor '{_flavor}'."),
     };
 
     private async Task AnswerAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var body = Encoding.UTF8.GetBytes(
-            "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(answer) + "}}]}\n\n" +
+            "data: {\"choices\":[{\"delta\":{\"content\":" + JsonSerializer.Serialize(_answer) + "}}]}\n\n" +
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
         var headers = Encoding.ASCII.GetBytes(
             $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");

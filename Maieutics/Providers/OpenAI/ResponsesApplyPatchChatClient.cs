@@ -38,7 +38,7 @@ internal sealed class ResponsesApplyPatchChatClient : DelegatingChatClient
     /// writes on the NativeAOT path.</summary>
     internal static readonly ModelReaderWriterContext ModelContext = OpenAIContext.Default;
 
-    private readonly string toolName;
+    private readonly string _toolName;
 
     /// <summary>Initializes the adapter.</summary>
     /// <param name="inner">The Responses client to wrap.</param>
@@ -47,7 +47,7 @@ internal sealed class ResponsesApplyPatchChatClient : DelegatingChatClient
         : base(inner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        this.toolName = toolName;
+        this._toolName = toolName;
     }
 
     public override async Task<ChatResponse> GetResponseAsync(
@@ -107,7 +107,7 @@ internal sealed class ResponsesApplyPatchChatClient : DelegatingChatClient
         foreach (var tool in prepared.Tools ?? [])
         {
             if (tool is AIFunction function &&
-                string.Equals(function.Name, toolName, StringComparison.Ordinal))
+                string.Equals(function.Name, _toolName, StringComparison.Ordinal))
                 continue;
 
             tools.Add(tool);
@@ -218,7 +218,7 @@ internal sealed class ResponsesApplyPatchChatClient : DelegatingChatClient
         var callId = item.CallId ?? item.Id ?? string.Empty;
         var call = new FunctionCallContent(
             callId,
-            toolName,
+            _toolName,
             new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["patch"] = ApplyPatchText.Render(item.Operation!)

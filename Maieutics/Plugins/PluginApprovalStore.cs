@@ -23,14 +23,14 @@ internal sealed class PluginApprovalStore
 {
     internal const int CurrentVersion = 1;
 
-    private readonly string path;
-    private readonly Lock gate = new();
-    private Dictionary<string, PluginApprovalRecord> approvals = new(StringComparer.Ordinal);
-    private bool writable = true;
+    private readonly string _path;
+    private readonly Lock _gate = new();
+    private Dictionary<string, PluginApprovalRecord> _approvals = new(StringComparer.Ordinal);
+    private bool _writable = true;
 
     private PluginApprovalStore(string path)
     {
-        this.path = path;
+        this._path = path;
     }
 
     /// <summary>An empty, persisted-nowhere store: the fail-closed stand-in before the first
@@ -60,14 +60,14 @@ internal sealed class PluginApprovalStore
                 PluginApprovalsJsonContext.Default.PluginApprovalsFile);
             if (file is null || file.Version != CurrentVersion)
             {
-                store.writable = false;
+                store._writable = false;
                 error = file is null
                     ? "The plugin approvals file is null."
                     : $"The plugin approvals file version {file.Version} is not supported (expected {CurrentVersion}).";
                 return store;
             }
 
-            store.approvals = (file.Approvals ?? new Dictionary<string, PluginApprovalRecordFile>())
+            store._approvals = (file.Approvals ?? new Dictionary<string, PluginApprovalRecordFile>())
                 .ToDictionary(
                     static pair => pair.Key,
                     static pair => new PluginApprovalRecord(
@@ -82,7 +82,7 @@ internal sealed class PluginApprovalStore
             exception is JsonException or IOException or UnauthorizedAccessException or
                 NotSupportedException or InvalidOperationException)
         {
-            store.writable = false;
+            store._writable = false;
             error = $"The plugin approvals file '{path}' could not be read: {exception.Message}";
             return store;
         }
@@ -91,9 +91,9 @@ internal sealed class PluginApprovalStore
     public bool TryGet(string pluginId, out PluginApprovalRecord? record)
     {
         ArgumentNullException.ThrowIfNull(pluginId);
-        lock (gate)
+        lock (_gate)
         {
-            if (approvals.TryGetValue(pluginId, out var found))
+            if (_approvals.TryGetValue(pluginId, out var found))
             {
                 record = found;
                 return true;
@@ -113,18 +113,18 @@ internal sealed class PluginApprovalStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pluginId);
         ArgumentNullException.ThrowIfNull(record);
-        lock (gate)
+        lock (_gate)
         {
-            if (!writable)
+            if (!_writable)
                 throw new InvalidOperationException(
                     "The plugin approvals file was rejected at load time (invalid or unsupported version); " +
                     "it is read-only until inspected or removed.");
-            var next = new Dictionary<string, PluginApprovalRecord>(approvals, StringComparer.Ordinal)
+            var next = new Dictionary<string, PluginApprovalRecord>(_approvals, StringComparer.Ordinal)
             {
                 [pluginId] = record
             };
             Persist(next);
-            approvals = next;
+            _approvals = next;
         }
     }
 
@@ -134,26 +134,26 @@ internal sealed class PluginApprovalStore
     public bool Remove(string pluginId)
     {
         ArgumentNullException.ThrowIfNull(pluginId);
-        lock (gate)
+        lock (_gate)
         {
-            if (!writable)
+            if (!_writable)
                 throw new InvalidOperationException(
                     "The plugin approvals file was rejected at load time (invalid or unsupported version); " +
                     "it is read-only until inspected or removed.");
-            if (!approvals.ContainsKey(pluginId)) return false;
-            var next = new Dictionary<string, PluginApprovalRecord>(approvals, StringComparer.Ordinal);
+            if (!_approvals.ContainsKey(pluginId)) return false;
+            var next = new Dictionary<string, PluginApprovalRecord>(_approvals, StringComparer.Ordinal);
             next.Remove(pluginId);
             Persist(next);
-            approvals = next;
+            _approvals = next;
             return true;
         }
     }
 
     public IReadOnlyDictionary<string, PluginApprovalRecord> Snapshot()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return new Dictionary<string, PluginApprovalRecord>(approvals, StringComparer.Ordinal);
+            return new Dictionary<string, PluginApprovalRecord>(_approvals, StringComparer.Ordinal);
         }
     }
 
@@ -170,11 +170,11 @@ internal sealed class PluginApprovalStore
                     ToFileGrants(pair.Value.Grants)),
                 StringComparer.Ordinal));
         var json = JsonSerializer.Serialize(file, PluginApprovalsJsonContext.Default.PluginApprovalsFile);
-        var directory = Path.GetDirectoryName(path);
+        var directory = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-        var temporary = path + ".tmp";
+        var temporary = _path + ".tmp";
         File.WriteAllText(temporary, json);
-        File.Move(temporary, path, overwrite: true);
+        File.Move(temporary, _path, overwrite: true);
     }
 
     /// <summary>Grant summaries persist in the manifest wire shape (a kind appears only

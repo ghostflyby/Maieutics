@@ -181,11 +181,11 @@ public sealed class FrontendRouteAuthenticationTests
     /// registered routes are exactly the frontend API surface under test.</summary>
     private sealed class FrontendFixture : IAsyncDisposable
     {
-        private readonly WebApplication application;
-        private readonly FrontendOptions options;
-        private readonly FrontendHost host;
-        private readonly MaieuticsAgentSessionManager manager;
-        private readonly HttpClient client;
+        private readonly WebApplication _application;
+        private readonly FrontendOptions _options;
+        private readonly FrontendHost _host;
+        private readonly MaieuticsAgentSessionManager _manager;
+        private readonly HttpClient _client;
 
         private FrontendFixture(
             WebApplication application,
@@ -193,23 +193,23 @@ public sealed class FrontendRouteAuthenticationTests
             FrontendHost host,
             MaieuticsAgentSessionManager manager)
         {
-            this.application = application;
-            this.options = options;
-            this.host = host;
-            this.manager = manager;
+            this._application = application;
+            this._options = options;
+            this._host = host;
+            this._manager = manager;
             // No default Authorization header: the anonymous probes must reach the
             // gate without a token, so callers attach credentials per request.
-            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
+            _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
         }
 
-        public HttpClient Client => client;
+        public HttpClient Client => _client;
 
-        public string Token => options.Token;
+        public string Token => _options.Token;
 
-        public int Port => options.Port;
+        public int Port => _options.Port;
 
         public IReadOnlyList<RouteEndpoint> EnumerateRouteEndpoints() =>
-            ((IEndpointRouteBuilder)application).DataSources
+            ((IEndpointRouteBuilder)_application).DataSources
             .SelectMany(static source => source.Endpoints)
             .OfType<RouteEndpoint>()
             .ToArray();
@@ -217,8 +217,8 @@ public sealed class FrontendRouteAuthenticationTests
         public async Task<string> CreateForegroundSessionAsync(CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/agent/session");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.Token);
-            using var response = await client.SendAsync(
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.Token);
+            using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             Assert.True(
                 response.IsSuccessStatusCode,
@@ -231,11 +231,11 @@ public sealed class FrontendRouteAuthenticationTests
 
         public async ValueTask DisposeAsync()
         {
-            client.Dispose();
-            await application.StopAsync(CancellationToken.None);
-            await host.DisposeAsync();
-            manager.Dispose();
-            await application.DisposeAsync();
+            _client.Dispose();
+            await _application.StopAsync(CancellationToken.None);
+            await _host.DisposeAsync();
+            _manager.Dispose();
+            await _application.DisposeAsync();
         }
 
         public static async Task<FrontendFixture> StartAsync(CancellationToken cancellationToken)

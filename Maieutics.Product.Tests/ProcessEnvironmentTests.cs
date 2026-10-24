@@ -156,20 +156,20 @@ public sealed class ProcessEnvironmentTests
 
     private sealed class EnvironmentVariableScope : IDisposable
     {
-        private readonly Dictionary<string, string?> original = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _original = new(StringComparer.Ordinal);
 
         internal EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
         {
             foreach (var (name, value) in values)
             {
-                original.Add(name, Environment.GetEnvironmentVariable(name));
+                _original.Add(name, Environment.GetEnvironmentVariable(name));
                 Environment.SetEnvironmentVariable(name, value);
             }
         }
 
         public void Dispose()
         {
-            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
+            foreach (var (name, value) in _original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 }

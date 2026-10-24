@@ -73,33 +73,33 @@ internal sealed class PermissionOverrideRegistry
     private const int ChildScopeCapacity = 256;
     private const int MaximumScopeChainDepth = 8;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentSessionId, PermissionLayer> overrides = [];
-    private readonly Dictionary<AgentSessionId, AgentSessionId> childScopes = [];
-    private readonly Queue<AgentSessionId> childScopeOrder = new();
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentSessionId, PermissionLayer> _overrides = [];
+    private readonly Dictionary<AgentSessionId, AgentSessionId> _childScopes = [];
+    private readonly Queue<AgentSessionId> _childScopeOrder = new();
 
     public void Set(AgentSessionId sessionId, PermissionLayer layer)
     {
         ArgumentNullException.ThrowIfNull(layer);
-        lock (gate)
+        lock (_gate)
         {
-            overrides[sessionId] = layer;
+            _overrides[sessionId] = layer;
         }
     }
 
     public void Clear(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            overrides.Remove(sessionId);
+            _overrides.Remove(sessionId);
         }
     }
 
     public PermissionLayer? TryGet(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (overrides.TryGetValue(sessionId, out var own)) return own;
+            if (_overrides.TryGetValue(sessionId, out var own)) return own;
             return WalkParentChainLocked(sessionId);
         }
     }
@@ -110,15 +110,15 @@ internal sealed class PermissionOverrideRegistry
     /// the chain walk is depth-capped against registration cycles.</summary>
     public void RegisterChildScope(AgentSessionId childSessionId, AgentSessionId parentSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!childScopes.TryAdd(childSessionId, parentSessionId))
+            if (!_childScopes.TryAdd(childSessionId, parentSessionId))
                 return;
-            childScopeOrder.Enqueue(childSessionId);
-            while (childScopeOrder.Count > ChildScopeCapacity)
+            _childScopeOrder.Enqueue(childSessionId);
+            while (_childScopeOrder.Count > ChildScopeCapacity)
             {
-                var evicted = childScopeOrder.Dequeue();
-                childScopes.Remove(evicted);
+                var evicted = _childScopeOrder.Dequeue();
+                _childScopes.Remove(evicted);
             }
         }
     }
@@ -128,9 +128,9 @@ internal sealed class PermissionOverrideRegistry
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return [.. childScopeOrder.Select(id => (id, childScopes[id]))];
+                return [.. _childScopeOrder.Select(id => (id, _childScopes[id]))];
             }
         }
     }
@@ -139,13 +139,13 @@ internal sealed class PermissionOverrideRegistry
     /// reaps the child. Unknown registrations are ignored.</summary>
     public void ReleaseChildScope(AgentSessionId childSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!childScopes.Remove(childSessionId)) return;
-            var remaining = childScopeOrder.Where(id => !id.Equals(childSessionId)).ToArray();
-            childScopeOrder.Clear();
+            if (!_childScopes.Remove(childSessionId)) return;
+            var remaining = _childScopeOrder.Where(id => !id.Equals(childSessionId)).ToArray();
+            _childScopeOrder.Clear();
             foreach (var id in remaining)
-                childScopeOrder.Enqueue(id);
+                _childScopeOrder.Enqueue(id);
         }
     }
 
@@ -154,8 +154,8 @@ internal sealed class PermissionOverrideRegistry
         var current = sessionId;
         for (var depth = 0; depth < MaximumScopeChainDepth; depth++)
         {
-            if (!childScopes.TryGetValue(current, out var parent)) return null;
-            if (overrides.TryGetValue(parent, out var layer)) return layer;
+            if (!_childScopes.TryGetValue(current, out var parent)) return null;
+            if (_overrides.TryGetValue(parent, out var layer)) return layer;
             current = parent;
         }
 

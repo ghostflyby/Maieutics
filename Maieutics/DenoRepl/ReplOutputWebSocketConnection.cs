@@ -15,24 +15,24 @@ namespace Maieutics.DenoRepl;
 /// </summary>
 internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
 {
-    private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ConcurrentDictionary<string, long> lastSequences = new(StringComparer.Ordinal);
-    private readonly Channel<ReplOutputFrame> frames;
-    private readonly Lock stateLock = new();
-    private readonly WebSocket socket;
-    private Exception? terminalError;
-    private int terminalState;
-    private int disposeState;
-    private int startState;
-    private int enumerationState;
-    private Task ownerTask = Task.CompletedTask;
-    private CancellationTokenRegistration ownerCancellation;
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ConcurrentDictionary<string, long> _lastSequences = new(StringComparer.Ordinal);
+    private readonly Channel<ReplOutputFrame> _frames;
+    private readonly Lock _stateLock = new();
+    private readonly WebSocket _socket;
+    private Exception? _terminalError;
+    private int _terminalState;
+    private int _disposeState;
+    private int _startState;
+    private int _enumerationState;
+    private Task _ownerTask = Task.CompletedTask;
+    private CancellationTokenRegistration _ownerCancellation;
 
     internal ReplOutputWebSocketConnection(WebSocket socket)
     {
-        this.socket = socket ?? throw new ArgumentNullException(nameof(socket));
-        frames = Channel.CreateBounded<ReplOutputFrame>(new BoundedChannelOptions(ReplOutputProtocol.QueueCapacity)
+        this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        _frames = Channel.CreateBounded<ReplOutputFrame>(new BoundedChannelOptions(ReplOutputProtocol.QueueCapacity)
         {
             SingleReader = true,
             SingleWriter = true,
@@ -41,7 +41,7 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
     }
 
     /// <summary>Completes when the connection ends; faults when the channel terminates abnormally.</summary>
-    internal Task Completion => completion.Task;
+    internal Task Completion => _completion.Task;
 
     /// <summary>Consumes decoded output frames in arrival order. Single-consumer.</summary>
     internal IAsyncEnumerable<ReplOutputFrame> Events => ReadEventsAsync();
@@ -50,10 +50,10 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
     /// until the peer closes it or the host disposes the connection.</summary>
     internal void Start(CancellationToken ownerToken)
     {
-        if (Interlocked.Exchange(ref startState, 1) != 0)
+        if (Interlocked.Exchange(ref _startState, 1) != 0)
             throw new InvalidOperationException("The REPL output connection is already started.");
 
-        ownerCancellation = ownerToken.UnsafeRegister(
+        _ownerCancellation = ownerToken.UnsafeRegister(
             static state =>
             {
                 if (state is ReplOutputWebSocketConnection connection)
@@ -61,20 +61,20 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
                         new OperationCanceledException("The REPL output connection owner stopped."));
             },
             this);
-        ownerTask = RunOwnerAsync();
+        _ownerTask = RunOwnerAsync();
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0)
             Terminate(new ObjectDisposedException(nameof(ReplOutputWebSocketConnection)));
 
-        await ownerTask.ConfigureAwait(false);
+        await _ownerTask.ConfigureAwait(false);
     }
 
     internal Task WaitForTerminationAsync()
     {
-        return ownerTask;
+        return _ownerTask;
     }
 
     private async Task RunOwnerAsync()
@@ -83,7 +83,7 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
         {
             await ReceiveAsync().ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
         catch (Exception exception)
@@ -92,30 +92,30 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
         }
         finally
         {
-            lock (stateLock)
+            lock (_stateLock)
             {
-                if (Interlocked.CompareExchange(ref terminalState, 1, 0) == 0)
-                    terminalError = new IOException("The REPL output WebSocket ended unexpectedly.");
+                if (Interlocked.CompareExchange(ref _terminalState, 1, 0) == 0)
+                    _terminalError = new IOException("The REPL output WebSocket ended unexpectedly.");
             }
 
-            frames.Writer.TryComplete(terminalError);
-            await lifetime.CancelAsync();
-            await ownerCancellation.DisposeAsync();
+            _frames.Writer.TryComplete(_terminalError);
+            await _lifetime.CancelAsync();
+            await _ownerCancellation.DisposeAsync();
 
-            if (terminalError is null)
-                completion.TrySetResult();
+            if (_terminalError is null)
+                _completion.TrySetResult();
             else
-                completion.TrySetException(terminalError);
+                _completion.TrySetException(_terminalError);
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
     }
 
     private async Task ReceiveAsync()
     {
-        while (!lifetime.IsCancellationRequested)
+        while (!_lifetime.IsCancellationRequested)
         {
-            var frame = await ReplOutputFrameReader.ReadAsync(socket, lifetime.Token).ConfigureAwait(false);
+            var frame = await ReplOutputFrameReader.ReadAsync(_socket, _lifetime.Token).ConfigureAwait(false);
             if (frame is null)
             {
                 Terminate(null);
@@ -123,7 +123,7 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
             }
 
             ValidateSequence(frame);
-            await frames.Writer.WriteAsync(frame, lifetime.Token).ConfigureAwait(false);
+            await _frames.Writer.WriteAsync(frame, _lifetime.Token).ConfigureAwait(false);
         }
     }
 
@@ -136,7 +136,7 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
                 "invalid_sequence",
                 $"The REPL output frame sequence '{frame.Seq}' for execution '{frame.ExecutionId}' must be a positive safe integer.");
 
-        var previous = lastSequences.AddOrUpdate(
+        var previous = _lastSequences.AddOrUpdate(
             frame.ExecutionId,
             static _ => 1L,
             static (_, current) => current + 1);
@@ -149,11 +149,11 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
     private async IAsyncEnumerable<ReplOutputFrame> ReadEventsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref enumerationState, 1) != 0)
+        if (Interlocked.Exchange(ref _enumerationState, 1) != 0)
             throw new InvalidOperationException("REPL output events are single-consumer.");
         try
         {
-            await foreach (var frame in frames.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var frame in _frames.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 yield return frame;
         }
         finally
@@ -162,14 +162,14 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
             // execution's collector enumerates its own window (bounded by its eval terminal) and
             // releases the single-concurrent-consumer guard when the window ends. Executions are
             // serialized per session, so the guard still prevents concurrent readers.
-            Volatile.Write(ref enumerationState, 0);
+            Volatile.Write(ref _enumerationState, 0);
         }
     }
 
     private void Terminate(Exception? exception)
     {
-        if (Interlocked.CompareExchange(ref terminalState, 1, 0) != 0) return;
-        terminalError = exception;
-        lifetime.Cancel();
+        if (Interlocked.CompareExchange(ref _terminalState, 1, 0) != 0) return;
+        _terminalError = exception;
+        _lifetime.Cancel();
     }
 }

@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Text;
 using Maieutics.Agent;
+using XTerm;
 using XTerm.Input;
 
 namespace Maieutics.Execution;
@@ -206,7 +208,7 @@ internal static class TerminalInputBatchParser
 
                 // int.TryParse keeps a maliciously long count from throwing OverflowException out of the
                 // parser; the cap bounds the bytes one token can write.
-                if (!int.TryParse(countText, System.Globalization.CultureInfo.InvariantCulture, out var parsed) ||
+                if (!int.TryParse(countText, CultureInfo.InvariantCulture, out var parsed) ||
                     parsed < 1 || parsed > MaximumKeyCount)
                     throw InvalidInput(lineNumber, $"key count '{countText}' must be between 1 and {MaximumKeyCount}.");
 
@@ -318,16 +320,16 @@ internal static class TerminalInputBatchParser
 /// </summary>
 internal sealed class TerminalKeyEncoder
 {
-    private readonly KeyboardInputGenerator? generator;
+    private readonly KeyboardInputGenerator? _generator;
 
     internal TerminalKeyEncoder()
     {
-        generator = null;
+        _generator = null;
     }
 
-    internal TerminalKeyEncoder(XTerm.Terminal terminal)
+    internal TerminalKeyEncoder(Terminal terminal)
     {
-        generator = new KeyboardInputGenerator(terminal);
+        _generator = new KeyboardInputGenerator(terminal);
     }
 
     internal byte[] Encode(IReadOnlyList<TerminalKey> keys)
@@ -370,10 +372,10 @@ internal sealed class TerminalKeyEncoder
 
     private byte[] EncodeSpecialKey(TerminalSpecialKey key)
     {
-        if (generator is null)
+        if (_generator is null)
             throw new InvalidOperationException("A special key requires a terminal-backed encoder.");
 
-        return Encoding.UTF8.GetBytes(generator.GenerateKeySequence(
+        return Encoding.UTF8.GetBytes(_generator.GenerateKeySequence(
             TerminalInputBatchParser.ToXTermKey(key.Name),
             TerminalInputBatchParser.ToXTermModifiers(key.Modifiers)));
     }

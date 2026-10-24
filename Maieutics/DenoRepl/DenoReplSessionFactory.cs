@@ -47,7 +47,8 @@ internal sealed class LocalDenoReplSessionFactory(
     DenoPermissionBroker broker,
     PermissionPolicyAcquirer acquirer,
     PluginHostManager? pluginHosts = null,
-    IReplPolicyRegistrar? replPolicyRegistrar = null)
+    IReplPolicyRegistrar? replPolicyRegistrar = null,
+    ReplOwnerPolicyCache? ownerPolicyCache = null)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry _credentialRegistry =
@@ -71,6 +72,8 @@ internal sealed class LocalDenoReplSessionFactory(
     private readonly PluginHostManager? _pluginHosts = pluginHosts;
 
     private readonly IReplPolicyRegistrar? _replPolicyRegistrar = replPolicyRegistrar;
+
+    private readonly ReplOwnerPolicyCache? _ownerPolicyCache = ownerPolicyCache;
 
     private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -112,6 +115,10 @@ internal sealed class LocalDenoReplSessionFactory(
                 acquirer,
                 _logger,
                 startup.Token).ConfigureAwait(false);
+            // The owner-keyed mirror of the same snapshot: the IDE workspace bridge judges a
+            // script call against exactly the policy the broker holds for this session's REPL.
+            if (policy is not null)
+                _ownerPolicyCache?.Cache(ownerSessionId.Value.ToString("N"), policy);
 
             // Host-derived path (ADR 0020 B5b): the plugin host is the spawner. The kernel decides
             // the entry, the complete child env, and the static permission shell; the host derives

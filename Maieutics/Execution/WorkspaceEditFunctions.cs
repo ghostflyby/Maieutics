@@ -133,6 +133,28 @@ internal sealed class WorkspaceEditFunctions
         }
     }
 
+    /// <summary>Enforces the session's write policy on one workspace write target — the
+    /// model-tool surface baseline (the workspace root) minus configuration denials — so a
+    /// write denial bites the same whichever channel lands the change. The instruction-surface
+    /// gate runs first and stays stricter: instruction files are that gate's own domain.</summary>
+    private void EnforceWritePolicy(string uri, AIFunctionArguments arguments)
+    {
+        if (_acquirer is null) return;
+
+        var snapshot = _workspace.Capture();
+        var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+        WorkspacePermissionSurface.Enforce(
+            _acquirer,
+            _workspace,
+            PermissionKind.Write,
+            snapshot.ToPhysicalPath(logical.Segments),
+            logical.DisplayPath,
+            WorkspaceToolCalls.TryGetSessionId(arguments) is { } text &&
+                AgentSessionId.TryParse(text, out var sessionId)
+                ? sessionId
+                : null);
+    }
+
     [Description("Creates or overwrites one workspace UTF-8 text file.")]
     private async ValueTask<WriteTextResult> WriteTextAsync(
         [Description("The workspace://local URI of the file. Missing parent directories are created.")]
@@ -163,6 +185,7 @@ internal sealed class WorkspaceEditFunctions
         CancellationToken cancellationToken)
     {
         GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+        EnforceWritePolicy(uri, arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -391,6 +414,7 @@ internal sealed class WorkspaceEditFunctions
         CancellationToken cancellationToken = default)
     {
         GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+        EnforceWritePolicy(uri, arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -894,7 +918,11 @@ internal sealed class WorkspaceEditFunctions
     {
         var document = ApplyPatchParser.Parse(patch);
         foreach (var change in document.Files)
-            GateInstructionSurface(ToWorkspaceUri(change.Path), arguments);
+        {
+            var uri = ToWorkspaceUri(change.Path);
+            GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+            EnforceWritePolicy(uri, arguments);
+        }
     }
 
     /// <summary>Extracts the workspace-relative path (forward slashes, no leading

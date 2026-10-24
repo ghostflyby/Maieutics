@@ -10,7 +10,8 @@ internal sealed class DenoReplRegistry(
     IDenoReplSessionFactory factory,
     IDenoReplPresentationRouter presentationRouter,
     ILogger<DenoReplSession> logger,
-    IReplDisplayObjectStore? displayObjectStore = null)
+    IReplDisplayObjectStore? displayObjectStore = null,
+    ReplOwnerPolicyCache? ownerPolicyCache = null)
     : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
@@ -21,6 +22,7 @@ internal sealed class DenoReplRegistry(
     private readonly Lock _gate = new();
     private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> _sessions = [];
     private readonly IReplDisplayObjectStore? _displayObjectStore = displayObjectStore;
+    private readonly ReplOwnerPolicyCache? _ownerPolicyCache = ownerPolicyCache;
     private int _disposeState;
 
     public async ValueTask DisposeAsync()
@@ -39,6 +41,7 @@ internal sealed class DenoReplRegistry(
             _sessions.Clear();
         }
 
+        _ownerPolicyCache?.ClearAll();
         try
         {
             await Task.WhenAll(snapshot.Select(static session => session.DisposeAsync().AsTask()))
@@ -157,6 +160,8 @@ internal sealed class DenoReplRegistry(
         finally
         {
             Remove(ownerSessionId, resolvedSessionId, session);
+            // A closed session's owner policy is spent; the next start re-caches its own.
+            _ownerPolicyCache?.Clear(ownerSessionId.Value.ToString("N"));
         }
 
         return new DenoReplCloseResult(resolvedSessionId, true);

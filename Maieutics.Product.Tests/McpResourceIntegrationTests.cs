@@ -31,13 +31,13 @@ public sealed class McpResourceIntegrationTests
         // factory lambda from referencing the using-scoped harness.
         var source = harness.Source;
         var provider = new McpResourceProvider(() => source);
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "mcp" && claim.Authority == null);
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "static");
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "users");
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "mcp", Authority: null });
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "test", Authority: "static" });
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "test", Authority: "users" });
 
         var entries = await provider.ListAsync(deadline.Token);
         Assert.Equal(2, entries.Count());
-        Assert.Contains(entries, entry => entry.Kind == "resource" && entry.Uri == "test://static/hello");
+        Assert.Contains(entries, entry => entry is { Kind: "resource", Uri: "test://static/hello" });
         Assert.Contains(entries, entry => entry.Kind == "template");
     }
 
@@ -54,7 +54,7 @@ public sealed class McpResourceIntegrationTests
             "test://static/hello",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (exact.Content)
+        await using (exact.Content)
         {
             Assert.Equal("text/plain", exact.MimeType);
             using var buffered = new MemoryStream();
@@ -66,7 +66,7 @@ public sealed class McpResourceIntegrationTests
             "test://users/42",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (templated.Content)
+        await using (templated.Content)
         {
             using var buffered = new MemoryStream();
             templated.Content.CopyTo(buffered);
@@ -86,7 +86,7 @@ public sealed class McpResourceIntegrationTests
             $"mcp://{harness.ServerId}/{Uri.EscapeDataString("test://static/hello")}",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (escape.Content)
+        await using (escape.Content)
         {
             using var buffered = new MemoryStream();
             escape.Content.CopyTo(buffered);

@@ -78,7 +78,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     {
         lock (_gate)
         {
-            return _parents.TryGetValue(sessionId, out var parent) ? parent : sessionId;
+            return _parents.GetValueOrDefault(sessionId, sessionId);
         }
     }
 

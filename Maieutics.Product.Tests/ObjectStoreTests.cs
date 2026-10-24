@@ -11,15 +11,10 @@ public sealed class ObjectStoreTests : IAsyncDisposable
     // SHA-256 of the UTF-8 bytes "abc" (RFC 9160 test vector).
     private const string AbcDigest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
-    private readonly string _objectsRoot;
-
-    public ObjectStoreTests()
-    {
-        _objectsRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-store-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _objectsRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-store-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {

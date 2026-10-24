@@ -931,7 +931,7 @@ internal sealed class McpServerGeneration
                                 PromptsListChanged = true
                             }
                         },
-                        McpJsonUtilities.GetTypeInfo<SubscriptionsListenRequestParams>(McpJsonUtilities.DefaultOptions))
+                        McpJsonUtilities.DefaultOptions.GetTypeInfo<SubscriptionsListenRequestParams>())
                 };
                 // The response arrives only when the server closes the stream; cancelling the
                 // token cancels the pending request and ends the subscription.
@@ -1276,24 +1276,18 @@ internal sealed class McpServerGeneration
         /// <summary>Renames / re-describes / re-schemas a tool surface without
         /// changing invocation: the call still routes to the inner remote tool.</summary>
         // ReSharper disable once InconsistentNaming
-        private sealed class RenamingAIFunction : DelegatingAIFunction
+        private sealed class RenamingAIFunction(AIFunction innerFunction, string name, string? description, JsonElement? schema)
+            : DelegatingAIFunction(innerFunction)
         {
-            private readonly JsonElement? _schema;
+            public override string Name { get; } = name;
 
-            public RenamingAIFunction(AIFunction innerFunction, string name, string? description, JsonElement? schema)
-                : base(innerFunction)
+            public override string Description
             {
-                Name = name;
-                Description = description;
-                this._schema = schema;
-            }
-
-            public override string Name { get; }
-
-            public override string Description => field ?? base.Description;
+                get => field ?? base.Description;
+            } = description;
 
             public override JsonElement JsonSchema =>
-                _schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;
+                schema is { ValueKind: JsonValueKind.Object } provided ? provided.Clone() : base.JsonSchema;
         }
 
         internal Task Retire()

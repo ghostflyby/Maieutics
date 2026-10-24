@@ -142,7 +142,7 @@ public sealed class PluginDeclarativeExtensionsTests
             // A pure content edit inside the root must take the in-process reload path:
             // reaching the reload-applied signal proves no set-mismatch restart fired.
             var applied = CaptureReloadApplied(manager);
-            File.WriteAllText(Path.Combine(root, "maieutics.json"), "{}\n");
+            await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"), "{}\n", deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
         }
@@ -177,13 +177,13 @@ public sealed class PluginDeclarativeExtensionsTests
             // Remove the section from the manifest and apply the reload: the synthetic
             // registration and the contribution must both disappear.
             var applied = CaptureReloadApplied(manager);
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "maieutics.json"),
                 """
                 {
                   "capabilities": ["tools.invoke"]
                 }
-                """);
+                """, deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
@@ -233,7 +233,7 @@ public sealed class PluginDeclarativeExtensionsTests
             // Add the section and apply the reload (a workerless plugin never
             // triggers a host registry resend, so the manager republishes itself).
             var applied = CaptureReloadApplied(manager);
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "maieutics.json"),
                 """
                 {
@@ -244,7 +244,7 @@ public sealed class PluginDeclarativeExtensionsTests
                     ]
                   }
                 }
-                """);
+                """, deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
 
@@ -500,13 +500,13 @@ public sealed class PluginDeclarativeExtensionsTests
 
             var applied = CaptureReloadApplied(manager);
             Directory.CreateDirectory(Path.Combine(root, "second-plugin"));
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "second-plugin", "maieutics.json"),
                 """
                 {
                   "capabilities": ["tools.invoke"]
                 }
-                """);
+                """, deadline.Token);
 
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);

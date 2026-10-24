@@ -16,14 +16,10 @@ namespace Maieutics.Product.Tests;
 ///     through one spelling that left the other spelling's items queued.
 /// </summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendQueueSessionKeyTests
+public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-
-    public FrontendQueueSessionKeyTests(ITestOutputHelper output) => this._output = output;
-
     private void Trace(string message) =>
-        TestTrace.Write(_output, "queue-session-key", message);
+        TestTrace.Write(output, "queue-session-key", message);
 
     /// <summary>The queue is filled to its committed capacity through the uppercase spelling
     /// of the session id. The worker is held between its submission handshake and the running

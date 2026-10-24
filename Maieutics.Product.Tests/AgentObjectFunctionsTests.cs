@@ -8,15 +8,10 @@ namespace Maieutics.Product.Tests;
 /// structured data and rejects absent or non-JSON objects with typed failures.</summary>
 public sealed class AgentObjectFunctionsTests : IAsyncDisposable
 {
-    private readonly string _objectsRoot;
-
-    public AgentObjectFunctionsTests()
-    {
-        _objectsRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-functions-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _objectsRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-functions-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {

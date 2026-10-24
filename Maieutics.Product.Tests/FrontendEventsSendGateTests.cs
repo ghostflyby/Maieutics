@@ -429,7 +429,7 @@ public sealed class FrontendEventsSendGateTests
             _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
         }
 
-        public MaieuticsAgentSessionManager Manager { get; }
+        private MaieuticsAgentSessionManager Manager { get; }
 
         public FrontendSessionService Service { get; }
 

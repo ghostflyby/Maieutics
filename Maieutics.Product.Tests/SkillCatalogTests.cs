@@ -342,7 +342,7 @@ public sealed class SkillCatalogTests : IAsyncDisposable
         catalog.RecordWatchedChange(Path.Combine(_workspaceRoot, "ALPHA", "SKILL.md"));
 
         await AwaitSkillsAsync(catalog, clock, snapshot =>
-            snapshot.Skills.Any(skill => skill.Name == "alpha" && skill.Description == "the edited body"));
+            snapshot.Skills.Any(skill => skill is { Name: "alpha", Description: "the edited body" }));
         Assert.Empty(catalog.Current.Diagnostics);
         Assert.Single(catalog.Current.Skills);
     }
@@ -460,7 +460,7 @@ public sealed class SkillPromptComposerTests
         Assert.Contains("- skill-0000: description (skill://skill-0000)", composed);
         Assert.Contains("20 more skill(s) omitted", composed);
         Assert.DoesNotContain("skill-0147", composed);
-        Assert.True(composed is { } text && text.Length <= SkillPromptComposer.MaximumComposedCharacters + 4096);
+        Assert.True(composed is { Length: <= SkillPromptComposer.MaximumComposedCharacters + 4096 });
     }
 }
 

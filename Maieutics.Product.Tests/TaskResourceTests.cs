@@ -20,7 +20,7 @@ public sealed class TaskResourceTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task TaskProviderClaimsOneAuthorityPerSource()
+    public void TaskProviderClaimsOneAuthorityPerSource()
     {
         _ = TestContext.Current.CancellationToken;
         var registry = new ResourceRegistry([
@@ -47,14 +47,14 @@ public sealed class TaskResourceTests
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await unknownAuthority.Invoke(); })).Code);
 
         var malformedPath = () => provider.ReadAsync(
-                $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/onlyonesegment",
+                $"task://terminal/{AgentSessionId.Create().Value:N}/onlyonesegment",
                 request,
                 token)
             .AsTask();
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await malformedPath.Invoke(); })).Code);
 
         var unknownSession = () => provider.ReadAsync(
-                $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/{Guid.NewGuid().ToString("N")}",
+                $"task://terminal/{AgentSessionId.Create().Value:N}/{Guid.NewGuid():N}",
                 request,
                 token)
             .AsTask();
@@ -76,7 +76,7 @@ public sealed class TaskResourceTests
         var result = await runTask;
 
         Assert.False(result.Settled);
-        Assert.Equal($"task://terminal/{owner.Value.ToString("N")}/{result.SessionId}", result.TaskUri);
+        Assert.Equal($"task://terminal/{owner.Value:N}/{result.SessionId}", result.TaskUri);
 
         var snapshot = await ReadSnapshotAsync(harness, result.TaskUri!);
         Assert.Equal(result.TaskUri, snapshot.GetProperty("uri").GetString());

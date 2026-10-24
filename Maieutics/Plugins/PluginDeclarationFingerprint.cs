@@ -150,7 +150,7 @@ internal static class PluginDeclarationFingerprint
 
         static bool IsEmpty(PluginPermissionGrant grant)
         {
-            return !grant.AllowAll && grant.Values.Count == 0;
+            return grant is { AllowAll: false, Values.Count: 0 };
         }
     }
 

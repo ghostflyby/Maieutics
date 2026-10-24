@@ -363,16 +363,16 @@ public sealed class PluginHostReplRegistrationTests
     {
         var scriptPath = Path.Combine(root, $"probe-{Guid.NewGuid():N}.ts");
         var targetPath = Path.Combine(root, "target.txt");
-        File.WriteAllText(targetPath, "payload");
+        await File.WriteAllTextAsync(targetPath, "payload", cancellationToken);
         var escapedTarget = targetPath.Replace("\\", "\\\\");
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             scriptPath,
             "try { await Deno.readTextFile(\"" + escapedTarget + "\"); console.log(\"read OK\"); }\n" +
             "catch (e) { console.log(\"read denied:\", String(e).split(\"\\n\")[0]); }\n" +
             "try { console.log(\"HOME visible:\", Deno.env.get(\"HOME\")); }\n" +
             "catch (e) { console.log(\"HOME denied:\", String(e).split(\"\\n\")[0]); }\n" +
             "try { console.log(\"PATH visible:\", Deno.env.get(\"PATH\")); }\n" +
-            "catch (e) { console.log(\"PATH denied:\", String(e).split(\"\\n\")[0]); }\n");
+            "catch (e) { console.log(\"PATH denied:\", String(e).split(\"\\n\")[0]); }\n", cancellationToken);
         var startInfo = new ProcessStartInfo
         {
             FileName = "deno",

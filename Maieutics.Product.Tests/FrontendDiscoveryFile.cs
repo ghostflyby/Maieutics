@@ -40,7 +40,7 @@ internal static class FrontendDiscoveryFile
                 {
                     // FileShare.ReadWrite: a concurrent reader (or a scanner that opens
                     // shared) must not turn this probe into a lock conflict.
-                    using var stream = new FileStream(
+                    await using var stream = new FileStream(
                         path,
                         FileMode.Open,
                         FileAccess.Read,

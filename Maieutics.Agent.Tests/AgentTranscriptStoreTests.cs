@@ -58,8 +58,8 @@ public sealed class AgentTranscriptStoreTests
         await ReadEventsAsync(next, deadline.Token);
         Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
 
-        Assert.Single(store.Turns);
-        Assert.Equal("again", store.Turns[0].Messages[0].Text);
+        var item = Assert.Single(store.Turns);
+        Assert.Equal("again", item.Messages[0].Text);
     }
 
     [Fact(Timeout = 30_000)]

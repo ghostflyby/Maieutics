@@ -33,7 +33,7 @@ public sealed class PermissionPipelineIntegrationTests
             // failure and the previously loaded layer stays the last-known-good contribution.
             File.WriteAllText(profilePath, "{ not json");
             var load = () => PermissionProfileLoader.Load(profilePath);
-            var assertion29 = Assert.ThrowsAny<PermissionException>(() => load.Invoke());
+            var assertion29 = Assert.ThrowsAny<PermissionException>(load.Invoke);
             Assert.Matches("(?is)^.*not\\ valid\\ JSON.*$", assertion29.Message);
             Assert.Contains(PermissionKind.Read, first.Kinds.Keys);
         }

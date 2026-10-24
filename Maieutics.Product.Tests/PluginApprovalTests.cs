@@ -85,10 +85,9 @@ public sealed class PluginApprovalTests
             """);
         var baselineFingerprint = PluginDeclarationFingerprint.Compute(baseline);
 
-        Action<string, string> assertDiffers = (denoJson, maieuticsJson) =>
-            Assert.NotEqual(baselineFingerprint, PluginDeclarationFingerprint.Compute(LoadManifest(denoJson, maieuticsJson)));
+        void AssertDiffers(string denoJson, string maieuticsJson) => Assert.NotEqual(baselineFingerprint, PluginDeclarationFingerprint.Compute(LoadManifest(denoJson, maieuticsJson)));
 
-        assertDiffers(
+        AssertDiffers(
             """
             {
               "name": "@maueutics-typo",
@@ -98,7 +97,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": { "worker": { "main": ["./main.ts"] } } }
             """);
-        assertDiffers(
+        AssertDiffers(
             """
             {
               "name": "@maieutics/probe",
@@ -108,7 +107,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": { "worker": { "main": ["./main.ts"] } } }
             """);
-        assertDiffers(
+        AssertDiffers(
             """
             {
               "name": "@maieutics/probe",
@@ -118,7 +117,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": { "worker": { "main": ["./main.ts"] } } }
             """);
-        assertDiffers(
+        AssertDiffers(
             """
             {
               "name": "@maieutics/probe",
@@ -128,7 +127,7 @@ public sealed class PluginApprovalTests
             """
             { "entrypoints": { "worker": { "main": ["./other.ts"] } } }
             """);
-        assertDiffers(
+        AssertDiffers(
             """
             {
               "name": "@maieutics/probe",
@@ -332,14 +331,14 @@ public sealed class PluginApprovalTests
             // Widen the declared read grant: the fingerprint no longer matches the
             // persisted approval, so the reload revokes instead of applying it.
             var applied = manager.ReloadApplied;
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "deno.json"),
                 """
                 {
                   "name": "@maieutics/probe",
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
-                """);
+                """, deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, deadline.Token);
             Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
@@ -351,14 +350,14 @@ public sealed class PluginApprovalTests
             // Reverting to the previously approved shape re-matches the still-stored
             // record: the manifest revert reactivates without a new approval.
             var reverted = manager.ReloadApplied;
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "deno.json"),
                 """
                 {
                   "name": "@maieutics/probe",
                   "permissions": { "default": { "read": ["./"] } }
                 }
-                """);
+                """, deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, reverted, deadline.Token);
             Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
@@ -367,14 +366,14 @@ public sealed class PluginApprovalTests
             // Widening again revokes again, and this time the user re-approves the new
             // declarations explicitly.
             var widened = manager.ReloadApplied;
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(root, "deno.json"),
                 """
                 {
                   "name": "@maieutics/probe",
                   "permissions": { "default": { "read": ["./", "/tmp"] } }
                 }
-                """);
+                """, deadline.Token);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, widened, deadline.Token);
             Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));

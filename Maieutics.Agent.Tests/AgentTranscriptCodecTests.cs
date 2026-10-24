@@ -152,26 +152,16 @@ public sealed class AgentTranscriptCodecTests
     [Fact]
     public void DetachingTurnRejectsInlineBinaryContentAndBinaryMetadata()
     {
-        Func<AgentTranscriptStateTurn> direct = () => DetachAssistant(
-            new TextContent("answer"),
-            new DataContent(new byte[] { 1, 2, 3 }, "image/png"));
         var nested = new ImageGenerationToolResultContent("image-call")
         {
             Outputs = [new DataContent(new byte[] { 4, 5, 6 }, "image/png")]
         };
-        Func<AgentTranscriptStateTurn> nestedAction = () => DetachAssistant(new TextContent("answer"), nested);
         var nestedResult = new FunctionResultContent(
             "result-call",
             new Dictionary<string, object?>
             {
                 ["nested"] = new object?[] { "text", new byte[] { 6, 7, 8 } }
             });
-        Func<AgentTranscriptStateTurn> nestedResultAction = () => DetachAssistant(
-            new TextContent("answer"),
-            nestedResult);
-        Func<AgentTranscriptStateTurn> invalidJsonAction = () => DetachAssistant(
-            new TextContent("answer"),
-            new DataContent(Encoding.UTF8.GetBytes("not-json"), "application/json"));
         var metadata = new TextContent("answer")
         {
             AdditionalProperties = new AdditionalPropertiesDictionary
@@ -179,7 +169,6 @@ public sealed class AgentTranscriptCodecTests
                 ["payload"] = new byte[] { 7, 8, 9 }
             }
         };
-        Func<AgentTranscriptStateTurn> metadataAction = () => DetachAssistant(metadata);
         var binaryDataMetadata = new TextContent("answer")
         {
             AdditionalProperties = new AdditionalPropertiesDictionary
@@ -187,14 +176,19 @@ public sealed class AgentTranscriptCodecTests
                 ["payload"] = CreateBinaryDataLikeValue()
             }
         };
-        Func<AgentTranscriptStateTurn> binaryDataAction = () => DetachAssistant(binaryDataMetadata);
 
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => direct.Invoke());
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => nestedAction.Invoke());
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => nestedResultAction.Invoke());
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => invalidJsonAction.Invoke());
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => metadataAction.Invoke());
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => binaryDataAction.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(
+            new TextContent("answer"),
+            new DataContent(new byte[] { 1, 2, 3 }, "image/png")));
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(new TextContent("answer"), nested));
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(
+            new TextContent("answer"),
+            nestedResult));
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(
+            new TextContent("answer"),
+            new DataContent(Encoding.UTF8.GetBytes("not-json"), "application/json")));
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(metadata));
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => DetachAssistant(binaryDataMetadata));
     }
 
     [Fact]
@@ -261,8 +255,8 @@ public sealed class AgentTranscriptCodecTests
             new AgentTranscriptState(AgentSessionId.Create(), 1, [turn]));
         var naive = AgentTranscriptCodec.CreatePublicMessages(turn.Messages);
 
-        Assert.Single(cached.Turns);
-        Assert.Equivalent(naive, cached.Turns[0].Messages, strict: true);
+        var item = Assert.Single(cached.Turns);
+        Assert.Equivalent(naive, item.Messages, strict: true);
         Assert.DoesNotContain(cached.Turns[0].Messages, static message =>
             message.Contents.OfType<TextReasoningContent>().Any());
         Assert.All(cached.Turns[0].Messages.SelectMany(static message => message.Contents), static content => Assert.True(content.RawRepresentation == null && content.AdditionalProperties == null));
@@ -453,8 +447,8 @@ public sealed class AgentTranscriptSessionTests
 
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(2, transcript.Version);
-        Assert.Single(transcript.Turns);
-        Assert.Equal(["问题", "答案"], transcript.Turns.Single().Messages.Select(static message => message.Text));
+        var item = Assert.Single(transcript.Turns);
+        Assert.Equal(["问题", "答案"], item.Messages.Select(static message => message.Text));
     }
 
     private static async Task<(AgentRunResult Result, IReadOnlyList<AgentEvent> Events)> CompleteTurnAsync(

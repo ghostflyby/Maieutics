@@ -171,17 +171,17 @@ public sealed class PluginLifecycleRaceTests
             {
                 var filler = Path.Combine(pluginsRoot, $"filler-{index:D2}");
                 Directory.CreateDirectory(filler);
-                File.WriteAllText(
+                await File.WriteAllTextAsync(
                     Path.Combine(filler, "maieutics.json"),
-                    """{ "capabilities": ["tools.invoke"] }""");
+                    """{ "capabilities": ["tools.invoke"] }""", deadline.Token);
             }
 
             var restarted = harness.Manager.RegistryChangesReplaced;
             var second = Path.Combine(pluginsRoot, "second-plugin");
             Directory.CreateDirectory(second);
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(second, "maieutics.json"),
-                """{ "capabilities": ["tools.invoke"] }""");
+                """{ "capabilities": ["tools.invoke"] }""", deadline.Token);
 
             // Wire the new directories into the root import map: the watched deno.json change
             // is the plugin-set seam. A bare maieutics.json drop-in is invisible to the set

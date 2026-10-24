@@ -47,7 +47,7 @@ public sealed class TerminalInputParserTests
     public void TextPayloadsRejectEscapeAndControlBytes(string line)
     {
         var failure = () => TerminalInputBatchParser.Parse(line);
-        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(() => failure.Invoke()).Code);
+        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(failure.Invoke).Code);
     }
 
     [Theory]
@@ -66,7 +66,7 @@ public sealed class TerminalInputParserTests
     public void MalformedKeyLinesFailTheWholeBatch(string line)
     {
         var failure = () => TerminalInputBatchParser.Parse(line);
-        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(() => failure.Invoke()).Code);
+        Assert.Equal("terminal_invalid_input", Assert.ThrowsAny<AgentToolException>(failure.Invoke).Code);
     }
 
     [Fact]

@@ -541,7 +541,7 @@ internal sealed class IdeFunctions
         if (fileUris.Count == 0) return;
 
         var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
+        await using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
             writer.WriteStartArray("uris");
@@ -679,7 +679,7 @@ internal sealed class IdeFunctions
         var separator = rest.IndexOf('/');
         var folderId = separator < 0 ? rest : rest[..separator];
         if (folderId.Length is < 2 or > 24 ||
-            folderId.Any(static character => character is < '0' or > 'z' || (character > '9' && character < 'a')))
+            folderId.Any(static character => character is < '0' or > 'z' || character is > '9' and < 'a'))
             throw new AgentToolException(
                 "ide_invalid_arguments",
                 $"The folder id '{folderId}' is not the frontend's opaque token shape ([a-z0-9]+). Re-list the roots.");
@@ -766,8 +766,8 @@ internal sealed class IdeFunctions
 
         var text = content.GetString() ?? string.Empty;
         var lines = text.Replace("\r\n", "\n").Split('\n');
-        var start = startLine is { } s && s >= 1 ? Math.Min(s - 1, lines.Length) : 0;
-        var count = Math.Min(maxLines is { } m && m > 0 ? m : 200, 1_000);
+        var start = startLine is { } s and >= 1 ? Math.Min(s - 1, lines.Length) : 0;
+        var count = Math.Min(maxLines is { } m and > 0 ? m : 200, 1_000);
         var window = lines.Skip(start).Take(count).ToArray();
         var next = start + window.Length;
         return JsonSerializer.SerializeToElement(
@@ -976,8 +976,7 @@ internal sealed class IdeFunctions
             return;
         }
 
-        if (ScriptInvocationContext.TryGet(arguments) is { } script &&
-            script.SessionId is { } sessionId)
+        if (ScriptInvocationContext.TryGet(arguments) is { SessionId: { } sessionId })
         {
             EnsureConnectedCore(sessionId);
             return;

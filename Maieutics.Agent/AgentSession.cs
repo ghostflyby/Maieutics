@@ -798,7 +798,7 @@ public sealed class AgentSession : IAgentSession
 
             // Report "remembered" only when something actually remembers it: a host that
             // configured no memory must not tell the UI the tool is allowed for the session.
-            var remembered = decision.Approved && decision.AlwaysAllow && approval.Memory is not null;
+            var remembered = decision is { Approved: true, AlwaysAllow: true } && approval.Memory is not null;
             if (remembered)
                 approval.Memory?.AllowAlways(owner.Id, function.Name, classification);
 

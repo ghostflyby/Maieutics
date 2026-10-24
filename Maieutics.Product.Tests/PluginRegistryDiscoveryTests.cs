@@ -27,8 +27,8 @@ public sealed class PluginRegistryDiscoveryTests
     {
         var denoJson = Path.Combine(Path.GetTempPath(), $"mc-reg-{Guid.NewGuid():N}");
         var maieutics = $"{denoJson}-m";
-        File.WriteAllText(denoJson, DenoJson);
-        File.WriteAllText(maieutics, MaieuticsJson);
+        await File.WriteAllTextAsync(denoJson, DenoJson, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(maieutics, MaieuticsJson, TestContext.Current.CancellationToken);
 
         var descriptor = await PluginRegistryDiscovery.TryLoadJsrAsync(
             "@acme/widget",
@@ -41,8 +41,8 @@ public sealed class PluginRegistryDiscoveryTests
         Assert.NotNull(descriptor);
         Assert.Equal("@acme/widget", descriptor.Id);
         Assert.Equal("@acme/widget", descriptor.Name);
-        Assert.Single(descriptor.Workers);
-        Assert.Equal("https://jsr.io/@acme/widget/1.0.0/mod.ts", descriptor.Workers[0].EntryUrl);
+        var item = Assert.Single(descriptor.Workers);
+        Assert.Equal("https://jsr.io/@acme/widget/1.0.0/mod.ts", item.EntryUrl);
         Assert.Equal("jsr:@std/bytes@1", Assert.Single(descriptor.Imports).Value);
         Assert.Equal(["./"], descriptor.Permissions.Read.Values);
     }
@@ -103,7 +103,7 @@ public sealed class PluginRegistryDiscoveryTests
     public async Task ReturnsNullWhenThePackagePublishesNoMaieuticsJson()
     {
         var denoJson = Path.Combine(Path.GetTempPath(), $"mc-reg-{Guid.NewGuid():N}");
-        File.WriteAllText(denoJson, DenoJson);
+        await File.WriteAllTextAsync(denoJson, DenoJson, TestContext.Current.CancellationToken);
 
         var diagnostics = new List<string>();
         var descriptor = await PluginRegistryDiscovery.TryLoadJsrAsync(

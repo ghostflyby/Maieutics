@@ -10,15 +10,10 @@ namespace Maieutics.Product.Tests;
 /// observe the hit rather than an <c>IOException</c>.</summary>
 public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
 {
-    private readonly string _objectsRoot;
-
-    public ObjectStoreConcurrencyTests()
-    {
-        _objectsRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-store-concurrency-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _objectsRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-store-concurrency-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {
@@ -78,7 +73,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
         foreach (var result in results)
         {
             Assert.True(store.Exists(result.Sha256));
-            using var read = store.Open(result.Sha256);
+            await using var read = store.Open(result.Sha256);
             Assert.Equal(result.Size, read.Length);
         }
     }

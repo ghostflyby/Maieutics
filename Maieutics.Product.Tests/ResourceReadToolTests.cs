@@ -95,8 +95,7 @@ public sealed class ResourceReadToolTests
         var description = Function(functions, "read_text").Description;
         Assert.NotNull(description);
 
-        var check = () => Function(functions, "list_resources");
-        Assert.ThrowsAny<InvalidOperationException>(() => check.Invoke());
+        Assert.ThrowsAny<InvalidOperationException>(() => Function(functions, "list_resources"));
     }
 
     [Fact(Timeout = 60_000)]
@@ -123,8 +122,8 @@ public sealed class ResourceReadToolTests
                 "{}"),
             ResourceJsonSerializerContext.Default.ResourceCatalogResult);
         Assert.Equal(3, result.Resources.Count());
-        Assert.Contains(result.Resources, entry => entry.Kind == "resource" && entry.Uri == "notes://a");
-        Assert.Contains(result.Resources, entry => entry.Kind == "template" && entry.Template == "notes://b/{id}");
+        Assert.Contains(result.Resources, entry => entry is { Kind: "resource", Uri: "notes://a" });
+        Assert.Contains(result.Resources, entry => entry is { Kind: "template", Template: "notes://b/{id}" });
         Assert.Equal("shadowed", Assert.Single(result.Conflicts).ProviderId);
     }
 

@@ -11,16 +11,11 @@ namespace Maieutics.Commands;
 ///     Without a runtime configuration (persistence-less hosts, tests) the provider is
 ///     absent and sessions share the manager's process provider.
 /// </summary>
-internal sealed class MaieuticsSessionProfileProvider : IAgentRunProfileProvider
+internal sealed class MaieuticsSessionProfileProvider(IMaieuticsRuntimeConfiguration runtime) : IAgentRunProfileProvider
 {
-    private readonly IMaieuticsRuntimeConfiguration _runtime;
+    private readonly IMaieuticsRuntimeConfiguration _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
     private readonly Lock _gate = new();
     private string? _overrideProfileId;
-
-    public MaieuticsSessionProfileProvider(IMaieuticsRuntimeConfiguration runtime)
-    {
-        this._runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
-    }
 
     /// <summary>Gets the session's current override, or <see langword="null" /> when the
     /// session follows the process selection.</summary>

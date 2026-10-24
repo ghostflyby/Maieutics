@@ -23,9 +23,7 @@ public sealed class McpServerGenerationTests
         var restricted = BuildPolicy(
             (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
 
-        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted);
-
-        var assertion26 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        var assertion26 = Assert.ThrowsAny<ArgumentException>(() => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted));
         Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion26.Message);
     }
 
@@ -52,9 +50,7 @@ public sealed class McpServerGenerationTests
         var restricted = BuildPolicy(
             (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe"] }));
 
-        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted);
-
-        var assertion27 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        var assertion27 = Assert.ThrowsAny<ArgumentException>(() => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted));
         Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion27.Message);
     }
 
@@ -116,7 +112,7 @@ public sealed class McpServerGenerationTests
             }
         }
 
-        public async Task<JsonElement?> AdjustToolsAsync(
+        public Task<JsonElement?> AdjustToolsAsync(
             string serverId,
             JsonElement listing,
             CancellationToken cancellationToken)
@@ -133,7 +129,7 @@ public sealed class McpServerGenerationTests
             // Completed only after the handler ran, so an awaiter observes the invocation's
             // outcome, not merely its start.
             completed.TrySetResult();
-            return result;
+            return Task.FromResult(result);
         }
     }
 

@@ -455,7 +455,7 @@ public sealed class FrontendRunStreamTests
         // The pump thread appends while the test thread asserts; a plain list would
         // both tear enumerations and race the settlement records into the snapshot.
         private readonly Lock _gate = new();
-        private List<(LogLevel Level, string Message, Exception? Exception)> _records = [];
+        private readonly List<(LogLevel Level, string Message, Exception? Exception)> _records = [];
 
         public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Records
         {

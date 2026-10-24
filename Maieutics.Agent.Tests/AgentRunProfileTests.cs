@@ -203,8 +203,8 @@ public sealed class AgentRunProfileTests
         var result = await CompleteTurnAsync(session, "question", deadline.Token);
 
         Assert.Equal(identity, result.ModelIdentity);
-        Assert.Single(result.Transcript.Turns);
-        Assert.Equal(identity, result.Transcript.Turns[0].ModelIdentity);
+        var item = Assert.Single(result.Transcript.Turns);
+        Assert.Equal(identity, item.ModelIdentity);
         Assert.Equal(identity, session.GetTranscriptSnapshot().Turns[0].ModelIdentity);
     }
 

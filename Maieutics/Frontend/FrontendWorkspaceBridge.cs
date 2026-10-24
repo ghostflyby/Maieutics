@@ -306,7 +306,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var fileUri = new Uri(owner._workspace.Capture().ToPhysicalPath(segments)).AbsoluteUri;
             var buffer = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(buffer))
+            await using (var writer = new Utf8JsonWriter(buffer))
             {
                 writer.WriteStartObject();
                 writer.WriteStartArray("uris");

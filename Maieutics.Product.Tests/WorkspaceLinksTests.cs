@@ -91,7 +91,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task OpenIsIdempotentAndStartupRemountsRegisteredLinks()
+    public void OpenIsIdempotentAndStartupRemountsRegisteredLinks()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -113,7 +113,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task ForeignLinksStateDirectoryAndInTargetLinksStayRejected()
+    public void ForeignLinksStateDirectoryAndInTargetLinksStayRejected()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -188,7 +188,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task OpeningFailsWithTypedErrorsForMissingUnsupportedAndCyclingTargets()
+    public void OpeningFailsWithTypedErrorsForMissingUnsupportedAndCyclingTargets()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();

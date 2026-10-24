@@ -26,8 +26,8 @@ public sealed class AgentSessionResumeTests
 
         Assert.Equal(sessionId, resumed.Id);
         var snapshot = resumed.GetTranscriptSnapshot();
-        Assert.Single(snapshot.Turns);
-        Assert.Equal("one", snapshot.Turns[0].Messages[0].Text);
+        var item = Assert.Single(snapshot.Turns);
+        Assert.Equal("one", item.Messages[0].Text);
         Assert.Equal("first", snapshot.Turns[0].Messages[^1].Text);
 
         await using var next = await resumed.StartTurnAsync(AgentTurn.FromText("two"), deadline.Token);
@@ -49,8 +49,7 @@ public sealed class AgentSessionResumeTests
         var provider = new FixedProfileProvider(new ScriptedChatClient());
         var store = new InMemoryTranscriptStore();
 
-        var resume = () => AgentSession.Resume(provider, store, AgentSessionId.Create());
-        Assert.ThrowsAny<AgentSessionNotFoundException>(() => resume.Invoke());
+        Assert.ThrowsAny<AgentSessionNotFoundException>(() => AgentSession.Resume(provider, store, AgentSessionId.Create()));
     }
 
 

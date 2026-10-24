@@ -209,8 +209,8 @@ public sealed class PluginHostIntegrationTests
                     : throw new InvalidOperationException("Expected a discovery result."),
                 JsonSerializerOptionsCaseInsensitive);
             Assert.NotNull(discovery);
-            Assert.Single(discovery);
-            Assert.Equal("npm:@maieutics/probe-server", discovery[0].Module);
+            var item = Assert.Single(discovery);
+            Assert.Equal("npm:@maieutics/probe-server", item.Module);
         }
     }
 

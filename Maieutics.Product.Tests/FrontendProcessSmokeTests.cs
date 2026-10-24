@@ -172,7 +172,7 @@ public sealed class FrontendProcessSmokeTests
         // Env config uses the double-underscore section separator.
         startInfo.Environment["Maieutics__Providers__OpenAI__Endpoint"] = endpoint.ToString();
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
-            OpenAiApiFlavor.ChatCompletions.ToString();
+            nameof(OpenAiApiFlavor.ChatCompletions);
         if (workspaceRoot is not null) startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
@@ -246,7 +246,7 @@ public sealed class FrontendProcessSmokeTests
         // otherwise double-kill.
         private int _disposeState;
 
-        public string DiscoveryPath { get; } = discoveryPath;
+        private string DiscoveryPath { get; } = discoveryPath;
 
         /// <summary>Waits for the discovery file's appearance within the remaining test
         /// budget. A dead child is reported immediately; otherwise the shared reader retries

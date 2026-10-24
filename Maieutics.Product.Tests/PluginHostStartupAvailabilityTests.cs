@@ -61,7 +61,7 @@ public sealed class PluginHostStartupAvailabilityTests
             Assert.NotNull(observed);
 
             // Let the scan finish so startup can proceed to its (irrelevant here) host launch.
-            File.WriteAllText(release, string.Empty);
+            await File.WriteAllTextAsync(release, string.Empty, deadline.Token);
             await TolerateStartupFailureAsync(start);
         }
         finally

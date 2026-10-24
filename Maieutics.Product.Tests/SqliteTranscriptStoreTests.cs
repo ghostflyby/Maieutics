@@ -258,8 +258,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         Assert.Equal(["Question two", "Answer two"], transcript.Turns[1].Messages.Select(message => message.Text));
 
         var sessions = reopened.ListSessions();
-        Assert.Single(sessions);
-        Assert.Equal(sessionId, sessions[0].Id);
+        var item = Assert.Single(sessions);
+        Assert.Equal(sessionId, item.Id);
         Assert.Equal(2, sessions[0].TurnCount);
         Assert.True(sessions[0].LastActivityAt >= sessions[0].CreatedAt);
     }

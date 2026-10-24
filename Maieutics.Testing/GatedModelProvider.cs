@@ -590,7 +590,7 @@ public static class HttpRequestReader
 {
     /// <summary>The request cap: a well-formed provider request is a few KiB, so anything
     /// past this is garbage from a broken or hostile client.</summary>
-    public const int MaxRequestBytes = 1024 * 1024;
+    private const int MaxRequestBytes = 1024 * 1024;
 
     /// <summary>Reads one request in full; throws <see cref="EndOfStreamException" /> when
     /// the connection closes mid-request.</summary>

@@ -240,7 +240,7 @@ internal static class TerminalInputBatchParser
     private static TerminalKey ParseKeyToken(string token, int? count, int lineNumber)
     {
         var modifiers = TerminalKeyModifiers.None;
-        while (token.Length >= 2 && token[1] == '-')
+        while (token is [_, '-', ..])
         {
             modifiers |= token[0] switch
             {
@@ -270,7 +270,7 @@ internal static class TerminalInputBatchParser
             return new TerminalKey(count, new TerminalCharKey(token[0], modifiers));
         }
 
-        if (token.Length == 1 && token[0] is '@' or '[' or '\\' or ']' or '^' or '_')
+        if (token is ['@' or '[' or '\\' or ']' or '^' or '_'])
         {
             if ((modifiers & TerminalKeyModifiers.Control) == 0 ||
                 (modifiers & (TerminalKeyModifiers.Alt | TerminalKeyModifiers.Shift)) != 0)

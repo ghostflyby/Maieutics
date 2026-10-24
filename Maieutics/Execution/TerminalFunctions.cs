@@ -87,7 +87,7 @@ internal sealed class TerminalFunctions
 
     private static void ValidateSnapshotRequest(int? maxCharacters)
     {
-        if (maxCharacters is { } max && max is < 1 or > MaximumFrameCharacters)
+        if (maxCharacters is { } and (< 1 or > MaximumFrameCharacters))
             throw new AgentToolException(
                 "terminal_invalid_arguments",
                 $"maxCharacters must be between 1 and {MaximumFrameCharacters}.");
@@ -150,7 +150,7 @@ internal sealed class TerminalFunctions
             throw new AgentToolException("terminal_invalid_arguments", "executable is required and cannot be empty.");
 
         ValidateSnapshotRequest(maxCharacters);
-        if (timeout is { } requested && requested is < 1 or > 600)
+        if (timeout is { } and (< 1 or > 600))
             throw new AgentToolException(
                 "terminal_invalid_arguments",
                 "timeout must be between 1 and 600 seconds.");

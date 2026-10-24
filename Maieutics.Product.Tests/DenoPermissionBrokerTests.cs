@@ -116,7 +116,7 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public async Task ResolverMatchesExactDenyOverAllow()
+    public void ResolverMatchesExactDenyOverAllow()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
@@ -129,7 +129,7 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public async Task ResolverAllowsExactGrantAndDeniesUnknownKind()
+    public void ResolverAllowsExactGrantAndDeniesUnknownKind()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
@@ -141,7 +141,7 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public async Task PathGrantsMatchInsideButNotSiblingPaths()
+    public void PathGrantsMatchInsideButNotSiblingPaths()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
@@ -155,7 +155,7 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public async Task PathDeniesMatchInsideButNotSiblingPaths()
+    public void PathDeniesMatchInsideButNotSiblingPaths()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
@@ -170,7 +170,7 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public async Task NonPathKindsKeepPrefixMatching()
+    public void NonPathKindsKeepPrefixMatching()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(

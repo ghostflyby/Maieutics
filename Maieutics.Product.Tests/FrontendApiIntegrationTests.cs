@@ -676,7 +676,7 @@ public sealed class FrontendApiIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, noBody.StatusCode);
 
         var unknownSource = await client.PostAsJsonAsync(
-            $"/v1/agent/sessions/{Guid.NewGuid().ToString("N")}/fork",
+            $"/v1/agent/sessions/{Guid.NewGuid():N}/fork",
             new { seq = 0 },
             deadline.Token);
         Assert.Equal(HttpStatusCode.NotFound, unknownSource.StatusCode);
@@ -1602,7 +1602,7 @@ public sealed class FrontendApiIntegrationTests
                 configurationFileBody = transformConfiguration(configurationFileBody);
             }
 
-            File.WriteAllText(configurationFile, configurationFileBody);
+            await File.WriteAllTextAsync(configurationFile, configurationFileBody, cancellationToken);
             var discoveryPath = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-discovery-{Guid.NewGuid():N}.json");

@@ -252,9 +252,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (type == "input.request" &&
-            JsonSerializer.Deserialize(
-                data,
-                FrontendJsonContext.Default.FrontendInputRequest) is { } request)
+            data.Deserialize(FrontendJsonContext.Default.FrontendInputRequest) is { } request)
         {
             return PublishCore(
                 new FrontendEventFrame(

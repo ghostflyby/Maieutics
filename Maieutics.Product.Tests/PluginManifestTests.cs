@@ -150,8 +150,8 @@ public sealed class PluginManifestTests
             }
             """);
 
-        Assert.Single(descriptor.Workers);
-        Assert.Equal("ok", descriptor.Workers[0].ExportName);
+        var item = Assert.Single(descriptor.Workers);
+        Assert.Equal("ok", item.ExportName);
     }
 
     [Fact]
@@ -174,8 +174,8 @@ public sealed class PluginManifestTests
             """);
 
         var targets = PluginManifest.ReadLocalImportTargets(directory).ToArray();
-        Assert.Single(targets);
-        Assert.Equal(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")), targets[0]);
+        var item = Assert.Single(targets);
+        Assert.Equal(Path.GetFullPath(Path.Combine(directory, "local-dep", "mod.ts")), item);
     }
 
     [Fact]
@@ -198,8 +198,8 @@ public sealed class PluginManifestTests
             }
             """);
 
-        Assert.Single(descriptor.Extensions);
-        Assert.Equal("McpDiscover", descriptor.Extensions[0].Kind);
+        var item = Assert.Single(descriptor.Extensions);
+        Assert.Equal("McpDiscover", item.Kind);
         Assert.Equal("npm:@maieutics/probe-server", descriptor.Extensions[0].Data.GetProperty("module")
             .GetString());
         Assert.Empty(descriptor.ExtensionDiagnostics);

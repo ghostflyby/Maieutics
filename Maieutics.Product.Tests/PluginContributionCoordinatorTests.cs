@@ -30,8 +30,8 @@ public sealed class PluginContributionCoordinatorTests
         // wait on and the registry-wide publish is synchronous — no settle window.
         await coordinator.FlightIdle;
 
-        Assert.Single(wide.Frames);
-        Assert.Single(wide.Frames[0].Registrations);
+        var item = Assert.Single(wide.Frames);
+        Assert.Single(item.Registrations);
         Assert.False(wide.Guarded[0], "the registry frame's plain branch publishes unguarded");
         Assert.Empty(perPlugin.Invocations);
     }
@@ -174,8 +174,8 @@ public sealed class PluginContributionCoordinatorTests
             snapshot,
             ContributionFrameInput.NoForcedPlugins,
             []));
-        Assert.Single(wide.Frames);
-        Assert.Equal(2, wide.Frames[0].Registrations.Count());
+        var item = Assert.Single(wide.Frames);
+        Assert.Equal(2, item.Registrations.Count());
         Assert.True(wide.Guarded[0], "approval publishes take the disposed-coordinator guard");
         // The input carries no per-plugin targets, so nothing is scheduled: awaiting the
         // coordinator's idle edge confirms it without a settle window.

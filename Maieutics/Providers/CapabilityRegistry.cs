@@ -17,7 +17,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     ///     rejected; they pass through with the configured spelling and remain comparable as opaque
     ///     capability identifiers.
     /// </summary>
-    internal static readonly IReadOnlyList<string> CanonicalCapabilityNames =
+    private static readonly IReadOnlyList<string> CanonicalCapabilityNames =
     [
         "WebSearch",
         "FileSearch",
@@ -138,7 +138,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
                 : null;
         }
 
-        return DefaultVendorHosts.TryGetValue(source.ProviderName, out var host) ? host : null;
+        return DefaultVendorHosts.GetValueOrDefault(source.ProviderName);
     }
 
     private IReadOnlyList<string> ResolveAggregateCapabilities(
@@ -219,7 +219,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     ///     <see langword="false" /> rather than throwing so a previously valid source endpoint never
     ///     fails configuration because it carries components the capability table does not support.
     /// </summary>
-    internal static bool TryNormalizeEndpoint(
+    private static bool TryNormalizeEndpoint(
         Uri endpoint,
         [NotNullWhen(true)] out string? normalized)
     {
@@ -538,7 +538,7 @@ internal sealed class EndpointCapabilityLimitsOptions
 
     internal void Validate()
     {
-        if (MaxBuiltinToolCalls is { } max && max < 1)
+        if (MaxBuiltinToolCalls is { } max and < 1)
             throw new ArgumentOutOfRangeException(
                 nameof(MaxBuiltinToolCalls),
                 max,

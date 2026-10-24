@@ -99,8 +99,8 @@ public sealed class AgentSubagentFunctionsTests
 
         // The real agent_spawn adapter registered the child scope under the calling session
         // (ADR 0030 decision 3), so the child resolves through the parent's override.
-        Assert.Single(overrides.ChildScopes);
-        Assert.Equal(session.Id, overrides.ChildScopes[0].Parent);
+        var item = Assert.Single(overrides.ChildScopes);
+        Assert.Equal(session.Id, item.Parent);
         Assert.Same(parentLayer, overrides.TryGet(overrides.ChildScopes[0].Child));
     }
 
@@ -186,8 +186,7 @@ public sealed class AgentSubagentFunctionsTests
         foreach (var content in messages.SelectMany(message => message.Contents)
                      .OfType<FunctionResultContent>())
         {
-            if (content.Result is JsonElement envelope &&
-                envelope.ValueKind == JsonValueKind.Object &&
+            if (content.Result is JsonElement { ValueKind: JsonValueKind.Object } envelope &&
                 envelope.TryGetProperty("value", out var value) &&
                 value.TryGetProperty("taskUri", out var taskUri) &&
                 taskUri.GetString() is { } uri)
@@ -216,18 +215,18 @@ public sealed class AgentSubagentFunctionsTests
 
     private static AIFunction CreateProbeTool()
     {
-        async ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
+        ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
         {
             _ = AgentSubagentContext.GetRequired(arguments);
             var attached = arguments.Context is not null &&
                            arguments.Context.ContainsKey(typeof(IAgentSubagentSpawner));
-            return JsonSerializer.SerializeToElement(
+            return ValueTask.FromResult(JsonSerializer.SerializeToElement(
                 new ProbeValue(attached ? "attached" : "missing"),
-                ProbeJsonContext.Default.ProbeValue);
+                ProbeJsonContext.Default.ProbeValue));
         }
 
         return AIFunctionFactory.Create(
-            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)Invoke,
+            Invoke,
             new AIFunctionFactoryOptions
             {
                 Name = "subagent_probe",

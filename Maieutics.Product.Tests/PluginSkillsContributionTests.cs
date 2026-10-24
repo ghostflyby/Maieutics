@@ -843,7 +843,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             await AwaitCatalogAsync(
                 catalog,
                 snapshot => snapshot.Skills.Any(skill =>
-                    skill.Name == "gen-skill" && skill.Description == "after the reload"),
+                    skill is { Name: "gen-skill", Description: "after the reload" }),
                 TestContext.Current.CancellationToken);
             Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }
@@ -916,7 +916,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             await AwaitCatalogAsync(
                 catalog,
                 snapshot => snapshot.Skills.Any(skill =>
-                    skill.Name == "gen-skill" && skill.Description == "after the isolation reload"),
+                    skill is { Name: "gen-skill", Description: "after the isolation reload" }),
                 TestContext.Current.CancellationToken);
             Assert.Equal(2, fakeSocket.TotalSkillInvokes);
         }

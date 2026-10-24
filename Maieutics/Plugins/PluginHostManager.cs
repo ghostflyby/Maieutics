@@ -3396,8 +3396,7 @@ internal sealed class PluginHostManager(
                 return;
             }
 
-            if (ContributionKindCatalog.ByPublishCapability(request.Capability) is { } publishKind &&
-                publishKind.KindName == SkillsContributionKind.ExtensionKind)
+            if (ContributionKindCatalog.ByPublishCapability(request.Capability) is { KindName: SkillsContributionKind.ExtensionKind })
             {
                 // Plugin skill publication (ADR 0039 stage 3): the payload is the
                 // replacement set for the plugin's published part — the same entry shape

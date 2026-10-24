@@ -92,7 +92,7 @@ public sealed class PermissionLayerTests
 
         var build = () => PermissionLayerStore.Build([layer], CreateVariables());
 
-        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
     }
 
     [Fact]
@@ -105,7 +105,7 @@ public sealed class PermissionLayerTests
 
         var build = () => PermissionLayerStore.Build([layer], CreateVariables());
 
-        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
+        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public sealed class PermissionLayerTests
         // The variable resolves, but to an empty value: an empty pattern would match everything.
         var build = () => PermissionLayerStore.Build([layer], CreateVariables(workspace: string.Empty));
 
-        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(() => build.Invoke()).Code);
+        Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
     }
 
     private static PermissionLayer Layer(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)

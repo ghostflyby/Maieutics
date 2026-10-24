@@ -103,8 +103,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         Assert.Equal("Answer two", manager.GetTranscriptSnapshot().Turns[1].Messages[^1].Text);
 
         var sessions = manager.ListStoredSessions();
-        Assert.Single(sessions);
-        Assert.Equal(sessionId, sessions[0].Id);
+        var item = Assert.Single(sessions);
+        Assert.Equal(sessionId, item.Id);
         Assert.Equal(2, sessions[0].TurnCount);
 
         var afterNew = manager.StartNew();
@@ -164,8 +164,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 
         // The fork is active and its history ends at the fork point.
         Assert.Equal(forkId, manager.Id);
-        Assert.Single(manager.GetTranscriptSnapshot().Turns);
-        Assert.Equal("Question one", manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text);
+        var item = Assert.Single(manager.GetTranscriptSnapshot().Turns);
+        Assert.Equal("Question one", item.Messages[0].Text);
 
         // The head row lives in the source's family database with lineage and an
         // auto-derived title.

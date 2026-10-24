@@ -49,8 +49,8 @@ public sealed class DenoReplSessionTests
 
         // The session passes the display object store through to the collector, so the binary
         // mime becomes an object reference on the wire instead of being dropped (invariant 26).
-        Assert.Single(sink.BinaryDisplays);
-        var reference = sink.BinaryDisplays.Single().Data["image/png"];
+        var item = Assert.Single(sink.BinaryDisplays);
+        var reference = item.Data["image/png"];
         Assert.Equal(JsonValueKind.Object, reference.ValueKind);
         var url = reference.GetProperty("$object").GetString()!;
         Assert.StartsWith("/v1/objects/", url);

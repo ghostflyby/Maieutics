@@ -533,7 +533,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 is { } bodySize)
                 bodySize.MaxRequestBodySize = null;
 
-            using var bounded = new BoundedBodyStream(context.Request.Body, _service.MaxIngestBytes, Oversized());
+            await using var bounded = new BoundedBodyStream(context.Request.Body, _service.MaxIngestBytes, Oversized());
             // Kestrel forbids synchronous reads on the request body while the object store's
             // ingest is a synchronous hash-and-write pass; the bounded async copy bridges the
             // two. The copy is capped by the same bound, so the buffer is bounded too.

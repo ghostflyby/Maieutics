@@ -14,7 +14,7 @@ internal sealed class TestChildProcess : IAsyncDisposable
     private static readonly TimeSpan ReapBudget = TimeSpan.FromSeconds(10);
 
     private readonly Process _process;
-    private ChildSlotLease _slot;
+    private readonly ChildSlotLease _slot;
     private bool _disposed;
 
     private TestChildProcess(Process process, ChildSlotLease slot)

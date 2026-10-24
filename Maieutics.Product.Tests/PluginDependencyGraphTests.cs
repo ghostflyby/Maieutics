@@ -66,7 +66,7 @@ public sealed class PluginDependencyGraphTests
         Assert.Equal(["independent"], graph.Enabled.Select(static p => p.Id));
         Assert.All(["a", "b"], item => Assert.Contains(item, graph.Exclusions.Select(static e => e.PluginId)));
         Assert.Contains(graph.Exclusions, e =>
-            e.PluginId == "a" && e.Reason == PluginExclusionReason.MissingDependency);
+            e is { PluginId: "a", Reason: PluginExclusionReason.MissingDependency });
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class PluginDependencyGraphTests
         Assert.Equal(["ok"], graph.Enabled.Select(static p => p.Id));
         Assert.All(["a", "b", "c"], item => Assert.Contains(item, graph.Exclusions.Select(static e => e.PluginId)));
         Assert.Contains(graph.Exclusions, e =>
-            e.PluginId == "a" && e.Reason == PluginExclusionReason.DependencyCycle);
+            e is { PluginId: "a", Reason: PluginExclusionReason.DependencyCycle });
     }
 
     [Fact]

@@ -88,7 +88,7 @@ public sealed class PermissionProfileLoaderTests
 
             var load = () => PermissionProfileLoader.Load(path);
 
-            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(() => load.Invoke()).Code);
+            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(load.Invoke).Code);
         }
         finally
         {
@@ -108,7 +108,7 @@ public sealed class PermissionProfileLoaderTests
 
             var load = () => PermissionProfileLoader.Load(path);
 
-            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(() => load.Invoke()).Code);
+            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(load.Invoke).Code);
         }
         finally
         {

@@ -169,7 +169,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal("ok", envelope.GetProperty("status").GetString());
         Assert.Equal("hello", envelope.GetProperty("value").GetString());
 
-        var call = Assert.Single(invoker.Calls, call => call.Phase == "describe" ? false : true);
+        var call = Assert.Single(invoker.Calls, call => call.Phase != "describe");
         Assert.NotNull(call.Arguments);
         Assert.Equal("hello", call.Arguments.Value.GetProperty("text").GetString());
         Assert.NotNull(call.CallId);
@@ -272,7 +272,7 @@ public sealed class PluginToolCoordinatorTests
         var token = cancellation.Token;
         var root = arguments.RootElement;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Task.Run(() => InvokeAsync(tool, root, token)));
+            InvokeAsync(tool, root, token));
     }
 
     [Fact(Timeout = 30_000)]
@@ -369,7 +369,7 @@ public sealed class PluginToolCoordinatorTests
         var root = arguments.RootElement;
         var token = cancellation.Token;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Task.Run(() => InvokeAsync(tool, root, token)));
+            InvokeAsync(tool, root, token));
     }
 
     [Fact(Timeout = 30_000)]

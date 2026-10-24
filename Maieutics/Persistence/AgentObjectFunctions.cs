@@ -37,7 +37,7 @@ internal sealed class AgentObjectFunctions(IAgentObjectStore store)
         byte[] bytes;
         try
         {
-            using var stream = store.Open(sha256);
+            await using var stream = store.Open(sha256);
             using var buffer = new MemoryStream();
             await stream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
             bytes = buffer.ToArray();

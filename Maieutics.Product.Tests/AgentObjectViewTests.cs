@@ -9,15 +9,10 @@ namespace Maieutics.Product.Tests;
 /// is idempotent, and never links to absent objects.</summary>
 public sealed class AgentObjectViewTests : IAsyncDisposable
 {
-    private readonly string _agentRoot;
-
-    public AgentObjectViewTests()
-    {
-        _agentRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-view-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _agentRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-view-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {

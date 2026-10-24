@@ -37,22 +37,16 @@ internal sealed record McpAdjustmentSnapshot(
 /// adjusted exposes nothing), so a broken adjuster never resurrects removed
 /// surface.
 /// </summary>
-internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
+internal sealed class McpAdjustmentChain(
+    Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke,
+    ILogger logger) : IMcpToolSurfaceAdjuster
 {
-    private readonly Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> _invoke;
-    private readonly ILogger _logger;
+    private readonly Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> _invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
+    private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly Lock _gate = new();
     private readonly Dictionary<string, IReadOnlySet<string>> _lastGoodDrops = new(StringComparer.Ordinal);
     private readonly Dictionary<string, JsonElement> _lastGoodListings = new(StringComparer.Ordinal);
     private McpAdjustmentSnapshot _currentSnapshot = new([], ImmutableDictionary<string, IReadOnlyList<string>>.Empty, []);
-
-    public McpAdjustmentChain(
-        Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke,
-        ILogger logger)
-    {
-        this._invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
 
     /// <summary>Replaces the adjustment topology. Called on startup, on every host
     /// registry payload, and after declarative reloads.</summary>

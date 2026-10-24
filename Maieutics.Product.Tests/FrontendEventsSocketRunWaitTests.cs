@@ -13,14 +13,10 @@ namespace Maieutics.Product.Tests;
 /// queue mutation to wake the loop and recover the run, so the run is never served on that
 /// socket.</summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendEventsSocketRunWaitTests
+public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-
-    public FrontendEventsSocketRunWaitTests(ITestOutputHelper output) => this._output = output;
-
     private void Trace(string message) =>
-        TestTrace.Write(_output, "events-run-wait", message);
+        TestTrace.Write(output, "events-run-wait", message);
 
     /// <summary>A run announced after the turn queue has fully drained must still be served on
     /// a socket that observed the queue's transitions. The drain's queue wakes are what used to

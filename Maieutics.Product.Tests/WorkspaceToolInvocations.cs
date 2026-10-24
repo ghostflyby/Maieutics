@@ -15,7 +15,7 @@ internal static class WorkspaceToolInvocations
         return functions.Functions.Single(function => function.Name == name);
     }
 
-    internal static AIFunctionArguments Arguments(string json)
+    private static AIFunctionArguments Arguments(string json)
     {
         using var document = JsonDocument.Parse(json);
         return new AIFunctionArguments(document.RootElement.EnumerateObject().ToDictionary(

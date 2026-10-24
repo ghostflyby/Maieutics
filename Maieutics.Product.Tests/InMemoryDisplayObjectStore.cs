@@ -16,5 +16,5 @@ internal sealed class InMemoryDisplayObjectStore : IReplDisplayObjectStore
         return url;
     }
 
-    internal byte[]? Get(string url) => _objects.TryGetValue(url, out var bytes) ? bytes : null;
+    internal byte[]? Get(string url) => _objects.GetValueOrDefault(url);
 }

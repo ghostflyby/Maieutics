@@ -69,9 +69,9 @@ internal static class PluginRegistryDiscovery
         try
         {
             var packageManifest = JsonSerializer.Deserialize(
-                File.ReadAllText(denoJsonLocal), PluginManifestJsonContext.Default.PluginManifestFile);
+                await File.ReadAllTextAsync(denoJsonLocal, cancellationToken), PluginManifestJsonContext.Default.PluginManifestFile);
             var pluginManifest = JsonSerializer.Deserialize(
-                File.ReadAllText(maieuticsLocal), PluginManifestJsonContext.Default.MaieuticsManifestFile);
+                await File.ReadAllTextAsync(maieuticsLocal, cancellationToken), PluginManifestJsonContext.Default.MaieuticsManifestFile);
             if (packageManifest is null || pluginManifest is null)
             {
                 diagnostics.Add($"Registry discovery: '{value}' has empty manifest files.");

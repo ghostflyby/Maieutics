@@ -62,8 +62,8 @@ public sealed class AgentSessionTests
         Assert.Equal("Hello world", result.AssistantMessage.Text);
         Assert.Equal(session.Id, result.Transcript.SessionId);
         Assert.Equal(1, result.Transcript.Version);
-        Assert.Single(result.Transcript.Turns);
-        Assert.Equal(run.Id, result.Transcript.Turns[0].RunId);
+        var item = Assert.Single(result.Transcript.Turns);
+        Assert.Equal(run.Id, item.RunId);
         Assert.Equal([
             (result.UserMessage.Role, result.UserMessage.Text), (result.AssistantMessage.Role, result.AssistantMessage.Text),
         ], result.Transcript.Turns[0].Messages.Select(static message => (message.Role, message.Text)));
@@ -179,8 +179,8 @@ public sealed class AgentSessionTests
 
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(3, transcript.Version);
-        Assert.Single(transcript.Turns);
-        Assert.Equal([ChatRole.User, ChatRole.Assistant], transcript.Turns[0].Messages.Select(message => message.Role));
+        var item = Assert.Single(transcript.Turns);
+        Assert.Equal([ChatRole.User, ChatRole.Assistant], item.Messages.Select(message => message.Role));
         Assert.Equal(["c", "three"], transcript.Turns[0].Messages.Select(message => message.Text));
     }
 
@@ -373,8 +373,8 @@ public sealed class AgentSessionTests
             .Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text);
         Assert.Equivalent(new TextContent("working"), events.OfType<AgentToolProgress>().Single().Content);
 
-        Assert.Single(result.Transcript.Turns);
-        var messages = result.Transcript.Turns[0].Messages;
+        var item = Assert.Single(result.Transcript.Turns);
+        var messages = item.Messages;
         Assert.Equal([ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant], messages.Select(message => message.Role));
         var call = messages[1].Contents.OfType<FunctionCallContent>().Single();
         var toolResult = messages[2].Contents.OfType<FunctionResultContent>().Single();
@@ -783,8 +783,8 @@ public sealed class AgentSessionTests
 
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(2, transcript.Version);
-        Assert.Single(transcript.Turns);
-        Assert.Equal(["plain turn", "second"], transcript.Turns[0].Messages.Select(message => message.Text));
+        var item = Assert.Single(transcript.Turns);
+        Assert.Equal(["plain turn", "second"], item.Messages.Select(message => message.Text));
         Assert.DoesNotContain(transcript.Turns[0].Messages
             .SelectMany(message => message.Contents), content => content is FunctionCallContent or FunctionResultContent);
     }
@@ -873,8 +873,8 @@ public sealed class AgentSessionTests
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Late"), deadline.Token);
         await ReadEventsAsync(run, deadline.Token);
         await run.Completion.WaitAsync(deadline.Token);
-        Assert.Single(contexts);
-        var context = contexts[0];
+        var item = Assert.Single(contexts);
+        var context = item;
 
         // The run completed and closed its event writer; a straggler reporter observes the
         // typed recoverable failure instead of ChannelClosedException.

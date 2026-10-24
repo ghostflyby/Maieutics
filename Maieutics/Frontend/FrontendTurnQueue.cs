@@ -256,7 +256,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     }
 
     private static bool IsIdleLocked(SessionQueue state) =>
-        state.Items.Count == 0 && state.Running is null && !state.DequeueInFlight && state.Worker is null;
+        state.Items.Count == 0 && state.Running is null && state is { DequeueInFlight: false, Worker: null };
 
     public async ValueTask DisposeAsync()
     {

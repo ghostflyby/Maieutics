@@ -42,8 +42,8 @@ public sealed class PluginMcpCoordinatorTests
         var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
 
         Assert.True(await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token));
-        Assert.Single(generationFactory.Generations);
-        var originalGeneration = generationFactory.Generations[0];
+        var item = Assert.Single(generationFactory.Generations);
+        var originalGeneration = item;
         var originalLease = Assert.Single(coordinator.AcquireLeases());
 
         Assert.True(await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token));
@@ -415,10 +415,10 @@ public sealed class PluginMcpCoordinatorTests
         // reconciliation, then assert the re-projected surface synchronously.
         await coordinator.RegistryReconciled.WaitAsync(deadline.Token);
         var projected = coordinator.AcquireLeases();
-        Assert.Single(projected);
+        var item = Assert.Single(projected);
         Assert.Equal(
             ["echo", "echo_alias"],
-            projected[0].Tools.Select(static function => function.Name).Order());
+            item.Tools.Select(static function => function.Name).Order());
         await projected[0].DisposeAsync();
 
         // The adjuster drops the server: it leaves the view before the merge, so

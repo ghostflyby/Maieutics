@@ -139,8 +139,8 @@ public sealed class AgentBlobContentTests
         await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var snapshot = session.GetTranscriptSnapshot();
-        Assert.Single(snapshot.Turns);
-        var inputMessage = snapshot.Turns[0].Messages[0];
+        var item = Assert.Single(snapshot.Turns);
+        var inputMessage = item.Messages[0];
         Assert.Equal(2, inputMessage.Contents.Count());
         Assert.True(AgentBlobContent.TryParse(inputMessage.Contents[1], out var descriptor));
         Assert.Equal(64, descriptor.Sha256.Length);
@@ -152,9 +152,7 @@ public sealed class AgentBlobContentTests
         var malformed = new DataContent(Encoding.UTF8.GetBytes("{\"sha256\":\"nope\"}"), AgentBlobContent.MediaType);
         var message = new ChatMessage(ChatRole.User, [malformed]);
 
-        var detach = () => AgentTranscriptCodec.DetachPrivateMessages([message]);
-
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => detach.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => AgentTranscriptCodec.DetachPrivateMessages([message]));
     }
 
     [Fact(Timeout = 30_000)]

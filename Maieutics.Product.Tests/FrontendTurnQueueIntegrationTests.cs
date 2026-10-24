@@ -12,21 +12,17 @@ using GatedOpenAiServer = Maieutics.Testing.GatedModelProvider;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendTurnQueueIntegrationTests
+public sealed class FrontendTurnQueueIntegrationTests(ITestOutputHelper output)
 {
     private const string Answer = "queued answer";
-
-    private readonly ITestOutputHelper _output;
 
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
     /// whether the run under test ever reached the provider gate. Null until a test that
     /// needs the diagnostic sets it; one class instance serves exactly one test.</summary>
     private GatedOpenAiServer? _diagnosticProvider;
 
-    public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this._output = output;
-
     private void Trace(string message) =>
-        TestTrace.Write(_output, "queue-test", message);
+        TestTrace.Write(output, "queue-test", message);
 
     [Fact(Timeout = 120_000)]
     public async Task QueuedTurnsRunSeriallyInTheEnqueuedOrder()

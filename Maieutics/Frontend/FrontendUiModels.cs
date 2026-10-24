@@ -122,7 +122,7 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
                     return;
                 }
 
-                if (payload?.Method == "event" && payload.Name == "submit")
+                if (payload is { Method: "event", Name: "submit" })
                 {
                     var values = DecodeValues(payload.Payload);
                     if (_handlers.OnSubmit is { } onSubmit)
@@ -130,7 +130,7 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
                         await onSubmit(values, cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (payload?.Method == "event" && payload.Name == "cancel")
+                else if (payload is { Method: "event", Name: "cancel" })
                 {
                     if (_handlers.OnCancel is { } onCancel)
                     {

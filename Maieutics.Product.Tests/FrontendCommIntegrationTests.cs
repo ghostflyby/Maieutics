@@ -330,16 +330,14 @@ public sealed class FrontendCommIntegrationTests
         CancellationToken ct)
     {
         var buffer = new byte[64 * 1024];
-        string text;
-        WebSocketMessageType type;
         while (true)
         {
             var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
             if (result.MessageType == WebSocketMessageType.Close)
                 throw new InvalidOperationException(
                     $"The comms socket closed: {socket.CloseStatus} {socket.CloseStatusDescription}");
-            text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            type = result.MessageType;
+            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            var type = result.MessageType;
             if (result.EndOfMessage) return (text, type);
         }
     }

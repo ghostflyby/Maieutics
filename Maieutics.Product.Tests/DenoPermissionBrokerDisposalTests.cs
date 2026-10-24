@@ -1,5 +1,4 @@
 using System.IO.Pipes;
-using System.Reflection;
 using Maieutics.DenoExecution;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -15,8 +14,6 @@ namespace Maieutics.Product.Tests;
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class DenoPermissionBrokerDisposalTests
 {
-    private const string PipeListenerFieldName = "pipeListener";
-
     private const int PipeListenerInstanceLimit = 8; // The broker's pending-connection limit.
 
     /// <summary>Disposing the broker must release the named-pipe listener it holds. On Windows the
@@ -98,13 +95,7 @@ public sealed class DenoPermissionBrokerDisposalTests
     /// installed to stand in for it.</summary>
     private static NamedPipeServerStream InstallPipeListener(DenoPermissionBroker broker)
     {
-        if (typeof(DenoPermissionBroker).GetField(PipeListenerFieldName, BindingFlags.Instance | BindingFlags.NonPublic)
-            is not { } field)
-        {
-            throw new InvalidOperationException($"DenoPermissionBroker has no {PipeListenerFieldName} field.");
-        }
-
-        if (field.GetValue(broker) is NamedPipeServerStream existing)
+        if (broker._pipeListener is NamedPipeServerStream existing)
         {
             return existing;
         }
@@ -119,7 +110,7 @@ public sealed class DenoPermissionBrokerDisposalTests
             PipeListenerInstanceLimit,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous);
-        field.SetValue(broker, installed);
+        broker._pipeListener = installed;
         return installed;
     }
 }

@@ -155,9 +155,9 @@ public sealed class SqliteProviderInitTests
 
             // Every observer must find a usable provider: this connection would fail — or
             // carry no mutex — had the caller returned before initialization completed.
-            using var connection = new SqliteConnection("Data Source=:memory:");
+            await using var connection = new SqliteConnection("Data Source=:memory:");
             connection.Open();
-            using var command = connection.CreateCommand();
+            await using var command = connection.CreateCommand();
             command.CommandText = "SELECT sqlite_version();";
             Assert.NotNull(command.ExecuteScalar());
         }, cancellationToken)).ToArray();

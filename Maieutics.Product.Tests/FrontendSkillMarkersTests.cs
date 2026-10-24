@@ -77,14 +77,14 @@ public sealed class FrontendSkillMarkersTests
     }
 }
 
-public sealed class FrontendSkillExpansionTests : IDisposable
+public sealed class FrontendSkillExpansionTests : IAsyncDisposable
 {
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-expand-{Guid.NewGuid():N}");
 
     private readonly List<SkillCatalog> _catalogs = [];
 
-    public async void Dispose()
+    public async ValueTask DisposeAsync()
     {
         foreach (var catalog in _catalogs)
             await catalog.DisposeAsync();
@@ -96,6 +96,7 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         {
         }
     }
+
 
     private SkillResourceProvider CreateProvider(params (string Name, string Body)[] skills)
     {

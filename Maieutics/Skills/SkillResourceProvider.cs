@@ -13,7 +13,7 @@ namespace Maieutics.Skills;
 /// cannot serve a path outside the declared root. Inert skills never reach this plane.</summary>
 internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourceCatalogProvider
 {
-    internal const string Scheme = "skill";
+    private const string Scheme = "skill";
 
     private const long MaximumSkillBytes = 4 * 1024 * 1024;
 
@@ -108,7 +108,7 @@ internal sealed class SkillResourceProvider(SkillCatalog catalog) : IResourceCat
         }
 
         var bounded = new MemoryStream();
-        using (content)
+        await using (content)
         {
             var buffer = new byte[64 * 1024];
             long copied = 0;

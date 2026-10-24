@@ -119,7 +119,7 @@ public sealed class McpProcessPolicyTests
 
         await using var session = CreateTerminalSession(executable, policy);
         var terminalRefused = await Record.ExceptionAsync(() => session.StartAsync(TestContext.Current.CancellationToken))
-            is AgentToolException refusal && refusal.Code == "terminal_start_failed";
+            is AgentToolException { Code: "terminal_start_failed" };
 
         // One verdict for both launch surfaces: the same grant admits or refuses the same
         // command identically, including the directory-boundary cases.

@@ -378,7 +378,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         // decision 9): present when any frontend socket announced ide, absent otherwise —
         // a headless host never offers the family, and per-session liveness is re-checked
         // at invocation.
-        if (_ideTools is { } family && family.Gate.HasIdeFrontend)
+        if (_ideTools is { Gate.HasIdeFrontend: true } family)
             tools.AddRange(family.Tools);
         // Global exposed-name uniqueness across the whole MCP union (ADR 0034):
         // adjustment chains can rename tools into collisions that no single server
@@ -1696,7 +1696,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         MaieuticsPermissionKindOptions? options)
     {
         if (options is null ||
-            (options.Allow.Count == 0 && options.Deny.Count == 0 && !options.AllowAll && !options.DenyAll))
+            (options.Allow.Count == 0 && options.Deny.Count == 0 && options is { AllowAll: false, DenyAll: false }))
             return;
 
         kinds[model] = new PermissionKindRules

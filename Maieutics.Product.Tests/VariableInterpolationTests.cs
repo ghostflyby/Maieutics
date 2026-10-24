@@ -66,7 +66,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.MAIEUTICS_VARIABLE_THAT_DOES_NOT_EXIST}");
 
-        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${var.missing}");
 
-        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.HOME");
 
-        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Theory]
@@ -100,7 +100,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand(pattern);
 
-        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     private static VariableTable CreateTable(

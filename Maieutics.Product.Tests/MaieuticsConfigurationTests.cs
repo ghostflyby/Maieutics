@@ -1160,8 +1160,7 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
             Assert.Equal(2, runtime.Version);
             Assert.True(((Func<MaieuticsConfigurationReloadInfo, bool>)(reload => reload.Attempt == runtime.CompletedReloadAttempt &&
-                                                                                  reload.Outcome == MaieuticsConfigurationReloadOutcome.Applied &&
-                                                                                  reload.ActiveVersion == 2))(runtime.GetStatus().LastReload));
+                                                                                  reload is { Outcome: MaieuticsConfigurationReloadOutcome.Applied, ActiveVersion: 2 }))(runtime.GetStatus().LastReload));
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 Assert.Equal(1_200, lease.Profile.Options.MaxHistoryBytes);
@@ -1869,9 +1868,7 @@ public sealed class MaieuticsConfigurationTests
 
             // The active automatic override is reported alongside configured profiles.
             Assert.Single(runtime.GetStatus().CapabilityProfiles, profile =>
-                profile.SourceId == "vendor" &&
-                profile.ModelId == "model-alpha" &&
-                profile.KnownVendor &&
+                profile is { SourceId: "vendor", ModelId: "model-alpha", KnownVendor: true } &&
                 profile.HostedCapabilities.SequenceEqual(["WebSearch"]));
 
             await WriteAndWaitForReloadAsync(

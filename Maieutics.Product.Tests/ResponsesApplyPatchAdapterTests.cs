@@ -61,8 +61,8 @@ public sealed class ResponsesApplyPatchAdapterTests
 
         var document = Execution.ApplyPatchParser.Parse(patch);
 
-        Assert.Single(document.Files);
-        Assert.Equal("create_file", document.Files[0].Kind);
+        var item = Assert.Single(document.Files);
+        Assert.Equal("create_file", item.Kind);
         Assert.Equal("docs/new.txt", document.Files[0].Path);
         Assert.Equal("one\ntwo\n", document.Files[0].Diff);
     }

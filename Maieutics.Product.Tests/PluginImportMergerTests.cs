@@ -133,7 +133,7 @@ public sealed class PluginImportMergerTests
 
         Assert.Equal(2, imports.Count());
         Assert.Contains(imports, pair => pair.Key == "@std/path");
-        Assert.Contains(imports, pair => pair.Key == "@ui/lib" && pair.Value == "jsr:@ui/lib@1");
+        Assert.Contains(imports, pair => pair is { Key: "@ui/lib", Value: "jsr:@ui/lib@1" });
         Assert.Equal("c", Assert.Single(exclusions).PluginId);
     }
 
@@ -155,7 +155,7 @@ public sealed class PluginImportMergerTests
         // b conflicts on @std/path and is excluded; the deduped @std/bytes entry
         // belongs to a and must survive b's exclusion untouched.
         Assert.Equal(2, imports.Count());
-        Assert.Contains(imports, pair => pair.Key == "@std/bytes" && pair.Value == "jsr:@std/bytes@1");
+        Assert.Contains(imports, pair => pair is { Key: "@std/bytes", Value: "jsr:@std/bytes@1" });
         Assert.Equal("b", Assert.Single(exclusions).PluginId);
     }
 

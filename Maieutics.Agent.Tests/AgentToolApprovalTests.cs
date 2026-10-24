@@ -39,8 +39,8 @@ public sealed class AgentToolApprovalTests
         Assert.Equal("Not allowed.", resolved.Reason);
 
         // The turn committed: the denial is model input, not a rollback.
-        Assert.Single(result.Transcript.Turns);
-        var toolResult = result.Transcript.Turns[0].Messages
+        var item = Assert.Single(result.Transcript.Turns);
+        var toolResult = item.Messages
             .SelectMany(static message => message.Contents)
             .OfType<FunctionResultContent>()
             .Single();

@@ -10,7 +10,7 @@ namespace Maieutics.Skills;
 /// carried in the result; discovery itself never throws for content problems.</summary>
 internal static class SkillDirectoryDiscovery
 {
-    internal const string SkillFileName = "SKILL.md";
+    private const string SkillFileName = "SKILL.md";
 
     /// <summary>The most skills one root contributes; the excess is ignored with one
     /// diagnostic so a runaway directory cannot flood the prompt catalog.</summary>
@@ -23,7 +23,7 @@ internal static class SkillDirectoryDiscovery
 
     /// <summary>The most directories one root's walk visits; a wide skill-less tree stops
     /// here instead of becoming a full-disk scan.</summary>
-    internal const int MaximumVisitedDirectories = 4096;
+    private const int MaximumVisitedDirectories = 4096;
 
     /// <summary>Discovers the skills of one root as one deterministically ordered list.
     /// This is the buffered facade over <see cref="EnumerateSubtree"/> for callers that

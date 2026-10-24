@@ -92,8 +92,8 @@ public sealed class FrontendDenoReplPresentationTests
 
         await sink.DisplayAsync(bundle, EmptyMetadata(), TestContext.Current.CancellationToken);
 
-        Assert.Single(target.Published);
-        var data = target.Published[0].Data;
+        var item = Assert.Single(target.Published);
+        var data = item.Data;
         Assert.Equal("maieutics/form", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("viewFamily").GetString());
         Assert.Equal("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("modelId").GetString());
         Assert.Equal("form", data.GetProperty("text/plain").GetString());
@@ -148,8 +148,8 @@ public sealed class FrontendDenoReplPresentationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(5));
 
         var wait = sink.RequestInputAsync("Name:", password: true, deadline.Token);
-        Assert.Single(target.Published);
-        var frame = target.Published[0];
+        var item = Assert.Single(target.Published);
+        var frame = item;
         Assert.Equal("input.request", frame.Type);
         Assert.Null(frame.DisplayId);
 

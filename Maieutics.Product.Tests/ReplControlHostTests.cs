@@ -750,8 +750,7 @@ public sealed class ReplControlHostTests
     private static AIFunction CreateProgressFunction()
     {
         return AIFunctionFactory.Create(
-            (AIFunctionArguments arguments, CancellationToken ct) =>
-                ReportProgressAsync(arguments, ct),
+            ReportProgressAsync,
             new AIFunctionFactoryOptions
             {
                 Name = "progress_test",
@@ -903,7 +902,7 @@ public sealed class ReplControlHostTests
 
             var chunkEnd = offset + chunkSize;
             if (body.Length - chunkEnd < 2 ||
-                !body.Slice(chunkEnd, 2).SequenceEqual("\r\n"))
+                body.Slice(chunkEnd, 2) is not "\r\n")
                 return false;
 
             offset = chunkEnd + 2;

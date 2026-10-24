@@ -23,7 +23,7 @@ public sealed class McpPromptIntegrationTests
 
         var catalog = harness.Generation.GetPromptCatalog();
         Assert.Equal(4, catalog.Prompts.Count());
-        Assert.Contains(catalog.Prompts, prompt => prompt.Name == "code_review" && prompt.Title == "Code review");
+        Assert.Contains(catalog.Prompts, prompt => prompt is { Name: "code_review", Title: "Code review" });
         Assert.Contains(catalog.Prompts, prompt => prompt.Name == "image_only");
         var review = catalog.Prompts.Single(prompt => prompt.Name == "code_review");
         Assert.Equivalent(new[] { new McpPromptArgumentDescriptor("language", "The language to review", false), new McpPromptArgumentDescriptor("depth", null, true) }, review.Arguments);

@@ -46,8 +46,8 @@ public sealed class AgentSubagentTests
         var finished = events.OfType<AgentToolFinished>().Single();
         Assert.Equal("ok", finished.Result.GetProperty("status").GetString());
         var transcript = session.GetTranscriptSnapshot();
-        Assert.Single(transcript.Turns);
-        Assert.Equal("done", transcript.Turns[0].Messages[^1].Text);
+        var item = Assert.Single(transcript.Turns);
+        Assert.Equal("done", item.Messages[^1].Text);
         await collector.Settled.Task.WaitAsync(deadline.Token);
         Assert.Contains(collector.Events, pair => pair.Event is AgentTextDelta);
         Assert.All(collector.Events.Select(pair => pair.SessionId), id => Assert.True(id == childResult.SessionId));
@@ -137,8 +137,8 @@ public sealed class AgentSubagentTests
                 ? SpawnValue("completed", result.Report, null)
                 : SpawnValue(result.Status.ToString(), null, result.Failure?.GetType().Name);
         });
-        var childProbe = CreateSpawnTool("child_probe", async (arguments, _) => SpawnValue(
-            AgentSubagentContext.GetRequired(arguments).SessionId.ToString(), null, null));
+        var childProbe = CreateSpawnTool("child_probe", (arguments, _) => Task.FromResult<JsonElement?>(SpawnValue(
+            AgentSubagentContext.GetRequired(arguments).SessionId.ToString(), null, null)));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("call", "agent_spawn")),
             (_, _) => StreamAsync(ToolCallUpdate("grandchild", "child_probe")),
@@ -155,8 +155,8 @@ public sealed class AgentSubagentTests
 
         Assert.Equal(AgentSubagentStatus.Failed, childResult.Status);
         Assert.IsType<AgentToolInvocationException>(childResult.Failure);
-        Assert.Single(events.OfType<AgentToolFinished>());
-        Assert.Equal(nameof(AgentToolInvocationException), events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
+        var item = Assert.Single(events.OfType<AgentToolFinished>());
+        Assert.Equal(nameof(AgentToolInvocationException), item.Result.GetProperty("value")
             .GetProperty("failureType").GetString());
         Assert.Single(session.GetTranscriptSnapshot().Turns);
     }
@@ -300,12 +300,11 @@ public sealed class AgentSubagentTests
     public void PositiveDepthWithoutEventSinkFailsConfiguration()
     {
         var client = new ScriptedChatClient((_, _) => StreamAsync("done"));
-        var construct = () => new AgentSession(client, new AgentSessionOptions
+
+        Assert.ThrowsAny<InvalidOperationException>(() => new AgentSession(client, new AgentSessionOptions
         {
             Subagents = new AgentSubagentOptions { MaxDepth = 1 }
-        });
-
-        Assert.ThrowsAny<InvalidOperationException>(() => construct.Invoke());
+        }));
     }
 
     [Fact(Timeout = 30_000)]

@@ -40,7 +40,10 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private readonly Lock _listenerGate = new();
     private Task _loop = Task.CompletedTask;
     private Socket? _unixListener;
-    private NamedPipeServerStream? _pipeListener;
+
+    // Internal as the disposal tests' seam: the pipe listener exists only in the Windows
+    // branch, so the unix CI installs an equivalent stand-in to drive the same release path.
+    internal NamedPipeServerStream? _pipeListener;
 
     private DenoPermissionBroker(
         string? socketPath,

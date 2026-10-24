@@ -212,7 +212,7 @@ public static class MaieuticsHost
             services.GetRequiredService<Workspace>());
         builder.Services.AddSingleton(static services =>
             new PermissionPolicyAcquirer(
-                () => services.GetRequiredService<IPermissionLayerSource>(),
+                services.GetRequiredService<IPermissionLayerSource>,
                 services.GetRequiredService<IPermissionVariableSource>()));
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
@@ -533,7 +533,7 @@ public static class MaieuticsHost
                 // Deferred: the registry is the frontend presenter, which reaches back into
                 // this tool list through the run-profile provider. Resolving per spawn breaks
                 // the construction cycle without changing the registration.
-                () => services.GetService<IAgentChildScopeRegistry>()));
+                services.GetService<IAgentChildScopeRegistry>));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
@@ -635,7 +635,7 @@ public static class MaieuticsHost
                 new TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
                 CreateAgentTaskResourceSource(services)
             ]),
-            new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>()),
+            new McpResourceProvider(services.GetRequiredService<MaieuticsRuntimeConfiguration>),
             new Skills.SkillResourceProvider(services.GetRequiredService<Skills.SkillCatalog>())
         };
         if (services.GetService<IAgentObjectStore>() is { } objectStore)
@@ -784,14 +784,14 @@ public static class MaieuticsHost
         // Everything resolves lazily at request time: eager resolution here re-enters the
         // container mid-composition (the startup-deadlock class this file has seen).
         return new ModelOrchestrationSurface(
-            () => services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetRequiredService<MaieuticsAgentSessionManager>,
             replSessionId => services.GetRequiredService<DenoReplRegistry>()
                 .TryGetOwnerSessionId(replSessionId),
             () => new AgentSessionOptions { Subagents = subagents },
-            () => services.GetRequiredService<IReadOnlyList<AIFunction>>(),
-            () => services.GetService<PermissionOverrideRegistry>())
+            services.GetRequiredService<IReadOnlyList<AIFunction>>,
+            services.GetService<PermissionOverrideRegistry>)
         {
-            TaskResources = () => services.GetRequiredService<TaskResourceProvider>()
+            TaskResources = services.GetRequiredService<TaskResourceProvider>
         };
     }
 

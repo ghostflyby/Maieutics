@@ -10,8 +10,8 @@ public sealed class HostedToolCatalogTests
     {
         var tools = HostedToolCatalog.Create(["ApplyPatch", "WebSearch", "CodeInterpreter", "Shell"]);
 
-        Assert.Single(tools);
-        Assert.IsType<HostedWebSearchTool>(tools[0]);
+        var item = Assert.Single(tools);
+        Assert.IsType<HostedWebSearchTool>(item);
     }
 
     [Fact]

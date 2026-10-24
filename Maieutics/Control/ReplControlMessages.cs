@@ -322,6 +322,9 @@ internal sealed record HostInvokeCancelPayload(string PluginId, string ExportNam
 /// No worker wake: the rediscover action is pure runtime.</summary>
 internal sealed record PluginTriggerPayload(string PluginId, string Trigger);
 
+// States is part of the host's extension-registry wire payload: the kernel no longer
+// mirrors per-plugin lifecycle state, but the field keeps the payload shape versioned.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal sealed record ExtensionRegistryPayload(
     IReadOnlyList<ExtensionRegistryPlugin> Plugins,
     IReadOnlyList<PluginStatePayload>? States = null,

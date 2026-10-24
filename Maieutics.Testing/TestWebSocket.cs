@@ -14,7 +14,7 @@ public class TestWebSocket : WebSocket
     private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Channel<InboundFrame> inbound = Channel.CreateUnbounded<InboundFrame>();
     private readonly Channel<SentFrame> sent = Channel.CreateUnbounded<SentFrame>();
-    private WebSocketCloseStatus? closeStatus;
+    private WebSocketCloseStatus? negotiatedCloseStatus;
     private string? closeStatusDescription;
     private WebSocketState state = WebSocketState.Open;
 
@@ -23,7 +23,7 @@ public class TestWebSocket : WebSocket
 
     public override WebSocketState State => state;
 
-    public override WebSocketCloseStatus? CloseStatus => closeStatus;
+    public override WebSocketCloseStatus? CloseStatus => negotiatedCloseStatus;
 
     public override string? CloseStatusDescription => closeStatusDescription;
 
@@ -75,7 +75,7 @@ public class TestWebSocket : WebSocket
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        this.closeStatus = closeStatus;
+        negotiatedCloseStatus = closeStatus;
         closeStatusDescription = statusDescription;
         state = WebSocketState.Closed;
         closed.TrySetResult();
@@ -102,7 +102,7 @@ public class TestWebSocket : WebSocket
 
     public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(
         Memory<byte> buffer,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         var frame = await ReadNextInboundAsync(cancellationToken).ConfigureAwait(false);
         if (frame.IsClose) return new ValueWebSocketReceiveResult(0, WebSocketMessageType.Close, true);
@@ -129,7 +129,7 @@ public class TestWebSocket : WebSocket
         ReadOnlyMemory<byte> buffer,
         WebSocketMessageType messageType,
         bool endOfMessage,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!endOfMessage)
@@ -177,8 +177,10 @@ public class TestWebSocket : WebSocket
     /// <param name="IsText">True for text, false for binary (ignored on close).</param>
     protected internal readonly record struct InboundFrame(byte[] Bytes, bool IsClose, bool IsText);
 
-    /// <summary>One complete message the peer sent.</summary>
+    /// <summary>One complete message the peer sent. The type is carried so captures
+    /// mirror the wire's frame metadata even where assertions read only the bytes.</summary>
     /// <param name="Type">The message type.</param>
     /// <param name="Bytes">The complete message payload.</param>
+    // ReSharper disable once NotAccessedPositionalProperty.Global
     public readonly record struct SentFrame(WebSocketMessageType Type, byte[] Bytes);
 }

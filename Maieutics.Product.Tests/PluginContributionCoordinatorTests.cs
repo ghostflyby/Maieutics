@@ -373,6 +373,9 @@ public sealed class PluginContributionCoordinatorTests
             (_, _) => throw new InvalidOperationException("no definitions reach generation construction"),
             NullLogger<PluginHostManager>.Instance);
         coordinator.Start();
+        // The adapter's factory reads the coordinator live; the adapter is used only inside
+        // the coordinator's using scope.
+        // ReSharper disable once AccessToDisposedClosure
         var adapter = new McpContributionDelivery(
             "McpDiscover",
             "McpDiscover",

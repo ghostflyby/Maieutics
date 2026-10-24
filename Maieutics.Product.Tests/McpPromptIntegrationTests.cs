@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.IO.Pipelines;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
@@ -37,13 +36,11 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("code_review", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -68,19 +65,17 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var unknownServer = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [],
             [Marker("code_review", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownServer.Invoke(); })).Code);
+            deadline.Token))).Code);
 
-        var unknownPrompt = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("absent", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownPrompt.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -131,13 +126,11 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptResultInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("image_only", new Dictionary<string, string>())],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptResultInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -254,7 +247,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                             new Prompt { Name = "mixed", Description = "Text plus image" }
                         ]
                     }),
-                    GetPromptHandler = (request, _) => ValueTask.FromResult(request.Params?.Name switch
+                    GetPromptHandler = (request, _) => ValueTask.FromResult(request.Params.Name switch
                     {
                         "image_only" => new GetPromptResult
                         {
@@ -345,6 +338,6 @@ file sealed class PromptServerHarness : IAsyncDisposable
 
     private static string? Arg(RequestContext<GetPromptRequestParams> request, string name)
     {
-        return request.Params?.Arguments is { } args && args.TryGetValue(name, out var value) ? value.ToString() : null;
+        return request.Params.Arguments is { } args && args.TryGetValue(name, out var value) ? value.ToString() : null;
     }
 }

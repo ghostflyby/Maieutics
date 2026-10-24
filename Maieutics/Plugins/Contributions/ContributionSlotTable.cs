@@ -28,44 +28,6 @@ internal sealed class SlotSourceKeyComparer : IEqualityComparer<SlotSourceKey>
             key.ExtensionPointName.GetHashCode(StringComparison.Ordinal));
 }
 
-/// <summary>Read model of one (plugin, kind) contribution slot: the three optional
-/// parts (declared / generated / published) as the table currently holds them. The
-/// presence flag — a held slot means the plugin has a face even with empty parts, the
-/// publish-only plugin form — is exactly the former <c>contributedSkillPlugins</c>
-/// set membership.</summary>
-internal sealed class ContributionSlot
-{
-    public ContributionSlot(
-        string pluginId,
-        string kindName,
-        IReadOnlyList<ContributionDescriptor>? declared,
-        IReadOnlyDictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>> generated,
-        IReadOnlyList<ContributionDescriptor>? published)
-    {
-        PluginId = pluginId;
-        KindName = kindName;
-        Declared = declared;
-        Generated = generated;
-        Published = published;
-    }
-
-    public string PluginId { get; }
-
-    public string KindName { get; }
-
-    /// <summary>The declarative part; null when this kind carries no declared part or
-    /// none was contributed.</summary>
-    public IReadOnlyList<ContributionDescriptor>? Declared { get; }
-
-    /// <summary>The sticky per-source generated parts (insertion-ordered bag view).</summary>
-    public IReadOnlyDictionary<SlotSourceKey, IReadOnlyList<ContributionDescriptor>> Generated { get; }
-
-    /// <summary>The published part (wholesale-replaced); null when none.</summary>
-    public IReadOnlyList<ContributionDescriptor>? Published { get; }
-
-    public bool HoldsFace => true;
-}
-
 /// <summary>The per-kind contribution state the skills reconcile passes commit into:
 /// the former four dictionaries (<c>pluginGeneratedSkills</c>, <c>pluginDeclarativeSkills</c>,
 /// <c>pluginPublishedSkills</c>, <c>contributedSkillPlugins</c>) under one owner.
@@ -139,17 +101,6 @@ internal sealed class ContributionSlotTable
                 composed.AddRange(part);
         if (parts?.Published is { } published) composed.AddRange(published);
         return composed;
-    }
-
-    /// <summary>The plugin's slot read model, or null when it holds none. Generated
-    /// parts are visible even without a held slot (the declined-commit edge above).</summary>
-    public ContributionSlot? Snapshot(string pluginId)
-    {
-        if (!slots.TryGetValue(pluginId, out var parts)) return null;
-        var owned = generated
-            .Where(pair => pair.Key.PluginId == pluginId)
-            .ToDictionary(static pair => pair.Key, static pair => pair.Value, SlotSourceKey.Ordinal);
-        return new ContributionSlot(pluginId, kindName, parts.Declared, owned, parts.Published);
     }
 
     /// <summary>Removes the plugin's whole slot — presence, declared, published, and its

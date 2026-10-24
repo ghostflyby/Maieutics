@@ -185,9 +185,7 @@ public sealed class MaieuticsConfigurationTests
                 {
                     // An unknown section must be tolerated rather than rejected; the point of the
                     // test is that a configuration with no model or provider still initializes.
-                    ["UnknownSection"] = new JsonObject
-                    {
-                    }
+                    ["UnknownSection"] = new JsonObject()
                 }
             }.ToJsonString(),
             deadline.Token);
@@ -224,6 +222,9 @@ public sealed class MaieuticsConfigurationTests
 
         var factory = new TrackingChatClientFactory
         {
+            // The cancellation source outlives every callback: the using scope spans the host
+            // disposal in the finally below, so a creation callback can never fire after it.
+            // ReSharper disable once AccessToDisposedClosure
             ClientCreated = _ => cancellation.Cancel()
         };
         var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
@@ -318,7 +319,7 @@ public sealed class MaieuticsConfigurationTests
             Assert.True(selection.HasSessionOverride);
             Assert.True(Assert.Single(selection.Profiles).IsAutomatic);
 
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal("model-alpha", client.Model);
             Assert.NotNull(lease.Profile.ModelIdentity);
@@ -363,6 +364,9 @@ public sealed class MaieuticsConfigurationTests
         {
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            // The cancellation source outlives every callback: the using scope spans the host
+            // disposal in the finally below, so a creation callback can never fire after it.
+            // ReSharper disable once AccessToDisposedClosure
             factory.ClientCreated = model =>
             {
                 if (model == "model-alpha") cancellation.Cancel();
@@ -411,7 +415,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
 
             await WriteAndWaitForReloadAsync(
@@ -467,7 +471,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
@@ -523,6 +527,8 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
+            // The selection task is awaited before the runtime's using scope ends.
+            // ReSharper disable once AccessToDisposedClosure
             var selection = Task.Run(
                 () => runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token).AsTask(),
                 deadline.Token);
@@ -753,6 +759,8 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
+            // The initialization task is awaited before the host's using scope ends.
+            // ReSharper disable once AccessToDisposedClosure
             var initialization = Task.Run(
                 () => InitializeRuntimeAsync(host.Services, deadline.Token),
                 deadline.Token);
@@ -1229,7 +1237,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
-            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
             Assert.Equal("one", firstClient.Model);
             Assert.Equal("first", firstLease.Profile.Options.SystemPrompt);
@@ -1333,13 +1341,13 @@ public sealed class MaieuticsConfigurationTests
             Assert.Equal("one", initialSelection.SelectedProfileId);
             Assert.False(initialSelection.HasSessionOverride);
 
-            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
             Assert.Equal(new AgentModelIdentity(
                 new AgentModelProfileId("one"), "Fake", "model-one"), firstLease.Profile.ModelIdentity);
 
             await runtime.SelectModelProfileAsync("TWO", deadline.Token);
-            await using var secondLease = await runtime.AcquireAsync(deadline.Token);
+            var secondLease = await runtime.AcquireAsync(deadline.Token);
             var secondClient = Assert.IsType<TrackingChatClient>(secondLease.Profile.ChatClient);
             Assert.True(runtime.GetModelProfileSelection().HasSessionOverride);
 
@@ -1855,7 +1863,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
@@ -1912,7 +1920,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 

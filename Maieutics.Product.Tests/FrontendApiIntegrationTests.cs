@@ -121,7 +121,11 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await StartHostAsync(deadline.Token);
-        using var anonymous = new HttpClient { BaseAddress = new Uri(harness.Url) };
+        // One anonymous client per test is deliberate; it is disposed with the test, so
+        // the socket-exhaustion concern behind the short-lived-client guidance does not apply.
+        // ReSharper disable once ShortLivedHttpClient
+        using var anonymous = new HttpClient();
+        anonymous.BaseAddress = new Uri(harness.Url);
         using var forged = harness.CreateClient(token: "wrong");
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/agent/session", deadline.Token)).StatusCode);
@@ -383,11 +387,13 @@ public sealed class FrontendApiIntegrationTests
         // The cancellation token only reaches the pre-run handshake: AgentSession
         // aborts before the session reservation, so the turn start leaves the
         // session free and the transcript untouched.
-        var act = () => harness.SessionService.StartTurnAsync(
-            sessionId,
-            "hello",
-            new CancellationToken(canceled: true));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await act.Invoke(); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await harness.SessionService.StartTurnAsync(
+                sessionId,
+                "hello",
+                new CancellationToken(canceled: true));
+        });
 
         Assert.Equal(0, harness.SessionService.DescribeSession(sessionId).Turns);
 
@@ -1675,8 +1681,8 @@ public sealed class FrontendApiIntegrationTests
 
         /// <summary>The live comm router, so tests can await a session plane's live-set
         /// transitions instead of probing with throwaway hello reads.</summary>
-        public Frontend.FrontendCommRouter CommRouter =>
-            host.Services.GetRequiredService<Frontend.FrontendCommRouter>();
+        public FrontendCommRouter CommRouter =>
+            host.Services.GetRequiredService<FrontendCommRouter>();
 
         /// <summary>The live IDE announcement gate, so tests observe the per-socket
         /// capability lifecycle without driving a run.</summary>
@@ -1775,7 +1781,7 @@ public sealed class FrontendApiIntegrationTests
             }
             else if (Guid.TryParseExact(sessionId, "N", out var parsed) &&
                      SessionService.TryGetLatestRun(
-                         new Agent.AgentSessionId(parsed),
+                         new AgentSessionId(parsed),
                          out var latest) &&
                      latest is not null)
             {

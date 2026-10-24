@@ -57,7 +57,15 @@ internal sealed class SkillsContributionDelivery(
 
     public string ExtensionPointName { get; } = extensionPointName;
 
-    public bool HoldsFace(string pluginId) => table.HoldsFace(pluginId);
+    public bool HoldsFace(string pluginId)
+    {
+        // The slot table owns no lock: every method — this read included — runs under the
+        // host manager's gate, matching the reconcile and commit paths.
+        lock (host.Gate)
+        {
+            return table.HoldsFace(pluginId);
+        }
+    }
 
     public void PublishFrame(ContributionFrameInput frame, bool guardDisposed)
     {
@@ -71,6 +79,10 @@ internal sealed class SkillsContributionDelivery(
     {
         if (skillCatalog is null) return;
 
+        // `host` is deliberately touched outside the gate here and inside `lock (host.Gate)`
+        // elsewhere: CaptureSkillPassInputLock takes the gate itself, and the invoke below
+        // must await without holding it.
+        // ReSharper disable once InconsistentlySynchronizedField
         var input = host.CaptureSkillPassInputLock(pluginId, KindName, ExtensionPointName);
         if (input.Descriptor is null)
         {
@@ -94,6 +106,9 @@ internal sealed class SkillsContributionDelivery(
             // export-set diff alone would never fire again), matching the MCP
             // coordinator's "never-succeeded stays new" discipline.
             var invokeFailed = false;
+            // `host` is deliberately touched outside the gate here: the invoke must await
+            // without holding the manager's gate (the sticky commit re-acquires it).
+            // ReSharper disable once InconsistentlySynchronizedField
             foreach (var exportName in input.GeneratorExports)
             {
                 var outcome = await host.InvokeExtensionPointAsync(

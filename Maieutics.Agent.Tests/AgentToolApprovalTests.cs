@@ -437,9 +437,6 @@ public sealed class AgentToolApprovalTests
             tools: [tool ?? CreateTool("guarded")]);
     }
 
-    private static CancellationTokenSource CreateDeadline()
-        => TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
-
     private static async Task<IReadOnlyList<AgentEvent>> ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)

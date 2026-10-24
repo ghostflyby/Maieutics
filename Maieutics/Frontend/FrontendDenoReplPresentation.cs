@@ -231,11 +231,18 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     {
         string requestId;
         var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        // The gate is the sink's one semaphore: every guarded section is synchronous, so the
+        // acquire/release pairs below exclude the async publishers without monitor semantics.
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             if (!IsActive) throw CreateInactive();
             requestId = $"{inputPrefix}-{++inputSequence}";
             pendingInputs[requestId] = completion;
+        }
+        finally
+        {
+            gate.Release();
         }
 
         target.PublishPresentation(
@@ -252,9 +259,14 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         }
         finally
         {
-            lock (gate)
+            await gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
             {
                 pendingInputs.Remove(requestId);
+            }
+            finally
+            {
+                gate.Release();
             }
         }
     }
@@ -263,10 +275,15 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     public bool TryCompleteInput(string requestId, string value)
     {
         TaskCompletionSource<string>? completion;
-        lock (gate)
+        gate.Wait();
+        try
         {
             pendingInputs.TryGetValue(requestId, out completion);
             pendingInputs.Remove(requestId);
+        }
+        finally
+        {
+            gate.Release();
         }
 
         return completion is not null && completion.TrySetResult(value);
@@ -282,10 +299,15 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         if (Interlocked.Exchange(ref active, 0) == 0) return;
 
         List<TaskCompletionSource<string>> pending;
-        lock (gate)
+        await gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
             pending = pendingInputs.Values.ToList();
             pendingInputs.Clear();
+        }
+        finally
+        {
+            gate.Release();
         }
 
         var cancelled = new OperationCanceledException("The frontend presentation sink is no longer active.");

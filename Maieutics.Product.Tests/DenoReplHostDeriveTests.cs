@@ -16,7 +16,6 @@ using System.Text;
 
 namespace Maieutics.Product.Tests;
 
-[Collection(ProductIntegrationCollection.Name)]
 /// <summary>
 ///     B5b (ADR 0020): the kernel sends <c>host.repl.derive</c> to the plugin host and the
 ///     session factory derives the REPL through it. These tests cover the .NET send side: the
@@ -30,6 +29,7 @@ namespace Maieutics.Product.Tests;
 ///     The actor-skeleton eval bridge (process_main.ts serving the WebSocket eval channel) is a
 ///     later migration step, so the eval channel here is driven directly.
 /// </summary>
+[Collection(ProductIntegrationCollection.Name)]
 public sealed class DenoReplHostDeriveTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(20);
@@ -313,7 +313,11 @@ public sealed class DenoReplHostDeriveTests
             harness.ControlHost.SocketPath,
             ReplEvalProtocol.WebSocketPath,
             deadline.Token);
+        // The serve task lives exactly as long as the eval socket: the test awaits it before
+        // the socket's using scope ends.
+        // ReSharper disable AccessToDisposedClosure
         var serveEval = Task.Run(() => ServeEvalAsync(evalSocket, credential, deadline.Token), deadline.Token);
+        // ReSharper restore AccessToDisposedClosure
 
         var generation = await start;
         await using (generation)

@@ -20,7 +20,7 @@ internal static class PluginWatcherTestWaits
     /// before this pass read its signal is observed as an already-completed task (the source
     /// is swapped, not dropped), so the advance still runs; the watcher chain can win the
     /// race against the test's continuation after the write.
-    /// Cancellation surfaces: a canceled <see cref="Task.WaitAsync"/> completes
+    /// Cancellation surfaces: a canceled <c>WaitAsync</c> completes
     /// synchronously forever, and treating it as "another debounce registered" would turn
     /// the loop into a hot spin that masks the true failure site (this exact spin once
     /// converted a reload-wait timeout into a downstream OCE at ApproveAsync).</summary>
@@ -101,7 +101,7 @@ internal static class PluginWatcherTestWaits
                     });
                 using var ___ = report;
                 var stacks = await report!.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-                await report!.WaitForExitAsync().ConfigureAwait(false);
+                await report.WaitForExitAsync().ConfigureAwait(false);
                 await File.WriteAllTextAsync(
                     Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.stacks.txt"),
                     stacks).ConfigureAwait(false);

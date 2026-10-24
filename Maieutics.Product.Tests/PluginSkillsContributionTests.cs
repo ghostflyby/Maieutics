@@ -436,7 +436,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             fakeSocket.ReplyError(manager, secondInvoke, "generator_broken", "the worker failed");
             await AwaitCatalogQuietAsync(catalog, TestContext.Current.CancellationToken);
 
-            Assert.Contains(catalog.Current.Skills, skill => skill.Name == "gen-skill");
+            Assert.Contains(catalog.Current.Skills, contributed => contributed.Name == "gen-skill");
         }
         finally
         {
@@ -1508,7 +1508,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             ReadOnlyMemory<byte> buffer,
             WebSocketMessageType messageType,
             bool endOfMessage,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (messageType != WebSocketMessageType.Text || !endOfMessage)

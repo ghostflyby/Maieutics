@@ -84,15 +84,13 @@ public sealed class AgentTranscriptStoreTests
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
         => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
-    private static async Task<List<AgentEvent>> ReadEventsAsync(
+    private static async Task ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)
     {
-        var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-            events.Add(agentEvent);
-
-        return events;
+        await foreach (var _ in run.Events.WithCancellation(cancellationToken))
+        {
+        }
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] deltas)
@@ -112,8 +110,6 @@ public sealed class AgentTranscriptStoreTests
 
         public List<AgentSessionId> SessionIds { get; } = [];
 
-        public List<IReadOnlyList<string>> References { get; } = [];
-
         public bool FailOnAppend { get; set; }
 
         public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
@@ -122,7 +118,6 @@ public sealed class AgentTranscriptStoreTests
             {
                 if (FailOnAppend) throw new InvalidOperationException("The transcript store is unavailable.");
                 SessionIds.Add(sessionId);
-                References.Add(objectReferences);
                 Turns.Add(new AgentTranscriptTurn(
                     turn.RunId,
                     turn.Messages.Select(message => message.Clone()).ToArray(),

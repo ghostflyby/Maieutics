@@ -40,7 +40,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly Lock gate = new();
     private readonly Lock initializationGate = new();
     private readonly ILogger<MaieuticsRuntimeConfiguration> logger;
-    private readonly ILoggerFactory loggerFactory;
     private PluginHostManager? pluginHosts;
 
     // The bounded channel is only an edge trigger. reloadRequest remains authoritative when duplicate
@@ -55,7 +54,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private readonly List<Task> retiredGenerations = [];
     private readonly TerminalFunctions terminalFunctions;
     private readonly IdeToolFamily? ideTools;
-    private readonly TimeProvider timeProvider;
     private long completedReloadAttempt;
     private long completedReloadRequest;
     private RuntimeSnapshot? current;
@@ -84,8 +82,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IEnumerable<IConfiguredChatClientFactory> factories,
         IReadOnlyList<AIFunction> builtInTools,
         TerminalFunctions terminalFunctions,
-        TimeProvider timeProvider,
-        ILoggerFactory loggerFactory,
         ILogger<MaieuticsRuntimeConfiguration> logger,
         PermissionOverrideRegistry? permissionOverrides = null,
         IdeToolFamily? ideTools = null,
@@ -96,8 +92,6 @@ internal sealed class MaieuticsRuntimeConfiguration :
         this.configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
         this.fileErrors = fileErrors ?? throw new ArgumentNullException(nameof(fileErrors));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this.loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
-        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.permissionOverrides = permissionOverrides;
         this.factories = CreateFactoryRegistry(factories);
         this.builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
@@ -294,7 +288,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     public async Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        RuntimeProfileSelection? selection = null;
+        RuntimeProfileSelection? selection;
         ProfileGenerationLease? generationLease = null;
         try
         {
@@ -326,7 +320,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
         cancellationToken.ThrowIfCancellationRequested();
-        RuntimeProfileSelection? selection = null;
+        RuntimeProfileSelection? selection;
         ProfileGenerationLease? generationLease = null;
         try
         {
@@ -1342,7 +1336,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
             options.Agent.MaxToolResultBytes,
             options.Agent.MaxToolProgressEventsPerCall,
             options.Agent.EventBufferCapacity,
-            PermissionsFingerprint(appPermissionsDefaults, workspacePermissionsProfile));
+            ComputePermissionsFingerprint(appPermissionsDefaults, workspacePermissionsProfile));
         return new Candidate(
             options,
             defaultProfileId,
@@ -1717,7 +1711,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     /// <summary>A canonical fingerprint of the two configuration-owned permission layers. It
     /// rides the runtime key so a reload whose permissions changed rebuilds the snapshot, while
     /// an unchanged pair short-circuits.</summary>
-    private static string PermissionsFingerprint(PermissionLayer? appDefaults, PermissionLayer? workspaceProfile)
+    private static string ComputePermissionsFingerprint(PermissionLayer? appDefaults, PermissionLayer? workspaceProfile)
     {
         var builder = new StringBuilder();
         AppendLayerFingerprint(builder, "app", appDefaults);

@@ -376,7 +376,7 @@ public sealed class WorkspaceEditToolTests
         var functions = new WorkspaceEditFunctions(workspace, acquirer: acquirer);
         var write = functions.Functions.Single(static function => function.Name == "write_text");
 
-        async Task<JsonElement> invokeWrite(string uri)
+        async Task<JsonElement> InvokeWrite(string uri)
         {
             var result = await write.InvokeAsync(new AIFunctionArguments(
                     new Dictionary<string, object?> { ["uri"] = uri, ["content"] = "# hi" })
@@ -386,14 +386,14 @@ public sealed class WorkspaceEditToolTests
 
         // Default posture: instruction surfaces deny model-initiated writes even though the
         // file sits inside the workspace root (ADR 0032 decision 1).
-        var gateForbidden = await Record.ExceptionAsync(() => invokeWrite("workspace://local/AGENTS.md"));
+        var gateForbidden = await Record.ExceptionAsync(() => InvokeWrite("workspace://local/AGENTS.md"));
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbidden).Code);
 
-        var gateForbiddenSkill = await Record.ExceptionAsync(() => invokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
+        var gateForbiddenSkill = await Record.ExceptionAsync(() => InvokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbiddenSkill).Code);
 
         // Ordinary workspace files are unaffected by the instruction gate.
-        Assert.Null(await Record.ExceptionAsync(() => invokeWrite("workspace://local/docs/notes.md")));
+        Assert.Null(await Record.ExceptionAsync(() => InvokeWrite("workspace://local/docs/notes.md")));
 
         // A session override allow admits the instruction path explicitly (the migration path).
         registry.Set(sessionId, new PermissionLayer
@@ -404,7 +404,7 @@ public sealed class WorkspaceEditToolTests
             }
         });
 
-        Assert.Null(await Record.ExceptionAsync(() => invokeWrite("workspace://local/AGENTS.md")));
+        Assert.Null(await Record.ExceptionAsync(() => InvokeWrite("workspace://local/AGENTS.md")));
     }
 
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);

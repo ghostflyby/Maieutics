@@ -50,7 +50,6 @@ public sealed class TerminalSessionTests
         EffectivePolicy policy)
     {
         return new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
@@ -83,7 +82,6 @@ public sealed class TerminalSessionTests
         var options = TestOptions();
         options.StartupTimeout = TimeSpan.FromMilliseconds(100);
         var session = new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
@@ -489,7 +487,6 @@ public sealed class TerminalSessionTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var factory = new StalledTerminalProcessFactory(release.Task, fake);
         var session = new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),

@@ -137,7 +137,9 @@ public sealed class PluginHostInvokeTests
 
         // 12 concurrent capability invokes: the bounded outbound queue serializes
         // the reply frames on the one WebSocket without interleaving or send faults,
-        // and every correlated answer reaches the host.
+        // and every correlated answer reaches the host. Parallel.For completes before
+        // the harness's using scope ends.
+        // ReSharper disable once AccessToDisposedClosure
         Parallel.For(0, 12, index =>
         {
             harness.Manager.HandleHostMessage(
@@ -494,7 +496,7 @@ public sealed class PluginHostInvokeTests
 
         public async ValueTask DisposeAsync()
         {
-            Host?.Dispose();
+            Host.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
         }
     }

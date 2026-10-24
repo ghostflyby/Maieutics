@@ -515,7 +515,7 @@ public sealed class FrontendWorkspaceBridgeTests
         public FrontendIdeSockets Sockets { get; } = new();
         public IdeRequestRegistry Registry { get; } = new();
         public FakeDiskFrontend DiskFrontend { get; }
-        public FrontendWorkspaceBridge Bridge { get; private set; } = null!;
+        public FrontendWorkspaceBridge Bridge { get; private set; }
         public (string Method, string PhysicalUri, JsonElement Params)? LastRequest { get; private set; }
         private readonly List<Guid> registrations = [];
 
@@ -746,87 +746,6 @@ public sealed class FrontendWorkspaceBridgeTests
                 File.WriteAllText(path, content);
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse("{}").RootElement.Clone());
             });
-        }
-
-        /// <summary>A compact real scan over the stand-in's disk: the same bounded
-        /// contract the extension's provider scan serves (literal or regex, 1-based
-        /// line/column, bounded previews, relative posix paths under the root).</summary>
-        private IdeRequestAnswer Search(JsonElement parameters)
-        {
-            return Covered(parameters, root =>
-            {
-                var query = parameters.GetProperty("query").GetString()!;
-                var useRegex = parameters.TryGetProperty("regex", out var regexElement) &&
-                               regexElement.ValueKind == JsonValueKind.True;
-                var caseSensitive = !parameters.TryGetProperty("caseSensitive", out var caseElement) ||
-                                    caseElement.ValueKind != JsonValueKind.False;
-                var maximum = parameters.TryGetProperty("maximumMatches", out var bound) &&
-                              bound.ValueKind == JsonValueKind.Number
-                    ? bound.GetInt32()
-                    : 200;
-                var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-                var regex = useRegex
-                    ? new System.Text.RegularExpressions.Regex(
-                        query,
-                        caseSensitive
-                            ? System.Text.RegularExpressions.RegexOptions.None
-                            : System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                    : null;
-                var matches = new List<string>();
-                var scanned = 0L;
-                var rootDirectory = new DirectoryInfo(root);
-                foreach (var file in rootDirectory.EnumerateFiles("*", SearchOption.AllDirectories))
-                {
-                    string text;
-                    try
-                    {
-                        text = File.ReadAllText(file.FullName);
-                    }
-                    catch (IOException)
-                    {
-                        continue;
-                    }
-
-                    scanned += text.Length;
-                    var lines = text.Split('\n');
-                    for (var lineIndex = 0; lineIndex < lines.Length && matches.Count < maximum; lineIndex += 1)
-                    {
-                        var line = lines[lineIndex].TrimEnd('\r');
-                        if (regex is { } pattern)
-                        {
-                            foreach (System.Text.RegularExpressions.Match found in pattern.Matches(line))
-                            {
-                                matches.Add(MatchJson(rootDirectory, file, lineIndex + 1, found.Index + 1, line));
-                                if (matches.Count >= maximum) break;
-                            }
-
-                            continue;
-                        }
-
-                        var haystack = caseSensitive ? line : line.ToLowerInvariant();
-                        var needle = caseSensitive ? query : query.ToLowerInvariant();
-                        var offset = 0;
-                        while (matches.Count < maximum)
-                        {
-                            var index = haystack.IndexOf(needle, offset, comparison);
-                            if (index < 0) break;
-
-                            matches.Add(MatchJson(rootDirectory, file, lineIndex + 1, index + 1, line));
-                            offset = index + needle.Length;
-                        }
-                    }
-                }
-
-                var payload = $"{{\"matches\":[{string.Join(",", matches)}],\"truncated\":false,\"scannedBytes\":{scanned}}}";
-                return IdeRequestAnswer.FromValue(JsonDocument.Parse(payload).RootElement.Clone());
-            });
-        }
-
-        private static string MatchJson(DirectoryInfo root, FileInfo file, int line, int column, string lineText)
-        {
-            var relative = Path.GetRelativePath(root.FullName, file.FullName).Replace('\\', '/');
-            var preview = JsonSerializer.Serialize(lineText.Length > 512 ? lineText[..512] : lineText);
-            return $"{{\"path\":\"{relative}\",\"line\":{line},\"column\":{column},\"preview\":{preview}}}";
         }
 
         private IdeRequestAnswer Delete(JsonElement parameters)

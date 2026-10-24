@@ -24,6 +24,9 @@ public sealed class PluginMcpCoordinatorTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var generationFactory = new TestGenerationFactory();
         var currentDiscovery = PluginMcpDiscoveryResult.Success([CreateDefinition("one")]);
+        // The test reassigns the scripted discovery between phases and the coordinator reads
+        // it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             (_, cancellationToken) =>
             {
@@ -219,6 +222,9 @@ public sealed class PluginMcpCoordinatorTests
         var blockNext = false;
         var discoveryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseDiscovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The test reassigns the scripted discovery and `blockNext` toggle between phases and
+        // the coordinator reads them live by design; phase boundaries quiesce the writes.
+        // ReSharper disable AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             async (_, cancellationToken) =>
             {
@@ -235,6 +241,7 @@ public sealed class PluginMcpCoordinatorTests
             },
             generationFactory.CreateAsync,
             NullLogger<PluginHostManager>.Instance);
+        // ReSharper restore AccessToModifiedClosure
         coordinator.Start();
         var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
 
@@ -328,6 +335,9 @@ public sealed class PluginMcpCoordinatorTests
         var drop = false;
         var compositionCalls = 0;
         var toolCalls = 0;
+        // The test flips `drop` between phases and the fake reads it live by design; the
+        // chain callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var chain = new McpAdjustmentChain(
             (_, _, _, request, _) =>
             {
@@ -364,6 +374,9 @@ public sealed class PluginMcpCoordinatorTests
         var currentDiscovery = PluginMcpDiscoveryResult.Success(
             [CreateDefinition("one") with { Id = "plugin:provider::server" }]);
         var discoveryRuns = 0;
+        // The test reassigns the scripted discovery between phases and the coordinator reads
+        // it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             (_, cancellationToken) =>
             {
@@ -520,5 +533,8 @@ public sealed class PluginMcpCoordinatorTests
         }
     }
 
+    // The value is the tool's structured result; the assertions read the serialized JSON
+    // the client receives, so the property is carried for the tool's wire shape.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private sealed record EchoResult(string Value);
 }

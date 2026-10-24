@@ -312,7 +312,6 @@ internal sealed class WorkspaceEditFunctions
         WorkspaceSnapshot snapshot,
         WorkspaceBridgeChannel channel,
         string uri,
-        AIFunctionArguments arguments,
         string oldText,
         string newText,
         bool? replaceAll,
@@ -413,7 +412,7 @@ internal sealed class WorkspaceEditFunctions
             {
                 try
                 {
-                    return await EditBridgedAsync(snapshot, channel, uri, arguments, oldText, newText, replaceAll, cancellationToken)
+                    return await EditBridgedAsync(snapshot, channel, uri, oldText, newText, replaceAll, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (WorkspaceBridgeCoverageException)
@@ -820,10 +819,10 @@ internal sealed class WorkspaceEditFunctions
         }
 
         var body = string.Join(crlf ? "\r\n" : "\n", lines);
-        var trailing = endsWithNewline(before) ? crlf ? "\r\n" : "\n" : "";
+        var trailing = EndsWithNewline(before) ? crlf ? "\r\n" : "\n" : "";
         return body + trailing;
 
-        static bool endsWithNewline(string text)
+        static bool EndsWithNewline(string text)
         {
             return text.Length > 0 && (text.EndsWith('\n') || text.EndsWith('\r'));
         }

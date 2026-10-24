@@ -470,6 +470,10 @@ internal sealed record CapabilityResolution(
     IReadOnlyList<string> Effective,
     int? MaxBuiltinToolCalls = null);
 
+// The normalized URL is the profile's identity (the dictionary key); the deliberate
+// equality comparison covers only the capability payload, so the field is carried for
+// the record's shape and diagnostics.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal sealed record EndpointCapabilityProfile(
     string NormalizedUrl,
     IReadOnlyList<string> Capabilities,
@@ -477,6 +481,10 @@ internal sealed record EndpointCapabilityProfile(
 
 internal sealed record EndpointCapabilityLimits(int MaxBuiltinToolCalls);
 
+// The vendor id is the profile's identity (the dictionary key); the deliberate equality
+// comparison covers only the capability payload, so the field is carried for the record's
+// shape and diagnostics.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal sealed record VendorCapabilityProfile(
     string VendorId,
     IReadOnlyList<string> EndpointHosts,

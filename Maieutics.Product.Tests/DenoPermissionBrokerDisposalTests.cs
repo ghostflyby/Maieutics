@@ -31,7 +31,10 @@ public sealed class DenoPermissionBrokerDisposalTests
         // timeout directly instead.
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
 
-        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        // The test owns the broker's disposal explicitly: releasing it mid-test is the
+        // behavior under test, so there is no using scope to auto-dispose behind it. The
+        // finally re-disposes idempotently if an assertion fails first.
+        var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
         var listener = InstallPipeListener(broker);
         try
         {
@@ -58,9 +61,11 @@ public sealed class DenoPermissionBrokerDisposalTests
         finally
         {
             // The pre-fix behaviour this test pins leaks the listener; the test still owns its
-            // probe and must not leave the pipe behind either. Disposal is idempotent, so this is
-            // a no-op when the broker released it.
+            // probe and must not leave the pipe behind either. Disposal is idempotent, so this
+            // is a no-op when the broker released it — and it releases the broker itself when
+            // an assertion above failed before the test reached its own DisposeAsync.
             await listener.DisposeAsync();
+            await broker.DisposeAsync();
         }
     }
 
@@ -78,7 +83,9 @@ public sealed class DenoPermissionBrokerDisposalTests
             Assert.Skip("The unix branch binds a socket path; Windows covers its pipe listener directly.");
         }
 
-        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        // Disposal is the test's subject, so the broker is owned explicitly instead of a
+        // using scope that would auto-dispose behind the manual release.
+        var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
         var socketPath = broker.Address;
         Assert.True(File.Exists(socketPath));
         await broker.DisposeAsync();

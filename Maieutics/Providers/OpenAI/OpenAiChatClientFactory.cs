@@ -92,7 +92,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             client = new ConfigureOptionsChatClient(client, chatOptions =>
             {
                 var factory = chatOptions.RawRepresentationFactory;
-                chatOptions.RawRepresentationFactory = client => factory?.Invoke(client) ?? options.ApiFlavor switch
+                chatOptions.RawRepresentationFactory = chatClient => factory?.Invoke(chatClient) ?? options.ApiFlavor switch
                 {
                     OpenAiApiFlavor.Responses => new CreateResponseOptions { StoredOutputEnabled = false },
                     OpenAiApiFlavor.ChatCompletions => new ChatCompletionOptions { StoredOutputEnabled = false },

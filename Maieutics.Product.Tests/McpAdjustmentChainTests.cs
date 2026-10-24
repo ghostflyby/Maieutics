@@ -112,6 +112,9 @@ public sealed class McpAdjustmentChainTests
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));
         var failing = true;
+        // The test flips `failing` between phases and the fake reads it live by design; the
+        // chain callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var chain = CreateChain(
             (_, _, _, _) =>
             {

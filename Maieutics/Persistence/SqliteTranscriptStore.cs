@@ -466,6 +466,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     """;
             }
 
+            // Migration-ladder step: with the current schema at version 4 the guard is always
+            // true today, and it goes live again when the next schema version lands.
+            // ReSharper disable once ConditionIsAlwaysTrueOrFalse
             if (current < 4)
             {
                 script += """

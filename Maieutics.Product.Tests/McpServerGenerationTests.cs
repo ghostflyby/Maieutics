@@ -94,12 +94,10 @@ public sealed class McpServerGenerationTests
         private int invocations;
         private TaskCompletionSource invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        internal int Invocations => invocations;
-
         /// <summary>Waits until the adjuster has completed at least <paramref name="count"/>
         /// invocations. Signal-driven: each completed invocation (the handler has run and its
-        /// result is known) completes a fresh source, so the wait needs no polling of
-        /// <see cref="Invocations"/>.</summary>
+        /// result is known) completes a fresh source, so the wait needs no polling
+        /// counter.</summary>
         internal async Task WaitForInvocationsAsync(int count, CancellationToken cancellationToken)
         {
             while (true)
@@ -259,6 +257,9 @@ public sealed class McpServerGenerationTests
         await using var serverFactory = new StreamServerFactory();
         var definition = CreateStdioDefinition();
         var fail = false;
+        // The test flips `fail` between phases and the fake reads it live by design; the
+        // adjuster callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var adjuster = new FakeToolSurfaceAdjuster(_ =>
         {
             if (fail) return null;
@@ -305,7 +306,9 @@ public sealed class McpServerGenerationTests
         var fail = false;
         JsonElement? lastGood = null;
         // The real chain's sticky semantics, embedded in the fake: a failing backend
-        // keeps the last adjusted listing active.
+        // keeps the last adjusted listing active. The test flips `fail` between phases
+        // and the fake reads it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
         var adjuster = new FakeToolSurfaceAdjuster(_ =>
         {
             if (fail) return lastGood;
@@ -1014,5 +1017,8 @@ public sealed class McpServerGenerationTests
         }
     }
 
+    // The value is the tool's structured result; the assertions read the serialized JSON
+    // the client receives, so the property is carried for the tool's wire shape.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private sealed record EchoResult(string Value);
 }

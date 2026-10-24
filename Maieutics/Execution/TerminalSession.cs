@@ -53,7 +53,6 @@ internal sealed class TerminalSession : IAsyncDisposable
     private TaskCompletionSource stateChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal TerminalSession(
-        AgentSessionId ownerSessionId,
         string sessionId,
         bool isDefault,
         string workingDirectory,
@@ -65,7 +64,6 @@ internal sealed class TerminalSession : IAsyncDisposable
         ITerminalProcessFactory factory,
         ILogger<TerminalSession> logger)
     {
-        OwnerSessionId = ownerSessionId;
         SessionId = sessionId;
         IsDefault = isDefault;
         this.workingDirectory = workingDirectory;
@@ -95,8 +93,6 @@ internal sealed class TerminalSession : IAsyncDisposable
         cursorStyle = args.Style;
         cursorBlink = args.Blink;
     }
-
-    internal AgentSessionId OwnerSessionId { get; }
 
     internal string SessionId { get; }
 
@@ -389,7 +385,7 @@ internal sealed class TerminalSession : IAsyncDisposable
 
             var current = process ?? throw CreateFaultedException();
             SetState(TerminalSessionState.Busy);
-            var bracketed = false;
+            bool bracketed;
             try
             {
                 lock (terminalGate)

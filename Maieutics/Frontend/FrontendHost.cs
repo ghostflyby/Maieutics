@@ -32,7 +32,6 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// <summary>The native view-family capability version advertised in capabilities (ADR 0038).</summary>
     internal const int FrontendUiCapabilityVersion = 1;
 
-    private readonly FrontendOptions options;
     private readonly FrontendSessionService service;
     private readonly FrontendElicitationPresenter elicitationPresenter;
     private readonly FrontendToolApprovalPresenter? toolApprovalPresenter;
@@ -69,7 +68,6 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendIdeSockets? ideSockets = null,
         FrontendToolApprovalPresenter? toolApprovalPresenter = null)
     {
-        this.options = options;
         this.service = service;
         this.turnQueue = turnQueue;
         this.logger = logger;
@@ -454,7 +452,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        await GuardAsync(context, () => Task.FromResult<IResult>(
+        await GuardAsync(context, () => Task.FromResult(
             Results.Json(new FrontendCommandResponse(
                     $"**GC** removed {service.PruneObjects(sessionId, graceHours)} unreferenced object(s) (grace {graceHours} h)."),
                 FrontendJsonContext.Default.FrontendCommandResponse)));
@@ -462,7 +460,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private async Task HandleRepairSession(HttpContext context, string sessionId)
     {
-        await GuardAsync(context, () => Task.FromResult<IResult>(
+        await GuardAsync(context, () => Task.FromResult(
             Results.Json(new FrontendCommandResponse(
                     $"**View** ensured {service.RepairObjectView(sessionId)} object link(s) under view/sessions."),
                 FrontendJsonContext.Default.FrontendCommandResponse)));
@@ -664,7 +662,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         return GuardAsync(context, () =>
         {
             turnQueue.Remove(sessionId, itemId);
-            return Task.FromResult<IResult>(Results.NoContent());
+            return Task.FromResult(Results.NoContent());
         });
     }
 
@@ -674,7 +672,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         return GuardAsync(context, () =>
         {
             turnQueue.Clear(sessionId);
-            return Task.FromResult<IResult>(Results.NoContent());
+            return Task.FromResult(Results.NoContent());
         });
     }
 
@@ -707,6 +705,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         // The source-generated binder accepts JSON null even for the non-nullable
         // property; an empty string is the documented dismiss answer, null is not.
+        // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (request.Value is null)
         {
             await WriteErrorAsync(context, FrontendErrors.InvalidRequest, "The input answer must carry a value.");
@@ -930,6 +929,13 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
 
+        // The socket, peer source, and send gate below are disposed when this handler returns.
+        // Every closure that touches them — the announcer send, the hello and run.missing
+        // writes, the queue flush, the frame loop, and the close write — is awaited inside the
+        // handler, the announcer is withdrawn in the finally before the drain completes, and
+        // only then does the using scope end. The analyzer cannot see that sequencing, so the
+        // disposed-closure findings are suppressed for this handler's scope.
+        // ReSharper disable AccessToDisposedClosure
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
@@ -965,10 +971,13 @@ internal sealed class FrontendHost : IAsyncDisposable
             context.Request.Path,
             since,
             ideAnnounced);
+        // Copied before the closure: the loop below rewrites `since` for later runs, and the
+        // hello frame must pin the replay status of the socket as opened.
+        var replayed = since > 0;
         await SendAsync(
             () => SendFrameAsync(
                 socket,
-                new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+                new FrontendEventFrame("hello", Session: helloSession, Replayed: replayed),
                 peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
@@ -1112,6 +1121,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 }
             }
         }
+        // ReSharper restore AccessToDisposedClosure
     }
 
     /// <summary>Observes a run wait that was still pending when the events loop ended.
@@ -1215,7 +1225,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
                 while (channel.Reader.TryRead(out var frame))
                 {
-                    await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
+                    // Copied per iteration: `frame` is one variable across the loop, and the
+                    // awaited send must pin the frame it was handed.
+                    var currentFrame = frame;
+                    await send(() => SendFrameAsync(socket, currentFrame, cancellationToken), cancellationToken).ConfigureAwait(false);
                     if (queueWake.IsCompleted)
                     {
                         await queueWake.ConfigureAwait(false);
@@ -1293,6 +1306,13 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
 
         var plane = commRouter.PlaneFor(sessionId);
+
+        // Same lifecycle shape as the events socket: the socket, peer source, and send gate
+        // are disposed after the finally has withdrawn the subscription, cancelled the peer,
+        // awaited the uplink, and written the close frame — every closure below completes
+        // inside that sequence. The disposed-closure findings are suppressed for this
+        // handler's scope.
+        // ReSharper disable AccessToDisposedClosure
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
@@ -1331,7 +1351,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         // an open published in between lands in both initial replay and live, folded by
         // comm id.
         var (initial, channel, truncated) = plane.Subscribe(since);
-        var uplink = ServeCommUplinkAsync(socket, commRouter, sessionId, plane, SendAsync, peer.Token);
+        var uplink = ServeCommUplinkAsync(socket, commRouter, sessionId, SendAsync, peer.Token);
         try
         {
             await SendAsync(() => SendTextFrameAsync(
@@ -1374,6 +1394,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             await uplink.ConfigureAwait(false);
             await CloseAsyncOutput(WebSocketCloseStatus.NormalClosure, "stream ended").ConfigureAwait(false);
         }
+        // ReSharper restore AccessToDisposedClosure
     }
 
     /// <summary>Reads uplink comm frames until the socket closes; the loop owns its own
@@ -1382,9 +1403,8 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// policy close.</summary>
     private async Task ServeCommUplinkAsync(
         WebSocket socket,
-        FrontendCommRouter commRouter,
+        FrontendCommRouter router,
         string sessionId,
-        FrontendCommStream plane,
         Func<Func<Task>, Task> send,
         CancellationToken cancellationToken)
     {
@@ -1417,7 +1437,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
                 try
                 {
-                    await commRouter
+                    await router
                         .PushToReplAsync(sessionId, message, cancellationToken)
                         .ConfigureAwait(false);
                 }

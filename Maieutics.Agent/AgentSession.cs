@@ -78,6 +78,8 @@ public sealed class AgentSession : IAgentSession
     /// <param name="transcriptStore">The store the session was persisted in; new turns are appended to it.</param>
     /// <param name="sessionId">The stored session identity to restore.</param>
     /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <param name="objectStore">The optional object store the restored session binds for blob
+    /// content and object views; null when object persistence is unavailable.</param>
     /// <returns>A session whose committed history contains every stored turn of the session.</returns>
     /// <exception cref="AgentSessionNotFoundException">The store holds no session with this identity.</exception>
     /// <exception cref="AgentContentCompatibilityException">A stored turn cannot be represented canonically.</exception>
@@ -1143,6 +1145,9 @@ public sealed class AgentSession : IAgentSession
             }
         }
 
+        // Both sides of every iteration are retained whole: the transcript assertions read
+        // the responses, and the requests are kept for the recording's debugging fidelity.
+        // ReSharper disable once NotAccessedPositionalProperty.Local
         internal sealed record RecordedIteration(
             IReadOnlyList<ChatMessage> RequestMessages,
             IReadOnlyList<ChatMessage> ResponseMessages);

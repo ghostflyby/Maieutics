@@ -198,15 +198,13 @@ public sealed class AgentBlobContentTests
         Assert.Equivalent(new[] { descriptor.Sha256, envelopeSha }, references);
     }
 
-    private static async Task<List<AgentEvent>> ReadEventsAsync(
+    private static async Task ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)
     {
-        var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-            events.Add(agentEvent);
-
-        return events;
+        await foreach (var _ in run.Events.WithCancellation(cancellationToken))
+        {
+        }
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] deltas)

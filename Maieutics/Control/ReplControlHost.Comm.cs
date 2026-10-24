@@ -187,8 +187,6 @@ internal sealed partial class ReplControlHost
 
         internal WebSocketState State => socket.State;
 
-        internal Task Completion => completion.Task;
-
         internal Task SendTextAsync(string text, CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(text);

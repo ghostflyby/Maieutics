@@ -149,11 +149,9 @@ public sealed class PluginHostStartupAvailabilityTests
 
         using var watcher = new FileSystemWatcher(
             Path.GetDirectoryName(path) ?? ".",
-            Path.GetFileName(path))
-        {
-            EnableRaisingEvents = true,
-            NotifyFilter = NotifyFilters.FileName,
-        };
+            Path.GetFileName(path));
+        watcher.EnableRaisingEvents = true;
+        watcher.NotifyFilter = NotifyFilters.FileName;
         var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         watcher.Created += (_, _) => created.TrySetResult();
 

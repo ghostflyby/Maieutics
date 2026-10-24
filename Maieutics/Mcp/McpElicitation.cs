@@ -106,6 +106,9 @@ internal sealed class McpElicitationCoordinator
 
         try
         {
+            // Message is annotated non-nullable but arrives through JSON: an elicit request
+            // without a message reaches here as null, so the fallback is runtime defense.
+            // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
             var message = request.Message ?? string.Empty;
             if (message.Length > MaximumMessageCharacters)
             {

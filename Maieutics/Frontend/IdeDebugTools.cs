@@ -126,18 +126,6 @@ internal sealed class IdeDebugTools
             });
     }
 
-    private static string RequireSession(JsonElement parameters)
-    {
-        var sessionId = parameters.TryGetProperty("sessionId", out var session) &&
-                        session.ValueKind == JsonValueKind.String
-            ? session.GetString()
-            : null;
-        if (string.IsNullOrEmpty(sessionId))
-            throw new AgentToolException("ide_invalid_arguments", "sessionId is required.");
-
-        return sessionId;
-    }
-
     private async ValueTask<JsonElement> SendAsync(
         Func<AIContent, CancellationToken, ValueTask>? announce,
         string method,

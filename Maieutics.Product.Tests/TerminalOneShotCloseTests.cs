@@ -21,19 +21,27 @@ public sealed class TerminalOneShotCloseTests
     public async Task ClosingAOneShotSettlesTheExitSignalAWaitIsArmedOn()
     {
         var fake = new FakeTerminalProcess();
-        await using var session = CreateOneShotSession(fake);
+        // Disposal is the test's subject, so the session is owned explicitly instead of a
+        // using scope that would auto-dispose behind the manual close.
+        var session = CreateOneShotSession(fake);
         await session.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            // Armed before the close, exactly as the task plane's wait arms it.
+            var armedBeforeClose = session.WaitExitedAsync(TestContext.Current.CancellationToken);
+            await session.DisposeAsync();
 
-        // Armed before the close, exactly as the task plane's wait arms it.
-        var armedBeforeClose = session.WaitExitedAsync(TestContext.Current.CancellationToken);
-        await session.DisposeAsync();
+            Assert.Equal("closed", session.GetSnapshot().State);
+            await armedBeforeClose.WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
 
-        Assert.Equal("closed", session.GetSnapshot().State);
-        await armedBeforeClose.WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
-
-        // Resolve-once semantics: a wait armed after the close settles from the same signal.
-        var armedAfterClose = session.WaitExitedAsync(TestContext.Current.CancellationToken);
-        await armedAfterClose.WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
+            // Resolve-once semantics: a wait armed after the close settles from the same signal.
+            var armedAfterClose = session.WaitExitedAsync(TestContext.Current.CancellationToken);
+            await armedAfterClose.WaitAsync(ObservationBound, TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            await session.DisposeAsync();
+        }
     }
 
     [Fact(Timeout = 30_000)]
@@ -95,7 +103,6 @@ public sealed class TerminalOneShotCloseTests
     private static TerminalSession CreateOneShotSession(FakeTerminalProcess process)
     {
         return new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             false,
             Directory.GetCurrentDirectory(),

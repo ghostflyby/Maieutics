@@ -52,9 +52,10 @@ public sealed class AgentSubagentFunctionsTests
 
         // After the turn the child is no longer on the plane (join-before-complete), and the
         // plane reports that as a typed miss rather than a stale snapshot.
-        var gone = () => harness.Provider.WaitTaskAsync(
-            taskUri, TimeSpan.FromSeconds(1), deadline.Token);
-        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.WaitTaskAsync(taskUri, TimeSpan.FromSeconds(1), deadline.Token);
+        })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -162,7 +163,7 @@ public sealed class AgentSubagentFunctionsTests
             },
             functions.Functions);
         reference.Session = session;
-        return new Harness(session, provider, functions, buffer);
+        return new Harness(session, provider, buffer);
 
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
@@ -199,14 +200,11 @@ public sealed class AgentSubagentFunctionsTests
     private sealed class Harness(
         AgentSession session,
         TaskResourceProvider provider,
-        AgentSubagentFunctions functions,
         SubagentEventBuffer buffer)
     {
         internal AgentSession Session { get; } = session;
 
         internal TaskResourceProvider Provider { get; } = provider;
-
-        internal AgentSubagentFunctions Functions { get; } = functions;
 
         internal SubagentEventBuffer Buffer { get; } = buffer;
     }
@@ -241,26 +239,6 @@ public sealed class AgentSubagentFunctionsTests
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
-
-    private static AIFunction CreateSpawnTool(
-        string name,
-        Func<AIFunctionArguments, CancellationToken, Task<JsonElement>> body)
-    {
-        ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
-        {
-            return new ValueTask<JsonElement>(body(arguments, cancellationToken));
-        }
-
-        return AIFunctionFactory.Create(
-            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)Invoke,
-            new AIFunctionFactoryOptions
-            {
-                Name = name,
-                Description = $"Test spawn tool {name}.",
-                SerializerOptions = SubagentFrameJsonContext.Default.Options,
-                ExcludeResultSchema = true
-            });
-    }
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(IAgentRun run, CancellationToken cancellationToken)
     {

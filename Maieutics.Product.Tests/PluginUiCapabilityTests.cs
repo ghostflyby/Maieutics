@@ -64,8 +64,10 @@ public sealed class PluginUiCapabilityTests
         await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(
             TestContext.Current.CancellationToken);
 
-        var act = () => harness.Manager.PublishUiFormAsync("plugin-without-ui", TestContext.Current.CancellationToken);
-        var assertion30 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await act.Invoke(); });
+        var assertion30 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () =>
+        {
+            await harness.Manager.PublishUiFormAsync("plugin-without-ui", TestContext.Current.CancellationToken);
+        });
         Assert.Matches("(?is)^.*declares\\ no\\ ui\\ data\\ entry.*$", assertion30.Message);
     }
 
@@ -93,6 +95,8 @@ public sealed class PluginUiCapabilityTests
             TestContext.Current.CancellationToken);
         harness.Manager.SetCapabilityGrants("plugin-1", [ReplCapabilityName.UiModels]);
         var frames = new List<PluginUiFramePayload>();
+        // `pluginId` exists only for the sink's per-frame assertion.
+        // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
         harness.Manager.UiFrameSink = (pluginId, frame, _) =>
         {
             Assert.Equal("plugin-1", pluginId);
@@ -221,15 +225,17 @@ public sealed class PluginUiCapabilityTests
 
         // Without a live stream the open is rejected and the comm is closed again.
         publisher.Publishable = false;
-        var act = () => MaieuticsHost.PublishPluginUiFrameAsync(
-            harness.Manager,
-            router,
-            session.ToString(),
-            publisher,
-            "plugin-1",
-            new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form"),
-            TestContext.Current.CancellationToken);
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await act.Invoke(); });
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () =>
+        {
+            await MaieuticsHost.PublishPluginUiFrameAsync(
+                harness.Manager,
+                router,
+                session.ToString(),
+                publisher,
+                "plugin-1",
+                new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form"),
+                TestContext.Current.CancellationToken);
+        });
         var live = router.PlaneFor(session.ToString()).SnapshotLive();
         Assert.Equal("p1", Assert.Single(live).CommId);
     }

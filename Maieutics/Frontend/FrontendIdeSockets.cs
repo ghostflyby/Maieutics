@@ -218,8 +218,11 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
 
 /// <summary>The elected authority's handle for one bridge acquire: enough to push
 /// an <c>ide.request</c> frame to that announcer's socket and nothing more — the
-/// registration itself stays private to the sockets registry.</summary>
+/// registration itself stays private to the sockets registry. The send capability is
+/// part of the handle's contract; current callers route through the registration.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record IdeAnnouncerHandle(
     string SessionId,
     Guid RegistrationId,
     Func<FrontendEventFrame, CancellationToken, Task> SendAsync);
+// ReSharper restore NotAccessedPositionalProperty.Global

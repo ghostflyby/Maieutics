@@ -25,7 +25,7 @@ namespace Maieutics.Product.Tests;
 ///     the run stream, escapes <c>ServeStreamAsync</c> and the handler's catches, and makes
 ///     <c>FrontendIdeSockets</c> withdraw the announcer as if the socket had died.
 ///     The overlap is forced deterministically with a fake transport whose
-///     <see cref="WebSocket.SendAsync" /> parks on a task completion source the test
+///     <c>SendAsync</c> parks on a task completion source the test
 ///     releases and records any entry made while a previous send is still outstanding —
 ///     the exact condition a real WebSocket faults on. The run writer's send is parked
 ///     inside the transport (its replay frames are finite and already published, so
@@ -102,9 +102,13 @@ public sealed class FrontendEventsSendGateTests
         // only way the count can reach two), so its send entered the transport while a send
         // was outstanding; on the fixed code it parks at the send gate and the probe's
         // budget runs out instead.
+        // The probe task is awaited (or observed through the parked-send signal) before the
+        // fixture's using scope ends.
+        // ReSharper disable AccessToDisposedClosure
         var push = Task.Run(
             () => fixture.IdeSockets.TrySendToAnnouncingAsync(ProbeIdeRequest(), deadline.Token),
             deadline.Token);
+        // ReSharper restore AccessToDisposedClosure
         await transport.TryWaitParkedSendsAsync(2, OverlapProbeBudget, deadline.Token).ConfigureAwait(true);
 
         // Pin the overlap before anything is released: an entry made while a send was
@@ -169,12 +173,15 @@ public sealed class FrontendEventsSendGateTests
     private sealed class BlockableEventsSocket : WebSocket
     {
         /// <summary>One recorded send: the whole payload with its framing flags, plus the
-        /// release the test completes to let the owning writer continue.</summary>
+        /// release the test completes to let the owning writer continue. The payload is
+        /// retained whole for delivery fidelity even where the assertions read the type.</summary>
+        // ReSharper disable NotAccessedPositionalProperty.Local
         public sealed record RecordedSend(
             byte[] Payload,
             string FrameType,
             bool EndOfMessage,
             WebSocketMessageType MessageType)
+        // ReSharper restore NotAccessedPositionalProperty.Local
         {
             private readonly TaskCompletionSource release = NewSignal();
 
@@ -428,8 +435,6 @@ public sealed class FrontendEventsSendGateTests
 
         public FrontendIdeSockets IdeSockets { get; }
 
-        public HttpClient Client => client;
-
         public string Token => options.Token;
 
         public string BaseUrl => $"http://127.0.0.1:{options.Port}";
@@ -506,10 +511,4 @@ public sealed class FrontendEventsSendGateTests
             return fixture;
         }
     }
-
-
-    /// <summary>A model client whose stream parks at the provider until the run's own
-    /// cancellation: the run's frontend stream then holds a finite, already-published
-    /// replay and no further frames of its own, so the run writer's sends are exactly the
-    /// bounded set the test releases.</summary>
 }

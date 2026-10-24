@@ -44,7 +44,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
     private readonly Lock gate = new();
     private readonly Dictionary<string, IReadOnlySet<string>> lastGoodDrops = new(StringComparer.Ordinal);
     private readonly Dictionary<string, JsonElement> lastGoodListings = new(StringComparer.Ordinal);
-    private McpAdjustmentSnapshot snapshot = new([], ImmutableDictionary<string, IReadOnlyList<string>>.Empty, []);
+    private McpAdjustmentSnapshot currentSnapshot = new([], ImmutableDictionary<string, IReadOnlyList<string>>.Empty, []);
 
     public McpAdjustmentChain(
         Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke,
@@ -61,7 +61,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
         ArgumentNullException.ThrowIfNull(snapshot);
         lock (gate)
         {
-            this.snapshot = snapshot;
+            currentSnapshot = snapshot;
         }
     }
 
@@ -69,7 +69,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
     /// dependency-topological order). Exposed for change detection.</summary>
     public IReadOnlyList<McpAdjusterRegistration> ChainFor(string serverId)
     {
-        var snapshot = Volatile.Read(ref this.snapshot);
+        var snapshot = Volatile.Read(ref currentSnapshot);
         var owner = OwnerOf(serverId);
         var chain = new List<McpAdjusterRegistration>();
         foreach (var adjuster in snapshot.Adjusters)
@@ -98,7 +98,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
         IReadOnlyList<(string OwnerPluginId, string ServerId, McpTransportDefinition Transport)> view,
         CancellationToken cancellationToken)
     {
-        var snapshot = Volatile.Read(ref this.snapshot);
+        var snapshot = Volatile.Read(ref currentSnapshot);
         var dropped = ImmutableHashSet<string>.Empty;
         foreach (var adjuster in OrderedAdjusters(snapshot))
         {

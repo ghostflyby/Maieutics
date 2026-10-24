@@ -20,7 +20,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
     /// whether the run under test ever reached the provider gate. Null until a test that
     /// needs the diagnostic sets it; one class instance serves exactly one test.</summary>
-    private GatedOpenAiServer? provider;
+    private GatedOpenAiServer? diagnosticProvider;
 
     public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
 
@@ -381,7 +381,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer(answer: Answer);
         // Exposed to the shared wait helpers for their timeout diagnostics.
-        this.provider = provider;
+        diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         Trace("harness booted");
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -477,7 +477,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer(answer: Answer);
-        this.provider = provider;
+        diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -635,7 +635,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         return await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<JsonElement> WaitForQueueAsync(
+    private async Task WaitForQueueAsync(
         Harness harness,
         string sessionId,
         Func<JsonElement, bool> predicate,
@@ -653,7 +653,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             {
                 var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
                 polls++;
-                if (predicate(queue)) return queue;
+                if (predicate(queue)) return;
 
                 if (polls % 10 == 0)
                     Trace($"queue poll #{polls}: {QueueSummary(queue)}");
@@ -665,7 +665,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
         {
             throw new InvalidOperationException(
-                $"the queue state never matched after {polls} polls; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}",
+                $"the queue state never matched after {polls} polls; provider parked={diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}",
                 exception);
         }
     }
@@ -842,7 +842,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             // whether the run ever reached the provider gate (parked=0 means the
             // submission itself stalled before issuing the provider request).
             throw new InvalidOperationException(
-                $"no matching queue.updated frame; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}; "
+                $"no matching queue.updated frame; provider parked={diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}; "
                 + $"frames seen: [{string.Join("; ", seen)}]",
                 exception);
         }

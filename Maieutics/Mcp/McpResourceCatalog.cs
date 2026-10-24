@@ -176,6 +176,9 @@ internal static class McpResourceTemplateMatcher
         return char.IsAsciiLetterOrDigit(value) || value == '_';
     }
 
+    // The name rides the token for diagnostics (which template token matched); the
+    // matcher itself branches only on Reserved.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private readonly record struct Expansion(string Name, bool Reserved);
 }
 

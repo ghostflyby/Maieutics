@@ -170,9 +170,11 @@ public sealed class TaskResourceTests
         Assert.Equal("cancel", snapshot.Status);
         Assert.Equal("closed", snapshot.Terminal!.State);
 
-        var gone = () => harness.Provider.ReadAsync(
-            result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
-        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.ReadAsync(
+                result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
+        })).Code);
     }
 
     [Fact(Timeout = 10_000)]
@@ -197,9 +199,11 @@ public sealed class TaskResourceTests
         var owner = AgentSessionId.Create();
         var result = await StartTimedOutOneShotAsync(harness, owner);
 
-        var forbidden = () => harness.Provider.CancelTaskAsync(
-            result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
-        Assert.Equal("task_forbidden", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await forbidden.Invoke(); })).Code);
+        Assert.Equal("task_forbidden", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.CancelTaskAsync(
+                result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
+        })).Code);
 
         var stillWorking = await ReadSnapshotAsync(harness, result.TaskUri!);
         Assert.Equal("working", stillWorking.GetProperty("status").GetString());

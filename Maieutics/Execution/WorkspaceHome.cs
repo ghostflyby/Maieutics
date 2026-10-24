@@ -538,7 +538,7 @@ internal sealed class WorkspaceHome
 /// <summary>Creates and deletes managed directory links: a symbolic link on POSIX, a
 /// directory junction on Windows (ADR 0027 §3). Deletion removes the reparse point only —
 /// never the target.</summary>
-internal static partial class ManagedWorkspaceLink
+internal static class ManagedWorkspaceLink
 {
     internal static void Create(string linkPath, string targetPath)
     {

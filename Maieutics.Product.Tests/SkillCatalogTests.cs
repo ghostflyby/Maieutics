@@ -40,17 +40,14 @@ public sealed class SkillCatalogTests : IAsyncDisposable
     }
 
     /// <summary>Waits out a watcher-driven rebuild under the test's cancellation budget via
-    /// the shared signal-driven helper (see
-    /// <see cref="SkillCatalogTestWaits.AwaitAsync"/>); returns the catalog so call sites
-    /// stay expression-shaped.</summary>
-    private static async Task<SkillCatalog> AwaitSkillsAsync(
+    /// the shared signal-driven helper (see <see cref="SkillCatalogTestWaits.AwaitAsync"/>).</summary>
+    private static async Task AwaitSkillsAsync(
         SkillCatalog catalog,
         FakeTimeProvider clock,
         Func<SkillCatalogSnapshot, bool> predicate)
     {
         await SkillCatalogTestWaits.AwaitAsync(
             catalog, clock, predicate, TestContext.Current.CancellationToken);
-        return catalog;
     }
 
     [Fact(Timeout = 30_000)]

@@ -155,7 +155,7 @@ public sealed class SubagentFrontendFramesTests
             // When parentRelease is set, park the parent model so CancelRunAsync can run
             // while the parent run is still in-flight (the child is still alive).
             if (parentRelease is not null)
-                return WaitAndStreamAsync(parentRelease, postToolParentResponse, token);
+                return WaitAndStreamAsync(parentRelease, postToolParentResponse);
 
             return StreamAsync(postToolParentResponse);
         }
@@ -256,9 +256,7 @@ public sealed class SubagentFrontendFramesTests
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> WaitAndStreamAsync(
-        Task release, string text,
-        [System.Runtime.CompilerServices.EnumeratorCancellation]
-        CancellationToken cancellationToken)
+        Task release, string text)
     {
         await release;
         yield return new ChatResponseUpdate(ChatRole.Assistant, text);

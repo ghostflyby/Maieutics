@@ -253,8 +253,11 @@ internal static class PluginRegistryDiscovery
     }
 
     /// <summary>Toolchain mediation: `deno info --json {url}` fetches the URL into the
-    /// shared cache and reports its local path.</summary>
+    /// shared cache and reports its local path. Name and version mirror the toolchain's
+    /// answer; consumers resolve the local directory.</summary>
+    // ReSharper disable NotAccessedPositionalProperty.Global
     public sealed record NpmPackageInfo(string Name, string Version, string LocalPath);
+    // ReSharper restore NotAccessedPositionalProperty.Global
 
     /// <summary>`deno info --json npm:spec` resolves ranges/tags and reports the
     /// extracted package directory (browsable) under the shared npm cache.</summary>

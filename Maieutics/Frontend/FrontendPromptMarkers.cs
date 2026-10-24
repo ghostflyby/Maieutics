@@ -36,7 +36,7 @@ internal static class FrontendPromptMarkers
 
     private const string PromptName = @"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}";
 
-    private const string ServerId = @"[^/?#\[\]()\\\s%]+";
+    private const string ServerSegment = @"[^/?#\[\]()\\\s%]+";
 
     // The query alphabet is the RFC 3986 unreserved set plus pct-escapes; keys are the
     // stricter encoder output (no sub-delims, so '=' cannot smuggle into a key), values
@@ -48,12 +48,12 @@ internal static class FrontendPromptMarkers
     private const string QueryPair = $"{QueryKey}={QueryValue}";
 
     private static readonly Regex MarkerPattern = new(
-        $@"(?<!\\)\[(?<text>[^\]\n]*)\]\(mcp-prompt://(?<server>{ServerId})/(?<name>{PromptName})(?:\?(?<query>{QueryPair}(?:&{QueryPair})*))?\)",
+        $@"(?<!\\)\[(?<text>[^\]\n]*)\]\(mcp-prompt://(?<server>{ServerSegment})/(?<name>{PromptName})(?:\?(?<query>{QueryPair}(?:&{QueryPair})*))?\)",
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(1));
 
     private static readonly Regex MentionEscapePattern = new(
-        $"""\\(\[[^\]\n]*\]\(mcp-prompt://{ServerId}/{PromptName}(?:\?{QueryPair}(?:&{QueryPair})*)?\))""",
+        $"""\\(\[[^\]\n]*\]\(mcp-prompt://{ServerSegment}/{PromptName}(?:\?{QueryPair}(?:&{QueryPair})*)?\))""",
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(1));
 

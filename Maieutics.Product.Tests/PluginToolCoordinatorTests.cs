@@ -52,6 +52,9 @@ public sealed class PluginToolCoordinatorTests
     public async Task AFailedDescribeKeepsThePreviousDefinitionAndRetriesNextFrame()
     {
         var fail = false;
+        // The test flips `fail` between phases and the fake reads it live by design; the
+        // coordinator's callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
             Task.FromResult(fail
                 ? ExtensionCallOutcome.Error("host_invoke_failed", "boom")
@@ -264,8 +267,12 @@ public sealed class PluginToolCoordinatorTests
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
 
+        // Hoisted values: the token is a cancelled struct copy and the root a view over the
+        // still-open document, so the awaited Task.Run closure captures no disposable object.
+        var token = cancellation.Token;
+        var root = arguments.RootElement;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Task.Run(() => InvokeAsync(tool, arguments.RootElement, cancellation.Token)));
+            Task.Run(() => InvokeAsync(tool, root, token)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -356,11 +363,13 @@ public sealed class PluginToolCoordinatorTests
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
 
+        // Hoisted values: the token is a cancelled struct copy and the root a view over the
+        // still-open document, so the awaited Task.Run closure captures no disposable object.
+        var tool = Assert.Single(coordinator.SnapshotTools());
+        var root = arguments.RootElement;
+        var token = cancellation.Token;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Task.Run(() => InvokeAsync(
-                Assert.Single(coordinator.SnapshotTools()),
-                arguments.RootElement,
-                cancellation.Token)));
+            Task.Run(() => InvokeAsync(tool, root, token)));
     }
 
     [Fact(Timeout = 30_000)]
@@ -674,6 +683,11 @@ public sealed class PluginToolCoordinatorTests
         }
     }
 
+    // Every invoke is recorded with its full identity; the assertions read the argument
+    // and call-id fields, and the export/extension-point pair stays for completeness.
+    // Every invoke is recorded with its full identity; the assertions read the argument
+    // and call-id fields, and the export/extension-point pair stays for completeness.
+    // ReSharper disable NotAccessedPositionalProperty.Local
     private sealed record CallRecord(
         string Phase,
         string ExportName,
@@ -681,4 +695,5 @@ public sealed class PluginToolCoordinatorTests
         JsonElement? Arguments,
         string? CallId,
         string? SessionId);
+    // ReSharper restore NotAccessedPositionalProperty.Local
 }

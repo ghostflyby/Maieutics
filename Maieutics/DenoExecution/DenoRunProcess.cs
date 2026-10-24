@@ -49,8 +49,8 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         processDescription = Describe(kind);
         processId = process.Id;
         this.standardError = standardError;
-        var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", logger, null);
-        var stderrDrain = DrainAsync(process.StandardError, "stderr", logger, standardError);
+        var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", null);
+        var stderrDrain = DrainAsync(process.StandardError, "stderr", standardError);
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
         if (slot.HasSlot)
         {
@@ -216,7 +216,6 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     private async Task DrainAsync(
         TextReader reader,
         string streamName,
-        ILogger logger,
         TaskCompletionSource<string>? capturedOutput)
     {
         var buffer = ArrayPool<char>.Shared.Rent(DrainBufferCharacters);
@@ -264,7 +263,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
                     {
                         if (remainingLogBudget <= 0)
                         {
-                            LogStreamSummary(logger, streamName, truncated: true);
+                            LogStreamSummary(streamName, truncated: true);
                             truncatedLogged = true;
                             break;
                         }
@@ -293,7 +292,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
             if (pendingLine is { } remainder)
             {
                 FlushLine(remainder); // a final partial line without a terminator
-                if (!truncatedLogged) LogStreamSummary(logger, streamName, truncated: false);
+                if (!truncatedLogged) LogStreamSummary(streamName, truncated: false);
             }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
@@ -312,7 +311,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         }
     }
 
-    private void LogStreamSummary(ILogger logger, string streamName, bool truncated)
+    private void LogStreamSummary(string streamName, bool truncated)
     {
         if (!logger.IsEnabled(LogLevel.Debug)) return;
 

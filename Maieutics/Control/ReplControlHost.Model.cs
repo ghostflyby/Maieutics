@@ -320,7 +320,6 @@ internal sealed partial class ReplControlHost
                 {
                     "resource_not_found" => StatusCodes.Status404NotFound,
                     "task_forbidden" => StatusCodes.Status403Forbidden,
-                    "task_cancel_failed" => StatusCodes.Status502BadGateway,
                     _ => StatusCodes.Status502BadGateway
                 }, exception.Code, exception.Message, cancellationToken).ConfigureAwait(false);
         }

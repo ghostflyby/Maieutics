@@ -40,7 +40,7 @@ public sealed class FrontendProcessSmokeTests
             // The tool result rides inside the tool message's JSON-escaped
             // content, so match a substring without quotes or colons.
             expectedToolResultText: "smoke.txt");
-        var process = StartHostProcess(provider.Endpoint, deadline.Token, workspace);
+        var process = StartHostProcess(provider.Endpoint, workspace);
         try
         {
             var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
@@ -135,7 +135,6 @@ public sealed class FrontendProcessSmokeTests
 
     private static SmokeHostProcess StartHostProcess(
         Uri endpoint,
-        CancellationToken cancellationToken,
         string? workspaceRoot = null)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");

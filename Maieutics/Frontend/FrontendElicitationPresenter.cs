@@ -93,7 +93,7 @@ internal sealed class FrontendElicitationPresenter(
                     OnSubmit: (values, _) =>
                     {
                         var content = JsonSerializer.Serialize(
-                            (Dictionary<string, object?>)values,
+                            values,
                             FrontendJsonContext.Default.DictionaryStringObject);
                         Complete(requestId, "accept", content);
                         return ValueTask.CompletedTask;

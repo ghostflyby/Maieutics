@@ -194,8 +194,8 @@ public sealed class GatedModelProvider : IAsyncDisposable
     }
 
     /// <summary>Waits until every parked provider request has left the gate (released, or
-    /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync" />; Gated
-    /// mode only.</summary>
+    /// its client vanished). Signal-driven like <see cref="WaitForParkedAsync(CancellationToken)" />;
+    /// Gated mode only.</summary>
     public async Task WaitForParkedDrainedAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -572,11 +572,15 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
 /// <summary>One fully read provider request: the request line, the header dictionary, and
 /// the JSON body clone.</summary>
+// The header dictionary is preserved so the fake request mirrors the wire's shape even
+// where current assertions only read method, path, and body.
+// ReSharper disable NotAccessedPositionalProperty.Global
 public sealed record HttpRequest(
     string Method,
     string Path,
     IReadOnlyDictionary<string, string> Headers,
     JsonElement Body);
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 /// <summary>The single HTTP/1.1 request reader for the fake providers: Content-Length
 /// framing with the header dictionary preserved and the body parsed as JSON. A request

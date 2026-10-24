@@ -439,18 +439,18 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             throw new ArgumentException(
                 "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to reclaim objects.");
 
-        var live = new HashSet<string>(StringComparer.Ordinal);
+        var liveIds = new HashSet<string>(StringComparer.Ordinal);
         if (familiesRoot is not null && Directory.Exists(familiesRoot))
         {
             foreach (var directory in Directory.EnumerateDirectories(familiesRoot))
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
-                live.UnionWith(RequiredStore(new AgentSessionId(familyId)).GetReferencedObjectIds());
+                liveIds.UnionWith(RequiredStore(new AgentSessionId(familyId)).GetReferencedObjectIds());
             }
         }
 
-        return reclaimer.DeleteExcept(live, DateTimeOffset.UtcNow - gracePeriod);
+        return reclaimer.DeleteExcept(liveIds, DateTimeOffset.UtcNow - gracePeriod);
     }
 
     /// <summary>Maintenance pass: rebuilds the derived inspection view (one relative link per

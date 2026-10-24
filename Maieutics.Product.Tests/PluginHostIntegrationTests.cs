@@ -1441,5 +1441,8 @@ public sealed class PluginHostIntegrationTests
     }
 
 
+    // The shape mirrors the discovery payload; the transport rides along for fidelity
+    // even where the assertions read only the module.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private sealed record McpDiscoveryTestShape(string Module, object Transport);
 }

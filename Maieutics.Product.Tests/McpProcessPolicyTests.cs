@@ -155,7 +155,7 @@ public sealed class McpProcessPolicyTests
 
         Assert.True(
             failure is ArgumentException,
-            $"expected the owning scope's run grant to refuse the command, got: {failure?.GetType().FullName ?? "null"}");
+            $"expected the owning scope's run grant to refuse the command, got: {failure.GetType().FullName}");
     }
 
     [Fact(Timeout = 30_000)]
@@ -387,7 +387,6 @@ public sealed class McpProcessPolicyTests
     private static TerminalSession CreateTerminalSession(string executable, EffectivePolicy policy)
     {
         return new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),

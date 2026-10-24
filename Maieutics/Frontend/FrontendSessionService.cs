@@ -711,7 +711,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var latest = hub.Latest;
         if (latest is not null && !ReferenceEquals(latest, previous))
         {
-            hub.Drain(latest);
+            hub.Drain();
             return latest;
         }
 
@@ -763,20 +763,17 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             announcements.Writer.TryWrite(stream);
         }
 
-        /// <summary>Drops buffered announcements superseded by
-        /// <paramref name="current" /> (or everything, when null).</summary>
-        public void Drain(FrontendRunStream? current)
+        /// <summary>Drops every buffered announcement, so a waiter that takes
+        /// <see cref="Latest" /> directly does not observe superseded streams.</summary>
+        public void Drain()
         {
-            while (announcements.Reader.TryRead(out var item))
-            {
-                if (current is not null && ReferenceEquals(item, current)) continue;
-            }
+            while (announcements.Reader.TryRead(out _)) { }
         }
 
         public async Task<FrontendRunStream> ReadAsync(CancellationToken cancellationToken)
         {
             var stream = await announcements.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            Drain(stream);
+            Drain();
             return stream;
         }
     }

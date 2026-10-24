@@ -695,16 +695,16 @@ internal sealed class McpServerGeneration
         {
             // Capability follows handler presence (ADR 0029 decision 1): a server that never
             // opted into roots sees no roots capability and must not ask.
-            handlers.RootsHandler = (_, cancellationToken) => BuildRootsAsync(rootsSource, cancellationToken);
+            handlers.RootsHandler = (_, token) => BuildRootsAsync(rootsSource, token);
         }
 #pragma warning restore MCP9005
         if (definition.ElicitationEnabled && elicitationCoordinator is { IsEnabled: true })
         {
-            handlers.ElicitationHandler = (request, cancellationToken) =>
+            handlers.ElicitationHandler = (request, token) =>
                 elicitationCoordinator.HandleElicitationAsync(
                     definition.Id,
                     request ?? new ElicitRequestParams { Message = string.Empty },
-                    cancellationToken);
+                    token);
         }
 
         var clientOptions = new McpClientOptions

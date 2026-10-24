@@ -164,6 +164,9 @@ internal sealed record ReplEvalErrorPayload(
 
 internal sealed record ReplEvalCancelledPayload(string ExecutionId);
 
+// The sequence number rides the eval IPC wire (correlation is by execution id in-process),
+// so the property is carried for the wire shape even though in-process readers key on it.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal abstract record ReplEvalEvent(string ExecutionId, long Sequence);
 
 internal sealed record ReplEvalInputRequestEvent(
@@ -173,6 +176,9 @@ internal sealed record ReplEvalInputRequestEvent(
     string Prompt,
     bool Password) : ReplEvalEvent(ExecutionId, Sequence);
 
+// The execution id rides the eval IPC wire for every terminal frame; in-process readers
+// correlate through the collector, so the property is carried for the wire shape.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal abstract record ReplEvalTerminal(string ExecutionId);
 
 internal sealed record ReplEvalResultTerminal(

@@ -393,7 +393,6 @@ public sealed class PluginHostReplRegistrationTests
         return child.ReadToEndAsync(cancellationToken);
     }
 
-    /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
     private sealed class FakeVariableSource : Execution.IPermissionVariableSource
     {
         public string? GetVariable(string name)

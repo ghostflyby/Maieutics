@@ -114,7 +114,9 @@ internal sealed record ContributionDeclarationResult(
 /// <summary>The raw declaration material <see cref="ContributionKindContract.ParseDeclared"/>
 /// receives: the plugin identity (the MCP server id prefix stamps it), the root the
 /// data files resolve against, the canonicalized extensions entries, and the collected
-/// data entries. Values only — the load path holds no callbacks.</summary>
+/// data entries. Values only — the load path holds no callbacks. The extension entries
+/// stay on the context so every kind parses the same declaration shape.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record ContributionDeclarationContext(
     string PluginId,
     string RootDirectory,
@@ -124,6 +126,7 @@ internal sealed record ContributionDeclarationContext(
     public PluginDataEntry? FindDataEntry(string name) =>
         DataEntries.FirstOrDefault(entry => entry.Name == name);
 }
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 /// <summary>Unwraps the kind's descriptors back to their domain values (the inverse of
 /// the contract's wrapping). A foreign descriptor type in the list is a wiring bug and

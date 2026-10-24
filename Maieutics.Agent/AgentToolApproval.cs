@@ -54,6 +54,9 @@ public interface IAgentChildScopeRegistry
 /// <param name="Arguments">Detached untrusted model arguments.</param>
 /// <param name="Classification">The tool's declared hints, or null when it declares none.</param>
 /// <param name="Reason">Why this call needs approval. This is policy text, never model output.</param>
+// RunId and CallId are part of the public approval-request contract: gate implementations
+// correlate and log with them even though the built-in gates key on SessionId.
+// ReSharper disable NotAccessedPositionalProperty.Global
 public sealed record AgentToolApprovalRequest(
     AgentSessionId SessionId,
     AgentRunId RunId,
@@ -89,8 +92,8 @@ public sealed record AgentToolApprovalDecision(bool Approved, string Reason, boo
 ///     Decides whether one tool call may execute. The Agent runtime calls this immediately
 ///     before invoking a function, after <see cref="AgentToolStarted" /> and before any side
 ///     effect. Implementations own their waiting budget and must return a terminal decision:
-///     they never throw for user absence, and a cancelled
-///     <paramref name="cancellationToken" /> means the run ended, not that the user declined.
+///     they never throw for user absence, and a cancelled wait means the run ended, not
+///     that the user declined.
 /// </summary>
 /// <remarks>
 ///     A denial is a recoverable tool failure — the model receives a typed

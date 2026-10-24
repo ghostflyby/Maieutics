@@ -39,37 +39,55 @@ public sealed class FileLoggingTests : IAsyncDisposable
     [Fact]
     public void LoggersFromDifferentCategoriesWriteFormattedRecordLines()
     {
-        using var provider = new FileLoggerProvider(logDirectory);
-        var first = provider.CreateLogger("Maieutics.Tests.First");
-        var second = provider.CreateLogger("Maieutics.Tests.Second");
+        // The mid-test Dispose is the point of the test (the provider holds the log file
+        // exclusively), so the provider is owned explicitly instead of a using scope.
+        var provider = new FileLoggerProvider(logDirectory);
+        try
+        {
+            var first = provider.CreateLogger("Maieutics.Tests.First");
+            var second = provider.CreateLogger("Maieutics.Tests.Second");
 
-        first.LogInformation("first message");
-        second.LogWarning("second message");
+            first.LogInformation("first message");
+            second.LogWarning("second message");
 
-        // Dispose before reading: the provider holds the log file exclusively, and
-        // Windows rejects a concurrent read with a sharing violation.
-        provider.Dispose();
-        var lines = File.ReadAllLines(LogFilePath);
-        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Information\] Maieutics\.Tests\.First: first message$", lines.Single(line => line.Contains("Maieutics.Tests.First", StringComparison.Ordinal)));
-        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Warning\] Maieutics\.Tests\.Second: second message$", lines.Single(line => line.Contains("Maieutics.Tests.Second", StringComparison.Ordinal)));
+            // Dispose before reading: the provider holds the log file exclusively, and
+            // Windows rejects a concurrent read with a sharing violation.
+            provider.Dispose();
+            var lines = File.ReadAllLines(LogFilePath);
+            Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Information\] Maieutics\.Tests\.First: first message$", lines.Single(line => line.Contains("Maieutics.Tests.First", StringComparison.Ordinal)));
+            Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Warning\] Maieutics\.Tests\.Second: second message$", lines.Single(line => line.Contains("Maieutics.Tests.Second", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            provider.Dispose();
+        }
     }
 
     [Fact]
     public void ExceptionLoggingIncludesTheExceptionTypeOnItsOwnLine()
     {
-        using var provider = new FileLoggerProvider(logDirectory);
-        var logger = provider.CreateLogger("Maieutics.Tests.Errors");
+        // The mid-test Dispose is the point of the test (the provider holds the log file
+        // exclusively), so the provider is owned explicitly instead of a using scope.
+        var provider = new FileLoggerProvider(logDirectory);
+        try
+        {
+            var logger = provider.CreateLogger("Maieutics.Tests.Errors");
 
-        logger.LogError(new InvalidOperationException("boom"), "operation failed");
+            logger.LogError(new InvalidOperationException("boom"), "operation failed");
 
-        // Dispose before reading: the provider holds the log file exclusively, and
-        // Windows rejects a concurrent read with a sharing violation.
-        provider.Dispose();
-        var lines = File.ReadAllLines(LogFilePath);
-        Assert.Equal(2, lines.Length);
-        Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Error\] Maieutics\.Tests\.Errors: operation failed$", lines[0]);
-        Assert.Contains("InvalidOperationException", lines[1]);
-        Assert.Contains("boom", lines[1]);
+            // Dispose before reading: the provider holds the log file exclusively, and
+            // Windows rejects a concurrent read with a sharing violation.
+            provider.Dispose();
+            var lines = File.ReadAllLines(LogFilePath);
+            Assert.Equal(2, lines.Length);
+            Assert.Matches(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} Error\] Maieutics\.Tests\.Errors: operation failed$", lines[0]);
+            Assert.Contains("InvalidOperationException", lines[1]);
+            Assert.Contains("boom", lines[1]);
+        }
+        finally
+        {
+            provider.Dispose();
+        }
     }
 
     [Fact]

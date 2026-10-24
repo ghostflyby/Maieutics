@@ -44,7 +44,8 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>Async disposal for <c>await using</c> consumers; the sink's teardown is
+    /// synchronous.</summary>
     public ValueTask DisposeAsync()
     {
         Dispose();

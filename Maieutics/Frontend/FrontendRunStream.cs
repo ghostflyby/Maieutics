@@ -30,7 +30,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly FrontendDenoReplPresentationRouter? presentationRouter;
     private readonly ILogger logger;
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private Task pump = Task.CompletedTask;
     private TaskCompletionSource replayAppended = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes on the next frame appended to the
@@ -91,13 +90,15 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     /// <summary>Starts the pump. The stream owns the run's disposal and detaches the
     /// presentation scope once the terminal frame is published.</summary>
-    internal void Start(IAsyncDisposable? presentationScope)
+    internal void Start(IAsyncDisposable? scope)
     {
         if (Interlocked.CompareExchange(ref startState, 1, 0) != 0)
             throw new InvalidOperationException("The frontend run stream is already started.");
 
-        this.presentationScope = presentationScope;
-        pump = Task.Run(RunPumpAsync);
+        presentationScope = scope;
+        // The pump settles its own outcome (terminal publish, fault log, run disposal);
+        // no external observation point observes the task itself.
+        _ = Task.Run(RunPumpAsync);
     }
 
     /// <summary>Gets the owning run identifier.</summary>
@@ -170,7 +171,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         lock (gate)
         {
             var lines = new List<string>(replay.Count);
-            var index = 0;
             foreach (var frame in replay)
             {
                 if (lines.Count >= 32)
@@ -180,7 +180,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 }
 
                 lines.Add($"#{frame.Sequence}: {frame.Type}");
-                index++;
             }
 
             return lines;

@@ -38,7 +38,7 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
         var ingested = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("inspectable bytes")));
         using var store = new SqliteTranscriptStore(
             SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(agentRoot, "families"), familyId));
-        store.AppendTurn(sessionId, Turn(sessionId, ingested.Sha256), [ingested.Sha256]);
+        store.AppendTurn(sessionId, Turn(ingested.Sha256), [ingested.Sha256]);
 
         var ensured = AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]);
 
@@ -68,7 +68,7 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
         var missing = new string('a', 64);
         using var store = new SqliteTranscriptStore(
             SqliteTranscriptStore.FamilyDatabasePath(Path.Combine(agentRoot, "families"), sessionId));
-        store.AppendTurn(sessionId, Turn(sessionId, missing), [missing]);
+        store.AppendTurn(sessionId, Turn(missing), [missing]);
 
         Assert.Equal(0, AgentObjectView.Repair(viewSessionsRoot, objectsRoot, [store]));
         Assert.False(Directory.Exists(Path.Combine(viewSessionsRoot, sessionId.Value.ToString("N"), "objects")));
@@ -92,7 +92,7 @@ public sealed class AgentObjectViewTests : IAsyncDisposable
         }
     }
 
-    private static AgentTranscriptTurn Turn(AgentSessionId sessionId, string sha256)
+    private static AgentTranscriptTurn Turn(string sha256)
     {
         var runId = new AgentRunId(Guid.Parse($"00000000-0000-0000-0000-{sha256[..11].PadLeft(12, '0')}"));
         return new AgentTranscriptTurn(

@@ -12,7 +12,7 @@ namespace Maieutics.Product.Tests;
 ///     the invoke path, and a dispose that races a plugin-set restart must join the restart
 ///     before returning so nothing lives or attaches behind it. The interleavings are driven
 ///     deterministically through the simulated-host seam
-///     (<see cref="PluginHostInvokeTests.CreateHarnessAsync"/> +
+///     (<see cref="PluginHostInvokeTests.CreateHarnessAsync(CancellationToken)"/> +
 ///     <see cref="PluginHostManager.HandleHostMessage"/> + <see cref="PluginHostManager.AttachHostAsync"/>)
 ///     with the fake deno executable, so no real deno host process runs; the dispose-restart
 ///     interleaving additionally arms the manager's real watcher and triggers it through the

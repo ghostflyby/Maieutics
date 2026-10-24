@@ -74,8 +74,8 @@ internal sealed class Workspace : IPermissionVariableSource
         var owner = home
                     ?? throw new InvalidOperationException(
                         "Workspace links require the fixed workspace home.");
-        var record = owner.Open(path, alias);
-        return CommitLinksChanged(record);
+        _ = owner.Open(path, alias);
+        return CommitLinksChanged();
     }
 
     internal WorkspaceSnapshot CloseLink(string name)
@@ -83,11 +83,11 @@ internal sealed class Workspace : IPermissionVariableSource
         var owner = home
                     ?? throw new InvalidOperationException(
                         "Workspace links require the fixed workspace home.");
-        var record = owner.Close(name);
-        return CommitLinksChanged(record);
+        _ = owner.Close(name);
+        return CommitLinksChanged();
     }
 
-    private WorkspaceSnapshot CommitLinksChanged(WorkspaceLinkRecord record)
+    private WorkspaceSnapshot CommitLinksChanged()
     {
         lock (gate)
         {
@@ -1106,6 +1106,8 @@ internal sealed partial record WorkspaceSnapshot(
     [Flags]
     private enum UnixOpenFlags
     {
+        // The conventional zero member of the flags enum; no call site opens with no flags.
+        // ReSharper disable once UnusedMember.Local
         None = 0,
         NonBlocking = 1,
         NoFollow = 2,

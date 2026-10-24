@@ -375,7 +375,6 @@ internal sealed class TerminalRegistry(
                     $"An Agent session may own at most {options.MaxSessionsPerAgent} terminal sessions.");
 
             var created = new TerminalSession(
-                ownerSessionId,
                 sessionId,
                 isDefault,
                 workspace.Capture().RootPath,

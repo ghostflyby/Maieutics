@@ -93,7 +93,7 @@ internal sealed record SubagentTaskUsage(int? InputTokens, int? OutputTokens, in
 /// waited on and cancelled through the uniform control contract (ADR 0030 decision 5). The
 /// owning subsystems keep their richer typed tools alongside; the plane's control surface is
 /// deliberately narrow.</summary>
-internal sealed class TaskResourceProvider : IResourceProvider, IResourceCatalogProvider
+internal sealed class TaskResourceProvider : IResourceCatalogProvider
 {
     internal const string Scheme = "task";
 

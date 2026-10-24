@@ -138,6 +138,10 @@ internal static class FrontendPromptExpansion
             var partIndex = 0;
             var droppedBlocks = 0;
             var promptBytes = 0L;
+            // The MCP SDK annotates Messages non-nullable, but it deserializes a server's
+            // JSON: an absent field still reaches here as null, so the fallback is runtime
+            // defense, not dead code.
+            // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
             foreach (var message in result.Messages ?? [])
             {
                 partIndex++;

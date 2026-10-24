@@ -154,6 +154,8 @@ internal static partial class WorkspaceFileIdentityReader
         }
     }
 
+    // The platform is spelled macOS.
+    // ReSharper disable once InconsistentNaming
     private static WorkspaceFileIdentity? TryReadMacOS(string directoryPath)
     {
         var descriptor = OpenUnix(
@@ -266,6 +268,8 @@ internal static partial class WorkspaceFileIdentityReader
     /// <summary>The struct the macOS <c>fstat</c> writes: 144 bytes with 16-byte timespecs;
     /// only the identity fields are read.</summary>
     [StructLayout(LayoutKind.Explicit, Size = 144)]
+    // The platform is spelled macOS.
+    // ReSharper disable once InconsistentNaming
     internal struct StatMacOS
     {
         [FieldOffset(0)]
@@ -325,6 +329,8 @@ internal static partial class WorkspaceFileIdentityReader
     [Flags]
     private enum UnixOpenFlags
     {
+        // The conventional zero member of the flags enum; no call site opens with no flags.
+        // ReSharper disable once UnusedMember.Local
         None = 0,
         Directory = 1,
         NoFollow = 2

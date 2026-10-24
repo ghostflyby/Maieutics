@@ -655,15 +655,10 @@ internal sealed class IdeFunctions
                characterElement.TryGetInt32(out character);
     }
 
-    /// <summary>Announces one IDE request on the run's event stream
-    /// <summary>Announces one IDE request on the run's event stream
-    /// <summary>Announces one IDE request on the run's event stream (the sequenced,
-    /// replayable <c>ide.request</c> payload — ADR 0042 decision 1) and awaits its answer
-    /// through the registry, bounded by the request timeout and the caller's cancellation.</summary>
     // ---------- stage E: virtual file systems (decision 11) ----------
     private const string IdeFsUriPrefix = "idefs:///";
 
-    /// <summary>Validates one `idefs:///<folderId>/<segments…>` URI and splits it.
+    /// <summary>Validates one <c>idefs:///&lt;folderId&gt;/&lt;segments…&gt;</c> URI and splits it.
     /// This is the kernel-side half of the containment contract (ADR 0042 decision
     /// 11): the id segment must be the opaque ASCII token shape the frontend
     /// assigns, every following segment must satisfy the workspace segment
@@ -965,11 +960,6 @@ internal sealed class IdeFunctions
             // replayed answer always renders as a typed 404 at the answer endpoint.
             requests.Abandon(registration.RequestId);
         }
-    }
-
-    private void EnsureConnected(AgentToolContext context)
-    {
-        EnsureConnectedCore(context.SessionId.Value.ToString("N"));
     }
 
     /// <summary>Script-tool invocations (REPL, ide.query) carry no agent tool
@@ -1420,26 +1410,6 @@ internal sealed class IdeFunctions
         buffer.Position = 0;
         using var document = JsonDocument.Parse(buffer);
         return document.RootElement.Clone();
-    }
-
-    private static JsonDocument BuildJsonDocument(
-        params (string Name, JsonElement Value)[] properties)
-    {
-        var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            foreach (var (name, value) in properties)
-            {
-                writer.WritePropertyName(name);
-                value.WriteTo(writer);
-            }
-
-            writer.WriteEndObject();
-        }
-
-        buffer.Position = 0;
-        return JsonDocument.Parse(buffer);
     }
 
     private static AIFunction CreateFunction(Delegate method, string name, string description)

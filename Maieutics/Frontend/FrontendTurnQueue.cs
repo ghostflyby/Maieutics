@@ -133,7 +133,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     {
         service.EnsureSessionResolved(sessionId);
         var state = GetOrAdd(ParseSessionId(sessionId));
-        var removed = false;
+        bool removed;
         lock (state.Gate)
         {
             var index = state.Items.FindIndex(item => item.Id == itemId);
@@ -338,7 +338,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// session open a second queue.</summary>
     /// <exception cref="FrontendFailureException">
     ///     <see cref="FrontendErrors.InvalidRequest" /> when the id is not a well-formed
-    ///     non-empty identifier, exactly as the other session-addressed routes answer.</summary>
+    ///     non-empty identifier, exactly as the other session-addressed routes answer.</exception>
     private static AgentSessionId ParseSessionId(string sessionId)
     {
         if (!Guid.TryParseExact(sessionId, "N", out var parsed) || parsed == Guid.Empty)
@@ -499,8 +499,8 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 {
                     var runId = await SubmitWithBusyRetryAsync(sessionId, item.Text, cancellation.Token)
                         .ConfigureAwait(false);
-                    if (RunningPublishGateForTests is { } gate)
-                        await gate(cancellation.Token).ConfigureAwait(false);
+                    if (RunningPublishGateForTests is { } publishGate)
+                        await publishGate(cancellation.Token).ConfigureAwait(false);
                     lock (state.Gate)
                     {
                         state.Running = new RunningItem(item.Id, runId);
@@ -508,7 +508,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                     }
 
                     PublishChange(state);
-                    await AwaitRunSettledAsync(sessionId, runId, cancellation.Token).ConfigureAwait(false);
+                    await AwaitRunSettledAsync(runId, cancellation.Token).ConfigureAwait(false);
                     logger.LogDebug(
                         "Run {RunId} settled; turn queue item {ItemId} of session {SessionId} removed.",
                         runId,
@@ -658,7 +658,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
 
     /// <summary>Waits for one run's terminal boundary. The run's outcome is rendered by
     /// its own frames; the queue only needs the settle signal.</summary>
-    private async Task AwaitRunSettledAsync(AgentSessionId sessionId, string runId, CancellationToken cancellationToken)
+    private async Task AwaitRunSettledAsync(string runId, CancellationToken cancellationToken)
     {
         // StartTurnAsync registers the run's stream before returning, so the lookup
         // succeeds; a run that already left the bounded registry also already settled.

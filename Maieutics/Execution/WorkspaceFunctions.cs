@@ -148,12 +148,12 @@ internal sealed class WorkspaceFunctions
                 catch (WorkspaceBridgeCoverageException)
                 {
                     // The frontend's folders do not cover this directory; list locally.
-                    entries = EnumerateLocalDirectory(snapshot, uri, maximumDirectoryEntries, cancellationToken);
+                    entries = EnumerateLocalDirectory(snapshot, uri, cancellationToken);
                 }
             }
             else
             {
-                entries = EnumerateLocalDirectory(snapshot, uri, maximumDirectoryEntries, cancellationToken);
+                entries = EnumerateLocalDirectory(snapshot, uri, cancellationToken);
             }
 
             var comparisons = 0;
@@ -212,7 +212,6 @@ internal sealed class WorkspaceFunctions
     private List<WorkspaceDirectoryEntry> EnumerateLocalDirectory(
         WorkspaceSnapshot snapshot,
         string? uri,
-        int maximumDirectoryEntries,
         CancellationToken cancellationToken)
     {
         var directory = snapshot.Resolve(uri);

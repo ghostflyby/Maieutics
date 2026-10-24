@@ -320,7 +320,6 @@ internal sealed partial class ReplControlHost : IDisposable
                 await ObserveCompletedAsync(toolInvocations).ConfigureAwait(false);
                 logger.LogDebug("Control message received: {Message}.", text);
                 await HandleBusMessageAsync(
-                    sessionId,
                     gateSessionId,
                     connection,
                     text,
@@ -464,7 +463,6 @@ internal sealed partial class ReplControlHost : IDisposable
     }
 
     private async Task HandleBusMessageAsync(
-        string sessionId,
         string gateSessionId,
         SessionBusConnection connection,
         string text,
@@ -622,12 +620,6 @@ internal sealed partial class ReplControlHost : IDisposable
                 correlationId,
                 Payload(new BusErrorPayload(code, message))),
             ct).ConfigureAwait(false);
-    }
-
-    private async Task PushAsync(string sessionId, ReplEnvelope envelope, CancellationToken ct)
-    {
-        if (!connections.TryGetValue(sessionId, out var connection)) return;
-        await PushAsync(connection, envelope, ct).ConfigureAwait(false);
     }
 
     private static async Task PushAsync(
@@ -796,7 +788,7 @@ internal sealed partial class ReplControlHost : IDisposable
     /// <summary>Tracks the async flow of a capability-initiated tool invoke: hook chains
     /// must not re-enter (the plugin explicitly asked the kernel for the tool, and the
     /// outer hook would otherwise recurse into itself).</summary>
-    private static readonly AsyncLocal<bool> insideCapabilityCall = new();
+    private static readonly AsyncLocal<bool> InsideCapabilityCall = new();
 
     /// <summary>Executes one script-callable kernel tool on behalf of a plugin capability
     /// call. The composition root binds this to the plugin host manager's capability
@@ -808,7 +800,7 @@ internal sealed partial class ReplControlHost : IDisposable
         CancellationToken cancellationToken,
         string? sessionId = null)
     {
-        insideCapabilityCall.Value = true;
+        InsideCapabilityCall.Value = true;
         try
         {
             return await InvokeToolAsync(
@@ -822,7 +814,7 @@ internal sealed partial class ReplControlHost : IDisposable
         {
             // The flag flows through ExecutionContext: leaving it set would leak into the
             // caller's continuations and silently skip hook chains for unrelated calls.
-            insideCapabilityCall.Value = false;
+            InsideCapabilityCall.Value = false;
         }
     }
 
@@ -860,7 +852,7 @@ internal sealed partial class ReplControlHost : IDisposable
         JsonElement envelope;
         try
         {
-            if (!insideCapabilityCall.Value)
+            if (!InsideCapabilityCall.Value)
             {
                 argumentValues = await RunPreHooksAsync(tool, argumentValues, correlationId, invokeToken)
                     .ConfigureAwait(false);
@@ -921,7 +913,7 @@ internal sealed partial class ReplControlHost : IDisposable
             if (!string.IsNullOrWhiteSpace(correlationId)) operations.Remove(correlationId);
         }
 
-        if (!insideCapabilityCall.Value)
+        if (!InsideCapabilityCall.Value)
         {
             await RunPostHooksAsync(
                 tool, argumentValues, correlationId, envelope,

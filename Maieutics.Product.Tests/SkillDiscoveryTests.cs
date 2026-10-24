@@ -12,13 +12,11 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
         await TempArea.DeleteAsync(root, CancellationToken.None);
     }
 
-    private string WriteSkill(string relativeDirectory, string body, string fileName = "SKILL.md")
+    private void WriteSkill(string relativeDirectory, string body, string fileName = "SKILL.md")
     {
         var directory = Path.Combine(root, relativeDirectory);
         Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, fileName);
-        File.WriteAllText(path, body);
-        return path;
+        File.WriteAllText(Path.Combine(directory, fileName), body);
     }
 
     private const string ValidFrontmatter = """

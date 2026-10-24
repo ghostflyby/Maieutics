@@ -51,6 +51,9 @@ public sealed class AgentToolContext
     /// <summary>Gets the owning session identifier.</summary>
     public AgentSessionId SessionId { get; }
 
+    // RunId is part of the public tool-context contract: tool implementations correlate
+    // and log with it even where the built-in tools key on SessionId.
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global
     /// <summary>Gets the owning run identifier.</summary>
     public AgentRunId RunId { get; }
 

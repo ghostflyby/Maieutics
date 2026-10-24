@@ -18,9 +18,6 @@ namespace Maieutics.Plugins;
 
 internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
 
-/// <summary>Per-plugin lifecycle state reported by the host (backward compatible new field).</summary>
-internal sealed record PluginState(string PluginId, string ExportName, string Specifier, string State, string? Failure);
-
 internal sealed record PluginHostStatus(
     PluginHostState State,
     int PluginCount,
@@ -44,7 +41,9 @@ internal enum PluginApprovalState
 
 /// <summary>The approval view of one discovered plugin: current classification, the
 /// requested versus approved declaration fingerprints, and both grant summaries so a
-/// renderer can show what changed since the last approval.</summary>
+/// renderer can show what changed since the last approval. The approved fingerprint is
+/// carried for that renderer even though the current list view renders only the state.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record PluginApprovalInfo(
     string PluginId,
     string Name,
@@ -54,6 +53,7 @@ internal sealed record PluginApprovalInfo(
     PluginPermissionGrants RequestedGrants,
     PluginPermissionGrants? ApprovedGrants,
     int WorkerCount);
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 internal enum PluginHostState
 {
@@ -391,7 +391,6 @@ internal sealed class PluginHostManager(
 
     private readonly List<PluginRegistration> registrations = [];
     private readonly List<PluginRegistration> hostRegistrations = [];
-    private readonly List<PluginState> states = [];
 
     /// <summary>Pids of the REPL processes the attached plugin host derived, keyed by pid to the
     /// session id the host reported. Used to release the pid-scoped registrations (session identity
@@ -683,11 +682,11 @@ internal sealed class PluginHostManager(
     internal IReadOnlyList<PluginSurfaceInfo> GetPluginSurfaces(string? gatewayHostname, int gatewayPort, string? gatewayToken)
     {
         PluginDescriptor[] snapshot;
-        PluginApprovalState[] states;
+        PluginApprovalState[] surfaceStates;
         lock (gate)
         {
             snapshot = [.. descriptors];
-            states = snapshot.Select(descriptor =>
+            surfaceStates = snapshot.Select(descriptor =>
                 approvalStates.GetValueOrDefault(descriptor.Id, PluginApprovalState.PendingApproval)).ToArray();
         }
 
@@ -695,7 +694,7 @@ internal sealed class PluginHostManager(
         for (var index = 0; index < snapshot.Length; index++)
         {
             var descriptor = snapshot[index];
-            var state = states[index];
+            var state = surfaceStates[index];
             string? pageUrl = null;
             if (state == PluginApprovalState.Approved &&
                 gatewayHostname is not null && gatewayToken is not null &&
@@ -1010,7 +1009,7 @@ internal sealed class PluginHostManager(
                 if (IsApprovalBlockedLock(descriptor.Id))
                 {
                     logger.LogWarning(
-                        "Plugin '{PluginId}' declarations are not approved; its workers, MCP servers, triggers, and capabilities stay inactive until approved (%plugin approve {PluginId}).",
+                        "Plugin '{PluginId}' declarations are not approved; its workers, MCP servers, triggers, and capabilities stay inactive until approved (%plugin approve {CommandTarget}).",
                         descriptor.Id,
                         descriptor.Id);
                     continue;
@@ -1266,7 +1265,7 @@ internal sealed class PluginHostManager(
                 // removals cascade through the dependency graph's exclusion rules. Pure
                 // content changes leave the set unchanged and fall through to the in-process
                 // worker reload below.
-                if (LocalPluginSetDiffers(out _))
+                if (LocalPluginSetDiffers())
                 {
                     logger.LogInformation(
                         "Watched change at '{Path}' changes the local plugin set; restarting the plugin host.",
@@ -1329,13 +1328,13 @@ internal sealed class PluginHostManager(
     /// descriptors. The scan is file-only — no Deno toolchain resolution — so every debounced
     /// watcher event can afford it; registry-installed (jsr:/npm:) plugins are not part of this
     /// check and still require a manual host-process restart, consistent with the import-map
-    /// change they imply. The out parameter carries the fresh local roots for logging.</summary>
-    private bool LocalPluginSetDiffers(out IReadOnlyCollection<string> scannedRoots)
+    /// change they imply.</summary>
+    private bool LocalPluginSetDiffers()
     {
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        scannedRoots = ScanLocalPluginRoots();
+        var scannedRoots = ScanLocalPluginRoots();
         HashSet<string> current;
         lock (gate)
         {
@@ -1491,7 +1490,7 @@ internal sealed class PluginHostManager(
             // gap: if the set differs again — from a change in that window — the coalesced
             // restart machinery runs another generation. The diff is deterministic, so this
             // converges instead of looping.
-            if (LocalPluginSetDiffers(out _))
+            if (LocalPluginSetDiffers())
             {
                 logger.LogWarning(
                     "The local plugin set changed while the host was restarting; starting another generation.");
@@ -1605,7 +1604,7 @@ internal sealed class PluginHostManager(
                         if (!previouslyBlocked.Contains(reloaded.Id))
                             logger.LogWarning(
                                 "Plugin '{PluginId}' declarations changed since approval; its approval is revoked " +
-                                "and the plugin stays inactive until re-approved (%plugin approve {PluginId}).",
+                                "and the plugin stays inactive until re-approved (%plugin approve {CommandTarget}).",
                                 reloaded.Id,
                                 reloaded.Id);
                         await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
@@ -1788,6 +1787,13 @@ internal sealed class PluginHostManager(
     /// leaving it running unobserved. A worker that ignores the abort keeps running — the
     /// host has no per-call termination (killing it would discard the plugin's other state),
     /// so the signal is the whole mechanism.</param>
+    /// <param name="pluginId">The plugin whose worker serves the extension point.</param>
+    /// <param name="exportName">The worker export that carries the extension point.</param>
+    /// <param name="extensionPoint">The extension point name to invoke.</param>
+    /// <param name="request">The JSON payload delivered to the handler; null when the
+    /// extension point takes no arguments.</param>
+    /// <param name="cancellationToken">Cancels the caller's wait for the outcome.</param>
+    /// <param name="timeout">Bounds the handler's run; null uses <see cref="InvokeTimeout"/>.</param>
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
         string pluginId,
         string exportName,
@@ -3691,10 +3697,6 @@ internal sealed class PluginHostManager(
             foreach (var registration in DeclarativeRegistrationsLock())
                 registrations.Add(registration);
 
-            states.Clear();
-            foreach (var state in payload.States ?? [])
-                states.Add(new PluginState(state.PluginId, state.ExportName, state.Specifier, state.State, state.Failure));
-
             logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
                 registrations.Count,
@@ -3834,7 +3836,8 @@ internal sealed class PluginHostManager(
     {
         var candidates = descriptorExtensions.Keys
             .Concat(recordedDeclarations.Keys.Select(static key => key.PluginId))
-            .Distinct(StringComparer.Ordinal);
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
         foreach (var contract in Contributions.ContributionKindCatalog.Contracts)
         {
             if (!contract.HasDeclarativeRegistrations) continue;

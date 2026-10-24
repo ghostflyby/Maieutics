@@ -104,7 +104,10 @@ public sealed record AgentSubagentSpec
     public IReadOnlyList<string>? Tools { get; init; }
 
     /// <summary>Gets the wall-clock budget of the child run, overriding
-    /// <see cref="AgentSubagentOptions.MaxChildTurnDuration" /> when set.</summary>
+    /// <see cref="AgentSubagentOptions.MaxChildTurnDuration" /> when set. Optional per-child
+    /// override: orchestration surfaces set it when one child needs a different budget from
+    /// the session default; leaving it unset inherits the session option.</summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global
     public TimeSpan? MaxTurnDuration { get; init; }
 }
 
@@ -306,9 +309,9 @@ internal sealed class AgentSubagentHost(
     /// <summary>Starts a detached (session-scoped) child run for an orchestration surface
     /// outside any agent run — the control channel's model-orchestration endpoints. A detached
     /// child has no parent run: nothing joins it at a turn boundary, its lifetime is the
-    /// process or an explicit cancel, and <see cref="MaxDetachedChildren"/> bounds how many it
-    /// hosts. It is otherwise a complete child run — own profile lease, event sequence, and
-    /// tool registry — addressable through the same registry and task plane.</summary>
+    /// process or an explicit cancel, and <see cref="AgentSubagentOptions.MaxDetachedChildren"/>
+    /// bounds how many it hosts. It is otherwise a complete child run — own profile lease, event
+    /// sequence, and tool registry — addressable through the same registry and task plane.</summary>
     /// <param name="spec">The composed child run description.</param>
     /// <param name="baseOptions">
     ///     The session-level options the child derives from: the subagent configuration
@@ -321,6 +324,9 @@ internal sealed class AgentSubagentHost(
     /// </param>
     /// <param name="cancellationToken">Cancels starting; the child's lifetime is session-scoped
     /// and independent afterwards.</param>
+    /// <param name="onChildSessionCreated">Optional callback invoked with the child's session id
+    /// once the child session exists, letting the orchestration surface link it without waiting
+    /// for the child's first turn.</param>
     /// <exception cref="AgentSubagentBudgetExceededException">The session hosts its detached
     /// cap of children.</exception>
     public async ValueTask<IAgentSubagentHandle> StartDetachedChildAsync(
@@ -744,13 +750,13 @@ internal sealed class AgentSubagentHost(
 
         public Task<AgentSubagentResult> Completion => completionSource.Task;
 
-        public Task MapperTask { get; private set; } = Task.CompletedTask;
-
         public Task PumpTask { get; private set; } = Task.CompletedTask;
 
         public void Start(IAgentSubagentEventSink sink)
         {
-            MapperTask = MapCompletionAsync();
+            // The mapper settles the child's completion mapping internally (its outcome is
+            // the completion source); no external observation point observes the task itself.
+            _ = MapCompletionAsync();
             PumpTask = PumpEventsAsync(sink);
         }
 

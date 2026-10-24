@@ -664,16 +664,6 @@ internal sealed class DenoReplExecutionCollector
         return result;
     }
 
-    private static IReadOnlyDictionary<string, JsonElement> ToDictionary(JsonElement? element)
-    {
-        if (element is not { ValueKind: JsonValueKind.Object } value)
-            return new Dictionary<string, JsonElement>();
-        return value.EnumerateObject().ToDictionary(
-            static property => property.Name,
-            static property => property.Value.Clone(),
-            StringComparer.Ordinal);
-    }
-
     private static string TruncateUtf8(string value, int maximumBytes, out int selectedBytes)
     {
         if (maximumBytes <= 0 || value.Length == 0)

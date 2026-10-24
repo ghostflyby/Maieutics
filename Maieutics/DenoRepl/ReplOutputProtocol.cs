@@ -59,7 +59,9 @@ internal enum ReplOutputFrameType : byte
     ClearOutput = 3
 }
 
-/// <summary>Base type of every decoded REPL output frame.</summary>
+/// <summary>Base type of every decoded REPL output frame. The frame type rides the
+/// output IPC wire; in-process dispatch happens on the decoded CLR type.</summary>
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal abstract record ReplOutputFrame(ReplOutputFrameType Type, long Seq, string ExecutionId);
 
 internal sealed record ReplOutputConsoleFrame(

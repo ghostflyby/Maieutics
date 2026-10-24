@@ -85,7 +85,6 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
 {
     private readonly FrontendCommRouter router;
     private readonly AgentSessionId sessionId;
-    private readonly FrontendUiFormState state;
     private readonly FrontendFormHandlers handlers;
     private readonly string commId = Guid.NewGuid().ToString("N");
     private readonly Lock gate = new();
@@ -94,12 +93,10 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
     private FrontendFormModel(
         FrontendCommRouter router,
         AgentSessionId sessionId,
-        FrontendUiFormState state,
         FrontendFormHandlers handlers)
     {
         this.router = router;
         this.sessionId = sessionId;
-        this.state = state;
         this.handlers = handlers;
     }
 
@@ -176,7 +173,7 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
         FrontendFormHandlers handlers,
         CancellationToken cancellationToken)
     {
-        var model = new FrontendFormModel(router, sessionId, state, handlers);
+        var model = new FrontendFormModel(router, sessionId, handlers);
         var open = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?> { ["state"] = state },
             FrontendJsonContext.Default.DictionaryStringObject);
@@ -264,11 +261,16 @@ internal sealed record FrontendPluginSurfaceEntry(
     string? FormError,
     string? PageUrl);
 
-/// <summary>The gateway entrance as Frontend may consume it (ADR 0038 stage 4).</summary>
+/// <summary>The gateway entrance as Frontend may consume it (ADR 0038 stage 4). The
+/// gateway seam is wired on the host side; the frontend consumes it through the
+/// composed <c>GetHttpGateway</c> surface, so the carried fields are part of the
+/// contract even before a reader lands.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record FrontendPluginGateway(
     string Hostname,
     int Port,
     string Token);
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 /// <summary>
 ///     Plugin-surface seam (ADR 0038 stage 4): the composition root binds this to the

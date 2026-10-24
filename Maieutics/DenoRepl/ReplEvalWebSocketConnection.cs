@@ -544,6 +544,9 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         state.Completion.TrySetResult(terminal);
     }
 
+    // The flag exists to opt specific envelope kinds into the correlation precondition —
+    // per-callsite strictness is its whole use.
+    // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
     private ExecutionState RequireActive(
         ReplEvalEnvelope envelope,
         string executionId,

@@ -405,6 +405,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         Assert.Equal("ide_selector_no_match", invocation.Failure!.Code);
     }
 
+    // ReSharper disable once InconsistentNaming
     [Fact(Timeout = 30_000)]
     public async Task V4aPatchSelectorLocatesThroughSectionContext()
     {
@@ -508,6 +509,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         TaskCompletionSource<string> announcedPayload = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var lastPayloadJson = string.Empty;
         var lastMethod = string.Empty;
+        // The announce callback and the answering loop below share `lastPayloadJson` /
+        // `lastMethod` as the live "latest request" state by design; each round trip is
+        // quiesced before the shared locals are rewritten.
+        // ReSharper disable once AccessToModifiedClosure
         var invocation = function.InvokeAsync(
             ContextArguments(
                 argumentsJson,
@@ -560,6 +565,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 
         const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
 
+        // `method` exists only for the answering lambda's per-request assertion.
+        // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
         var invocation = await InvokeAnsweringByMethodAsync(
             apply,
             "{\"edit\":" + edit + "}",
@@ -600,6 +607,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         AgentToolException? failure = null;
         try
         {
+            // `method` exists only for the answering lambda's per-request assertion.
+            // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
             await InvokeAnsweringByMethodAsync(
                 apply,
                 "{\"edit\":" + edit + "}",

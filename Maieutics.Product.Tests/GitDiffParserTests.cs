@@ -38,6 +38,8 @@ public sealed class GitDiffParserTests
         Assert.Equal("added tail", hunk.Lines[4].Text);
     }
 
+    // The diff prefixes are literally a/ and b/.
+    // ReSharper disable once InconsistentNaming
     [Fact]
     public void ParsesMultipleFilesAndStripsABPrefixes()
     {

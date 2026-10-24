@@ -110,7 +110,7 @@ public sealed class PluginRegistryDiscoveryTests
             "@acme/widget",
             "jsr:@acme/widget@1.0.0",
             "deno",
-            (url, _) => Task.FromResult<string?>(url.EndsWith("deno.json") ? denoJson : null),
+            (url, _) => Task.FromResult(url.EndsWith("deno.json") ? denoJson : null),
             diagnostics,
             TestContext.Current.CancellationToken);
 

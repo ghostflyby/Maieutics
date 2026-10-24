@@ -908,6 +908,8 @@ public sealed class AgentSubagentTests
             yield return new ChatResponseUpdate(ChatRole.Assistant, $"c{index++}");
             await Task.Yield();
         }
+        // The stream ends only when the test cancels it.
+        // ReSharper disable once IteratorNeverReturns
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> WaitAfterTextAsync(

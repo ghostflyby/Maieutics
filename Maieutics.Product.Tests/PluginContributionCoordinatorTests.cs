@@ -613,9 +613,11 @@ public sealed class PluginContributionCoordinatorTests
         /// never the observation mechanism.</summary>
         public async Task WaitUntilAsync(Func<bool> predicate, int seconds = 5)
         {
-            using var deadline = TestDeadlines.Create(
-                TestContext.Current.CancellationToken,
-                TimeSpan.FromSeconds(seconds));
+            // The per-call budget is dynamic, so it stays an explicit stage source; the
+            // budget is the failure (a TimeoutException), never the observation mechanism.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(seconds));
             while (true)
             {
                 Task signal;

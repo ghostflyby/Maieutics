@@ -33,17 +33,16 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
     [Fact(Timeout = 60_000)]
     public async Task WorkerExitTransitionWakesAWaiterThatSubscribedAtTheSettledVersion()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(50));
         var provider = new GatedProvider(answer: Answer);
-        await using var harness = await StartHarnessAsync(deadline.Token, provider);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHarnessAsync(TestContext.Current.CancellationToken, provider);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
         var addressed = new Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
 
         // One item, parked at the gated provider: every later queue mutation is under
         // the test's control, and none can happen until the release. The worker is
         // alive while the run is parked, so its completion task is resolvable now.
         harness.TurnQueue.Enqueue(sessionId, [Answer]);
-        await provider.WaitForParkedAsync(1, deadline.Token);
+        await provider.WaitForParkedAsync(1, TestContext.Current.CancellationToken);
         if (!harness.TurnQueue._sessions.TryGetValue(addressed, out var state))
             throw new InvalidOperationException("The session has no queue state.");
 
@@ -54,9 +53,9 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         // Signal-driven catch-up to the running transition: the run is parked, so the
         // running publish is the last mutation that can exist before the release — the
         // loop lands on it deterministically.
-        var version = await harness.TurnQueue.WaitForChangeAsync(sessionId, 0, deadline.Token);
+        var version = await harness.TurnQueue.WaitForChangeAsync(sessionId, 0, TestContext.Current.CancellationToken);
         while (harness.TurnQueue.FrameSnapshot(sessionId).Snapshot.Running is null)
-            version = await harness.TurnQueue.WaitForChangeAsync(sessionId, version, deadline.Token);
+            version = await harness.TurnQueue.WaitForChangeAsync(sessionId, version, TestContext.Current.CancellationToken);
         var runningVersion = version;
 
         // Subscribe before the release, then release: the next mutation is exactly the
@@ -64,7 +63,7 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         // transitions), so the settled version is runningVersion + 1 by arithmetic. The
         // wait's own return value is deliberately not used — on the fixed worker the
         // exit publish can race into its re-lock and make it one higher.
-        var settleWait = harness.TurnQueue.WaitForChangeAsync(sessionId, runningVersion, deadline.Token);
+        var settleWait = harness.TurnQueue.WaitForChangeAsync(sessionId, runningVersion, TestContext.Current.CancellationToken);
         provider.ReleaseNext();
         await settleWait;
         var settledVersion = runningVersion + 1;

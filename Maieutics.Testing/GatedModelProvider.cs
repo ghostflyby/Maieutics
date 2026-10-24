@@ -558,14 +558,27 @@ public sealed class GatedModelProvider : IAsyncDisposable
 
     /// <summary>Completes when the client closes its end (EOF) or the server shuts down: a
     /// parked request whose connection is gone can never observe a release, so its gate
-    /// entry must be removed instead of blocking the head of the queue.</summary>
+    /// entry must be removed instead of blocking the head of the queue. A peek receive
+    /// completes on the socket state change itself — the peer sends nothing while its
+    /// request is parked, so the wait needs no timer; a reset is a disconnect like an
+    /// EOF.</summary>
     private static async Task WaitDisconnectedAsync(TcpClient client, CancellationToken cancellationToken)
     {
-        var socket = client.Client;
-        while (!cancellationToken.IsCancellationRequested)
+        var buffer = new byte[1];
+        try
         {
-            if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) return;
-            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                var received = await client.Client.ReceiveAsync(
+                    buffer,
+                    SocketFlags.Peek,
+                    cancellationToken).ConfigureAwait(false);
+                if (received == 0) return;
+            }
+        }
+        catch (SocketException)
+        {
+            return;
         }
     }
 }

@@ -12,14 +12,13 @@ public sealed class AnthropicUsageTests
     [Fact(Timeout = 30_000)]
     public async Task AdapterEmitsTheStreamedMessageUsageAsOneUsageContent()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
         await using var server = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "Hello from Claude");
         using var client = new AnthropicMessagesChatClient("claude-test", "configured-key", server.Endpoint);
 
         var updates = new List<ChatResponseUpdate>();
         await foreach (var update in client.GetStreamingResponseAsync(
                            "Say hello",
-                           cancellationToken: deadline.Token))
+                           cancellationToken: TestContext.Current.CancellationToken))
             updates.Add(update);
 
         var contents = updates.SelectMany(static update => update.Contents).ToArray();
@@ -34,7 +33,6 @@ public sealed class AnthropicUsageTests
     [Fact(Timeout = 30_000)]
     public async Task RunResultRecordsTheUsageTheAnthropicStreamReported()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
         await using var server = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "Hello from Claude");
         using var client = AnthropicChatClientFactory.Create(
             "claude-test",
@@ -43,11 +41,11 @@ public sealed class AnthropicUsageTests
 
         await using var run = await session.StartTurnAsync(
             AgentTurn.FromText("Say hello"),
-            deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
+            TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
-        await server.Completion.WaitAsync(deadline.Token);
+        await server.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Single(server.RequestBodies);
 
         // A run result whose usage stayed null is the defect: the stream reported 1 input

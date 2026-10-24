@@ -16,16 +16,15 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task ADeniedCallReturnsToolDeniedAndTheTurnContinues()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Deny("Not allowed."));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),
             (_, _) => StreamAsync("I did not run it."));
         var session = CreateSession(client, gate, RequireAll("guarded"));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         // The model sees a typed, recoverable failure — not a turn failure.
         var finished = Assert.Single(events.OfType<AgentToolFinished>());
@@ -50,7 +49,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnApprovedCallExecutesTheTool()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Allow("Go ahead."));
         var client = new ScriptedChatClient(
@@ -62,9 +60,9 @@ public sealed class AgentToolApprovalTests
             RequireAll("guarded"),
             CreateTool("guarded", () => invoked = true));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.True(invoked, "the approved call reached the tool");
         Assert.Equal("ok", Assert.Single(events.OfType<AgentToolFinished>()).Result.GetProperty("status").GetString());
@@ -74,16 +72,15 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AToolThePolicyDoesNotRequireNeverReachesTheGate()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => throw new InvalidOperationException("the gate must not run"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),
             (_, _) => StreamAsync("Done."));
         var session = CreateSession(client, gate, new AgentToolApprovalPolicy());
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(gate.Requests);
         Assert.Empty(events.OfType<AgentToolApprovalRequested>());
@@ -93,7 +90,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AlwaysAllowSkipsTheGateForLaterCallsInTheSameTurn()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => new AgentToolApprovalDecision(true, "Always.", AlwaysAllow: true));
         var memory = new AgentToolApprovalMemory();
         var client = new ScriptedChatClient(
@@ -102,9 +98,9 @@ public sealed class AgentToolApprovalTests
             (_, _) => StreamAsync("Both done."));
         var session = CreateSession(client, gate, RequireAll("guarded"), memory: memory);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it twice."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it twice."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         // Two calls, one approval: the second consults the remembered allowance.
         Assert.Single(gate.Requests);
@@ -130,7 +126,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AFailingGateDeniesRatherThanExecuting()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var gate = new RecordingGate(_ => throw new InvalidOperationException("approver offline"));
         var client = new ScriptedChatClient(
@@ -142,9 +137,9 @@ public sealed class AgentToolApprovalTests
             RequireAll("guarded"),
             CreateTool("guarded", () => invoked = true));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.False(invoked, "a broken gate must never turn into silent execution");
         var finished = Assert.Single(events.OfType<AgentToolFinished>());
@@ -155,7 +150,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task CancellingTheTurnWhileWaitingDoesNotHangOrExecute()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var invoked = false;
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var gate = new RecordingGate(async (_, token) =>
@@ -173,11 +167,11 @@ public sealed class AgentToolApprovalTests
             RequireAll("guarded"),
             CreateTool("guarded", () => invoked = true));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        await entered.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        await entered.Task.WaitAsync(TestContext.Current.CancellationToken);
 
-        await run.CancelAsync(deadline.Token);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion.WaitAsync(deadline.Token));
+        await run.CancelAsync(TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion.WaitAsync(TestContext.Current.CancellationToken));
 
         Assert.False(invoked, "a cancelled turn must not execute the pending tool");
     }
@@ -185,7 +179,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task ADestructiveClassificationRequiresApprovalWithoutAnyNameRule()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => AgentToolApprovalDecision.Allow("ok"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "plugin_writer")),
@@ -198,9 +191,9 @@ public sealed class AgentToolApprovalTests
                 "plugin_writer",
                 classification: new AgentToolClassification(ReadOnly: false, Destructive: true)));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var request = Assert.Single(gate.Requests);
         Assert.Contains("destroy", request.Reason);
@@ -209,7 +202,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AReadOnlyClassificationIsExemptEvenWhenANameRuleMatches()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => throw new InvalidOperationException("the gate must not run"));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded_reader")),
@@ -222,9 +214,9 @@ public sealed class AgentToolApprovalTests
                 "guarded_reader",
                 classification: new AgentToolClassification(ReadOnly: true, Destructive: false)));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Read it."), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Read it."), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(gate.Requests);
     }
@@ -280,7 +272,6 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnOversizedDenialReasonIsBoundedBeforeItEntersTheTranscript()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         // The reason can carry a user's typed refusal, so it is untrusted text that must obey
         // the same bounding every other result path does.
         var reason = new string('x', 30_000);
@@ -290,9 +281,9 @@ public sealed class AgentToolApprovalTests
             (_, _) => StreamAsync("Understood."));
         var session = CreateSession(client, gate, RequireAll("guarded"));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var finished = Assert.Single(events.OfType<AgentToolFinished>());
         var message = finished.Result.GetProperty("message").GetString()!;
@@ -313,16 +304,15 @@ public sealed class AgentToolApprovalTests
     [Fact(Timeout = 30_000)]
     public async Task AnEmptyDenialReasonStillCarriesAMessage()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
         var gate = new RecordingGate(_ => new AgentToolApprovalDecision(false, "   ", false));
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("provider-call", "guarded")),
             (_, _) => StreamAsync("Understood."));
         var session = CreateSession(client, gate, RequireAll("guarded"));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Run it."), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var finished = Assert.Single(events.OfType<AgentToolFinished>());
         Assert.False(string.IsNullOrWhiteSpace(finished.Result.GetProperty("message").GetString()));

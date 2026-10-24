@@ -188,26 +188,25 @@ public sealed class ReplOutputWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task SequenceMustIncreaseStrictlyPerExecution()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var (host, context) = CreateAuthenticatedHost("session-1");
         await using (host)
         {
             var socket = new TestBinarySocket();
             socket.QueueText(Hello("session-1", 1));
-            var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
-            var attached = host.AttachAsync(socket, 41, context, deadline.Token);
+            var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
+            var attached = host.AttachAsync(socket, 41, context, TestContext.Current.CancellationToken);
             var connection = await connectionWait;
 
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "first"));
             socket.QueueBinary(Frame.Stdout(2, "execution-1", "second"));
-            await using var events = connection.Events.GetAsyncEnumerator(deadline.Token);
+            await using var events = connection.Events.GetAsyncEnumerator(TestContext.Current.CancellationToken);
             Assert.True(await events.MoveNextAsync());
             Assert.True(await events.MoveNextAsync());
 
             // A skipped sequence (3 -> 5) for the same execution terminates the connection.
             socket.QueueBinary(Frame.Stdout(5, "execution-1", "skip"));
             Assert.Equal("sequence_mismatch", (await Assert.ThrowsAnyAsync<ReplOutputProtocolException>(async () => { await connection.Completion; })).Code);
-            await attached.WaitAsync(deadline.Token);
+            await attached.WaitAsync(TestContext.Current.CancellationToken);
             socket.Dispose();
         }
     }
@@ -215,14 +214,13 @@ public sealed class ReplOutputWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task SequencesAreIndependentAcrossExecutions()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var (host, context) = CreateAuthenticatedHost("session-1");
         await using (host)
         {
             var socket = new TestBinarySocket();
             socket.QueueText(Hello("session-1", 1));
-            var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
-            var attached = host.AttachAsync(socket, 41, context, deadline.Token);
+            var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
+            var attached = host.AttachAsync(socket, 41, context, TestContext.Current.CancellationToken);
             var connection = await connectionWait;
 
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "one"));
@@ -234,10 +232,10 @@ public sealed class ReplOutputWebSocketTests
             socket.QueueClose();
 
             var seen = new List<ReplOutputFrame>();
-            await foreach (var frame in connection.Events.WithCancellation(deadline.Token))
+            await foreach (var frame in connection.Events.WithCancellation(TestContext.Current.CancellationToken))
                 seen.Add(frame);
             Assert.Equal([1, 1, 2, 2], seen.Select(static frame => frame.Seq));
-            await attached.WaitAsync(deadline.Token);
+            await attached.WaitAsync(TestContext.Current.CancellationToken);
             socket.Dispose();
         }
     }
@@ -245,25 +243,24 @@ public sealed class ReplOutputWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task WaitForConnectionAsyncPublishesAndDisposeCompletes()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var (host, context) = CreateAuthenticatedHost("session-1");
         await using (host)
         {
             var socket = new TestBinarySocket();
             socket.QueueText(Hello("session-1", 1));
-            var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
-            var attached = host.AttachAsync(socket, 41, context, deadline.Token);
+            var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
+            var attached = host.AttachAsync(socket, 41, context, TestContext.Current.CancellationToken);
 
             var connection = await connectionWait;
             Assert.NotNull(connection);
             socket.QueueBinary(Frame.Stdout(1, "execution-1", "alive"));
-            await using (var events = connection.Events.GetAsyncEnumerator(deadline.Token))
+            await using (var events = connection.Events.GetAsyncEnumerator(TestContext.Current.CancellationToken))
             {
                 Assert.True(await events.MoveNextAsync());
             }
 
             await host.DisposeAsync();
-            await attached.WaitAsync(deadline.Token);
+            await attached.WaitAsync(TestContext.Current.CancellationToken);
             socket.Dispose();
         }
     }
@@ -271,17 +268,16 @@ public sealed class ReplOutputWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task UnauthenticatedPeerIsRejected()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         await using var host = new ReplOutputWebSocketHost(
             new ReplControlSessionRegistry(),
             new ReplControlCredentialRegistry());
         var socket = new TestBinarySocket();
         socket.QueueText(Hello("unknown-session", 1));
-        var attached = host.AttachAsync(socket, 0, new DefaultHttpContext(), deadline.Token);
+        var attached = host.AttachAsync(socket, 0, new DefaultHttpContext(), TestContext.Current.CancellationToken);
 
-        await socket.Closed.WaitAsync(deadline.Token);
+        await socket.Closed.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
-        await attached.WaitAsync(deadline.Token);
+        await attached.WaitAsync(TestContext.Current.CancellationToken);
         socket.Dispose();
     }
 
@@ -301,9 +297,6 @@ public sealed class ReplOutputWebSocketTests
     {
         return $$"""{"sessionId":"{{sessionId}}","generation":{{generation}}}""";
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
-        TestDeadlines.Create(cancellationToken);
 
     /// <summary>Encodes output frames byte-for-byte as the TS <c>encodeOutputFrame</c> does
     /// (all integers big-endian).</summary>

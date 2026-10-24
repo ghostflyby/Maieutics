@@ -8,7 +8,6 @@ public sealed class AgentTranscriptStoreTests
     [Fact(Timeout = 30_000)]
     public async Task CommittedTurnsAreAppendedInOrderWithCanonicalContent()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var store = new RecordingTranscriptStore();
         var session = new AgentSession(
             new ScriptedChatClient(
@@ -16,13 +15,13 @@ public sealed class AgentTranscriptStoreTests
                 (_, _) => StreamAsync("Again", "!")),
             transcriptStore: store);
 
-        await using var first = await session.StartTurnAsync(AgentTurn.FromText("one"), deadline.Token);
-        await ReadEventsAsync(first, deadline.Token);
-        await first.Completion.WaitAsync(deadline.Token);
+        await using var first = await session.StartTurnAsync(AgentTurn.FromText("one"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(first, TestContext.Current.CancellationToken);
+        await first.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
-        await using var second = await session.StartTurnAsync(AgentTurn.FromText("two"), deadline.Token);
-        await ReadEventsAsync(second, deadline.Token);
-        await second.Completion.WaitAsync(deadline.Token);
+        await using var second = await session.StartTurnAsync(AgentTurn.FromText("two"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(second, TestContext.Current.CancellationToken);
+        await second.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(2, store.Turns.Count());
         Assert.Equal(first.Id, store.Turns[0].RunId);
@@ -39,7 +38,6 @@ public sealed class AgentTranscriptStoreTests
     [Fact(Timeout = 30_000)]
     public async Task StoreFailureRollsBackTheTurnAndKeepsTheSessionUsable()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var store = new RecordingTranscriptStore { FailOnAppend = true };
         var session = new AgentSession(
             new ScriptedChatClient(
@@ -47,16 +45,16 @@ public sealed class AgentTranscriptStoreTests
                 (_, _) => StreamAsync("second")),
             transcriptStore: store);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
         await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         store.FailOnAppend = false;
 
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
 
-        await using var next = await session.StartTurnAsync(AgentTurn.FromText("again"), deadline.Token);
-        await ReadEventsAsync(next, deadline.Token);
-        Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("again"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(next, TestContext.Current.CancellationToken);
+        Assert.Equal("second", (await next.Completion.WaitAsync(TestContext.Current.CancellationToken)).AssistantMessage.Text);
 
         var item = Assert.Single(store.Turns);
         Assert.Equal("again", item.Messages[0].Text);
@@ -65,7 +63,6 @@ public sealed class AgentTranscriptStoreTests
     [Fact(Timeout = 30_000)]
     public async Task SessionReusesAnInjectedIdentityForTheStore()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var store = new RecordingTranscriptStore();
         var sessionId = AgentSessionId.Create();
         var session = new AgentSession(
@@ -73,16 +70,13 @@ public sealed class AgentTranscriptStoreTests
             transcriptStore: store,
             sessionId: sessionId);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(sessionId, session.Id);
         Assert.Equal(sessionId, Assert.Single(store.SessionIds));
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
-        => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
     private static async Task ReadEventsAsync(
         IAgentRun run,

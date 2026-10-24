@@ -14,7 +14,6 @@ public sealed class AgentToolObjectStoreTests
     [Fact(Timeout = 30_000)]
     public async Task OversizedSuccessResultIsStoredWholeAndReplacedByATruncatedEnvelope()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var store = new InMemoryObjectStore();
         var tool = CreateTool("big", static () =>
             JsonSerializer.SerializeToElement(new string('x', 4_096)));
@@ -26,9 +25,9 @@ public sealed class AgentToolObjectStoreTests
             tools: [tool],
             objectStore: store);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Single(store.Objects);
         var finished = events.OfType<AgentToolFinished>().Single();
@@ -44,7 +43,6 @@ public sealed class AgentToolObjectStoreTests
     [Fact(Timeout = 30_000)]
     public async Task OversizedResultWithoutObjectStoreFailsWithTheTypedLimit()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var tool = CreateTool("big", static () =>
             JsonSerializer.SerializeToElement(new string('x', 4_096)));
         var session = new AgentSession(
@@ -52,8 +50,8 @@ public sealed class AgentToolObjectStoreTests
             options: new AgentSessionOptions { MaxToolResultBytes = 512 },
             tools: [tool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call big"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
 
         await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
     }
@@ -61,7 +59,6 @@ public sealed class AgentToolObjectStoreTests
     [Fact(Timeout = 30_000)]
     public async Task SmallResultsStayInline()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var store = new InMemoryObjectStore();
         var tool = CreateTool("echo", static () => JsonSerializer.SerializeToElement("small"));
         var session = new AgentSession(
@@ -72,18 +69,15 @@ public sealed class AgentToolObjectStoreTests
             tools: [tool],
             objectStore: store);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call echo"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("call echo"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Empty(store.Objects);
         var finished = events.OfType<AgentToolFinished>().Single();
         Assert.Equal("small", finished.Result.GetProperty("value").GetString());
         Assert.False(finished.Result.TryGetProperty("truncated", out _));
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
-        => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(
         IAgentRun run,
@@ -124,7 +118,6 @@ public sealed class AgentToolObjectStoreTests
             },
             new AIFunctionFactoryOptions { Name = name });
     }
-
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {

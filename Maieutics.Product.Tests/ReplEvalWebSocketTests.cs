@@ -35,31 +35,30 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task OrderedExecutionRoutesInputAndDisposesGracefully()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         var credentials = new ReplControlCredentialRegistry();
         await using var host = new ReplEvalWebSocketHost(registry, credentials);
         using var socket = new TestWebSocket();
-        var connectionWait = host.WaitForConnectionAsync("session-1", 2, deadline.Token);
+        var connectionWait = host.WaitForConnectionAsync("session-1", 2, TestContext.Current.CancellationToken);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Hello,
             "hello-1",
             new ReplEvalIdentity("session-1", 2),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
-        var attached = host.AttachAsync(socket, 41, deadline.Token);
+        var attached = host.AttachAsync(socket, 41, TestContext.Current.CancellationToken);
 
-        var readyJson = await socket.ReadSentAsync(deadline.Token);
+        var readyJson = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain("\"credential\"", readyJson);
         var ready = ReplEvalProtocol.Deserialize(readyJson);
         Assert.Equal(ReplEvalMessageType.Ready, ready.Type);
         var connection = await connectionWait;
-        var execution = await connection.ExecuteAsync("console.log('hello')", deadline.Token);
-        var execute = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
+        var execution = await connection.ExecuteAsync("console.log('hello')", TestContext.Current.CancellationToken);
+        var execute = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(TestContext.Current.CancellationToken));
         Assert.Equal(ReplEvalMessageType.Execute, execute.Type);
         Assert.Equal(execution.ExecutionId, execute.CorrelationId);
 
-        await using var events = execution.Events.GetAsyncEnumerator(deadline.Token);
+        await using var events = execution.Events.GetAsyncEnumerator(TestContext.Current.CancellationToken);
         var request = new ReplEvalInputRequestPayload(
             execution.ExecutionId,
             1,
@@ -73,8 +72,8 @@ public sealed class ReplEvalWebSocketTests
             ReplEvalJsonContext.Default.ReplEvalInputRequestPayload));
         Assert.True(await events.MoveNextAsync());
         var input = Assert.IsType<ReplEvalInputRequestEvent>(events.Current);
-        await connection.ReplyInputAsync(input, "Ada", deadline.Token);
-        var reply = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
+        await connection.ReplyInputAsync(input, "Ada", TestContext.Current.CancellationToken);
+        var reply = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(TestContext.Current.CancellationToken));
         Assert.Equal(ReplEvalMessageType.InputReply, reply.Type);
         Assert.Equal(request.RequestId, reply.CorrelationId);
 
@@ -84,43 +83,41 @@ public sealed class ReplEvalWebSocketTests
             execution.ExecutionId,
             new ReplEvalResultPayload(execution.ExecutionId, resultDocument.RootElement.Clone()),
             ReplEvalJsonContext.Default.ReplEvalResultPayload));
-        Assert.IsType<ReplEvalResultTerminal>(await execution.Completion.WaitAsync(deadline.Token));
+        Assert.IsType<ReplEvalResultTerminal>(await execution.Completion.WaitAsync(TestContext.Current.CancellationToken));
         Assert.False(await events.MoveNextAsync());
 
-        await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
+        await CompleteGracefulShutdownAsync(connection, socket, attached, TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task HelloCredentialAuthenticatesButIsNotEchoed()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         var credentials = new ReplControlCredentialRegistry();
         var credential = credentials.Issue("session-1");
         await using var host = new ReplEvalWebSocketHost(registry, credentials);
         using var socket = new TestWebSocket();
-        var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
+        var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Hello,
             "hello-1",
             new ReplEvalIdentity("session-1", 1, credential),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
-        var attached = host.AttachAsync(socket, 0, deadline.Token);
+        var attached = host.AttachAsync(socket, 0, TestContext.Current.CancellationToken);
 
-        var readyJson = await socket.ReadSentAsync(deadline.Token);
+        var readyJson = await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain("\"credential\"", readyJson);
         var ready = ReplEvalProtocol.Deserialize(readyJson);
         var identity = ReplEvalProtocol.ParsePayload(ready, ReplEvalJsonContext.Default.ReplEvalIdentity);
         Assert.Equal(new ReplEvalIdentity("session-1", 1), identity);
         var connection = await connectionWait;
 
-        await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
+        await CompleteGracefulShutdownAsync(connection, socket, attached, TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task UnauthenticatedHelloIsRejected()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         await using var host = new ReplEvalWebSocketHost(
             new ReplControlSessionRegistry(),
             new ReplControlCredentialRegistry());
@@ -131,8 +128,8 @@ public sealed class ReplEvalWebSocketTests
             new ReplEvalIdentity("session-1", 1),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
 
-        await host.AttachAsync(socket, 0, deadline.Token);
-        await socket.Closed.WaitAsync(deadline.Token);
+        await host.AttachAsync(socket, 0, TestContext.Current.CancellationToken);
+        await socket.Closed.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
     }
@@ -140,22 +137,21 @@ public sealed class ReplEvalWebSocketTests
     [Fact(Timeout = 30_000)]
     public async Task OutputMessageTypesAreUnexpectedOnTheEvalChannel()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
         using var socket = new TestWebSocket();
-        var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
+        var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Hello,
             "hello-1",
             new ReplEvalIdentity("session-1", 1),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
-        var attached = host.AttachAsync(socket, 41, deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var attached = host.AttachAsync(socket, 41, TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         var connection = await connectionWait;
-        var execution = await connection.ExecuteAsync("1 + 1", deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var execution = await connection.ExecuteAsync("1 + 1", TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
 
         // Console, display, updateDisplay, and clearOutput left the eval control plane and travel
         // over the dedicated binary output endpoint (phase 2). An envelope claiming one of those
@@ -175,64 +171,62 @@ public sealed class ReplEvalWebSocketTests
             ReplEvalJsonContext.Default.ReplEvalEnvelope);
         socket.QueueText(consoleJson);
         Assert.Equal("unknown_message_type", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await connection.Completion; })).Code);
-        await attached.WaitAsync(deadline.Token);
+        await attached.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task DuplicateTerminalTerminatesConnection()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
         using var socket = new TestWebSocket();
-        var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
+        var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Hello,
             "hello-1",
             new ReplEvalIdentity("session-1", 1),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
-        var attached = host.AttachAsync(socket, 41, deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var attached = host.AttachAsync(socket, 41, TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         var connection = await connectionWait;
-        var execution = await connection.ExecuteAsync("1 + 1", deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var execution = await connection.ExecuteAsync("1 + 1", TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         var result = Envelope(
             ReplEvalMessageType.Result,
             execution.ExecutionId,
             new ReplEvalResultPayload(execution.ExecutionId),
             ReplEvalJsonContext.Default.ReplEvalResultPayload);
         socket.QueueText(result);
-        await execution.Completion.WaitAsync(deadline.Token);
+        await execution.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         socket.QueueText(result);
 
         Assert.Equal("duplicate_terminal", (await Assert.ThrowsAnyAsync<ReplEvalProtocolException>(async () => { await connection.Completion; })).Code);
-        await attached.WaitAsync(deadline.Token);
+        await attached.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task CancelWaitsForCancelledTerminalThenConnectionClosesGracefully()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var registry = new ReplControlSessionRegistry();
         registry.Register(41, "session-1");
         await using var host = new ReplEvalWebSocketHost(registry, new ReplControlCredentialRegistry());
         using var socket = new TestWebSocket();
-        var connectionWait = host.WaitForConnectionAsync("session-1", 1, deadline.Token);
+        var connectionWait = host.WaitForConnectionAsync("session-1", 1, TestContext.Current.CancellationToken);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Hello,
             "hello-1",
             new ReplEvalIdentity("session-1", 1),
             ReplEvalJsonContext.Default.ReplEvalIdentity));
-        var attached = host.AttachAsync(socket, 41, deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var attached = host.AttachAsync(socket, 41, TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
         var connection = await connectionWait;
-        var execution = await connection.ExecuteAsync("await pending", deadline.Token);
-        await socket.ReadSentAsync(deadline.Token);
+        var execution = await connection.ExecuteAsync("await pending", TestContext.Current.CancellationToken);
+        await socket.ReadSentAsync(TestContext.Current.CancellationToken);
 
-        var cancel = connection.CancelAsync(execution.ExecutionId, deadline.Token);
-        var cancelEnvelope = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(deadline.Token));
+        var cancel = connection.CancelAsync(execution.ExecutionId, TestContext.Current.CancellationToken);
+        var cancelEnvelope = ReplEvalProtocol.Deserialize(await socket.ReadSentAsync(TestContext.Current.CancellationToken));
         Assert.Equal(ReplEvalMessageType.Cancel, cancelEnvelope.Type);
         socket.QueueText(Envelope(
             ReplEvalMessageType.Cancelled,
@@ -242,7 +236,7 @@ public sealed class ReplEvalWebSocketTests
 
         await cancel;
         Assert.IsType<ReplEvalCancelledTerminal>(await execution.Completion);
-        await CompleteGracefulShutdownAsync(connection, socket, attached, deadline.Token);
+        await CompleteGracefulShutdownAsync(connection, socket, attached, TestContext.Current.CancellationToken);
     }
 
     private static async Task CompleteGracefulShutdownAsync(
@@ -282,6 +276,4 @@ public sealed class ReplEvalWebSocketTests
         return Encoding.UTF8.GetString(ReplEvalProtocol.Serialize(envelope));
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
-        TestDeadlines.Create(cancellationToken);
 }

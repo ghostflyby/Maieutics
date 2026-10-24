@@ -85,8 +85,7 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task DiscoveryFileIsPublishedAndRetired()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        var harness = await StartHostAsync(deadline.Token);
+        var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         try
         {
             var discovery = harness.Discovery;
@@ -108,8 +107,7 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task DiscoveryFileIsOwnerOnly()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
 
         // The discovery file carries the bearer token; on Unix it must be readable and
         // writable by the owner only (Windows relies on the user-scoped temp ACLs).
@@ -123,8 +121,7 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task FrontendEndpointsRejectMissingOrWrongBearerTokens()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         // One anonymous client per test is deliberate; it is disposed with the test, so
         // the socket-exhaustion concern behind the short-lived-client guidance does not apply.
         // ReSharper disable once ShortLivedHttpClient
@@ -132,21 +129,20 @@ public sealed class FrontendApiIntegrationTests
         anonymous.BaseAddress = new Uri(harness.Url);
         using var forged = harness.CreateClient(token: "wrong");
 
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/agent/session", deadline.Token)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await forged.GetAsync("/v1/agent/session", deadline.Token)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/status", deadline.Token)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/agent/session", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await forged.GetAsync("/v1/agent/session", TestContext.Current.CancellationToken)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/v1/status", TestContext.Current.CancellationToken)).StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task CapabilitiesAndSessionDescribeTheActiveSession()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         using var client = harness.CreateClient();
 
-        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
+        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", TestContext.Current.CancellationToken);
         Assert.Equal(1, capabilities.GetProperty("protocolVersion").GetInt32());
-        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", TestContext.Current.CancellationToken);
         Assert.Equal(session.GetProperty("id").GetString(), capabilities.GetProperty("session").GetProperty("id").GetString());
         Assert.Equal(32, (capabilities.GetProperty("session").GetProperty("id").GetString() ?? throw new InvalidOperationException("the assertion subject is null")).Length);
         Assert.Equal(0, session.GetProperty("turns").GetInt64());
@@ -158,20 +154,19 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task TurnStreamsEventsAndCommitsTheTranscript()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        var hello = await events.ReceiveFrameAsync(deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        var hello = await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
         Assert.Equal("hello", hello.GetProperty("type").GetString());
         Assert.Equal(sessionId, hello.GetProperty("session").GetProperty("id").GetString());
 
-        var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+        var runId = await harness.SubmitTurnAsync(sessionId, "hello", TestContext.Current.CancellationToken);
         var frames = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
         Assert.Equal(["run.started", "run.status"], types.Take(2));
@@ -194,7 +189,7 @@ public sealed class FrontendApiIntegrationTests
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
         var turn = transcript.GetProperty("turns")[0];
         Assert.Equal(runId, turn.GetProperty("runId").GetString());
@@ -206,19 +201,18 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task EventsReplayRetainedFramesAfterReconnect()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         string runId;
         var liveTypes = new List<string>();
-        await using (var events = await harness.OpenEventsAsync(sessionId, deadline.Token))
+        await using (var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken))
         {
-            await events.ReceiveFrameAsync(deadline.Token);
-            runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            runId = await harness.SubmitTurnAsync(sessionId, "hello", TestContext.Current.CancellationToken);
             liveTypes.AddRange((await events.CollectUntilAsync(
                     frame => frame.GetProperty("type").GetString() == "run.completed",
-                    deadline.Token))
+                    TestContext.Current.CancellationToken))
                 .Select(frame => frame.GetProperty("type").GetString()!));
         }
 
@@ -229,12 +223,12 @@ public sealed class FrontendApiIntegrationTests
         // follows run.completed but the collector stops at the terminal frame).
         await using var replay = await harness.OpenEventsAsync(
             sessionId,
-            deadline.Token,
+            TestContext.Current.CancellationToken,
             sinceSequence: 1);
-        await replay.ReceiveFrameAsync(deadline.Token);
+        await replay.ReceiveFrameAsync(TestContext.Current.CancellationToken);
         var replayed = await replay.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.completed",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(["message.completed", "run.completed"], replayed.Select(frame => frame.GetProperty("type").GetString()));
         Assert.All(replayed.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
             .Where(value => value is not null), value => Assert.True(value == runId));
@@ -243,17 +237,16 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ConcurrentTurnsAreRejectedAsBusy()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartHostWithHangingProviderAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostWithHangingProviderAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        var first = await harness.SubmitTurnAsync(sessionId, "first", deadline.Token);
+        var first = await harness.SubmitTurnAsync(sessionId, "first", TestContext.Current.CancellationToken);
         var second = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "second" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
-        var error = await second.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var error = await second.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("agent_busy", error.GetProperty("code").GetString());
 
         // "busy" has two causes with different remedies: the first run holding the
@@ -269,31 +262,30 @@ public sealed class FrontendApiIntegrationTests
         Assert.False(firstStream.Completion.IsCompleted, "the first turn must still be running when the second submission is rejected as busy");
 
         harness.ReleaseProvider();
-        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId: first);
+        await harness.WaitForTurnCommittedAsync(sessionId, TestContext.Current.CancellationToken, runId: first);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task CancelTerminatesTheRunAndFramesCarryTheOutcome()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartHostWithHangingProviderAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostWithHangingProviderAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
-        var runId = await harness.SubmitTurnAsync(sessionId, "first", deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+        var runId = await harness.SubmitTurnAsync(sessionId, "first", TestContext.Current.CancellationToken);
 
         var cancel = await harness.Client.PostAsync(
             $"/v1/agent/runs/{runId}/cancel",
             content: null,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
         harness.ReleaseProvider();
 
         var frames = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         var failure = frames.Single(frame => frame.GetProperty("type").GetString() == "run.failed");
         Assert.Equal("run_cancelled", failure.GetProperty("code").GetString());
         Assert.Equal(runId, failure.GetProperty("runId").GetString());
@@ -302,20 +294,19 @@ public sealed class FrontendApiIntegrationTests
         var missing = await harness.Client.PostAsync(
             $"/v1/agent/runs/{Guid.NewGuid():N}/cancel",
             content: null,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task InputAnswersCompletePendingReplStdinRequests()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var target = new FakePresentationTarget();
         var scope = harness.AttachPresentation(sessionId, target);
-        using var waitDeadline = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        using var waitDeadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         waitDeadline.CancelAfter(TimeSpan.FromSeconds(10));
         var wait = scope.Sink.RequestInputAsync("Name:", password: false, waitDeadline.Token);
 
@@ -326,7 +317,7 @@ public sealed class FrontendApiIntegrationTests
         var answer = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{requestId}",
             new { value = "ghost" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, answer.StatusCode);
 
         Assert.Equal("ghost", await wait);
@@ -335,15 +326,15 @@ public sealed class FrontendApiIntegrationTests
         var duplicate = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{requestId}",
             new { value = "again" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, duplicate.StatusCode);
-        var duplicateError = await duplicate.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var duplicateError = await duplicate.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("not_found", duplicateError.GetProperty("code").GetString());
 
         var unknown = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/input-{Guid.NewGuid():N}",
             new { value = "x" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
 
         // A run ending (the presentation scope detaching) cancels pending requests
@@ -358,35 +349,33 @@ public sealed class FrontendApiIntegrationTests
         var lateAnswer = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/inputs/{lateId}",
             new { value = "late" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, lateAnswer.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task InputAnswersWithMissingOrMalformedBodiesAreRejected()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
 
         var empty = await harness.Client.PostAsync(
             "/v1/agent/inputs/input-unknown",
             content: null,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
 
         var malformed = await harness.Client.PostAsync(
             "/v1/agent/inputs/input-unknown",
             new StringContent("not json", Encoding.UTF8, "application/json"),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task CanceledTurnStartAbortsTheHandshakeWithoutReservingTheSession()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         // The cancellation token only reaches the pre-run handshake: AgentSession
         // aborts before the session reservation, so the turn start leaves the
@@ -402,15 +391,14 @@ public sealed class FrontendApiIntegrationTests
         Assert.Equal(0, harness.SessionService.DescribeSession(sessionId).Turns);
 
         // The session still accepts a normal turn afterwards.
-        var runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+        var runId = await harness.SubmitTurnAsync(sessionId, "hello", TestContext.Current.CancellationToken);
         Assert.False(string.IsNullOrWhiteSpace(runId));
-        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+        await harness.WaitForTurnCommittedAsync(sessionId, TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task ToolLoopStreamsToolActivityFramesAndFinalAnswer()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(
             ModelApiFlavor.ChatCompletions,
             ProviderGateMode.Scripted,
@@ -418,23 +406,23 @@ public sealed class FrontendApiIntegrationTests
             toolName: "echo",
             toolArgumentsJson: "{\"text\":\"hello\"}");
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: builder =>
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: builder =>
             {
                 builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
                 builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([FrontendTestFunctions.CreateEchoFunction()]);
             });
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            var runId = await harness.SubmitTurnAsync(sessionId, "use echo", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            var runId = await harness.SubmitTurnAsync(sessionId, "use echo", TestContext.Current.CancellationToken);
 
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
             Assert.Contains("tool.started", types);
@@ -447,7 +435,7 @@ public sealed class FrontendApiIntegrationTests
 
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
         }
         finally
@@ -459,16 +447,15 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task CommandCellsAnswerInlineOnTheTurnEndpoint()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var response = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "%status" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Contains("### Maieutics status", body.GetProperty("markdown").GetString());
         // Command answers always carry the active session so frontends can re-pin.
         Assert.Equal(sessionId, body.GetProperty("sessionId").GetString());
@@ -476,35 +463,34 @@ public sealed class FrontendApiIntegrationTests
         Assert.Equal(HttpStatusCode.OK, (await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%session list" },
-                deadline.Token))
+                TestContext.Current.CancellationToken))
             .StatusCode);
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(0, transcript.GetProperty("turns").GetArrayLength());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task StatusCompletionAndSessionLifecycleEndpointsAnswer()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         using var client = harness.CreateClient();
 
-        var status = await client.GetFromJsonAsync<JsonElement>("/v1/status", deadline.Token);
+        var status = await client.GetFromJsonAsync<JsonElement>("/v1/status", TestContext.Current.CancellationToken);
         Assert.Contains("### Maieutics status", status.GetProperty("markdown").GetString());
 
         var completion = await client.PostAsJsonAsync(
             "/v1/agent/complete",
             new { text = "%se", cursor = 3 },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var matches = (await completion.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+        var matches = (await completion.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("matches").EnumerateArray().Select(value => value.GetString()).ToArray();
         Assert.Contains("%session", matches);
 
-        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
+        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", TestContext.Current.CancellationToken);
         Assert.Equal(JsonValueKind.Array, stored.ValueKind);
 
         // Persistence is wired in the composition root, so an unknown stored session is a
@@ -512,47 +498,46 @@ public sealed class FrontendApiIntegrationTests
         var resume = await client.PostAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/resume",
             content: null,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, resume.StatusCode);
-        var resumeError = await resume.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var resumeError = await resume.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("not_found", resumeError.GetProperty("code").GetString());
 
-        var previousSessionId = await harness.GetSessionIdAsync(deadline.Token);
-        var newSession = await client.PostAsync("/v1/agent/sessions", content: null, deadline.Token);
+        var previousSessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+        var newSession = await client.PostAsync("/v1/agent/sessions", content: null, TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, newSession.StatusCode);
-        var created = await newSession.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var created = await newSession.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.NotEqual(previousSessionId, created.GetProperty("id").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task SessionsCarryDisplayMetadataAndRenameWithoutActivation()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         using var client = harness.CreateClient();
 
-        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
+        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", TestContext.Current.CancellationToken);
         Assert.False(string.IsNullOrEmpty(capabilities.GetProperty("workspaceRoot").GetString()));
 
         // Renaming the active session before any turn creates its zero-turn row.
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
         var rename = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = "Design review" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, rename.StatusCode);
-        var renamed = await rename.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var renamed = await rename.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal(sessionId, renamed.GetProperty("id").GetString());
         Assert.Equal("Design review", renamed.GetProperty("title").GetString());
 
         // The active-session endpoint surfaces the stored title once set.
         var activeAfterRename = await client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/session",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(sessionId, activeAfterRename.GetProperty("id").GetString());
         Assert.Equal("Design review", activeAfterRename.GetProperty("title").GetString());
 
-        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
+        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", TestContext.Current.CancellationToken);
         var match = stored.EnumerateArray()
             .Single(session => session.GetProperty("id").GetString() == sessionId);
         Assert.Equal("Design review", match.GetProperty("title").GetString());
@@ -564,35 +549,35 @@ public sealed class FrontendApiIntegrationTests
         var create = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{fresh}/rename",
             new { title = "Named ahead of time" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, create.StatusCode);
 
         // Over the cap is a typed invalid request; whitespace-only clears the title.
         var tooLong = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = new string('x', 201) },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, tooLong.StatusCode);
-        var error = await tooLong.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var error = await tooLong.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("invalid_request", error.GetProperty("code").GetString());
 
         var invalid = await client.PostAsJsonAsync(
             "/v1/agent/sessions/not-a-guid/rename",
             new { title = "x" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
 
         var clear = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/rename",
             new { title = "   " },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
-        var cleared = await clear.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var cleared = await clear.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         // Nulls are omitted on write (protocol convention), so a cleared title is absent.
         Assert.False(cleared.TryGetProperty("title", out _));
 
         // The active session endpoint carries no title once cleared.
-        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", TestContext.Current.CancellationToken);
         Assert.Equal(sessionId, active.GetProperty("id").GetString());
         Assert.False(active.TryGetProperty("title", out _));
     }
@@ -600,21 +585,20 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ForkRewindsToACommittedTurnAndActivatesTheNewHead()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         // Two committed turns need two provider requests; the fake server serves exactly
         // the configured count and stops answering after that.
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token,
+            TestContext.Current.CancellationToken,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
-        var sourceId = await harness.GetSessionIdAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sourceId, "first question", deadline.Token);
+        var sourceId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sourceId, "first question", TestContext.Current.CancellationToken);
         // The single-run gate rejects concurrent turns; wait for the first to commit.
-        await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 1, deadline.Token);
-        await harness.SubmitTurnAsync(sourceId, "second question", deadline.Token);
-        var source = await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 2, deadline.Token);
+        await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 1, TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sourceId, "second question", TestContext.Current.CancellationToken);
+        var source = await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 2, TestContext.Current.CancellationToken);
         var firstRunId = source.GetProperty("turns")[0].GetProperty("runId").GetString()!;
 
         // Fork by run id: the fork keeps the turns before the referenced one and re-runs it.
@@ -622,25 +606,25 @@ public sealed class FrontendApiIntegrationTests
         var byRun = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { runId = firstRunId },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, byRun.StatusCode);
-        var fork = await byRun.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var fork = await byRun.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var forkId = fork.GetProperty("id").GetString()!;
         Assert.NotEqual(sourceId, forkId);
         // Auto-title from the source preview plus the branch point.
         Assert.Equal("first question · branch @ turn 1", fork.GetProperty("title").GetString());
 
         // The fork is the active session and its history ends at the fork point.
-        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+        var active = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", TestContext.Current.CancellationToken);
         Assert.Equal(forkId, active.GetProperty("id").GetString());
         Assert.Equal(0, active.GetProperty("turns").GetInt32());
         var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{forkId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(0, forkTranscript.GetProperty("turns").GetArrayLength());
 
         // The stored list carries the lineage.
-        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", deadline.Token);
+        var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", TestContext.Current.CancellationToken);
         var head = stored.EnumerateArray().Single(session => session.GetProperty("id").GetString() == forkId);
         Assert.Equal(sourceId, head.GetProperty("parentSessionId").GetString());
         Assert.Equal(0, head.GetProperty("forkPointSeq").GetInt32());
@@ -649,58 +633,57 @@ public sealed class FrontendApiIntegrationTests
         var bySeq = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { seq = 1 },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, bySeq.StatusCode);
-        var second = await bySeq.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var second = await bySeq.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("first question · branch @ turn 2", second.GetProperty("title").GetString());
 
         // Typed failures: an out-of-range seq, an unknown run, an unknown session.
         var outOfRange = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { seq = 99 },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, outOfRange.StatusCode);
-        var rangeError = await outOfRange.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var rangeError = await outOfRange.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("invalid_request", rangeError.GetProperty("code").GetString());
 
         var unknownRun = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { runId = Guid.NewGuid().ToString("N") },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, unknownRun.StatusCode);
 
         var noBody = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sourceId}/fork",
             new { },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, noBody.StatusCode);
 
         var unknownSource = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/fork",
             new { seq = 0 },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, unknownSource.StatusCode);
     }
 
     [Fact(Timeout = 60_000)]
     public async Task RunCompletedCarriesModelIdentityAndUsage()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         // The Responses flavor's final event carries the provider usage; the
         // chat-completions flavor omits it unless the client asks for it.
         var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, answer: Answer);
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false,
+            TestContext.Current.CancellationToken, provider, hanging: false,
             transformConfiguration: body => body.Replace("ChatCompletions", "Responses"));
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, "count my tokens", deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, "count my tokens", TestContext.Current.CancellationToken);
         var frames = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var completed = frames.Single(frame => frame.GetProperty("type").GetString() == "run.completed");
         var usage = completed.GetProperty("usage");
@@ -715,11 +698,10 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ModelProfilesAreListedWithTheSelection()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         using var client = harness.CreateClient();
 
-        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", TestContext.Current.CancellationToken);
         Assert.True(profiles.GetArrayLength() > 0);
         Assert.Equal(1, profiles.EnumerateArray().Count(profile => profile.GetProperty("selected").GetBoolean()));
         Assert.Equal("OpenAI", profiles[0].GetProperty("provider").GetString());
@@ -728,40 +710,39 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ForkAppliesTheRequestedProfileOverride()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token, openAi, hanging: false,
+            TestContext.Current.CancellationToken, openAi, hanging: false,
             transformConfiguration: _ => dualConfig);
         using var client = harness.CreateClient();
 
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
-        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, "first turn", TestContext.Current.CancellationToken);
+        await harness.WaitForTurnCommittedAsync(sessionId, TestContext.Current.CancellationToken);
 
         var fork = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/fork",
             new { seq = 0, profileId = "claude-profile" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, fork.StatusCode);
-        var forkBody = await fork.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var forkBody = await fork.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var forkId = forkBody.GetProperty("id").GetString()!;
 
         // The override is the fork's own: its next turn runs on Anthropic while
         // the process selection stays on the configured default (OpenAI).
-        await harness.SubmitTurnAsync(forkId, "second turn", deadline.Token);
-        await harness.WaitForTurnCommittedAsync(forkId, deadline.Token);
+        await harness.SubmitTurnAsync(forkId, "second turn", TestContext.Current.CancellationToken);
+        await harness.WaitForTurnCommittedAsync(forkId, TestContext.Current.CancellationToken);
         var forkTranscript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{forkId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal("anthropic answer", forkTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
             .GetProperty("parts")[0].GetProperty("text").GetString());
 
-        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", TestContext.Current.CancellationToken);
         Assert.True(profiles.EnumerateArray()
             .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
             .GetProperty("selected").GetBoolean());
@@ -769,14 +750,14 @@ public sealed class FrontendApiIntegrationTests
         var unknown = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/fork",
             new { seq = 0, profileId = "no-such-profile" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
-        var error = await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var error = await unknown.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("invalid_request", error.GetProperty("code").GetString());
 
         // A failed fork applies no model side effect: the process selection is
         // untouched after the rejected request (overrides are per session).
-        var after = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", deadline.Token);
+        var after = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", TestContext.Current.CancellationToken);
         Assert.True(after.EnumerateArray()
             .Single(profile => profile.GetProperty("id").GetString() == "openai-profile")
             .GetProperty("selected").GetBoolean());
@@ -785,26 +766,25 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task AddressedModelCommandsLazilyResumeStoredSessions()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token, openAi, hanging: false,
+            TestContext.Current.CancellationToken, openAi, hanging: false,
             transformConfiguration: _ => dualConfig);
         using var client = harness.CreateClient();
 
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
-        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, "first turn", TestContext.Current.CancellationToken);
+        await harness.WaitForTurnCommittedAsync(sessionId, TestContext.Current.CancellationToken);
 
         // Churn the foreground past the live capacity so the addressed session is
         // evicted from the live set (it stays resumable in storage).
         for (var index = 0; index < 8; index++)
         {
-            await client.PostAsync("/v1/agent/sessions", null, deadline.Token);
+            await client.PostAsync("/v1/agent/sessions", null, TestContext.Current.CancellationToken);
         }
 
         // An addressed %model use lazily resumes the session and applies the
@@ -812,12 +792,12 @@ public sealed class FrontendApiIntegrationTests
         var use = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "%model use claude-profile" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, use.StatusCode);
 
-        await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "second turn", TestContext.Current.CancellationToken);
         var transcript = await WaitForTranscriptTurnsAsync(
-            harness, sessionId, minimumTurns: 2, deadline.Token);
+            harness, sessionId, minimumTurns: 2, TestContext.Current.CancellationToken);
         Assert.Equal("anthropic answer", transcript.GetProperty("turns")[1].GetProperty("messages")[1]
             .GetProperty("parts")[0].GetProperty("text").GetString());
     }
@@ -825,23 +805,22 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(
             ModelApiFlavor.ChatCompletions,
             ProviderGateMode.Scripted,
             answer: "public answer",
             reasoning: "secret chain of thought");
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            TestContext.Current.CancellationToken, provider, hanging: false);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, "think", deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, "think", TestContext.Current.CancellationToken);
         var frames = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var allText = string.Concat(frames
             .Select(frame => frame.TryGetProperty("text", out var text) ? text.GetString() : null)
@@ -852,7 +831,7 @@ public sealed class FrontendApiIntegrationTests
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{sessionId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.DoesNotContain("secret chain of thought", transcript.GetRawText());
         Assert.Contains("public answer", transcript.GetRawText());
     }
@@ -860,7 +839,6 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ConfigurationReloadSwitchesTheProviderForTheNextTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var firstProvider = new GatedModelProvider(
             ModelApiFlavor.ChatCompletions,
             ProviderGateMode.Scripted,
@@ -872,12 +850,12 @@ public sealed class FrontendApiIntegrationTests
             model: "model-two",
             answer: "answer from model two");
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token, firstProvider, hanging: false, model: "model-one");
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            TestContext.Current.CancellationToken, firstProvider, hanging: false, model: "model-one");
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await harness.SubmitTurnAsync(sessionId, "first", deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "first", TestContext.Current.CancellationToken);
         var firstTranscript = await WaitForTranscriptTurnsAsync(
-            harness, sessionId, minimumTurns: 1, deadline.Token);
+            harness, sessionId, minimumTurns: 1, TestContext.Current.CancellationToken);
         Assert.Equal("answer from model one", firstTranscript.GetProperty("turns")[0].GetProperty("messages")[1]
             .GetProperty("parts")[0].GetProperty("text").GetString());
 
@@ -891,16 +869,16 @@ public sealed class FrontendApiIntegrationTests
         await File.WriteAllTextAsync(
             harness.ConfigurationFile,
             CreateSmokeConfiguration(secondProvider.Endpoint.ToString(), "model-two"),
-            deadline.Token);
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            TestContext.Current.CancellationToken);
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(30));
         await runtimeConfiguration.WaitForVersionAsync(beforeVersion + 1, wait.Token);
         var status = await harness.Client.GetFromJsonAsync<JsonElement>("/v1/status", wait.Token);
         Assert.Contains("model-two", status.GetProperty("markdown").GetString());
 
-        await harness.SubmitTurnAsync(sessionId, "second", deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "second", TestContext.Current.CancellationToken);
         var reloaded = await WaitForTranscriptTurnsAsync(
-            harness, sessionId, minimumTurns: 2, deadline.Token);
+            harness, sessionId, minimumTurns: 2, TestContext.Current.CancellationToken);
         Assert.Equal(2, reloaded.GetProperty("turns").GetArrayLength());
         Assert.Equal("answer from model two", reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
             .GetProperty("parts")[0].GetProperty("text").GetString());
@@ -975,27 +953,26 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task AnthropicToolLoopStreamsAndCommitsTheTranscript()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", toolFlow: true);
         var anthropicEndpoint = provider.Endpoint.ToString();
         var anthropicConfig = AnthropicConfigTemplate.Replace("{{endpoint}}", anthropicEndpoint);
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: builder =>
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: builder =>
             {
                 builder.Services.RemoveAll<IReadOnlyList<AIFunction>>();
                 builder.Services.AddSingleton<IReadOnlyList<AIFunction>>([FrontendTestFunctions.CreateEchoFunction()]);
             }, transformConfiguration: _ => anthropicConfig);
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            await harness.SubmitTurnAsync(sessionId, "use echo", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            await harness.SubmitTurnAsync(sessionId, "use echo", TestContext.Current.CancellationToken);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
             Assert.Contains("tool.started", types);
@@ -1005,7 +982,7 @@ public sealed class FrontendApiIntegrationTests
 
             var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(1, transcript.GetProperty("turns").GetArrayLength());
             // The second provider request carries the tool result envelope.
             Assert.Equal(2, provider.RequestBodies.Count());
@@ -1022,7 +999,6 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ResponsesApplyPatchToolEditsFilesAndHidesTheGeneralEditTools()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var operation = """{"type":"create_file","path":"patched.txt","diff":"+patched body\n"}""";
         var provider = new GatedModelProvider(
             ModelApiFlavor.Responses,
@@ -1033,7 +1009,7 @@ public sealed class FrontendApiIntegrationTests
         var workspace = Path.Combine(Path.GetTempPath(), $"maieutics-applypatch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workspace);
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null,
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => body
                 .Replace("ChatCompletions", "Responses")
                 .Replace(
@@ -1041,15 +1017,15 @@ public sealed class FrontendApiIntegrationTests
                     $"\"Workspace\": {{ \"Root\": {JsonSerializer.Serialize(workspace)} }},\n            \"Model\""));
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            await harness.SubmitTurnAsync(sessionId, "apply the patch", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            await harness.SubmitTurnAsync(sessionId, "apply the patch", TestContext.Current.CancellationToken);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             var types = frames.Select(frame => frame.GetProperty("type").GetString()).ToArray();
             Assert.Contains("tool.started", types);
@@ -1080,7 +1056,7 @@ public sealed class FrontendApiIntegrationTests
 
             Assert.Equal("patched body\n", await File.ReadAllTextAsync(
                 Path.Combine(workspace, "patched.txt"),
-                deadline.Token));
+                TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -1100,22 +1076,21 @@ public sealed class FrontendApiIntegrationTests
     {
         // 45 s inside the 60 s outer Fact timeout: the switch exercises two providers and a
         // canonical-history replay, while the outer attribute still fires with time to report.
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
         var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, openAi, hanging: false, configureBuilder: null,
+            TestContext.Current.CancellationToken, openAi, hanging: false, configureBuilder: null,
             transformConfiguration: _ => dualConfig);
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await harness.SubmitTurnAsync(sessionId, "first turn", deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "first turn", TestContext.Current.CancellationToken);
             var transcript = await WaitForTranscriptTurnsAsync(
-                harness, sessionId, minimumTurns: 1, deadline.Token);
+                harness, sessionId, minimumTurns: 1, TestContext.Current.CancellationToken);
             Assert.Equal("openai answer", transcript.GetProperty("turns")[0].GetProperty("messages")[1]
                 .GetProperty("parts")[0].GetProperty("text").GetString());
 
@@ -1123,14 +1098,14 @@ public sealed class FrontendApiIntegrationTests
             var switchResponse = await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%model use claude-profile" },
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, switchResponse.StatusCode);
-            var switchBody = await switchResponse.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+            var switchBody = await switchResponse.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
             Assert.Contains("claude-profile", switchBody.GetProperty("markdown").GetString());
 
-            await harness.SubmitTurnAsync(sessionId, "second turn", deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "second turn", TestContext.Current.CancellationToken);
             var reloaded = await WaitForTranscriptTurnsAsync(
-                harness, sessionId, minimumTurns: 2, deadline.Token);
+                harness, sessionId, minimumTurns: 2, TestContext.Current.CancellationToken);
             Assert.Equal("anthropic answer", reloaded.GetProperty("turns")[1].GetProperty("messages")[1]
                 .GetProperty("parts")[0].GetProperty("text").GetString());
             // Canonical history: both turns committed in order with user→assistant shape.
@@ -1154,7 +1129,6 @@ public sealed class FrontendApiIntegrationTests
             !string.IsNullOrWhiteSpace(mcpServer),
             "Requires an external stdio MCP test server; set MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE.");
 
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
         var provider = new GatedModelProvider(
             ModelApiFlavor.ChatCompletions,
             ProviderGateMode.Scripted,
@@ -1178,7 +1152,7 @@ public sealed class FrontendApiIntegrationTests
         await File.WriteAllTextAsync(
             Path.Combine(pluginsRoot, "maieutics.json"),
             """{ "entrypoints": { "mcp": "mcp.json" } }""",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         await File.WriteAllTextAsync(
             Path.Combine(pluginsRoot, "mcp.json"),
             new JsonObject
@@ -1193,36 +1167,36 @@ public sealed class FrontendApiIntegrationTests
                     }
                 }
             }.ToJsonString(),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         await File.WriteAllTextAsync(
             configurationFile,
             ConfigurationTemplate
                 .Replace("{{model}}", "test-model")
                 .Replace("{{endpoint}}", provider.Endpoint.ToString()),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot);
         Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", approvalsPath);
 
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null);
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: null);
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
             var mcpList = await harness.Client.PostAsJsonAsync(
                 $"/v1/agent/sessions/{sessionId}/turns",
                 new { text = "%mcp list" },
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, mcpList.StatusCode);
-            var markdown = (await mcpList.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+            var markdown = (await mcpList.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
                 .GetProperty("markdown").GetString()!;
             Assert.Contains("`echo` → `echo`", markdown);
             Assert.Contains("Connected", markdown);
 
-            await harness.SubmitTurnAsync(sessionId, "call the MCP echo tool", deadline.Token);
+            await harness.SubmitTurnAsync(sessionId, "call the MCP echo tool", TestContext.Current.CancellationToken);
             var transcript = await WaitForTranscriptTurnsAsync(
-                harness, sessionId, minimumTurns: 1, deadline.Token);
+                harness, sessionId, minimumTurns: 1, TestContext.Current.CancellationToken);
             Assert.Equal("tool-backed answer", transcript.GetProperty("turns")[0].GetProperty("messages")[1]
                 .GetProperty("parts")[0].GetProperty("text").GetString());
             Assert.Contains("status", provider.RequestBodies.Last().GetRawText());
@@ -1250,19 +1224,18 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedPerSessionWithLazyResolve()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartHostAsync(deadline.Token);
+        await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
         using var client = harness.CreateClient();
 
-        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", deadline.Token);
+        var capabilities = await client.GetFromJsonAsync<JsonElement>("/v1/agent/capabilities", TestContext.Current.CancellationToken);
         Assert.True(capabilities.GetProperty("multiSession").GetBoolean());
 
-        var bootId = await harness.GetSessionIdAsync(deadline.Token);
+        var bootId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         // Unknown sessions fail with not_found.
         var missing = await client.GetAsync(
             $"/v1/agent/sessions/{Guid.NewGuid():N}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
 
         // A stored session that is not the foreground is still served: it is
@@ -1270,14 +1243,14 @@ public sealed class FrontendApiIntegrationTests
         await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{bootId}/rename",
             new { title = "boot" },
-            deadline.Token);
-        await client.PostAsync("/v1/agent/sessions", null, deadline.Token);
-        var foreground = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", deadline.Token);
+            TestContext.Current.CancellationToken);
+        await client.PostAsync("/v1/agent/sessions", null, TestContext.Current.CancellationToken);
+        var foreground = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", TestContext.Current.CancellationToken);
         Assert.NotEqual(bootId, foreground.GetProperty("id").GetString());
 
         var transcript = await client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{bootId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(bootId, transcript.GetProperty("sessionId").GetString());
         Assert.Equal(0, transcript.GetProperty("turns").GetArrayLength());
     }
@@ -1285,33 +1258,32 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task SessionsRunConcurrentlyAndCommandsStaySessionScoped()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
         // Two in-flight turns on two sessions must both commit (the old
         // single-active semantics busy-rejected the second submission).
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token,
+            TestContext.Current.CancellationToken,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
-        var first = await harness.GetSessionIdAsync(deadline.Token);
-        var second = await (await client.PostAsync("/v1/agent/sessions", null, deadline.Token))
-            .Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var first = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+        var second = await (await client.PostAsync("/v1/agent/sessions", null, TestContext.Current.CancellationToken))
+            .Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var secondId = second.GetProperty("id").GetString()!;
 
-        var firstTurn = harness.SubmitTurnAsync(first, "turn on first", deadline.Token);
-        var secondTurn = harness.SubmitTurnAsync(secondId, "turn on second", deadline.Token);
+        var firstTurn = harness.SubmitTurnAsync(first, "turn on first", TestContext.Current.CancellationToken);
+        var secondTurn = harness.SubmitTurnAsync(secondId, "turn on second", TestContext.Current.CancellationToken);
         await Task.WhenAll(firstTurn, secondTurn);
-        await WaitForTranscriptTurnsAsync(harness, first, minimumTurns: 1, deadline.Token);
-        await WaitForTranscriptTurnsAsync(harness, secondId, minimumTurns: 1, deadline.Token);
+        await WaitForTranscriptTurnsAsync(harness, first, minimumTurns: 1, TestContext.Current.CancellationToken);
+        await WaitForTranscriptTurnsAsync(harness, secondId, minimumTurns: 1, TestContext.Current.CancellationToken);
 
         // A command cell answers with its own session: no re-pin happens.
         var command = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{first}/turns",
             new { text = "%session current" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, command.StatusCode);
-        var answered = await command.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var answered = await command.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal(first, answered.GetProperty("sessionId").GetString());
         Assert.Contains(first[..12], answered.GetProperty("markdown").GetString());
 
@@ -1320,19 +1292,18 @@ public sealed class FrontendApiIntegrationTests
         var switched = await client.PostAsJsonAsync(
             $"/v1/agent/sessions/{first}/turns",
             new { text = "%session new" },
-            deadline.Token);
-        var switchedBody = await switched.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+            TestContext.Current.CancellationToken);
+        var switchedBody = await switched.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.NotEqual(first, switchedBody.GetProperty("sessionId").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task ObjectRouteNormalizesUppercaseIdsAndTypesInvalidIds()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         // The object store (and the /v1/objects route) only exists when Agent persistence
         // is enabled; the transform turns it on for this host.
         await using var harness = await FrontendHarness.StartAsync(
-            deadline.Token,
+            TestContext.Current.CancellationToken,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer),
             hanging: false,
             transformConfiguration: body => body.Replace(
@@ -1348,45 +1319,44 @@ public sealed class FrontendApiIntegrationTests
         // the id must be normalized instead of surfacing as an untyped 500.
         var payload = new byte[] { 1, 2, 3 };
         var sha256 = harness.ObjectStore.Ingest(new MemoryStream(payload)).Sha256;
-        var served = await client.GetAsync($"/v1/objects/{sha256.ToUpperInvariant()}", deadline.Token);
+        var served = await client.GetAsync($"/v1/objects/{sha256.ToUpperInvariant()}", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, served.StatusCode);
-        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(deadline.Token));
+        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken));
 
         // A well-formed but unknown id is a typed not_found, and a non-hex id is a typed
         // invalid_request — never an unhandled 500.
-        var missing = await client.GetAsync($"/v1/objects/{new string('a', 63)}A", deadline.Token);
+        var missing = await client.GetAsync($"/v1/objects/{new string('a', 63)}A", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
-        var missingError = await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var missingError = await missing.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("not_found", missingError.GetProperty("code").GetString());
 
-        var invalid = await client.GetAsync($"/v1/objects/{new string('z', 64)}", deadline.Token);
+        var invalid = await client.GetAsync($"/v1/objects/{new string('z', 64)}", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
-        var invalidError = await invalid.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var invalidError = await invalid.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         Assert.Equal("invalid_request", invalidError.GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task ResponsesWebSearchStreamsTheSearchAndItsCitation()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true);
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null,
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapability(
                 body.Replace("ChatCompletions", "Responses"),
                 provider.Endpoint,
                 "WebSearch"));
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", TestContext.Current.CancellationToken);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             Assert.Contains("run.completed", frames.Select(frame => frame.GetProperty("type").GetString()));
 
@@ -1399,7 +1369,7 @@ public sealed class FrontendApiIntegrationTests
             // The canonical transcript records the cited answer.
             var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
-                deadline.Token)).GetRawText();
+                TestContext.Current.CancellationToken)).GetRawText();
             Assert.Contains("Zhipu AI is a Chinese AI company.", transcript);
             Assert.Contains("https://example.com/zhipu", transcript);
         }
@@ -1412,10 +1382,9 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ResponsesBuiltinCallsBeyondTheEndpointLimitFailTheTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true, webSearchCalls: 2);
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null,
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapabilityWithLimit(
                 body.Replace("ChatCompletions", "Responses"),
                 provider.Endpoint,
@@ -1423,14 +1392,14 @@ public sealed class FrontendApiIntegrationTests
                 limit: 1));
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", TestContext.Current.CancellationToken);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.failed",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             // The response surfaced two built-in searches against a per-request ceiling of one;
             // the OpenAI wire has no cap parameter, so the client enforces it and fails the turn.
@@ -1445,23 +1414,22 @@ public sealed class FrontendApiIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task AnthropicWebSearchStreamsTheServerToolAndCommitsTheTranscript()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", webSearchFlow: true);
         var config = AnthropicConfigTemplate.Replace("{{endpoint}}", provider.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
-            deadline.Token, provider, hanging: false, configureBuilder: null,
+            TestContext.Current.CancellationToken, provider, hanging: false, configureBuilder: null,
             transformConfiguration: _ => DeclareEndpointCapability(config, provider.Endpoint, "WebSearch"));
         try
         {
-            var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+            var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-            await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-            await events.ReceiveFrameAsync(deadline.Token);
-            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", deadline.Token);
+            await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+            await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+            await harness.SubmitTurnAsync(sessionId, "search zhipu ai", TestContext.Current.CancellationToken);
             var frames = await events.CollectUntilAsync(
                 frame => frame.GetProperty("type").GetString() == "run.status" &&
                          frame.GetProperty("state").GetString() == "idle",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
 
             Assert.Contains("run.completed", frames.Select(frame => frame.GetProperty("type").GetString()));
 
@@ -1473,7 +1441,7 @@ public sealed class FrontendApiIntegrationTests
 
             var transcript = (await harness.Client.GetFromJsonAsync<JsonElement>(
                 $"/v1/agent/sessions/{sessionId}/transcript",
-                deadline.Token)).GetRawText();
+                TestContext.Current.CancellationToken)).GetRawText();
             Assert.Contains("Zhipu AI is a Chinese AI company.", transcript);
             Assert.Contains("zhipu ai", transcript);
         }
@@ -1482,7 +1450,6 @@ public sealed class FrontendApiIntegrationTests
             await harness.DisposeAsync();
         }
     }
-
 
     /// <summary>The harness points at a loopback endpoint, and an unknown endpoint is assumed to
     /// host nothing, so a test that needs a hosted capability declares it explicitly here.</summary>
@@ -1506,11 +1473,6 @@ public sealed class FrontendApiIntegrationTests
             $"{JsonSerializer.Serialize(withoutTrailingSlash)}, \"Capabilities\": [ \"{capability}\" ], " +
             $"\"Limits\": {{ \"MaxBuiltinToolCalls\": {limit} }} }} ],");
     }
-
-
-    private static CancellationTokenSource CreateDeadline(
-        CancellationToken cancellationToken,
-        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 
     private static async Task<FrontendHarness> StartHostAsync(CancellationToken cancellationToken)
     {
@@ -1773,15 +1735,18 @@ public sealed class FrontendApiIntegrationTests
             wait.CancelAfter(TimeSpan.FromSeconds(20));
 
             // Completion-driven: the run's settlement is the completion notification for
-            // "the turn finished" — the transcript commit follows it. With a runId the
-            // harness awaits that run's settlement; without one, the session's latest
-            // run's settlement stands in (every caller submits exactly one turn before
-            // waiting). The transcript REST read then verifies the commit and carries the
-            // diagnostic on the failure path.
-            if (runId is not null)
+            // "the turn finished", and the transcript commit precedes it — CommitTurn
+            // appends the turn before the run result exists, and the pump settles after
+            // the terminal frame. With a runId the harness awaits that run's settlement;
+            // without one (or when the run was evicted), the session's latest run's
+            // settlement stands in. The transcript REST read then verifies the commit; a
+            // settled run that still reads empty can never commit, so the failure names
+            // itself instead of retrying into a bare cancellation.
+            FrontendRunStream? settledStream = null;
+            if (runId is not null && SessionService.TryGetRun(runId, out var stream) && stream is not null)
             {
-                if (SessionService.TryGetRun(runId, out var stream) && stream is not null)
-                    await stream.Settled.WaitAsync(wait.Token);
+                await stream.Settled.WaitAsync(wait.Token);
+                settledStream = stream;
             }
             else if (Guid.TryParseExact(sessionId, "N", out var parsed) &&
                      SessionService.TryGetLatestRun(
@@ -1790,71 +1755,27 @@ public sealed class FrontendApiIntegrationTests
                      latest is not null)
             {
                 await latest.Settled.WaitAsync(wait.Token);
+                settledStream = latest;
             }
 
-            while (true)
-            {
-                var transcript = await Client.GetFromJsonAsync<JsonElement>(
-                    $"/v1/agent/sessions/{sessionId}/transcript",
-                    wait.Token);
-                if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
-                // A run that already settled can never commit a turn, so polling until the
-                // budget expires only rewrites the real cause as an empty
-                // TaskCanceledException. Name it instead: the run's retained stream carries
-                // the protocol code the pump published. The two reads race the commit (the
-                // GET may land just before it and the settled check just after), so the
-                // verdict is only trustworthy after one fresh re-read in
-                // settled-first order.
-                if (runId is not null && DescribeSettledRunWithoutCommit(runId) is { } settled)
-                {
-                    var confirmation = await Client.GetFromJsonAsync<JsonElement>(
-                        $"/v1/agent/sessions/{sessionId}/transcript",
-                        wait.Token);
-                    if (confirmation.GetProperty("turns").GetArrayLength() > 0) return;
+            var transcript = await Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                wait.Token);
+            if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
 
-                    var retained = SessionService.TryGetRun(runId, out var settledStream) && settledStream is not null
-                        ? string.Join(" | ", settledStream.DescribeFrames())
-                        : "(evicted)";
-                    var providerState = _hangingProvider?.DescribeState() ?? "(none)";
-                    throw new InvalidOperationException(
-                        $"Run {runId} settled ({settled}) without committing a turn to session {sessionId}; "
-                        + $"the turn can never appear in the transcript. transcript={confirmation.GetRawText()} "
-                        + $"provider={providerState} frames=[{retained}]");
-                }
+            var confirmation = await Client.GetFromJsonAsync<JsonElement>(
+                $"/v1/agent/sessions/{sessionId}/transcript",
+                wait.Token);
+            if (confirmation.GetProperty("turns").GetArrayLength() > 0) return;
 
-                await Task.Delay(50, wait.Token);
-            }
-        }
-
-        /// <summary>Describes a run that has already settled, or returns null when it is
-        /// still in flight (or evicted from the retained registry). Converts a bare wait
-        /// timeout into the run's actual outcome and protocol code.</summary>
-        private string? DescribeSettledRunWithoutCommit(string runId)
-        {
-            if (!SessionService.TryGetRun(runId, out var stream) || stream is null) return null;
-
-            var completion = stream.Completion;
-            if (!completion.IsCompleted) return null;
-
-            var outcome = completion.Status switch
-            {
-                TaskStatus.RanToCompletion => "completed",
-                TaskStatus.Faulted => "faulted",
-                TaskStatus.Canceled => "cancelled",
-                _ => "pending"
-            };
-            if (completion.Exception?.GetBaseException() is not { } cause)
-                return $"{outcome}, no failure recorded";
-
-            var code = cause is AgentException agentException
-                ? FrontendErrors.MapAgentException(agentException)
-                : "agent_error";
-            // A provider failure's interesting detail is its inner exception (the actual
-            // HTTP/SSE/socket failure); without it the verdict names only the wrapper.
-            var inner = cause.InnerException is { } wrapped
-                ? $" inner={wrapped.GetType().Name}: {wrapped.Message}"
-                : string.Empty;
-            return $"{outcome}, code={code}, cause={cause.GetType().Name}: {cause.Message}{inner}";
+            var retained = settledStream is not null
+                ? string.Join(" | ", settledStream.DescribeFrames())
+                : "(evicted)";
+            var providerState = _hangingProvider?.DescribeState() ?? "(none)";
+            throw new InvalidOperationException(
+                $"The turn of session {sessionId} never appeared in the transcript after its run "
+                + $"settled; the turn can never appear. transcript={confirmation.GetRawText()} "
+                + $"provider={providerState} frames=[{retained}]");
         }
 
         public async ValueTask DisposeAsync()

@@ -64,8 +64,7 @@ public sealed class FrontendEventsSendGateTests
     [Fact(Timeout = 30_000)]
     public async Task ConcurrentEventsWritersNeverOverlapInsideTheTransport()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
-        await using var fixture = await SendGateFixture.StartAsync(deadline.Token).ConfigureAwait(true);
+        await using var fixture = await SendGateFixture.StartAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
 
         // Writer registration: the events request announces IDE capability, so the handler
         // registers its ide.push delegate with FrontendIdeSockets. The socket it accepts is
@@ -79,9 +78,9 @@ public sealed class FrontendEventsSendGateTests
             Query = $"sinceSequence=0&ide=1&token={fixture.Token}"
         }.Uri;
         using var ws = new ClientWebSocket();
-        await ws.ConnectAsync(eventsUri, deadline.Token).ConfigureAwait(true);
+        await ws.ConnectAsync(eventsUri, TestContext.Current.CancellationToken).ConfigureAwait(true);
         Assert.True(
-            await transport.TryWaitParkedSendsAsync(1, SendArrivalBudget, deadline.Token).ConfigureAwait(true),
+            await transport.TryWaitParkedSendsAsync(1, SendArrivalBudget, TestContext.Current.CancellationToken).ConfigureAwait(true),
             "the hello frame never reached the transport");
 
         // Release the hello and start a run whose provider parks before producing output:
@@ -91,9 +90,9 @@ public sealed class FrontendEventsSendGateTests
         var accepted = await fixture.Service.StartTurnAsync(
             fixture.SessionId,
             "park at the provider",
-            deadline.Token).ConfigureAwait(true);
+            TestContext.Current.CancellationToken).ConfigureAwait(true);
         Assert.True(
-            await transport.TryWaitParkedSendsAsync(1, SendArrivalBudget, deadline.Token).ConfigureAwait(true),
+            await transport.TryWaitParkedSendsAsync(1, SendArrivalBudget, TestContext.Current.CancellationToken).ConfigureAwait(true),
             "the run stream's first frame never reached the transport");
 
         // Second writer: the context-less ide push the announce registration serves. The
@@ -106,10 +105,10 @@ public sealed class FrontendEventsSendGateTests
         // fixture's using scope ends.
         // ReSharper disable AccessToDisposedClosure
         var push = Task.Run(
-            () => fixture.IdeSockets.TrySendToAnnouncingAsync(ProbeIdeRequest(), deadline.Token),
-            deadline.Token);
+            () => fixture.IdeSockets.TrySendToAnnouncingAsync(ProbeIdeRequest(), TestContext.Current.CancellationToken),
+            TestContext.Current.CancellationToken);
         // ReSharper restore AccessToDisposedClosure
-        await transport.TryWaitParkedSendsAsync(2, OverlapProbeBudget, deadline.Token).ConfigureAwait(true);
+        await transport.TryWaitParkedSendsAsync(2, OverlapProbeBudget, TestContext.Current.CancellationToken).ConfigureAwait(true);
 
         // Pin the overlap before anything is released: an entry made while a send was
         // still outstanding is the exact condition a real WebSocket rejects, and on the
@@ -122,7 +121,7 @@ public sealed class FrontendEventsSendGateTests
         // outlast, leaving a writer parked with nobody left to release it.
         transport.EnterPassThrough();
         Assert.True(
-            await push.WaitAsync(DeliveryBudget, deadline.Token).ConfigureAwait(true),
+            await push.WaitAsync(DeliveryBudget, TestContext.Current.CancellationToken).ConfigureAwait(true),
             "the ide push was never delivered through the announcing delegate");
 
         // The drain phase stayed serialized too: pass-through sends still enter one at a
@@ -151,7 +150,7 @@ public sealed class FrontendEventsSendGateTests
         fixture.Service.BeginShutdown();
         if (fixture.Service.TryGetRun(accepted.RunId, out var stream) && stream is not null)
         {
-            await stream.Settled.WaitAsync(deadline.Token).ConfigureAwait(true);
+            await stream.Settled.WaitAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
         }
     }
 

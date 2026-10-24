@@ -170,17 +170,48 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public void NonPathKindsKeepPrefixMatching()
+    public void EnvAndSysMatchExactNamesWhileNetAndImportKeepPrefixes()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules { Allow = ["MAIEUTICS_TEST"] }),
-            (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }));
+            (PermissionKind.Sys, new PermissionKindRules { Allow = ["hostname"] }),
+            (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }),
+            (PermissionKind.Import, new PermissionKindRules { Allow = ["jsr.io:443"] }));
 
-        // env names and net hosts stay prefix-matched (Deno semantics); only filesystem path
-        // kinds gain the directory-boundary rule.
-        Assert.True(DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed);
+        // env and sys match whole names (the kind table): a grant of one name never covers a
+        // longer name that shares its prefix.
+        Assert.False(DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "sys", "hostname").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "sys", "hostnameExtra").IsAllowed);
+        // net hosts and import specifiers stay prefix-matched: a host grant covers its ports and
+        // a specifier covers the paths under it.
         Assert.True(DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "import", "jsr.io:443/mod.ts").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void FfiGrantsMatchOnDirectoryBoundaries()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // ffi is a filesystem-path kind: the loader resolves its patterns against the profile
+        // directory, so the resolver must judge them with the boundary rule like read/write.
+        var policy = Build((PermissionKind.Ffi, new PermissionKindRules { Allow = ["/opt/lib"] }));
+
+        Assert.True(DenoPermissionResolver.Resolve(policy, "ffi", "/opt/lib/libfoo.so").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "ffi", "/opt/lib-evil/libbar.so").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void RunRequestsJudgeWithTheSameBoundaryAsTheLaunchGate()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // The broker and the general-start gate share the kind table, so a run grant cannot be
+        // wider inside a Deno child than at a terminal/MCP launch.
+        var policy = Build((PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin"] }));
+
+        Assert.True(DenoPermissionResolver.Resolve(policy, "run", "/usr/bin/deno").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "run", "/usr/bin-evil").IsAllowed);
     }
 
     /// <summary>A later registration for the same pid must replace an already-settled slot.

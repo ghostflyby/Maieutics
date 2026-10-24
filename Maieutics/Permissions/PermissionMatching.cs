@@ -2,25 +2,32 @@ namespace Maieutics.Permissions;
 
 /// <summary>Canonical pattern matching for permission values, shared by the Deno broker resolver
 /// and the process-launch enforcement seams (terminal executable, MCP command, terminal/MCP
-/// environment). Filesystem-path patterns (the <c>read</c> and <c>write</c> kinds, and executable
-/// run grants at launch enforcement) match with a directory boundary so granting <c>/tmp</c> never
-/// admits <c>/tmp-evil</c>; every other kind keeps Deno's prefix semantics (<c>net</c>
-/// <c>host:port</c>, <c>env</c> names, <c>import</c> specifiers, ...). Empty patterns never match:
+/// environment). The match mode comes from <see cref="PermissionKinds.MatchMode"/> so every
+/// enforcer judges a kind identically: path kinds and <c>run</c> match on a directory boundary so
+/// granting <c>/tmp</c> never admits <c>/tmp-evil</c>, <c>net</c> and <c>import</c> keep Deno's
+/// prefix semantics, and <c>env</c>/<c>sys</c> names match exactly. Empty patterns never match:
 /// the layer store rejects them at build time, and the checks here are the defensive backstop for
 /// patterns that reach the enforcers without a build.</summary>
 internal static class PermissionMatching
 {
-    /// <summary>Whether any pattern matches <paramref name="value"/> under the canonical kind
-    /// semantics: path kinds match on a directory boundary, all other kinds match by prefix.</summary>
+    /// <summary>Whether any pattern matches <paramref name="value"/> under the kind's one match
+    /// mode (path boundary, prefix, or exact) from <see cref="PermissionKinds.MatchMode"/>.</summary>
     internal static bool MatchesAny(PermissionKind kind, IReadOnlyList<string> patterns, string value)
     {
         var comparison = Comparison;
-        var boundary = kind is PermissionKind.Read or PermissionKind.Write;
+        var mode = PermissionKinds.MatchMode(kind);
         foreach (var pattern in patterns)
         {
             if (pattern.Length == 0) continue;
 
-            if (boundary ? MatchesPath(pattern, value, comparison) : value.StartsWith(pattern, comparison))
+            var matched = mode switch
+            {
+                PermissionMatchMode.PathBoundary => MatchesPath(pattern, value, comparison),
+                PermissionMatchMode.Prefix => value.StartsWith(pattern, comparison),
+                PermissionMatchMode.Exact => value.Equals(pattern, comparison),
+                _ => false
+            };
+            if (matched)
                 return true;
         }
 

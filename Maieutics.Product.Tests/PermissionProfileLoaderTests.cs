@@ -115,4 +115,51 @@ public sealed class PermissionProfileLoaderTests
             TempArea.DeleteTree(root);
         }
     }
+
+    [Fact]
+    public void SoleStarBecomesAllowAllWithoutListEntries()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-perm-profile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "permissions.json");
+            File.WriteAllText(path, """{ "sets": { "default": { "write": { "allow": ["*"] } } }, "default": "default" }""");
+
+            var write = PermissionProfileLoader.Load(path).Kinds[PermissionKind.Write];
+
+            // The sole '*' is consumed by the flag; the list carries no entries so the store
+            // never sees '*' where a pattern belongs.
+            Assert.True(write.AllowAll);
+            Assert.Empty(write.Allow);
+        }
+        finally
+        {
+            TempArea.DeleteTree(root);
+        }
+    }
+
+    [Fact]
+    public void StarAmongOtherEntriesFailsTheLoad()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"mc-perm-profile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "permissions.json");
+            File.WriteAllText(
+                path,
+                """{ "sets": { "default": { "read": { "allow": ["*", "/etc"] } } }, "default": "default" }""");
+
+            // '*' among other entries has no list-entry meaning, and the path kinds would mangle
+            // it into a silent junk pattern during resolution — so the loader rejects it loudly.
+            var load = () => PermissionProfileLoader.Load(path);
+
+            Assert.Equal("permission_profile_invalid", Assert.ThrowsAny<PermissionException>(load.Invoke).Code);
+        }
+        finally
+        {
+            TempArea.DeleteTree(root);
+        }
+    }
 }

@@ -54,6 +54,48 @@ internal static class PermissionKinds
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown permission kind.")
         };
     }
+
+    /// <summary>The one matching semantics of a kind, consumed by <see cref="PermissionMatching"/>
+    /// so the broker resolver and every launch/workspace gate judge identically. Filesystem path
+    /// kinds and executable <c>run</c> values match on a directory boundary; <c>net</c> hosts and
+    /// <c>import</c> specifiers keep Deno's prefix matching; <c>env</c> and <c>sys</c> match whole
+    /// names, mirroring Deno's by-name grants so one name never covers a longer one.</summary>
+    internal static PermissionMatchMode MatchMode(PermissionKind kind)
+    {
+        return kind switch
+        {
+            PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi or PermissionKind.Run
+                => PermissionMatchMode.PathBoundary,
+            PermissionKind.Net or PermissionKind.Import => PermissionMatchMode.Prefix,
+            PermissionKind.Env or PermissionKind.Sys => PermissionMatchMode.Exact,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown permission kind.")
+        };
+    }
+
+    /// <summary>Whether a kind's patterns are filesystem paths (read, write, ffi) — the kinds for
+    /// which a relative pattern is only definable in a file-anchored layer (the workspace profile
+    /// resolves relatives against its own directory). App-wide defaults reject relative path
+    /// patterns because the app config is anchored to no directory; <c>run</c> is excluded since
+    /// its values are bare command names or absolute paths.</summary>
+    internal static bool IsFilePathKind(PermissionKind kind)
+    {
+        return kind is PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi;
+    }
+}
+
+/// <summary>The matching semantics one permission kind carries everywhere it is judged.</summary>
+internal enum PermissionMatchMode
+{
+    /// <summary>The value equals the pattern or lives inside the pattern directory (pattern
+    /// followed by a separator) — read, write, ffi, and run.</summary>
+    PathBoundary,
+
+    /// <summary>The value starts with the pattern — net hosts (a host grant covers its ports) and
+    /// import specifiers (a specifier covers paths under it).</summary>
+    Prefix,
+
+    /// <summary>The value equals the pattern exactly — env and sys names.</summary>
+    Exact
 }
 
 /// <summary>Typed failure for permission-model violations (malformed or unresolvable variable

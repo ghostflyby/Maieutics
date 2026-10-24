@@ -97,26 +97,26 @@ public sealed class ProcessEnvironmentTests
     }
 
     [Fact]
-    public void PrefixDenyRemovesEveryMatchingName()
+    public void EnvDenyRemovesExactlyTheDeniedName()
     {
         using var scope = new EnvironmentVariableScope(new Dictionary<string, string?>
         {
             ["MAIEUTICS_TEST_KEEP"] = "kept",
             ["MAIEUTICS_TEST_KEEP_TOO"] = "kept-too"
         });
-        // The deny pattern uses the same prefix semantics the permission resolver applies to
-        // env names, so one prefix deny removes the whole family.
+        // env names match exactly (the kind's match mode): one deny removes the named variable
+        // only, never a longer name that merely shares its prefix.
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules
             {
                 Allow = ["MAIEUTICS_TEST_KEEP", "MAIEUTICS_TEST_KEEP_TOO"],
-                Deny = ["MAIEUTICS_TEST"]
+                Deny = ["MAIEUTICS_TEST_KEEP"]
             }));
 
         var environment = ProcessEnvironment.Capture(policy);
 
         Assert.False(environment.ContainsKey("MAIEUTICS_TEST_KEEP"));
-        Assert.False(environment.ContainsKey("MAIEUTICS_TEST_KEEP_TOO"));
+        Assert.Equal("kept-too", Assert.Contains("MAIEUTICS_TEST_KEEP_TOO", environment));
         Assert.True(environment.ContainsKey("TERM"));
     }
 

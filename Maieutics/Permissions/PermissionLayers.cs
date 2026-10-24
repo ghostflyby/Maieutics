@@ -4,7 +4,10 @@ namespace Maieutics.Permissions;
 /// Semantics: denials always win over grants; within one kind, later allowlists and deny lists are
 /// appended to earlier ones and <c>AllowAll</c>/<c>DenyAll</c> are preserved. Patterns with
 /// variable tokens are expanded at build time against the scope's <see cref="VariableTable"/> so a
-/// layer typo fails loudly before any launch instead of silently widening a grant.</summary>
+/// layer typo fails loudly before any launch instead of silently widening a grant. A pattern that
+/// is empty, expands to empty, expands to <c>*</c>, or contains a comma also fails the build: the
+/// first would match everything, the second two are the allow-all flag's spelling and the Deno
+/// flag grammar's list separator, neither of which is expressible as a list entry.</summary>
 internal static class PermissionLayerStore
 {
     /// <summary>Builds the effective policy from <paramref name="layers"/> (already ordered from
@@ -64,6 +67,17 @@ internal static class PermissionLayerStore
                     "permission_pattern_empty",
                     $"The permission pattern '{pattern}' expands to an empty value; " +
                     "an empty pattern would match everything and is rejected.");
+            if (expanded == "*")
+                throw new PermissionException(
+                    "permission_pattern_invalid",
+                    $"The permission pattern '{pattern}' expands to '*'; allow-all and deny-all " +
+                    "are expressed by their dedicated flags, never as a list entry.");
+            if (expanded.Contains(','))
+                throw new PermissionException(
+                    "permission_pattern_invalid",
+                    $"The permission pattern '{pattern}' expands to a value containing a comma; " +
+                    "Deno renders a kind's list as one comma-separated flag, so such a pattern " +
+                    "cannot be expressed and is rejected.");
             return expanded;
         }
     }

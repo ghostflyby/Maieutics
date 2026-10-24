@@ -1,5 +1,4 @@
 namespace Maieutics.Permissions;
-
 /// <summary>Canonical pattern matching for permission values, shared by the Deno broker resolver
 /// and the process-launch enforcement seams (terminal executable, MCP command, terminal/MCP
 /// environment). The match mode comes from <see cref="PermissionKinds.MatchMode"/> so every
@@ -49,10 +48,10 @@ internal static class PermissionMatching
     {
         if (pattern.Length == 0 || value.Length == 0) return false;
 
-        pattern = NormalizeSeparators(pattern).TrimEnd(Path.DirectorySeparatorChar);
+        pattern = NormalizeLexically(NormalizeSeparators(pattern)).TrimEnd(Path.DirectorySeparatorChar);
         if (pattern.Length == 0) return false;
 
-        var normalizedValue = NormalizeSeparators(value);
+        var normalizedValue = NormalizeLexically(NormalizeSeparators(value));
         return normalizedValue.Equals(pattern, comparison) ||
                normalizedValue.StartsWith(pattern + Path.DirectorySeparatorChar, comparison);
     }
@@ -62,5 +61,40 @@ internal static class PermissionMatching
         return Path.AltDirectorySeparatorChar == Path.DirectorySeparatorChar
             ? path
             : path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+    }
+
+    /// <summary>Lexically normalizes <c>.</c> and <c>..</c> segments without resolving symlinks
+    /// or anchoring to any working directory. Deno sends broker request paths exactly as the
+    /// caller wrote them (verified 2.9.8: <c>/tmp/x/../y</c> arrives verbatim, and aliases like
+    /// <c>/tmp</c> are never rewritten to their realpath), so a raw prefix match would let a
+    /// request phrased <c>/granted/../outside</c> prefix-match the grant and open outside it.
+    /// Collapsing the lexical segments closes that escape; a leading root anchor is never
+    /// popped, a leading climb keeps its <c>..</c>s (it cannot accidentally match a shorter
+    /// grant), and strings without separators (bare command names) pass through unchanged.</summary>
+    private static string NormalizeLexically(string path)
+    {
+        if (!path.Contains('.')) return path;
+
+        var segments = path.Split(Path.DirectorySeparatorChar);
+        var stack = new List<string>(segments.Length);
+        var rooted = segments.Length > 0 && segments[0].Length == 0;
+        if (rooted) stack.Add(string.Empty);
+        var minimumDepth = rooted ? 1 : 0;
+        foreach (var segment in segments.Skip(rooted ? 1 : 0))
+        {
+            if (segment.Length == 0 || segment == ".") continue;
+            if (segment == "..")
+            {
+                if (stack.Count > minimumDepth && stack[^1] != "..")
+                    stack.RemoveAt(stack.Count - 1);
+                else
+                    stack.Add("..");
+                continue;
+            }
+
+            stack.Add(segment);
+        }
+
+        return string.Join(Path.DirectorySeparatorChar, stack);
     }
 }

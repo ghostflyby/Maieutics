@@ -214,6 +214,39 @@ public sealed class DenoPermissionBrokerTests
         Assert.False(DenoPermissionResolver.Resolve(policy, "run", "/usr/bin-evil").IsAllowed);
     }
 
+    [Fact(Timeout = 10_000)]
+    public void DotSegmentRequestsCannotPrefixMatchPastAGrant()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // Deno sends broker request paths exactly as the caller wrote them (verified 2.9.8:
+        // /tmp/x/../y arrives verbatim), so a grant of /granted must not prefix-match a request
+        // phrased /granted/../outside — the file it opens lies outside the grant.
+        var policy = Build((PermissionKind.Read, new PermissionKindRules { Allow = ["/granted"] }));
+
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/../outside/secret").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/sub/../../outside/secret").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/sub/./target.txt").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/x/../y").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void DotSegmentRequestsCannotEvadeADenyEither()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        var policy = Build(
+            (PermissionKind.Read, new PermissionKindRules
+            {
+                AllowAll = true,
+                Deny = ["/granted/secret"]
+            }));
+
+        // Phrased through a sibling hop but actually accessing the denied file: the deny must
+        // see through the phrasing (a raw prefix check would miss /granted/other/../secret/key).
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/other/../secret/key").IsAllowed);
+        // The converse: /granted/secret/../key accesses /granted/key, not the denied tree.
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/secret/../key").IsAllowed);
+    }
+
     /// <summary>A later registration for the same pid must replace an already-settled slot.
     /// <para>
     /// The broker keys registrations by pid and resolves a connection's policy once, at accept.

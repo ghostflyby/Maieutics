@@ -31,17 +31,16 @@ public sealed class FrontendElicitationPresenterTests
     {
         var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
         var session = AgentSessionId.Create();
 
         var wait = presenter.PresentAsync(
             new McpElicitationRequest(session.Value.ToString("N"), session.Value.ToString("N"), "msg", null, false),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         // The frame is published synchronously before the await, and this request carries
         // no schema, so only the input.request frame is published. The signal makes the
         // observation deterministic without a settle window.
-        await publisher.WaitForCountAsync(1, deadline.Token);
+        await publisher.WaitForCountAsync(1, TestContext.Current.CancellationToken);
         var (publishedSession, type, data) = Assert.Single(publisher.Published);
         Assert.Equal(session.Value, publishedSession.Value);
         Assert.Equal("input.request", type);
@@ -64,10 +63,9 @@ public sealed class FrontendElicitationPresenterTests
     {
         var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
 
-        var wait = presenter.PresentAsync(BuildRequest(), deadline.Token);
-        await publisher.WaitForCountAsync(1, deadline.Token);
+        var wait = presenter.PresentAsync(BuildRequest(), TestContext.Current.CancellationToken);
+        await publisher.WaitForCountAsync(1, TestContext.Current.CancellationToken);
         var requestId = JsonSerializer
             .Deserialize<JsonElement>(publisher.Single("input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;
@@ -85,10 +83,9 @@ public sealed class FrontendElicitationPresenterTests
     {
         var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
 
-        var wait = presenter.PresentAsync(BuildRequest(), deadline.Token);
-        await publisher.WaitForCountAsync(1, deadline.Token);
+        var wait = presenter.PresentAsync(BuildRequest(), TestContext.Current.CancellationToken);
+        await publisher.WaitForCountAsync(1, TestContext.Current.CancellationToken);
         var requestId = JsonSerializer
             .Deserialize<JsonElement>(publisher.Single("input.request").Data.GetRawText())
             .GetProperty("requestId").GetString()!;

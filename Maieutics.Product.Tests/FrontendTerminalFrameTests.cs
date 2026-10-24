@@ -28,15 +28,14 @@ public sealed class FrontendTerminalFrameTests
     [Fact(Timeout = 30_000)]
     public async Task APresentationFrameOfferedAfterTheTerminalPairIsRefusedAndNeverReplays()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
         var harness = CreateHarness();
         var sessionId = harness.Manager.Id;
 
         var accepted = await harness.Service.StartTurnAsync(
             sessionId.ToString(),
             "hello",
-            deadline.Token);
-        var stream = await SettledStreamAsync(harness.Service, accepted.RunId, deadline.Token);
+            TestContext.Current.CancellationToken);
+        var stream = await SettledStreamAsync(harness.Service, accepted.RunId, TestContext.Current.CancellationToken);
 
         var (before, beforeChannel) = stream.Subscribe(sinceSequence: 0);
         Assert.Equal("run.status", before[^1].Type);
@@ -65,14 +64,13 @@ public sealed class FrontendTerminalFrameTests
     [Fact(Timeout = 30_000)]
     public async Task ThePresentationTargetDropsFramesOfferedAfterTheTerminalPair()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
         var harness = CreateHarness();
 
         var accepted = await harness.Service.StartTurnAsync(
             harness.Manager.Id.ToString(),
             "hello",
-            deadline.Token);
-        var stream = await SettledStreamAsync(harness.Service, accepted.RunId, deadline.Token);
+            TestContext.Current.CancellationToken);
+        var stream = await SettledStreamAsync(harness.Service, accepted.RunId, TestContext.Current.CancellationToken);
 
         var (before, beforeChannel) = stream.Subscribe(sinceSequence: 0);
         stream.Unsubscribe(beforeChannel);

@@ -23,15 +23,14 @@ public sealed class ModelOrchestrationEndpointTests
         if (OperatingSystem.IsWindows())
             Assert.Skip("The control-host test harness rides a Unix domain socket.");
 
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        var harness = await CreateHarnessAsync(deadline.Token);
+        var harness = await CreateHarnessAsync(TestContext.Current.CancellationToken);
         await using (harness.Application)
         {
             var spawn = await harness.SendJsonAsync(
                 "POST",
                 "/v1/model/subagents?session=test-session",
                 """{"version":1,"input":"orchestrated task","sessionId":"test-session"}""",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(200, spawn.StatusCode);
             var handle = JsonDocument.Parse(spawn.Body).RootElement;
             Assert.False(string.IsNullOrWhiteSpace(handle.GetProperty("childSessionId").GetString()));
@@ -43,7 +42,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/model/subagents/{runId}?session=test-session&timeoutMs=10000",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(200, wait.StatusCode);
             var result = JsonDocument.Parse(wait.Body).RootElement;
             Assert.Equal("complete", result.GetProperty("status").GetString());
@@ -57,15 +56,14 @@ public sealed class ModelOrchestrationEndpointTests
         if (OperatingSystem.IsWindows())
             Assert.Skip("The control-host test harness rides a Unix domain socket.");
 
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        var harness = await CreateHarnessAsync(deadline.Token);
+        var harness = await CreateHarnessAsync(TestContext.Current.CancellationToken);
         await using (harness.Application)
         {
             var spawn = await harness.SendJsonAsync(
                 "POST",
                 "/v1/model/subagents?session=test-session",
                 """{"version":1,"input":"orchestrated task","sessionId":"test-session"}""",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             var runId = JsonDocument.Parse(spawn.Body).RootElement.GetProperty("runId").GetString()!;
             var owner = harness.Manager.Id.Value.ToString("N");
             var taskUri = $"task://agent/{owner}/{runId}";
@@ -74,7 +72,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString(taskUri)}&timeoutMs=10000",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(200, wait.StatusCode);
             var snapshot = JsonDocument.Parse(wait.Body).RootElement;
             Assert.Equal("agent", snapshot.GetProperty("kind").GetString());
@@ -85,7 +83,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "POST",
                 "/v1/tasks/cancel?session=test-session",
                 $$"""{"uri":"{{taskUri}}","sessionId":"test-session"}""",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(200, cancel.StatusCode);
             Assert.Equal("complete", JsonDocument.Parse(cancel.Body).RootElement.GetProperty("status").GetString());
 
@@ -93,7 +91,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString($"task://agent/{owner}/{Guid.NewGuid():N}")}&timeoutMs=200",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(404, unknown.StatusCode);
         }
     }
@@ -104,8 +102,7 @@ public sealed class ModelOrchestrationEndpointTests
         if (OperatingSystem.IsWindows())
             Assert.Skip("The control-host test harness rides a Unix domain socket.");
 
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        var harness = await CreateHarnessAsync(deadline.Token);
+        var harness = await CreateHarnessAsync(TestContext.Current.CancellationToken);
         await using (harness.Application)
         {
             var oneShot = await harness.Terminals.RunOnceAsync(
@@ -114,7 +111,7 @@ public sealed class ModelOrchestrationEndpointTests
                 ["-c", "sleep 60"],
                 TimeSpan.FromMilliseconds(200),
                 new TerminalSnapshotRequest(),
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.False(oneShot.Settled);
             Assert.StartsWith("task://terminal/", oneShot.TaskUri ?? throw new InvalidOperationException("the assertion subject is null"));
 
@@ -124,7 +121,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString(oneShot.TaskUri!)}&timeoutMs=1",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(408, notSettled.StatusCode);
             Assert.Contains("task_wait_timeout", notSettled.Body);
 
@@ -132,14 +129,14 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString("https://example.com/heap")}&timeoutMs=100",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(400, invalidWait.StatusCode);
 
             var invalidCancel = await harness.SendJsonAsync(
                 "POST",
                 "/v1/tasks/cancel?session=test-session",
                 """{"uri":"file:///etc/hosts","sessionId":"test-session"}""",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(400, invalidCancel.StatusCode);
 
             harness.Process.EndOfOutput();
@@ -148,7 +145,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/tasks?uri={Uri.EscapeDataString(oneShot.TaskUri!)}&timeoutMs=10000",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(200, settled.StatusCode);
             var final = JsonDocument.Parse(settled.Body).RootElement;
             Assert.Equal("terminal", final.GetProperty("kind").GetString());
@@ -163,8 +160,7 @@ public sealed class ModelOrchestrationEndpointTests
         if (OperatingSystem.IsWindows())
             Assert.Skip("The control-host test harness rides a Unix domain socket.");
 
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        var harness = await CreateHarnessAsync(deadline.Token);
+        var harness = await CreateHarnessAsync(TestContext.Current.CancellationToken);
         await using (harness.Application)
         {
             var unknown = Guid.NewGuid().ToString("N");
@@ -172,7 +168,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "GET",
                 $"/v1/model/subagents/{unknown}?session=test-session&timeoutMs=200",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(404, wait.StatusCode);
             Assert.Contains("resource_not_found", wait.Body);
 
@@ -180,7 +176,7 @@ public sealed class ModelOrchestrationEndpointTests
                 "POST",
                 $"/v1/model/subagents/{unknown}/cancel?session=not-registered",
                 null,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(401, unowned.StatusCode);
         }
     }
@@ -238,9 +234,6 @@ public sealed class ModelOrchestrationEndpointTests
         var application = await ReplControlTestHost.StartAsync(socketPath, host, cancellationToken);
         return new Harness(application, host, manager, terminals, terminalProcess);
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
-        TestDeadlines.Create(cancellationToken);
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(string text)
     {

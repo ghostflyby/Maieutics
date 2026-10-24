@@ -18,13 +18,12 @@ public sealed class AgentSubagentFunctionsTests
     [Fact(Timeout = 30_000)]
     public async Task SpawnHandleWaitLoopReturnsTheChildReportThroughTheTaskPlane()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var harness = CreateHarness();
         var session = harness.Session;
 
-        var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         // The in-turn loop: agent_spawn(wait=false) returned the handle, task_wait addressed
         // the child through its task:// URI while the parent run was still live.
@@ -54,14 +53,13 @@ public sealed class AgentSubagentFunctionsTests
         // plane reports that as a typed miss rather than a stale snapshot.
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
         {
-            await harness.Provider.WaitTaskAsync(taskUri, TimeSpan.FromSeconds(1), deadline.Token);
+            await harness.Provider.WaitTaskAsync(taskUri, TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
         })).Code);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task SpawnRegistersTheChildScopeWithThePermissionRegistry()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var buffer = new SubagentEventBuffer();
         var reference = new SessionRef();
         var overrides = new PermissionOverrideRegistry();
@@ -93,9 +91,9 @@ public sealed class AgentSubagentFunctionsTests
         reference.Session = session;
         overrides.Set(session.Id, parentLayer);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         // The real agent_spawn adapter registered the child scope under the calling session
         // (ADR 0030 decision 3), so the child resolves through the parent's override.
@@ -107,7 +105,6 @@ public sealed class AgentSubagentFunctionsTests
     [Fact(Timeout = 30_000)]
     public async Task ManagerConfigurationDecoratesLeasesWithTheSpawnContext()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync(ToolCallUpdate("probe", "subagent_probe")),
             (_, _) => StreamAsync("done"));
@@ -127,9 +124,9 @@ public sealed class AgentSubagentFunctionsTests
             });
 
         var session = (AgentSession)manager.Resolve(manager.Id);
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         // The probe tool reports whether the spawn context was attached to its arguments.
         Assert.Equal("attached", events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
@@ -236,9 +233,6 @@ public sealed class AgentSubagentFunctionsTests
             });
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
-        TestDeadlines.Create(cancellationToken);
-
     private static async Task<List<AgentEvent>> ReadEventsAsync(IAgentRun run, CancellationToken cancellationToken)
     {
         var events = new List<AgentEvent>();
@@ -258,7 +252,6 @@ public sealed class AgentSubagentFunctionsTests
         await Task.Yield();
         yield return update;
     }
-
 
     private static ChatResponseUpdate ToolCallUpdate(
         string callId,

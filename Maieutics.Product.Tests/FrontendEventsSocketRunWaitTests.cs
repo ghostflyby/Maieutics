@@ -25,26 +25,25 @@ public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
     [Fact(Timeout = 90_000)]
     public async Task DirectTurnAfterTheQueueDrainsIsStillServedOnAnOpenEventsSocket()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(70));
         // The harness owns the provider's lifetime and disposes it with the host.
         var provider = new GatedModelProvider(
             ModelApiFlavor.ChatCompletions,
             ProviderGateMode.Scripted,
             requestCount: 3);
         await using var harness = await Harness.StartAsync(
-            deadline.Token,
+            TestContext.Current.CancellationToken,
             provider,
             hanging: false);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        var hello = await events.ReceiveFrameAsync(deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        var hello = await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
         Assert.Equal("hello", hello.GetProperty("type").GetString());
 
         // Queue two turns. The worker's dequeue/running/settled transitions publish queue
         // wakes while the events loop is waiting for a run, which is the window that left an
         // abandoned reader behind.
-        var enqueued = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two");
+        var enqueued = await EnqueueAsync(harness, sessionId, TestContext.Current.CancellationToken, "queued one", "queued two");
         Assert.Equal(2, enqueued.Count());
 
         // Deterministic readiness: the queue snapshot can present "drained" (no running, no
@@ -57,17 +56,17 @@ public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
         var seenRunIds = new HashSet<string>();
         while (true)
         {
-            var observed = await WaitForQueueDrainedAsync(harness, sessionId, deadline.Token);
+            var observed = await WaitForQueueDrainedAsync(harness, sessionId, TestContext.Current.CancellationToken);
             if (observed is not null) seenRunIds.Add(observed);
 
             foreach (var seenRunId in seenRunIds)
             {
                 if (harness.SessionService.TryGetRun(seenRunId, out var seenStream) && seenStream is not null)
-                    await seenStream.Settled.WaitAsync(deadline.Token);
+                    await seenStream.Settled.WaitAsync(TestContext.Current.CancellationToken);
             }
 
-            if (await IsQueueEmptyAsync(harness, sessionId, deadline.Token) &&
-                !await HasNewRunningAsync(harness, sessionId, seenRunIds, deadline.Token))
+            if (await IsQueueEmptyAsync(harness, sessionId, TestContext.Current.CancellationToken) &&
+                !await HasNewRunningAsync(harness, sessionId, seenRunIds, TestContext.Current.CancellationToken))
             {
                 Trace("queue drained stably; submitting a direct turn");
                 break;
@@ -80,9 +79,9 @@ public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
         using var response = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "direct after drain" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var runId = body.GetProperty("runId").GetString();
         Assert.False(string.IsNullOrEmpty(runId));
 
@@ -91,12 +90,11 @@ public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
         var frames = await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() is "run.completed" or "run.failed"
                      && frame.TryGetProperty("runId", out var id) && id.GetString() == runId,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         var terminal = frames.Last(frame => frame.GetProperty("type").GetString() is "run.completed" or "run.failed");
         Assert.Equal("run.completed", terminal.GetProperty("type").GetString());
         Assert.Equal(runId, terminal.GetProperty("runId").GetString());
     }
-
 
     private static async Task<string[]> EnqueueAsync(
         Harness harness,
@@ -192,7 +190,4 @@ public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
                !seenRunIds.Contains(runId);
     }
 
-    private static CancellationTokenSource CreateDeadline(
-        CancellationToken cancellationToken,
-        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 }

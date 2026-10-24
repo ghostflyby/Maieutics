@@ -16,18 +16,17 @@ public sealed class SubagentFrontendFramesTests
     [Fact(Timeout = 30_000)]
     public async Task ChildFramesFlowOnTheParentStreamUnderTheChildRunId()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var harness = CreateHarness(postToolParentResponse: "done", useTaskWait: true);
 
         var accepted = await harness.Service.StartTurnAsync(
-            harness.Manager.Id.ToString(), "Spawn", deadline.Token);
-        var handle = await harness.HandleSource.Task.WaitAsync(deadline.Token);
+            harness.Manager.Id.ToString(), "Spawn", TestContext.Current.CancellationToken);
+        var handle = await harness.HandleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
         if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
             throw new InvalidOperationException("The submitted run left no retained stream.");
         // Settled, not Completion: the run's completion task settles while the pump may
         // still be draining the last buffered events into the replay; Settled completes
         // strictly after the terminal frames are published, so the snapshot below is whole.
-        await stream.Settled.WaitAsync(deadline.Token);
+        await stream.Settled.WaitAsync(TestContext.Current.CancellationToken);
 
         // The child frames ride the parent stream through a display tap whose publishes
         // are synchronous on the child's pump: OnSubagentStartedAsync publishes the
@@ -71,7 +70,6 @@ public sealed class SubagentFrontendFramesTests
     [Fact(Timeout = 30_000)]
     public async Task RunCancelResolvesALiveSubagentChild()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         // The parent's post-tool response hangs until the test releases it, ensuring
         // CancelRunAsync operates on a live child (the parent run is still in-flight).
@@ -82,23 +80,23 @@ public sealed class SubagentFrontendFramesTests
             parentRelease: parentReleased.Task);
 
         var accepted = await harness.Service.StartTurnAsync(
-            harness.Manager.Id.ToString(), "Spawn", deadline.Token);
-        var handle = await harness.HandleSource.Task.WaitAsync(deadline.Token);
-        await childStarted.Task.WaitAsync(deadline.Token);
+            harness.Manager.Id.ToString(), "Spawn", TestContext.Current.CancellationToken);
+        var handle = await harness.HandleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await childStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
         if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
             throw new InvalidOperationException("The submitted run left no retained stream.");
 
         // Cancel the child while the parent run is still in-flight (the parent model is
         // parked on parentReleased). The child settles as cancelled; the parent tool call
         // sees the cancellation and the model finishes normally.
-        await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), deadline.Token);
+        await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), TestContext.Current.CancellationToken);
 
-        var result = await handle.Completion.WaitAsync(deadline.Token);
+        var result = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, result.Status);
 
         // Release the parent; it returns "done" and the run completes normally.
         parentReleased.TrySetResult();
-        await stream.Settled.WaitAsync(deadline.Token);
+        await stream.Settled.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     private static Harness CreateHarness(
@@ -277,8 +275,6 @@ public sealed class SubagentFrontendFramesTests
             ]);
     }
 
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
-        TestDeadlines.Create(cancellationToken);
 }
 
 internal sealed record SpawnValue(string Status);

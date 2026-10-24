@@ -9,16 +9,15 @@ public sealed class AgentSessionResumeTests
     [Fact(Timeout = 30_000)]
     public async Task ResumeRestoresCommittedHistoryAndContinuesAppendingToTheStore()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var sessionId = AgentSessionId.Create();
         var store = new InMemoryTranscriptStore();
         var firstProvider = new FixedProfileProvider(
             new ScriptedChatClient((_, _) => StreamAsync("first")));
         var original = new AgentSession(firstProvider, transcriptStore: store, sessionId: sessionId);
 
-        await using var run = await original.StartTurnAsync(AgentTurn.FromText("one"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await original.StartTurnAsync(AgentTurn.FromText("one"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var resumedProvider = new FixedProfileProvider(
             new ScriptedChatClient((_, _) => StreamAsync("second")));
@@ -30,9 +29,9 @@ public sealed class AgentSessionResumeTests
         Assert.Equal("one", item.Messages[0].Text);
         Assert.Equal("first", snapshot.Turns[0].Messages[^1].Text);
 
-        await using var next = await resumed.StartTurnAsync(AgentTurn.FromText("two"), deadline.Token);
-        await ReadEventsAsync(next, deadline.Token);
-        Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
+        await using var next = await resumed.StartTurnAsync(AgentTurn.FromText("two"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(next, TestContext.Current.CancellationToken);
+        Assert.Equal("second", (await next.Completion.WaitAsync(TestContext.Current.CancellationToken)).AssistantMessage.Text);
 
         if (store.LoadTranscript(sessionId) is not { } persisted)
         {
@@ -51,10 +50,6 @@ public sealed class AgentSessionResumeTests
 
         Assert.ThrowsAny<AgentSessionNotFoundException>(() => AgentSession.Resume(provider, store, AgentSessionId.Create()));
     }
-
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
-        => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
     private static async Task ReadEventsAsync(
         IAgentRun run,

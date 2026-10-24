@@ -33,8 +33,7 @@ public sealed class FrontendRouteAuthenticationTests
     [Fact(Timeout = 60_000)]
     public async Task EveryRegisteredFrontendEndpointRequiresAuthentication()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(50));
-        await using var fixture = await FrontendFixture.StartAsync(deadline.Token);
+        await using var fixture = await FrontendFixture.StartAsync(TestContext.Current.CancellationToken);
 
         var endpoints = fixture.EnumerateRouteEndpoints();
         Assert.NotEmpty(endpoints);
@@ -70,7 +69,7 @@ public sealed class FrontendRouteAuthenticationTests
             var probePath = BuildProbePath(rawText);
             using var request = new HttpRequestMessage(new HttpMethod(httpMethod), probePath);
             using var response = await fixture.Client.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                request, HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
             if (response.StatusCode != HttpStatusCode.Unauthorized)
             {
                 unauthenticated.Add($"{httpMethod} {probePath} -> {(int)response.StatusCode}");
@@ -83,8 +82,7 @@ public sealed class FrontendRouteAuthenticationTests
     [Fact(Timeout = 60_000)]
     public async Task CaseVariantPathsAreAuthenticatedLikeTheirCanonicalRoutes()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(50));
-        await using var fixture = await FrontendFixture.StartAsync(deadline.Token);
+        await using var fixture = await FrontendFixture.StartAsync(TestContext.Current.CancellationToken);
 
         var paths = new[] { "/V1/agent/session", "/v1/Agent/session", "/V1/SKILLS" };
 
@@ -93,7 +91,7 @@ public sealed class FrontendRouteAuthenticationTests
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, path);
             using var response = await fixture.Client.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                request, HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
             if (response.StatusCode != HttpStatusCode.Unauthorized)
             {
                 bypassed.Add($"GET {path} -> {(int)response.StatusCode}");
@@ -109,7 +107,7 @@ public sealed class FrontendRouteAuthenticationTests
             using var request = new HttpRequestMessage(HttpMethod.Get, path);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", fixture.Token);
             using var response = await fixture.Client.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                request, HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
             Assert.True(
                 response.IsSuccessStatusCode,
                 $"GET {path} with a valid token answered {(int)response.StatusCode}.");
@@ -119,23 +117,22 @@ public sealed class FrontendRouteAuthenticationTests
     [Fact(Timeout = 60_000)]
     public async Task EventsWebSocketAcceptsTheTokenAsAQueryParameter()
     {
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(50));
-        await using var fixture = await FrontendFixture.StartAsync(deadline.Token);
-        var sessionId = await fixture.CreateForegroundSessionAsync(deadline.Token);
+        await using var fixture = await FrontendFixture.StartAsync(TestContext.Current.CancellationToken);
+        var sessionId = await fixture.CreateForegroundSessionAsync(TestContext.Current.CancellationToken);
 
         // The browser-standard WebSocket client API cannot set headers: the events route
         // must keep accepting the token from the query string, with no Authorization header.
         using var socket = new ClientWebSocket();
         await socket.ConnectAsync(
             new Uri($"ws://127.0.0.1:{fixture.Port}/v1/agent/sessions/{sessionId}/events?token={fixture.Token}"),
-            deadline.Token);
-        Assert.Equal("hello", await ReceiveTextFrameTypeAsync(socket, deadline.Token));
+            TestContext.Current.CancellationToken);
+        Assert.Equal("hello", await ReceiveTextFrameTypeAsync(socket, TestContext.Current.CancellationToken));
 
         // And the same route still rejects a fully anonymous connect.
         using var anonymous = new ClientWebSocket();
         await Assert.ThrowsAnyAsync<WebSocketException>(() => anonymous.ConnectAsync(
             new Uri($"ws://127.0.0.1:{fixture.Port}/v1/agent/sessions/{sessionId}/events"),
-            deadline.Token));
+            TestContext.Current.CancellationToken));
     }
 
     /// <summary>Replaces every route parameter with the placeholder; authentication runs

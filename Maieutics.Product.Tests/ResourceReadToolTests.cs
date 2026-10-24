@@ -139,32 +139,31 @@ public sealed class ResourceReadToolTests
                 new ResourceCatalogEntry("fake", "notes://team/idea", null, null, "text/plain", "resource", null)
             ])
         ]);
-        using var cts = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         var registry2 = new ReplControlSessionRegistry();
         // The test process itself is the peer behind the unix socket connection.
         registry2.Register(Environment.ProcessId, "test-session");
         var (application, host) = await ReplControlTestHost.StartAsync(
             registry2,
-            cts.Token,
+            TestContext.Current.CancellationToken,
             resources: registry);
         await using var _ = application;
 
         using var client = CreateUnixSocketClient(host.SocketPath);
         var ok = await client.GetAsync(
             $"http://localhost/v1/resource?uri={Uri.EscapeDataString("notes://team/idea")}",
-            cts.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
         Assert.Equal("text/plain", ok.Content.Headers.ContentType?.MediaType);
-        Assert.Equal("first\nsecond\nthird\n", await ok.Content.ReadAsStringAsync(cts.Token));
+        Assert.Equal("first\nsecond\nthird\n", await ok.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
 
         var unknown = await client.GetAsync(
             $"http://localhost/v1/resource?uri={Uri.EscapeDataString("mystery://a/b")}",
-            cts.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
-        using var document = JsonDocument.Parse(await unknown.Content.ReadAsStringAsync(cts.Token));
+        using var document = JsonDocument.Parse(await unknown.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         Assert.Equal("resource_unknown_scheme", document.RootElement.GetProperty("code").GetString());
 
-        var missingParameter = await client.GetAsync("http://localhost/v1/resource", cts.Token);
+        var missingParameter = await client.GetAsync("http://localhost/v1/resource", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, missingParameter.StatusCode);
     }
 

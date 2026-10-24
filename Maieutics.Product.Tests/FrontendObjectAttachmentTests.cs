@@ -17,52 +17,48 @@ public sealed class FrontendObjectAttachmentTests
     [Fact(Timeout = 60_000)]
     public async Task UploadAnswersContentAddressAndServesTheBytesBack()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
         var client = harness.Client;
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var payload = "attachment bytes"u8.ToArray();
         var response = await client.PostAsync(
             $"/v1/agent/sessions/{sessionId}/objects?name=shot.png",
             new ByteArrayContent(payload),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var uploaded = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+        var uploaded = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var sha256 = uploaded.GetProperty("sha256").GetString();
         Assert.Matches("^[0-9a-f]{64}$", sha256);
         Assert.Equal(payload.Length, uploaded.GetProperty("byteLength").GetInt64());
 
         // The content address is the same object store the display-bundle GET serves.
-        var served = await client.GetAsync($"/v1/objects/{sha256}", deadline.Token);
+        var served = await client.GetAsync($"/v1/objects/{sha256}", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, served.StatusCode);
-        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(deadline.Token));
+        Assert.Equal(payload, await served.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken));
 
         // Content addressing: identical bytes deduplicate to the same address.
         var again = await client.PostAsync(
             $"/v1/agent/sessions/{sessionId}/objects",
             new ByteArrayContent(payload),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.OK, again.StatusCode);
-        Assert.Equal(sha256, (await again.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+        Assert.Equal(sha256, (await again.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("sha256").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task UploadRejectsUnknownSessionAndOversizedPayloadTyped()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
         var client = harness.Client;
 
         var unknown = await client.PostAsync(
             $"/v1/agent/sessions/{new string('e', 32)}/objects",
             new ByteArrayContent([1, 2, 3]),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
-        Assert.Equal("not_found", (await unknown.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+        Assert.Equal("not_found", (await unknown.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("code").GetString());
 
         // The ingest bound is a typed 400, not a transport-level abort; the declared
@@ -71,19 +67,17 @@ public sealed class FrontendObjectAttachmentTests
         var oversized = await client.PostAsync(
             "/v1/agent/sessions/anything/objects",
             new ByteArrayContent(new byte[9]),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
-        Assert.Equal("invalid_request", (await oversized.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+        Assert.Equal("invalid_request", (await oversized.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task MarkerTurnCommitsTheTextPartAndOneBlobDataPartPerMarker()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var first = harness.ObjectStore.Ingest(new MemoryStream([1, 2, 3]));
         var second = harness.ObjectStore.Ingest(new MemoryStream([9, 8, 7, 6]));
@@ -92,16 +86,16 @@ public sealed class FrontendObjectAttachmentTests
         var text = $"Look\n[[maieutics:object sha256={first.Sha256} mime=image/png name=\"shot.png\"]]\n"
                    + $"[[maieutics:object sha256={second.Sha256} mime=application/pdf name=\"my \\\"shot\\\"\\\\v1.pdf\"]]";
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, text, deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, text, TestContext.Current.CancellationToken);
         await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
-            $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
+            $"/v1/agent/sessions/{sessionId}/transcript", TestContext.Current.CancellationToken);
         var user = transcript
             .GetProperty("turns")[0]
             .GetProperty("messages")[0];
@@ -129,41 +123,37 @@ public sealed class FrontendObjectAttachmentTests
     [Fact(Timeout = 60_000)]
     public async Task MarkerWhoseObjectIsMissingFailsTheSubmissionTyped()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var missing = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = $"[[maieutics:object sha256={new string('a', 64)} mime=image/png name=\"gone.png\"]]" },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
-        Assert.Equal("not_found", (await missing.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+        Assert.Equal("not_found", (await missing.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("code").GetString());
     }
 
     [Fact(Timeout = 60_000)]
     public async Task NonCanonicalLookalikeStaysLiteralText()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         // Uppercase hex breaks the canonical grammar, so the whole line is ordinary text:
         // a user-written look-alike can never become a reference.
         var lookalike = $"[[maieutics:object sha256={new string('A', 64)} mime=image/png name=\"no.png\"]]";
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
-        await harness.SubmitTurnAsync(sessionId, lookalike, deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
+        await harness.SubmitTurnAsync(sessionId, lookalike, TestContext.Current.CancellationToken);
         await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
-            $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
+            $"/v1/agent/sessions/{sessionId}/transcript", TestContext.Current.CancellationToken);
         var parts = transcript.GetProperty("turns")[0].GetProperty("messages")[0].GetProperty("parts");
         Assert.Equal(1, parts.GetArrayLength());
         Assert.Equal("text", parts[0].GetProperty("kind").GetString());
@@ -173,29 +163,27 @@ public sealed class FrontendObjectAttachmentTests
     [Fact(Timeout = 60_000)]
     public async Task QueuedMarkerTurnParsesAtDrainAndItsObjectSurvivesPrune()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        await using var harness = await StartPersistenceHostAsync(deadline.Token);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartPersistenceHostAsync(TestContext.Current.CancellationToken);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
 
         var referenced = harness.ObjectStore.Ingest(new MemoryStream([5, 5, 5]));
         var unreferenced = harness.ObjectStore.Ingest(new MemoryStream([6, 6, 6]));
         var text = $"[[maieutics:object sha256={referenced.Sha256} mime=image/png name=\"q.png\"]]";
 
-        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
-        await events.ReceiveFrameAsync(deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, TestContext.Current.CancellationToken);
+        await events.ReceiveFrameAsync(TestContext.Current.CancellationToken);
         var enqueue = await harness.Client.PostAsJsonAsync(
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = new[] { new { text } } },
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.Accepted, enqueue.StatusCode);
         await events.CollectUntilAsync(
             frame => frame.GetProperty("type").GetString() == "run.status" &&
                      frame.GetProperty("state").GetString() == "idle",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
-            $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
+            $"/v1/agent/sessions/{sessionId}/transcript", TestContext.Current.CancellationToken);
         var parts = transcript.GetProperty("turns")[0].GetProperty("messages")[0].GetProperty("parts");
         Assert.Equal(1, parts.GetArrayLength());
         Assert.Equal("data", parts[0].GetProperty("kind").GetString());
@@ -226,7 +214,4 @@ public sealed class FrontendObjectAttachmentTests
                 StringComparison.Ordinal));
     }
 
-    private static CancellationTokenSource CreateDeadline(
-        CancellationToken cancellationToken,
-        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 }

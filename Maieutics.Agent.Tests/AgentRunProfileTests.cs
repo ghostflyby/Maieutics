@@ -98,14 +98,13 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task StaticConstructorKeepsExistingClientOptionsAndTranscriptBehavior()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient(
             (_, _) => StreamAsync("first answer"),
             (_, _) => StreamAsync("second answer"));
         var session = new AgentSession(client, new AgentSessionOptions { SystemPrompt = "static instructions" });
 
-        await CompleteTurnAsync(session, "first question", deadline.Token);
-        var result = await CompleteTurnAsync(session, "second question", deadline.Token);
+        await CompleteTurnAsync(session, "first question", TestContext.Current.CancellationToken);
+        var result = await CompleteTurnAsync(session, "second question", TestContext.Current.CancellationToken);
 
         Assert.Equal(new[] { "static instructions", "static instructions" }, client.Instructions);
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(MessageTuple));
@@ -118,15 +117,14 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task DynamicProfileAppliesToNextRunAndReplaysCanonicalTranscript()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient((_, _) => StreamAsync("first answer"));
         var secondClient = new ScriptedChatClient((_, _) => StreamAsync("second answer"));
         var firstLease = new TrackingProfileLease(CreateProfile(firstClient, "first instructions"));
         var secondLease = new TrackingProfileLease(CreateProfile(secondClient, "second instructions"));
         var session = new AgentSession(new QueueProfileProvider(firstLease, secondLease));
 
-        await CompleteTurnAsync(session, "first question", deadline.Token);
-        var result = await CompleteTurnAsync(session, "second question", deadline.Token);
+        await CompleteTurnAsync(session, "first question", TestContext.Current.CancellationToken);
+        var result = await CompleteTurnAsync(session, "second question", TestContext.Current.CancellationToken);
 
         Assert.Equal(new[] { "first instructions" }, firstClient.Instructions);
         Assert.Equal(new[] { "second instructions" }, secondClient.Instructions);
@@ -139,7 +137,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task PendingProfileAcquisitionKeepsTheSessionReserved()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var acquisition = new TaskCompletionSource<IAgentRunProfileLease>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var lease = new TrackingProfileLease(
@@ -147,14 +144,14 @@ public sealed class AgentRunProfileTests
         var provider = new AsyncQueueProfileProvider(acquisition.Task);
         var session = new AgentSession(provider);
 
-        var pending = session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token);
+        var pending = session.StartTurnAsync(AgentTurn.FromText("first"), TestContext.Current.CancellationToken);
         Assert.False(pending.IsCompleted);
-        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await (Session: session, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("second"), (Session: session, deadline.Token).Token); });
+        await Assert.ThrowsAnyAsync<AgentTurnInProgressException>(async () => { await session.StartTurnAsync(AgentTurn.FromText("second"), TestContext.Current.CancellationToken); });
 
         acquisition.SetResult(lease);
-        await using var run = await pending.WaitAsync(deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await pending.WaitAsync(TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(1, provider.AcquireCount);
         Assert.Equal(1, lease.DisposeCount);
@@ -163,8 +160,7 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CanceledProfileAcquisitionReleasesTheSessionReservation()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
-        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var pendingAcquisition = new TaskCompletionSource<IAgentRunProfileLease>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var recoveredLease = new TrackingProfileLease(
@@ -178,7 +174,7 @@ public sealed class AgentRunProfileTests
         await cancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await pending; });
-        var result = await CompleteTurnAsync(session, "next", deadline.Token);
+        var result = await CompleteTurnAsync(session, "next", TestContext.Current.CancellationToken);
 
         Assert.Equal("recovered", result.AssistantMessage.Text);
         Assert.Equal(2, provider.AcquireCount);
@@ -188,7 +184,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task SuccessfulRunCommitsCapturedModelIdentityToResultAndTranscript()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var identity = new AgentModelIdentity(
             new AgentModelProfileId("claude"),
             "Anthropic",
@@ -200,7 +195,7 @@ public sealed class AgentRunProfileTests
             AgentModelCapabilities.StreamingText);
         var session = new AgentSession(new QueueProfileProvider(new TrackingProfileLease(profile)));
 
-        var result = await CompleteTurnAsync(session, "question", deadline.Token);
+        var result = await CompleteTurnAsync(session, "question", TestContext.Current.CancellationToken);
 
         Assert.Equal(identity, result.ModelIdentity);
         var item = Assert.Single(result.Transcript.Turns);
@@ -211,7 +206,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task MissingStreamingCapabilityFailsBeforeProviderInvocation()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var identity = new AgentModelIdentity(new AgentModelProfileId("metadata"), "Test", "metadata-only");
         var lease = new TrackingProfileLease(new AgentRunProfile(
@@ -221,9 +215,9 @@ public sealed class AgentRunProfileTests
             AgentModelCapabilities.None));
         var session = new AgentSession(new QueueProfileProvider(lease));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
 
         Assert.Equal(AgentModelCapabilities.StreamingText, failure.RequiredCapability);
         Assert.Equal(identity, failure.ModelIdentity);
@@ -235,7 +229,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task MissingFunctionCallingCapabilityFailsBeforeProviderInvocationWhenToolsExist()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var identity = new AgentModelIdentity(new AgentModelProfileId("text"), "Test", "text-only");
         var lease = new TrackingProfileLease(new AgentRunProfile(
@@ -247,9 +240,9 @@ public sealed class AgentRunProfileTests
             new QueueProfileProvider(lease),
             [CreateSuccessfulTool()]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("use a tool"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var failure = await Assert.ThrowsAnyAsync<AgentModelCapabilityException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
 
         Assert.Equal(AgentModelCapabilities.FunctionCalling, failure.RequiredCapability);
         Assert.Equal(identity, failure.ModelIdentity);
@@ -261,7 +254,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task ActiveRunUsesOneCapturedClientAcrossToolIterations()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient(
             (_, _) => StreamAsync(new ChatResponseUpdate(
                 ChatRole.Assistant,
@@ -273,14 +265,14 @@ public sealed class AgentRunProfileTests
             new TrackingProfileLease(CreateProfile(nextClient, "next")));
         var session = new AgentSession(provider, [CreateSuccessfulTool()]);
 
-        var first = await CompleteTurnAsync(session, "use tool", deadline.Token);
+        var first = await CompleteTurnAsync(session, "use tool", TestContext.Current.CancellationToken);
 
         Assert.Equal("tool complete", first.AssistantMessage.Text);
         Assert.Equal(2, firstClient.Requests.Count());
         Assert.Empty(nextClient.Requests);
         Assert.Equal(1, provider.AcquireCount);
 
-        await CompleteTurnAsync(session, "next", deadline.Token);
+        await CompleteTurnAsync(session, "next", TestContext.Current.CancellationToken);
         Assert.Single(nextClient.Requests);
         Assert.Equal(2, provider.AcquireCount);
     }
@@ -288,7 +280,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task DynamicProfilesExposeDifferentRunLocalToolRegistries()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var firstClient = new ScriptedChatClient(
             (_, _) => StreamAsync(new ChatResponseUpdate(
                 ChatRole.Assistant,
@@ -309,8 +300,8 @@ public sealed class AgentRunProfileTests
             tools: [CreateSuccessfulTool("second_tool")]));
         var session = new AgentSession(new QueueProfileProvider(firstLease, secondLease));
 
-        await CompleteTurnAsync(session, "first", deadline.Token);
-        await CompleteTurnAsync(session, "second", deadline.Token);
+        await CompleteTurnAsync(session, "first", TestContext.Current.CancellationToken);
+        await CompleteTurnAsync(session, "second", TestContext.Current.CancellationToken);
 
         Assert.All(firstClient.ToolNames, names => Assert.Equal(new[] { "first_tool" }, names));
         Assert.All(secondClient.ToolNames, names => Assert.Equal(new[] { "second_tool" }, names));
@@ -321,7 +312,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task InputLimitIsRunLocalAndRejectedStartReleasesItsLease()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var rejectedClient = new ScriptedChatClient((_, _) => StreamAsync("unused"));
         var acceptedClient = new ScriptedChatClient((_, _) => StreamAsync("accepted"));
         var rejectedLease = new TrackingProfileLease(new AgentRunProfile(
@@ -332,11 +322,11 @@ public sealed class AgentRunProfileTests
             new AgentSessionOptions { MaxInputCharacters = 10 }));
         var session = new AgentSession(new QueueProfileProvider(rejectedLease, acceptedLease));
 
-        await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await (Session: session, deadline.Token).Session.StartTurnAsync(AgentTurn.FromText("four"), (Session: session, deadline.Token).Token); });
+        await Assert.ThrowsAnyAsync<AgentInputLimitExceededException>(async () => { await session.StartTurnAsync(AgentTurn.FromText("four"), TestContext.Current.CancellationToken); });
 
         Assert.Equal(1, rejectedLease.DisposeCount);
         Assert.Empty(rejectedClient.Requests);
-        var result = await CompleteTurnAsync(session, "four", deadline.Token);
+        var result = await CompleteTurnAsync(session, "four", TestContext.Current.CancellationToken);
         Assert.Equal("accepted", result.AssistantMessage.Text);
         Assert.Equal(1, acceptedLease.DisposeCount);
     }
@@ -344,28 +334,26 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CompletionRemainsPendingUntilLeaseIsReleased()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var releaseLease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lease = new TrackingProfileLease(
             CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("answer")), "instructions"),
             releaseLease.Task);
         var session = new AgentSession(new QueueProfileProvider(lease));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await lease.DisposeStarted.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await lease.DisposeStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.False(run.Completion.IsCompleted);
         Assert.Equal(1, lease.DisposeCount);
 
         releaseLease.SetResult();
-        await run.Completion.WaitAsync(deadline.Token);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task LeaseReleaseFailureRollsBackSuccessfulTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var failedLease = new TrackingProfileLease(
             CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("uncommitted")), "first"),
             releaseException: new InvalidOperationException("lease release failed"));
@@ -373,15 +361,15 @@ public sealed class AgentRunProfileTests
             CreateProfile(new ScriptedChatClient((_, _) => StreamAsync("committed")), "second"));
         var session = new AgentSession(new QueueProfileProvider(failedLease, recoveredLease));
 
-        await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
+        await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), TestContext.Current.CancellationToken))
         {
-            await ReadEventsAsync(failed, deadline.Token);
-            var assertion1 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await failed.Completion.WaitAsync(deadline.Token); });
+            await ReadEventsAsync(failed, TestContext.Current.CancellationToken);
+            var assertion1 = await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await failed.Completion.WaitAsync(TestContext.Current.CancellationToken); });
             Assert.Equal("lease release failed", assertion1.Message);
         }
 
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
-        var recovered = await CompleteTurnAsync(session, "second", deadline.Token);
+        var recovered = await CompleteTurnAsync(session, "second", TestContext.Current.CancellationToken);
         Assert.Equal(1, recovered.Transcript.Version);
         Assert.Single(recovered.Transcript.Turns);
     }
@@ -389,7 +377,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderFailureReleasesLeaseAndAllowsNextProfile()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var failedLease = new TrackingProfileLease(CreateProfile(
             new ScriptedChatClient((_, _) => FailAsync(new InvalidOperationException("failed"))),
             "failed"));
@@ -398,14 +385,14 @@ public sealed class AgentRunProfileTests
             "recovered"));
         var session = new AgentSession(new QueueProfileProvider(failedLease, recoveredLease));
 
-        await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), deadline.Token))
+        await using (var failed = await session.StartTurnAsync(AgentTurn.FromText("first"), TestContext.Current.CancellationToken))
         {
-            await ReadEventsAsync(failed, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await failed.Completion.WaitAsync(deadline.Token); });
+            await ReadEventsAsync(failed, TestContext.Current.CancellationToken);
+            await Assert.ThrowsAnyAsync<AgentProviderException>(async () => { await failed.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         }
 
         Assert.Equal(1, failedLease.DisposeCount);
-        var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
+        var recovered = await CompleteTurnAsync(session, "retry", TestContext.Current.CancellationToken);
         Assert.Equal("recovered", recovered.AssistantMessage.Text);
         Assert.Equal(1, recoveredLease.DisposeCount);
     }
@@ -413,7 +400,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task CancellationReleasesLeaseAndSessionReservation()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var providerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceledLease = new TrackingProfileLease(CreateProfile(
             new ScriptedChatClient((_, token) => WaitUntilCanceledAsync(providerStarted, token)),
@@ -423,13 +409,13 @@ public sealed class AgentRunProfileTests
             "next"));
         var session = new AgentSession(new QueueProfileProvider(canceledLease, nextLease));
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("cancel"), deadline.Token);
-        await providerStarted.Task.WaitAsync(deadline.Token);
-        await run.CancelAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("cancel"), TestContext.Current.CancellationToken);
+        await providerStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await run.CancelAsync(TestContext.Current.CancellationToken);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
 
         Assert.Equal(1, canceledLease.DisposeCount);
-        await CompleteTurnAsync(session, "next", deadline.Token);
+        await CompleteTurnAsync(session, "next", TestContext.Current.CancellationToken);
         Assert.Equal(1, nextLease.DisposeCount);
     }
 
@@ -441,7 +427,6 @@ public sealed class AgentRunProfileTests
     [Fact(Timeout = 30_000)]
     public async Task HostedToolsReachTheProviderRequestAlongsideLocalFunctions()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new ScriptedChatClient((_, _) => StreamAsync("answer"));
         var profile = new AgentRunProfile(
             client,
@@ -451,7 +436,7 @@ public sealed class AgentRunProfileTests
             hostedTools: [new HostedWebSearchTool()]);
         var session = new AgentSession(new SingleProfileProvider(profile));
 
-        await CompleteTurnAsync(session, "search something", deadline.Token);
+        await CompleteTurnAsync(session, "search something", TestContext.Current.CancellationToken);
 
         // The request carries both the local function (still invocable by the runtime) and the
         // provider-hosted tool (executed by the provider).
@@ -521,9 +506,6 @@ public sealed class AgentRunProfileTests
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         yield break;
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-        => TestDeadlines.Create(cancellationToken);
 
     private static AIFunction CreateSuccessfulTool(string name = "echo")
     {

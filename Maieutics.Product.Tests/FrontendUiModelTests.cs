@@ -226,7 +226,6 @@ public sealed class FrontendUiModelTests
         var presenter = new FrontendElicitationPresenter(
             publisher,
             new FrontendFormModelHost(router, publisher));
-        using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(10));
         var session = AgentSessionId.Create();
         using var schema = JsonDocument.Parse(
             "{\"type\":\"object\",\"required\":[\"token\"],\"properties\":{\"token\":{\"type\":\"string\",\"title\":\"API token\"},\"level\":{\"type\":\"integer\"},\"mode\":{\"enum\":[\"fast\",\"slow\"]}}}");
@@ -238,12 +237,12 @@ public sealed class FrontendUiModelTests
                 "Provide the token",
                 schema.RootElement.Clone(),
                 Password: false),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         // Both presentations ride the run stream: the fallback input.request frame is
         // synchronous, and the native form announcement lands after the form model's
         // router publish. The publication signal replaces a settle window.
-        await publisher.WaitForCountAsync(2, deadline.Token);
+        await publisher.WaitForCountAsync(2, TestContext.Current.CancellationToken);
         Assert.Equivalent(new[] { "input.request", "repl.display" }, publisher.Published.Select(frame => frame.Type));
         var announcement = publisher.Published
             .Single(frame => frame.Type == "repl.display")
@@ -263,7 +262,7 @@ public sealed class FrontendUiModelTests
             Uplink(
                 modelId,
                 new { method = "event", name = "submit", payload = new { values = new { token = "t0k" } } }),
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var answer = await wait;
         Assert.Equal("accept", answer.Action);

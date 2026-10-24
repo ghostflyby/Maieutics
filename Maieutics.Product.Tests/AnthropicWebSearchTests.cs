@@ -11,7 +11,6 @@ public sealed class AnthropicWebSearchTests
     [Fact(Timeout = 30_000)]
     public async Task HostedWebSearchIsDeclaredAsAServerToolAndResultsAreParsed()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         await using var provider = new GatedModelProvider(
             ModelApiFlavor.Anthropic, ProviderGateMode.Scripted,
             model: "claude-test", answer: "unused", webSearchFlow: true, requestCount: 1);
@@ -21,7 +20,7 @@ public sealed class AnthropicWebSearchTests
         await foreach (var update in client.GetStreamingResponseAsync(
                            [new ChatMessage(ChatRole.User, "search zhipu ai")],
                            new ChatOptions { Tools = [new HostedWebSearchTool()] },
-                           deadline.Token))
+                           TestContext.Current.CancellationToken))
             updates.Add(update);
 
         // The request declares Anthropic's versioned server tool, not a function with a schema.
@@ -52,7 +51,6 @@ public sealed class AnthropicWebSearchTests
     [Fact(Timeout = 30_000)]
     public async Task ConfiguredLimitIsDeclaredAsTheWireMaxUses()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         await using var provider = new GatedModelProvider(
             ModelApiFlavor.Anthropic, ProviderGateMode.Scripted,
             model: "claude-test", answer: "unused", webSearchFlow: true, requestCount: 1);
@@ -65,7 +63,7 @@ public sealed class AnthropicWebSearchTests
         await foreach (var _ in client.GetStreamingResponseAsync(
                            [new ChatMessage(ChatRole.User, "search zhipu ai")],
                            options,
-                           deadline.Token))
+                           TestContext.Current.CancellationToken))
         {
         }
 
@@ -77,7 +75,6 @@ public sealed class AnthropicWebSearchTests
     [Fact(Timeout = 30_000)]
     public async Task SearchResultsReplayVerbatimIncludingEncryptedContent()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         await using var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "unused", webSearchFlow: true);
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
@@ -86,7 +83,7 @@ public sealed class AnthropicWebSearchTests
         await foreach (var update in client.GetStreamingResponseAsync(
                            [new ChatMessage(ChatRole.User, "search zhipu ai")],
                            new ChatOptions { Tools = [new HostedWebSearchTool()] },
-                           deadline.Token))
+                           TestContext.Current.CancellationToken))
             turn.AddRange(update.Contents);
 
         // Second turn: the captured assistant turn is replayed. Anthropic validates the blocks
@@ -99,7 +96,7 @@ public sealed class AnthropicWebSearchTests
                 new ChatMessage(ChatRole.User, "thanks")
             ],
             client,
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         Assert.Contains("\"type\":\"server_tool_use\"", requestBody);
         Assert.Contains("\"type\":\"web_search_tool_result\"", requestBody);
@@ -113,13 +110,12 @@ public sealed class AnthropicWebSearchTests
     [Fact(Timeout = 30_000)]
     public async Task WebSearchCallWithoutItsWireBlockIsRejectedRatherThanMangled()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(20));
         await using var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "answer");
         using var client = new AnthropicMessagesChatClient("claude-test", "test-key", provider.Endpoint);
 
         // A constructed call with no preserved wire block cannot be faithfully replayed.
         var fabricated = new WebSearchToolCallContent("srvtoolu_x") { Queries = new List<string> { "q" } };
-        await Assert.ThrowsAnyAsync<NotSupportedException>(async () => { await ConsumeAsync(client, fabricated, deadline.Token); });
+        await Assert.ThrowsAnyAsync<NotSupportedException>(async () => { await ConsumeAsync(client, fabricated, TestContext.Current.CancellationToken); });
     }
 
     private static async Task ConsumeAsync(IChatClient client, AIContent content, CancellationToken cancellationToken)
@@ -151,7 +147,4 @@ public sealed class AnthropicWebSearchTests
         return request.GetRawText();
     }
 
-    private static CancellationTokenSource CreateDeadline(
-        CancellationToken cancellationToken,
-        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
 }

@@ -302,7 +302,6 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ReasoningAndProtectedDataStayPrivateAndReplayToTheNextTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var reasoning = new TextReasoningContent("private chain") { ProtectedData = "opaque-state" };
         var client = new RecordingClient(
             (_, _) => StreamUpdatesAsync(
@@ -311,14 +310,14 @@ public sealed class AgentTranscriptSessionTests
             (_, _) => StreamAsync("next answer"));
         var session = new AgentSession(client);
 
-        var first = await CompleteTurnAsync(session, "question", deadline.Token);
+        var first = await CompleteTurnAsync(session, "question", TestContext.Current.CancellationToken);
 
         Assert.Equal(["visible answer"], first.Events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
         Assert.DoesNotContain(first.Events.OfType<AgentMessageCompleted>().Single().Message.Contents, static content => content is TextReasoningContent);
         Assert.DoesNotContain(first.Result.AssistantMessage.Contents, static content => content is TextReasoningContent);
         Assert.DoesNotContain(first.Result.Transcript.Turns.Single().Messages[1].Contents, static content => content is TextReasoningContent);
 
-        await CompleteTurnAsync(session, "continue", deadline.Token);
+        await CompleteTurnAsync(session, "continue", TestContext.Current.CancellationToken);
 
         var replayedAssistant = client.Requests[1].Single(static message => message.Role == ChatRole.Assistant);
         var replayedReasoning = replayedAssistant.Contents.OfType<TextReasoningContent>().Single();
@@ -329,15 +328,14 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ReasoningOnlyAndCustomContentRollBackTranscriptVersion()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var reasoningOnly = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(new ChatResponseUpdate(
             ChatRole.Assistant,
             [new TextReasoningContent("private only")]))));
 
-        await using (var run = await reasoningOnly.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
+        await using (var run = await reasoningOnly.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken))
         {
-            await ReadEventsAsync(run, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
+            await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         }
 
         Assert.Equal(0, reasoningOnly.GetTranscriptSnapshot().Version);
@@ -346,10 +344,10 @@ public sealed class AgentTranscriptSessionTests
         var custom = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(new ChatResponseUpdate(
             ChatRole.Assistant,
             [new TextContent("visible"), new CustomContent()]))));
-        await using (var run = await custom.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token))
+        await using (var run = await custom.StartTurnAsync(AgentTurn.FromText("question"), TestContext.Current.CancellationToken))
         {
-            await ReadEventsAsync(run, deadline.Token);
-            await Assert.ThrowsAnyAsync<AgentContentCompatibilityException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
+            await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+            await Assert.ThrowsAnyAsync<AgentContentCompatibilityException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         }
 
         Assert.Equal(0, custom.GetTranscriptSnapshot().Version);
@@ -359,7 +357,6 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task InlineBinaryResponseRollsBackAndSessionRemainsUsable()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var binary = new ChatResponseUpdate(
             ChatRole.Assistant,
             [new TextContent("visible"), new DataContent(new byte[] { 1, 2, 3 }, "image/png")]);
@@ -368,19 +365,19 @@ public sealed class AgentTranscriptSessionTests
             (_, _) => StreamAsync("recovered"));
         var session = new AgentSession(client);
 
-        await using (var run = await session.StartTurnAsync(AgentTurn.FromText("image"), deadline.Token))
+        await using (var run = await session.StartTurnAsync(AgentTurn.FromText("image"), TestContext.Current.CancellationToken))
         {
-            var events = await ReadEventsAsync(run, deadline.Token);
+            var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
             Assert.Equal(["visible"], events.OfType<AgentTextDelta>().Select(static delta => delta.Text));
             Assert.DoesNotContain(events, static agentEvent => agentEvent is AgentMessageCompleted);
-            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
+            await Assert.ThrowsAnyAsync<AgentUnsupportedResponseException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
         }
 
         var rolledBack = session.GetTranscriptSnapshot();
         Assert.Equal(0, rolledBack.Version);
         Assert.Empty(rolledBack.Turns);
 
-        var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
+        var recovered = await CompleteTurnAsync(session, "retry", TestContext.Current.CancellationToken);
         Assert.Equal("recovered", recovered.Result.AssistantMessage.Text);
         Assert.Equal(1, recovered.Result.Transcript.Version);
         Assert.Single(recovered.Result.Transcript.Turns);
@@ -389,18 +386,17 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task MutatingPublicMessagesCannotChangeCanonicalReplay()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new RecordingClient(
             (_, _) => StreamAsync("first answer"),
             (_, _) => StreamAsync("second answer"));
         var session = new AgentSession(client);
 
-        var first = await CompleteTurnAsync(session, "first question", deadline.Token);
+        var first = await CompleteTurnAsync(session, "first question", TestContext.Current.CancellationToken);
         first.Result.UserMessage.Contents.Clear();
         ((TextContent)first.Result.AssistantMessage.Contents.Single()).Text = "mutated result";
         ((TextContent)first.Result.Transcript.Turns.Single().Messages[1].Contents.Single()).Text = "mutated snapshot";
 
-        await CompleteTurnAsync(session, "second question", deadline.Token);
+        await CompleteTurnAsync(session, "second question", TestContext.Current.CancellationToken);
 
         Assert.Equal(new (ChatRole Role, string Text)[] { (ChatRole.User, "first question"), (ChatRole.Assistant, "first answer"), (ChatRole.User, "second question") }, client.Requests[1].Select(static message => (message.Role, message.Text)));
         Assert.Equal(["first question", "first answer"], session.GetTranscriptSnapshot().Turns[0].Messages.Select(static message => message.Text));
@@ -409,7 +405,6 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task ProviderCannotMutateCanonicalReplayMessages()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var client = new RecordingClient(
             (_, _) => StreamAsync("first answer"),
             (messages, _) =>
@@ -421,9 +416,9 @@ public sealed class AgentTranscriptSessionTests
             (_, _) => StreamAsync("third answer"));
         var session = new AgentSession(client);
 
-        await CompleteTurnAsync(session, "first question", deadline.Token);
-        await CompleteTurnAsync(session, "second question", deadline.Token);
-        await CompleteTurnAsync(session, "third question", deadline.Token);
+        await CompleteTurnAsync(session, "first question", TestContext.Current.CancellationToken);
+        await CompleteTurnAsync(session, "second question", TestContext.Current.CancellationToken);
+        await CompleteTurnAsync(session, "third question", TestContext.Current.CancellationToken);
 
         Assert.Equal("first answer", client.Requests[2].First(static message => message.Role == ChatRole.Assistant).Text);
         Assert.Equal("first answer", session.GetTranscriptSnapshot().Turns[0].Messages[1].Text);
@@ -432,7 +427,6 @@ public sealed class AgentTranscriptSessionTests
     [Fact(Timeout = 30_000)]
     public async Task HistoryByteLimitEvictsCompleteOldestTurnForNonAsciiMessages()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var sample = AgentTranscriptCodec.DetachPrivateTurn(
             AgentRunId.Create(),
             null,
@@ -442,8 +436,8 @@ public sealed class AgentTranscriptSessionTests
             new RecordingClient((_, _) => StreamAsync("答案"), (_, _) => StreamAsync("答案")),
             new AgentSessionOptions { MaxHistoryBytes = checked(oneTurnBytes * 2 - 1) });
 
-        await CompleteTurnAsync(session, "问题", deadline.Token);
-        await CompleteTurnAsync(session, "问题", deadline.Token);
+        await CompleteTurnAsync(session, "问题", TestContext.Current.CancellationToken);
+        await CompleteTurnAsync(session, "问题", TestContext.Current.CancellationToken);
 
         var transcript = session.GetTranscriptSnapshot();
         Assert.Equal(2, transcript.Version);
@@ -484,9 +478,6 @@ public sealed class AgentTranscriptSessionTests
         await Task.Yield();
         foreach (var update in updates) yield return update;
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-        => TestDeadlines.Create(cancellationToken);
 
     private sealed class RecordingClient(
         params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)

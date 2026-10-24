@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
 using System.Text.Json;
 using Maieutics.Providers.OpenAI;
 
@@ -21,9 +22,6 @@ public sealed class FrontendProcessSmokeTests
     [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableServesTheFrontendProtocol()
     {
-        using var deadline = CreateDeadline(
-            TestContext.Current.CancellationToken,
-            TimeSpan.FromSeconds(90));
         // The scripted tool flow doubles as the published-process function
         // continuation check: the model calls write_text, the AOT process
         // marshals arguments through the source-generated tool contract,
@@ -44,7 +42,7 @@ public sealed class FrontendProcessSmokeTests
         var process = StartHostProcess(provider.Endpoint, workspace);
         try
         {
-            var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
+            var discovery = await process.WaitForDiscoveryAsync(TestContext.Current.CancellationToken);
 
             var baseUrl = discovery.GetProperty("url").GetString()!;
             var token = discovery.GetProperty("token").GetString()!;
@@ -54,29 +52,34 @@ public sealed class FrontendProcessSmokeTests
             try
             {
                 var capabilities = await client.GetFromJsonAsync<JsonElement>(
-                    "/v1/agent/capabilities", deadline.Token);
+                    "/v1/agent/capabilities", TestContext.Current.CancellationToken);
                 Assert.Equal(1, capabilities.GetProperty("protocolVersion").GetInt32());
                 var session = await client.GetFromJsonAsync<JsonElement>(
-                    "/v1/agent/session", deadline.Token);
+                    "/v1/agent/session", TestContext.Current.CancellationToken);
                 var sessionId = session.GetProperty("id").GetString()!;
 
                 using var response = await client.PostAsJsonAsync(
                     $"/v1/agent/sessions/{sessionId}/turns",
                     new { text = "%status" },
-                    deadline.Token);
+                    TestContext.Current.CancellationToken);
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-                var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
                 Assert.Contains("### Maieutics status", body.GetProperty("markdown").GetString());
 
                 var turn = await client.PostAsJsonAsync(
                     $"/v1/agent/sessions/{sessionId}/turns",
                     new { text = "write the smoke file" },
-                    deadline.Token);
+                    TestContext.Current.CancellationToken);
                 Assert.Equal(HttpStatusCode.Accepted, turn.StatusCode);
-                var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+                var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
                     .GetProperty("runId").GetString()!;
 
-                var transcript = await WaitForTranscriptTurnAsync(client, sessionId, deadline.Token);
+                var transcript = await WaitForTranscriptTurnAsync(
+                    client,
+                    sessionId,
+                    runId,
+                    token,
+                    TestContext.Current.CancellationToken);
                 Assert.Equal(runId, transcript.GetProperty("runId").GetString());
                 // The tool flow commits the intermediate tool-call messages, so
                 // the final assistant answer is the transcript's last message.
@@ -111,26 +114,68 @@ public sealed class FrontendProcessSmokeTests
         }
     }
 
-    private static CancellationTokenSource CreateDeadline(
-        CancellationToken cancellationToken,
-        TimeSpan timeout) => TestDeadlines.Create(cancellationToken, timeout);
-
+    /// <summary>Awaits the run's terminal frame on the session's events socket — the
+    /// protocol's completion signal — then reads the transcript once: the turn is
+    /// committed before the terminal frame is published, so no retry backs the read.</summary>
     private static async Task<JsonElement> WaitForTranscriptTurnAsync(
         HttpClient client,
         string sessionId,
+        string runId,
+        string bearerToken,
         CancellationToken cancellationToken)
     {
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         wait.CancelAfter(TimeSpan.FromSeconds(45));
+
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {bearerToken}");
+        var httpBase = client.BaseAddress ?? throw new InvalidOperationException("The smoke client has no base address.");
+        var socketUri = new Uri(
+            new Uri($"ws://{httpBase.Authority}{httpBase.AbsolutePath}"),
+            $"/v1/agent/sessions/{sessionId}/events");
+        await socket.ConnectAsync(socketUri, wait.Token).ConfigureAwait(false);
+        try
+        {
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, wait.Token).ConfigureAwait(false);
+                if (frame.GetProperty("type").GetString() is not ("run.completed" or "run.failed")) continue;
+                if (frame.GetProperty("runId").GetString() != runId) continue;
+                break;
+            }
+        }
+        finally
+        {
+            // The events handler serves live frames until its peer aborts — a graceful
+            // close would wait for a close frame the server never sends for a settled
+            // run. Abort the transport: the server observes RequestAborted and tears
+            // down.
+            socket.Abort();
+        }
+
+        var transcript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript",
+            wait.Token).ConfigureAwait(false);
+        return transcript.GetProperty("turns")[0];
+    }
+
+    private static async Task<JsonElement> ReceiveEventFrameAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        using var message = new MemoryStream();
+        var buffer = new byte[16 * 1024];
         while (true)
         {
-            var transcript = await client.GetFromJsonAsync<JsonElement>(
-                $"/v1/agent/sessions/{sessionId}/transcript",
-                wait.Token).ConfigureAwait(false);
-            if (transcript.GetProperty("turns").GetArrayLength() > 0)
-                return transcript.GetProperty("turns")[0];
-
-            await Task.Delay(50, wait.Token).ConfigureAwait(false);
+            var result = await socket.ReceiveAsync(
+                new ArraySegment<byte>(buffer),
+                cancellationToken).ConfigureAwait(false);
+            if (result.MessageType == WebSocketMessageType.Close)
+                throw new InvalidOperationException(
+                    "The smoke events socket closed before the run's terminal frame arrived.");
+            message.Write(buffer, 0, result.Count);
+            if (result.EndOfMessage)
+                return JsonDocument.Parse(message.ToArray()).RootElement.Clone();
         }
     }
 

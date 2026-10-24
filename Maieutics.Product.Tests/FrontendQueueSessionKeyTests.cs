@@ -30,10 +30,9 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
     [Fact(Timeout = 120_000)]
     public async Task CaseVariantsOfOneSessionIdShareTheCapacityAndSnapshots()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedProvider();
-        await using var harness = await StartHarnessAsync(deadline.Token, provider);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHarnessAsync(TestContext.Current.CancellationToken, provider);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
         var upperCaseId = sessionId.ToUpperInvariant();
 
         // The pin needs two spellings of one id, so the id must carry at least one hex
@@ -48,7 +47,7 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
         // aliasing the queue under test must share.
         var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
             $"/v1/agent/sessions/{upperCaseId}/transcript",
-            deadline.Token);
+            TestContext.Current.CancellationToken);
         Assert.Equal(sessionId, transcript.GetProperty("sessionId").GetString());
 
         // Hold the worker between the submission handshake and the running publish: the
@@ -59,9 +58,9 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
         try
         {
             var full = Enumerable.Range(0, 64).Select(index => $"queued {index}").ToArray();
-            var ids = await EnqueueAsync(harness, upperCaseId, deadline.Token, full);
+            var ids = await EnqueueAsync(harness, upperCaseId, TestContext.Current.CancellationToken, full);
             Assert.Equal(64, ids.Length);
-            await provider.WaitForParkedAsync(deadline.Token);
+            await provider.WaitForParkedAsync(TestContext.Current.CancellationToken);
 
             // The worker dequeued the head and then parked at the gate, so the queue is
             // exactly "head dequeued (invisible), 63 waiting" from here on.
@@ -69,14 +68,14 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
                 harness,
                 upperCaseId,
                 queue => !HasRunningItem(queue) && ItemIds(queue).Length == 63,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(sessionId, filled.GetProperty("sessionId").GetString());
             Trace("queue filled under the uppercase spelling");
 
             // The canonical spelling addresses the same queue: same identity, same waiting
             // items. Keyed by the raw route text it would have opened a second, empty queue
             // instead.
-            var canonical = await GetQueueAsync(harness, sessionId, deadline.Token);
+            var canonical = await GetQueueAsync(harness, sessionId, TestContext.Current.CancellationToken);
             Assert.Equal(sessionId, canonical.GetProperty("sessionId").GetString());
             Assert.False(HasRunningItem(canonical), "the head must stay in the dequeue window while the gate holds");
             Assert.Equal(ItemIds(filled), ItemIds(canonical));
@@ -85,11 +84,11 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
             // Capacity is one budget per session: 63 waiting plus a two-item batch exceeds
             // the 64-item capacity, so the batch is rejected whole however the session is
             // spelled instead of spending a second budget.
-            using var over = await EnqueueBatchAsync(harness, sessionId, deadline.Token, "one over", "two over");
+            using var over = await EnqueueBatchAsync(harness, sessionId, TestContext.Current.CancellationToken, "one over", "two over");
             Assert.Equal(HttpStatusCode.Conflict, over.StatusCode);
             Assert.Equal(
                 "queue_full",
-                (await over.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
+                (await over.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
                 .GetProperty("code")
                 .GetString());
             Trace("capacity probe rejected");
@@ -98,9 +97,9 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
             // filled; the in-flight head is untouched.
             using var cleared = await harness.Client.DeleteAsync(
                 $"/v1/agent/sessions/{sessionId}/queue",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.NoContent, cleared.StatusCode);
-            var clearedView = await GetQueueAsync(harness, upperCaseId, deadline.Token);
+            var clearedView = await GetQueueAsync(harness, upperCaseId, TestContext.Current.CancellationToken);
             Assert.Empty(ItemIds(clearedView));
             Assert.False(HasRunningItem(clearedView), "the dequeued head stays in the dequeue window");
             Trace("clear through the canonical spelling reached the uppercase queue");
@@ -114,7 +113,7 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
             provider.ReleaseAll();
             // Best-effort: empty the queue before the worker resumes, so a failed assertion
             // cannot cascade into dozens of queued runs against the fake provider.
-            using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             cleanup.CancelAfter(TimeSpan.FromSeconds(15));
             try
             {
@@ -132,7 +131,7 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
         }
 
         // Let the parked head finish so no run is left in flight at harness disposal.
-        await harness.TurnQueue.WaitUntilIdleAsync(sessionId, deadline.Token);
+        await harness.TurnQueue.WaitUntilIdleAsync(sessionId, TestContext.Current.CancellationToken);
         Trace("queue drained");
     }
 
@@ -142,10 +141,9 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
     [Fact(Timeout = 120_000)]
     public async Task ClearingThroughOneSpellingClearsTheSharedQueue()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedProvider();
-        await using var harness = await StartHarnessAsync(deadline.Token, provider);
-        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var harness = await StartHarnessAsync(TestContext.Current.CancellationToken, provider);
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
         var upperCaseId = sessionId.ToUpperInvariant();
         Assert.True(
             sessionId.Any(character => character is >= 'a' and <= 'f'),
@@ -155,9 +153,9 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
         harness.TurnQueue.RunningPublishGateForTests = token => releaseRunning.Task.WaitAsync(token);
         try
         {
-            var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "queued one", "queued two", "queued three");
+            var ids = await EnqueueAsync(harness, sessionId, TestContext.Current.CancellationToken, "queued one", "queued two", "queued three");
             Assert.Equal(3, ids.Length);
-            await provider.WaitForParkedAsync(deadline.Token);
+            await provider.WaitForParkedAsync(TestContext.Current.CancellationToken);
 
             // Freeze the state: the head is dequeued (held in the dequeue window) and exactly
             // two items wait behind it.
@@ -165,17 +163,17 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
                 harness,
                 sessionId,
                 queue => !HasRunningItem(queue) && ItemIds(queue).Length == 2,
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal([ids[1], ids[2]], ItemIds(queued));
 
             // The uppercase spelling addresses the same session, so its clear must remove
             // the waiting items the canonical spelling sees.
             using var cleared = await harness.Client.DeleteAsync(
                 $"/v1/agent/sessions/{upperCaseId}/queue",
-                deadline.Token);
+                TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.NoContent, cleared.StatusCode);
 
-            var remaining = await GetQueueAsync(harness, sessionId, deadline.Token);
+            var remaining = await GetQueueAsync(harness, sessionId, TestContext.Current.CancellationToken);
             Assert.Empty(ItemIds(remaining));
             Assert.False(HasRunningItem(remaining), "the dequeued head stays in the dequeue window");
             Trace("clear through the uppercase spelling removed the waiting items");
@@ -186,9 +184,6 @@ public sealed class FrontendQueueSessionKeyTests(ITestOutputHelper output)
             provider.ReleaseAll();
         }
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken, TimeSpan timeout) =>
-        TestDeadlines.Create(cancellationToken, timeout);
 
     private static Task<Harness> StartHarnessAsync(CancellationToken cancellationToken, GatedProvider provider)
     {

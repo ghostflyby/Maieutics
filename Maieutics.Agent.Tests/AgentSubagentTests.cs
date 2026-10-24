@@ -13,7 +13,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task BlockingSpawnReturnsChildReportAndParentTranscriptStaysTurnShaped()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var childResults = new TaskCompletionSource<AgentSubagentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -34,10 +33,10 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
-        var childResult = await childResults.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await childResults.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("done", result.AssistantMessage.Text);
         Assert.Equal(AgentSubagentStatus.Completed, childResult.Status);
@@ -48,7 +47,7 @@ public sealed class AgentSubagentTests
         var transcript = session.GetTranscriptSnapshot();
         var item = Assert.Single(transcript.Turns);
         Assert.Equal("done", item.Messages[^1].Text);
-        await collector.Settled.Task.WaitAsync(deadline.Token);
+        await collector.Settled.Task.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Contains(collector.Events, pair => pair.Event is AgentTextDelta);
         Assert.All(collector.Events.Select(pair => pair.SessionId), id => Assert.True(id == childResult.SessionId));
     }
@@ -56,7 +55,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task ParentCancellationCancelsRunningChildAndRollsBackTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -76,13 +74,13 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        await childStarted.Task.WaitAsync(deadline.Token);
-        await run.CancelAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        await childStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await run.CancelAsync(TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion.WaitAsync(deadline.Token); });
-        var handle = await handleSource.Task.WaitAsync(deadline.Token);
-        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion.WaitAsync(TestContext.Current.CancellationToken); });
+        var handle = await handleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
         Assert.Empty(session.GetTranscriptSnapshot().Turns);
     }
@@ -90,7 +88,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task HighVolumeChildEventsStayConsumedAndDoNotStallTheChild()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
         {
@@ -110,19 +107,18 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Single(events.OfType<AgentToolFinished>());
-        await collector.Settled.Task.WaitAsync(deadline.Token);
+        await collector.Settled.Task.WaitAsync(TestContext.Current.CancellationToken);
         Assert.True(collector.Events.Select(pair => pair.Event).OfType<AgentTextDelta>().Count() >= 300);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task DepthBudgetExhaustedLeavesChildWithoutSpawnContext()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childResults = new TaskCompletionSource<AgentSubagentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
         {
@@ -148,10 +144,10 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool, childProbe]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
-        var childResult = await childResults.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await childResults.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(AgentSubagentStatus.Failed, childResult.Status);
         Assert.IsType<AgentToolInvocationException>(childResult.Failure);
@@ -164,7 +160,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task PerTurnChildBudgetExhaustionFailsTheSpawnTyped()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var spawnCalls = 0;
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
         {
@@ -204,9 +199,9 @@ public sealed class AgentSubagentTests
             }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(2, events.OfType<AgentToolFinished>().Count());
         Assert.Equal(nameof(AgentSubagentOptions.MaxChildrenPerTurn), events.OfType<AgentToolFinished>().Last().Result.GetProperty("value")
@@ -217,7 +212,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task JoinTerminatesUnsettledChildAtRunEndWithoutStallingCommit()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -248,23 +242,22 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var handle = await handleSource.Task.WaitAsync(deadline.Token);
-        await childStarted.Task.WaitAsync(deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var handle = await handleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await childStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("done", result.AssistantMessage.Text);
         Assert.Single(session.GetTranscriptSnapshot().Turns);
         Assert.Equal("ok", events.OfType<AgentToolFinished>().Single().Result.GetProperty("status").GetString());
-        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        var childResult = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task SinkFailureTerminatesChildInsteadOfStallingIt()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector { FailAfter = 2 };
         var childResults = new TaskCompletionSource<AgentSubagentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -285,10 +278,10 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
-        var childResult = await childResults.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await childResults.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
         Assert.Equal(2, collector.Events.Count());
@@ -310,7 +303,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task UnknownAllowlistToolNameRejectsTheSpec()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(new ScriptedChatClient((_, _) => StreamAsync("done")));
         var tool = AIFunctionFactory.Create(
             (string text) => text,
@@ -326,15 +318,14 @@ public sealed class AgentSubagentTests
 
         await Assert.ThrowsAnyAsync<ArgumentException>(async () =>
         {
-            await (Spawner: spawner, deadline.Token).Spawner.StartChildAsync(
-                new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, (Spawner: spawner, deadline.Token).Token);
+            await spawner.StartChildAsync(
+                new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, TestContext.Current.CancellationToken);
         });
     }
 
     [Fact(Timeout = 30_000)]
     public async Task AsyncSpawnThenWaitReturnsTheChildReportWhenTheChildCompletesMidTurn()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         IAgentSubagentHandle? spawned = null;
         var postToolCalls = 0;
@@ -363,15 +354,15 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool, waitTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        var result = await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        var result = await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("done", result.AssistantMessage.Text);
         Assert.NotNull(spawned);
         Assert.Equal("async report", events.OfType<AgentToolFinished>().Last().Result.GetProperty("value")
             .GetProperty("report").GetString());
-        await collector.Settled.Task.WaitAsync(deadline.Token);
+        await collector.Settled.Task.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Contains(collector.Events, pair => pair.Event is AgentTextDelta);
 
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
@@ -388,7 +379,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task WaitTimesOutTypedWhileTheChildKeepsRunningUntilTheTurnJoinsIt()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -418,14 +408,14 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("timeout", events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
             .GetProperty("status").GetString());
-        var handle = await handleSource.Task.WaitAsync(deadline.Token);
-        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        var handle = await handleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
         Assert.Single(session.GetTranscriptSnapshot().Turns);
     }
@@ -433,7 +423,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task CancelChildTerminatesTheRunningChildAndReturnsItsResult()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -455,21 +444,20 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(nameof(AgentSubagentStatus.Cancelled), events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
             .GetProperty("status").GetString());
-        var handle = await handleSource.Task.WaitAsync(deadline.Token);
-        var childResult = await handle.Completion.WaitAsync(deadline.Token);
+        var handle = await handleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var childResult = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task CancelOnATerminalChildReturnsItsResultUnchanged()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var postToolCalls = 0;
         IAgentSubagentHandle? spawned = null;
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
@@ -494,9 +482,9 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [spawnTool, cancelTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var finishes = events.OfType<AgentToolFinished>().ToList();
         Assert.Equal(2, finishes.Count());
@@ -518,7 +506,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task UnknownChildRunIdFailsTypedOnWaitAndCancel()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var unknown = AgentRunId.Create();
         var probeTool = CreateSpawnTool("agent_wait", async (arguments, token) =>
         {
@@ -549,9 +536,9 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
         }, [probeTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal("not_found", events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
             .GetProperty("status").GetString());
@@ -560,7 +547,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task OverlappingChildrenReportOnlyAfterBothHaveStarted()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var startedSignals = new ConcurrentQueue<TaskCompletionSource>(
         [
@@ -605,9 +591,9 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool, waitTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var finishes = events.OfType<AgentToolFinished>().ToList();
         Assert.Equal(2, finishes.Count());
@@ -631,7 +617,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task LifecycleSinkSeesStartedBeforeEventsAndSettledAfterTheChildDrains()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new OrderedLifecycleSink();
         var spawnTool = CreateSpawnTool("agent_spawn", async (arguments, token) =>
         {
@@ -650,10 +635,10 @@ public sealed class AgentSubagentTests
             Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = collector }
         }, [spawnTool]);
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
-        await collector.Settled.Task.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        await collector.Settled.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(new[] { "started", "event", "settled" }, collector.Order);
         Assert.Equal(AgentSubagentStatus.Completed, collector.SettledStatus);
@@ -662,7 +647,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task DetachedChildRunsSessionScopedAndStaysAddressable()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var session = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync("detached report")),
@@ -682,10 +666,10 @@ public sealed class AgentSubagentTests
             new AgentSubagentSpec { Input = "detached task" },
             spawnerOptions,
             [],
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var result = await session.SubagentHost
-            .WaitDetachedAsync(handle.RunId, Timeout.InfiniteTimeSpan, deadline.Token);
+            .WaitDetachedAsync(handle.RunId, Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Completed, result.Status);
         Assert.Equal("detached report", result.Report);
         Assert.NotNull(session.SubagentHost.FindChild(handle.RunId));
@@ -693,18 +677,17 @@ public sealed class AgentSubagentTests
         // Wait returns at the child's completion; the pump may still be draining the last
         // buffered events into the sink. The settled notification fires strictly after the
         // drain, so events are deterministic from here.
-        await collector.Settled.Task.WaitAsync(deadline.Token);
+        await collector.Settled.Task.WaitAsync(TestContext.Current.CancellationToken);
         Assert.NotEmpty(collector.Events);
 
         var cancelled = await session.SubagentHost
-            .CancelDetachedAsync(handle.RunId, deadline.Token);
+            .CancelDetachedAsync(handle.RunId, TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Completed, cancelled.Status);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task DetachedChildrenAreCappedAndUnknownRunsFailTyped()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var session = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync("done")),
             new AgentSessionOptions
@@ -717,9 +700,9 @@ public sealed class AgentSubagentTests
         };
 
         await session.SubagentHost.StartDetachedChildAsync(
-            new AgentSubagentSpec { Input = "first" }, spawnerOptions, [], deadline.Token);
+            new AgentSubagentSpec { Input = "first" }, spawnerOptions, [], TestContext.Current.CancellationToken);
 
-        var token = deadline.Token;
+        var token = TestContext.Current.CancellationToken;
 
         var second = () => session.SubagentHost.StartDetachedChildAsync(
             new AgentSubagentSpec { Input = "second" }, spawnerOptions, [], token);
@@ -735,7 +718,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task ActiveRunSpawnerResolvesDuringTheTurnAndJoinsItsChildren()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var sessionRef = new SessionRef();
         AgentSubagentStatus orchestrationStatus = default;
@@ -768,9 +750,9 @@ public sealed class AgentSubagentTests
         }, [orchestrateTool]);
         sessionRef.Session = session;
 
-        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), deadline.Token);
-        var events = await ReadEventsAsync(run, deadline.Token);
-        await run.Completion.WaitAsync(deadline.Token);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("Spawn"), TestContext.Current.CancellationToken);
+        var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
+        await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(AgentSubagentStatus.Completed, orchestrationStatus);
         Assert.Equal("child report", events.OfType<AgentToolFinished>().Single().Result.GetProperty("value")
@@ -781,7 +763,6 @@ public sealed class AgentSubagentTests
     [Fact(Timeout = 30_000)]
     public async Task SessionWideWaitAndCancelByIdCoverDetachedChildren()
     {
-        using var deadline = CreateDeadline(TestContext.Current.CancellationToken);
         var collector = new EventCollector();
         var session = new AgentSession(
             new ScriptedChatClient((_, _) => StreamAsync("detached report")),
@@ -798,15 +779,15 @@ public sealed class AgentSubagentTests
             new AgentSubagentSpec { Input = "detached task" },
             spawnerOptions,
             [],
-            deadline.Token);
+            TestContext.Current.CancellationToken);
 
         var waited = await session.SubagentHost
-            .WaitChildByIdAsync(handle.RunId, Timeout.InfiniteTimeSpan, deadline.Token);
+            .WaitChildByIdAsync(handle.RunId, Timeout.InfiniteTimeSpan, TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Completed, waited.Status);
         Assert.Equal("detached report", waited.Report);
 
         var cancelled = await session.SubagentHost
-            .CancelChildByIdAsync(handle.RunId, deadline.Token);
+            .CancelChildByIdAsync(handle.RunId, TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Completed, cancelled.Status);
 
         await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () =>
@@ -815,9 +796,6 @@ public sealed class AgentSubagentTests
                 AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None);
         });
     }
-
-    private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-        => TestDeadlines.Create(cancellationToken);
 
     private static AIFunction CreateSpawnTool(
         string name,
@@ -992,7 +970,6 @@ public sealed class AgentSubagentTests
             return ValueTask.CompletedTask;
         }
     }
-
 
     private sealed class SessionRef
     {

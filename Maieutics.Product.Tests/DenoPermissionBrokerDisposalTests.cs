@@ -32,7 +32,27 @@ public sealed class DenoPermissionBrokerDisposalTests
         // behavior under test, so there is no using scope to auto-dispose behind it. The
         // finally re-disposes idempotently if an assertion fails first.
         var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
-        var listener = InstallPipeListener(broker);
+        NamedPipeServerStream? listener;
+        if (broker._pipeListener is { } existing)
+        {
+            listener = existing;
+        }
+        else
+        {
+            var installed = new NamedPipeServerStream(
+                $"mc-broker-disp-{Guid.NewGuid():N}"[..24],
+                PipeDirection.InOut,
+                PipeListenerInstanceLimit,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+            broker._pipeListener = installed;
+            listener = installed;
+        }
+
+        // Unix binds the pipe name as "{TempPath}/CoreFxPipe_{name}" and macOS caps domain socket
+        // paths at 104 characters, so the synthetic name stays short — the broker truncates its
+        // socket name in CreateSocketPath for the same reason; the truncated Guid suffix keeps
+        // concurrent runs collision-free.
         try
         {
             // Baseline for the probe below. TransmissionMode is the probe member because its only
@@ -87,30 +107,5 @@ public sealed class DenoPermissionBrokerDisposalTests
         Assert.True(File.Exists(socketPath));
         await broker.DisposeAsync();
         Assert.False(File.Exists(socketPath));
-    }
-
-    /// <summary>Returns the broker's live named-pipe listener. On Windows the broker created one;
-    /// on unix the listener field is null by construction, so an equivalent listener (same
-    /// direction, instance limit, transmission mode, and async mode as the broker's own) is
-    /// installed to stand in for it.</summary>
-    private static NamedPipeServerStream InstallPipeListener(DenoPermissionBroker broker)
-    {
-        if (broker._pipeListener is NamedPipeServerStream existing)
-        {
-            return existing;
-        }
-
-        // Unix binds the pipe name as "{TempPath}/CoreFxPipe_{name}" and macOS caps domain socket
-        // paths at 104 characters, so the synthetic name stays short — the broker truncates its
-        // socket name in CreateSocketPath for the same reason; the truncated Guid suffix keeps
-        // concurrent runs collision-free.
-        var installed = new NamedPipeServerStream(
-            $"mc-broker-disp-{Guid.NewGuid():N}"[..24],
-            PipeDirection.InOut,
-            PipeListenerInstanceLimit,
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous);
-        broker._pipeListener = installed;
-        return installed;
     }
 }

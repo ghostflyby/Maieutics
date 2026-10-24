@@ -1,8 +1,5 @@
-using System.Collections;
-using System.Reflection;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using GatedProvider = Maieutics.Testing.GatedModelProvider;
-using Maieutics.Frontend;
 
 namespace Maieutics.Product.Tests;
 
@@ -47,7 +44,12 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         // alive while the run is parked, so its completion task is resolvable now.
         harness.TurnQueue.Enqueue(sessionId, [Answer]);
         await provider.WaitForParkedAsync(1, deadline.Token);
-        var workerCompletion = ResolveWorkerCompletion(harness.TurnQueue, addressed);
+        if (!harness.TurnQueue._sessions.TryGetValue(addressed, out var state))
+            throw new InvalidOperationException("The session has no queue state.");
+
+        if (state.Worker is not { } worker)
+            throw new InvalidOperationException("The turn queue worker was not running.");
+        var workerCompletion = worker.Completion;
 
         // Signal-driven catch-up to the running transition: the run is parked, so the
         // running publish is the last mutation that can exist before the release — the
@@ -83,37 +85,6 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
             $"the worker exited without publishing: the queue version stayed at the settle's {settledVersion}, "
             + "so a waiter that re-subscribed at the settled version is never woken and the drain waits out "
             + "its whole budget on a quiescent queue");
-    }
-
-    /// <summary>Resolves the session queue worker's completion task while the worker is
-    /// running. The queue's internals are visible to this assembly; the nested private
-    /// state is reached through reflection the same way the disposal tests reach their
-    /// probes — the shape is pinned by the assertions, a rename fails loudly here
-    /// rather than silently weakening the test.</summary>
-    private static Task ResolveWorkerCompletion(FrontendTurnQueue queue, Agent.AgentSessionId sessionId)
-    {
-        var sessionsField = typeof(FrontendTurnQueue).GetField(
-            "sessions",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-        if (sessionsField is null || sessionsField.GetValue(queue) is not IDictionary sessions)
-            throw new InvalidOperationException("FrontendTurnQueue has no sessions dictionary.");
-
-        if (sessions[sessionId] is not { } state)
-            throw new InvalidOperationException("The session has no queue state.");
-
-        var workerProperty = state.GetType().GetProperty(
-            "Worker",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        if (workerProperty is null || workerProperty.GetValue(state) is not { } worker)
-            throw new InvalidOperationException("The turn queue worker was not running.");
-
-        var completionProperty = worker.GetType().GetProperty(
-            "Completion",
-            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        if (completionProperty is null || completionProperty.GetValue(worker) is not Task completion)
-            throw new InvalidOperationException("The turn queue worker has no completion task.");
-
-        return completion;
     }
 
     private static async Task<Harness> StartHarnessAsync(

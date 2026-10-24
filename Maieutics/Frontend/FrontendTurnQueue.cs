@@ -47,8 +47,9 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     private readonly Lock _gate = new();
 
     /// <summary>One queue state per session identifier: two spellings of one session's id
-    /// must never own two queues. See <see cref="ParseSessionId" />.</summary>
-    private readonly Dictionary<AgentSessionId, SessionQueue> _sessions = new();
+    /// must never own two queues. See <see cref="ParseSessionId" />. Internal as the worker
+    /// wakeup tests' seam: they observe one session's worker completion task mid-flight.</summary>
+    internal readonly Dictionary<AgentSessionId, SessionQueue> _sessions = new();
 
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -679,8 +680,9 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     }
 
     /// <summary>One session's queue state: the pending FIFO, the optional running item,
-    /// the wake signal and state version, the lazy worker, and the eviction pin lease.</summary>
-    private sealed class SessionQueue
+    /// the wake signal and state version, the lazy worker, and the eviction pin lease.
+    /// Internal so the worker wakeup tests can read the worker's completion.</summary>
+    internal sealed class SessionQueue
     {
         public Lock Gate { get; } = new();
 
@@ -709,11 +711,11 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         }
     }
 
-    private sealed record QueuedItem(string Id, string Text, DateTimeOffset EnqueuedAt);
+    internal sealed record QueuedItem(string Id, string Text, DateTimeOffset EnqueuedAt);
 
-    private sealed record RunningItem(string ItemId, string RunId);
+    internal sealed record RunningItem(string ItemId, string RunId);
 
-    private sealed class WorkerRun(CancellationTokenSource cancellation, Task completion)
+    internal sealed class WorkerRun(CancellationTokenSource cancellation, Task completion)
     {
         public CancellationTokenSource Cancellation { get; } = cancellation;
 

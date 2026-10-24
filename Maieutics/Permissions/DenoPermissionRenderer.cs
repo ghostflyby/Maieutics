@@ -16,6 +16,9 @@ internal static class DenoPermissionRenderer
         var arguments = new List<string>(PermissionKindCount * 2);
         foreach (var kind in Enum.GetValues<PermissionKind>())
         {
+            // The instructions domain is kernel-internal (ADR 0032): it never becomes a flag.
+            if (!PermissionKinds.IsDenoKind(kind)) continue;
+
             var rules = policy.For(kind);
             if (rules.AllowAll) arguments.Add($"--allow-{PermissionKinds.GetName(kind)}");
             else if (rules.Allow.Count > 0) arguments.Add($"--allow-{PermissionKinds.GetName(kind)}={Join(rules.Allow)}");
@@ -70,5 +73,5 @@ internal static class DenoPermissionRenderer
         return string.Join(',', values);
     }
 
-    private const int PermissionKindCount = 8;
+    private const int PermissionKindCount = 9;
 }

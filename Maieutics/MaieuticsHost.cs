@@ -271,7 +271,11 @@ public static class MaieuticsHost
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<MaieuticsStatusProvider>(),
             services.GetService<IMaieuticsMcpController>(),
-            services.GetService<PluginHostManager>()));
+            services.GetService<PluginHostManager>(),
+            // The %permissions family sets and renders the session override layer (ADR 0018
+            // Phase 5) — the reachable setter this surface was always meant to be.
+            services.GetRequiredService<PermissionOverrideRegistry>(),
+            services.GetRequiredService<PermissionPolicyAcquirer>()));
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
         var controlSocketPath = ReplControlHost.CreateSocketPath();
         builder.WebHost.ConfigureKestrel(options =>

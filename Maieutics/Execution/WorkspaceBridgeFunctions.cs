@@ -224,25 +224,15 @@ internal sealed class WorkspaceBridgeFunctions
             throw WorkspacePermissionSurface.Forbidden(kind, logical.DisplayPath);
     }
 
+    /// <summary>Gates bridged script writes to instruction surfaces (ADR 0032 decision 1) in
+    /// the kernel-internal <c>instructions</c> domain, judged at the physical workspace address
+    /// like every other gate; the write baseline never loosens it.</summary>
     private void GateInstructionSurface(string relativePath, AIFunctionArguments arguments)
     {
-        if (_acquirer is null || !InstructionSurface.IsInstructionSurface(relativePath)) return;
+        if (!InstructionSurface.IsInstructionSurface(relativePath)) return;
 
         var sessionId = TryParseSession(arguments);
-        if (sessionId is null)
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{relativePath}' is an instruction surface: model-initiated writes require an explicit " +
-                "allow in the calling session's permission policy.");
-
-        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
-        var rules = policy.For(PermissionKind.Write);
-        if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)) ||
-            !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)))
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{relativePath}' is an instruction surface: writes require an explicit allow in the " +
-                "calling session's permission policy.");
+        WorkspacePermissionSurface.EnforceInstructions(_acquirer, _workspace, relativePath, sessionId);
     }
 
     private static AgentSessionId? TryParseSession(AIFunctionArguments arguments)

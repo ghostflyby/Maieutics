@@ -61,6 +61,7 @@ internal static class PermissionProfileLoader
         AddKind(kinds, PermissionKind.Ffi, set.Ffi, baseDirectory);
         AddKind(kinds, PermissionKind.Sys, set.Sys, baseDirectory);
         AddKind(kinds, PermissionKind.Import, set.Import, baseDirectory);
+        AddKind(kinds, PermissionKind.Instructions, set.Instructions, baseDirectory);
         return new PermissionLayer { Kinds = kinds };
     }
 

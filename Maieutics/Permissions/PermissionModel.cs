@@ -3,7 +3,9 @@ namespace Maieutics.Permissions;
 /// <summary>The permission kinds the store models, matching the Deno permission surface so the
 /// renderer and the future process-sandbox enforcer consume the same snapshot. Kinds a process
 /// sandbox cannot express (env, import) stay explicit and are enforced by their owning layer
-/// (AGENTS.md invariant 23; ADR 0018 §3).</summary>
+/// (AGENTS.md invariant 23; ADR 0018 §3). <see cref="Instructions"/> is a kernel-internal domain
+/// (ADR 0032): it never renders as a Deno flag and never reaches the broker; the instruction
+/// gates judge it against physical workspace paths.</summary>
 internal enum PermissionKind
 {
     Read,
@@ -13,7 +15,8 @@ internal enum PermissionKind
     Run,
     Ffi,
     Sys,
-    Import
+    Import,
+    Instructions
 }
 
 /// <summary>Grants and denials for one permission kind within one layer. A layer may contribute
@@ -51,20 +54,23 @@ internal static class PermissionKinds
             PermissionKind.Ffi => "ffi",
             PermissionKind.Sys => "sys",
             PermissionKind.Import => "import",
+            PermissionKind.Instructions => "instructions",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown permission kind.")
         };
     }
 
     /// <summary>The one matching semantics of a kind, consumed by <see cref="PermissionMatching"/>
     /// so the broker resolver and every launch/workspace gate judge identically. Filesystem path
-    /// kinds and executable <c>run</c> values match on a directory boundary; <c>net</c> hosts and
-    /// <c>import</c> specifiers keep Deno's prefix matching; <c>env</c> and <c>sys</c> match whole
-    /// names, mirroring Deno's by-name grants so one name never covers a longer one.</summary>
+    /// kinds, executable <c>run</c> values, and the internal <c>instructions</c> domain match on a
+    /// directory boundary; <c>net</c> hosts and <c>import</c> specifiers keep Deno's prefix
+    /// matching; <c>env</c> and <c>sys</c> match whole names, mirroring Deno's by-name grants so
+    /// one name never covers a longer one.</summary>
     internal static PermissionMatchMode MatchMode(PermissionKind kind)
     {
         return kind switch
         {
-            PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi or PermissionKind.Run
+            PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi or PermissionKind.Run or
+                PermissionKind.Instructions
                 => PermissionMatchMode.PathBoundary,
             PermissionKind.Net or PermissionKind.Import => PermissionMatchMode.Prefix,
             PermissionKind.Env or PermissionKind.Sys => PermissionMatchMode.Exact,
@@ -72,14 +78,41 @@ internal static class PermissionKinds
         };
     }
 
-    /// <summary>Whether a kind's patterns are filesystem paths (read, write, ffi) — the kinds for
-    /// which a relative pattern is only definable in a file-anchored layer (the workspace profile
-    /// resolves relatives against its own directory). App-wide defaults reject relative path
-    /// patterns because the app config is anchored to no directory; <c>run</c> is excluded since
-    /// its values are bare command names or absolute paths.</summary>
+    /// <summary>Whether a kind's patterns are filesystem paths (read, write, ffi, instructions) —
+    /// the kinds for which a relative pattern is only definable in a file-anchored layer (the
+    /// workspace profile resolves relatives against its own directory). App-wide defaults reject
+    /// relative path patterns because the app config is anchored to no directory; <c>run</c> is
+    /// excluded since its values are bare command names or absolute paths.</summary>
     internal static bool IsFilePathKind(PermissionKind kind)
     {
-        return kind is PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi;
+        return kind is PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi or
+            PermissionKind.Instructions;
+    }
+
+    /// <summary>Whether a kind belongs to the Deno permission surface (everything except the
+    /// kernel-internal <c>instructions</c> domain): the renderer emits flags only for these, and
+    /// the broker's permission strings name only these.</summary>
+    internal static bool IsDenoKind(PermissionKind kind)
+    {
+        return kind != PermissionKind.Instructions;
+    }
+
+    /// <summary>Parses a canonical kind name (case-insensitive) — the command surface's kind
+    /// argument. Unknown names return false.</summary>
+    internal static bool TryParse(string name, out PermissionKind kind)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        foreach (var candidate in Enum.GetValues<PermissionKind>())
+        {
+            if (string.Equals(GetName(candidate), name, StringComparison.OrdinalIgnoreCase))
+            {
+                kind = candidate;
+                return true;
+            }
+        }
+
+        kind = default;
+        return false;
     }
 }
 

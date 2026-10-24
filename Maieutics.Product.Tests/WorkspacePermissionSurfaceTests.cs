@@ -75,6 +75,7 @@ public sealed class WorkspacePermissionSurfaceTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task SearchOnADeniedRootIsForbidden()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var denied = Path.Combine(_workspace.Path, "secret");
         Directory.CreateDirectory(denied);
         var functions = CreateFunctions(Denying(PermissionKind.Read, denied));
@@ -110,6 +111,7 @@ public sealed class WorkspacePermissionSurfaceTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task ApplyPatchCannotBypassTheInstructionGateThroughUriShapedPaths()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         // GatePatchSurface used to feed the full workspace:// URI where a relative path is
         // expected, so ".agents/**" paths escaped the instruction classification; the gate
         // judges the patch-relative path now, like every other write entry point.

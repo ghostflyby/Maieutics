@@ -395,16 +395,31 @@ public sealed class WorkspaceEditToolTests
         // Ordinary workspace files are unaffected by the instruction gate.
         Assert.Null(await Record.ExceptionAsync(() => InvokeWrite("workspace://local/docs/notes.md")));
 
-        // A session override allow admits the instruction path explicitly (the migration path).
+        // A session override allow in the instructions domain admits the instruction path
+        // explicitly (the migration path): one physical workspace path, not a write grant.
         registry.Set(sessionId, new PermissionLayer
         {
             Kinds = new Dictionary<PermissionKind, PermissionKindRules>
             {
-                [PermissionKind.Write] = new PermissionKindRules { Allow = ["AGENTS.md"] }
+                [PermissionKind.Instructions] = new PermissionKindRules { Allow = [Path.Combine(root, "AGENTS.md")] }
             }
         });
 
         Assert.Null(await Record.ExceptionAsync(() => InvokeWrite("workspace://local/AGENTS.md")));
+
+        // The write domain never loosens the instruction gate: a write allow of the whole
+        // workspace root still refuses the instruction surface.
+        registry.Set(sessionId, new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Write] = new PermissionKindRules { Allow = [root] }
+            }
+        });
+        var writeGrantForbidden = await Record.ExceptionAsync(() => InvokeWrite("workspace://local/AGENTS.md"));
+        Assert.Equal(
+            "instructions_write_forbidden",
+            Assert.IsType<AgentToolException>(writeGrantForbidden).Code);
     }
 
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);

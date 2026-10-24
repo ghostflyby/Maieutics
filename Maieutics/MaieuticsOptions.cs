@@ -50,6 +50,10 @@ public sealed class MaieuticsPermissionsOptions
 
     public MaieuticsPermissionKindOptions? Import { get; set; }
 
+    /// <summary>The kernel-internal instruction-surface domain (ADR 0032): a physical-path kind;
+    /// patterns must be absolute or variable-anchored like the other path kinds.</summary>
+    public MaieuticsPermissionKindOptions? Instructions { get; set; }
+
     internal void Validate()
     {
         ValidateKind(Read);
@@ -60,9 +64,11 @@ public sealed class MaieuticsPermissionsOptions
         ValidateKind(Ffi);
         ValidateKind(Sys);
         ValidateKind(Import);
+        ValidateKind(Instructions);
         ValidatePathPatterns(Read, PermissionKind.Read);
         ValidatePathPatterns(Write, PermissionKind.Write);
         ValidatePathPatterns(Ffi, PermissionKind.Ffi);
+        ValidatePathPatterns(Instructions, PermissionKind.Instructions);
     }
 
     private static void ValidateKind(MaieuticsPermissionKindOptions? kind)

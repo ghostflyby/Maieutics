@@ -15,7 +15,7 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionExpandsAnExactCommandAndHandlesPrefixes()
     {
         var exact = Complete("%maieutics");
-        Assert.Equal(new[] { "%maieutics mcp", "%maieutics model", "%maieutics plugin", "%maieutics session", "%maieutics workspace" }, exact.Matches);
+        Assert.Equal(new[] { "%maieutics mcp", "%maieutics model", "%maieutics permissions", "%maieutics plugin", "%maieutics session", "%maieutics workspace" }, exact.Matches);
         Assert.Equal(0, exact.CursorStart);
         Assert.Equal(10, exact.CursorEnd);
 
@@ -25,7 +25,7 @@ public sealed class MaieuticsCompletionTests
         Assert.Equal(4, prefix.CursorEnd);
 
         var afterRoot = Complete("%maieutics ");
-        Assert.Equal(new[] { "mcp", "model", "plugin", "session", "workspace" }, afterRoot.Matches);
+        Assert.Equal(new[] { "mcp", "model", "permissions", "plugin", "session", "workspace" }, afterRoot.Matches);
         Assert.Equal(11, afterRoot.CursorStart);
         Assert.Equal(11, afterRoot.CursorEnd);
     }
@@ -232,7 +232,7 @@ public sealed class MaieuticsCompletionTests
     public void SlashDiscoveryCompletesCanonicalCommandsAndReplacesTheSlashToken()
     {
         var all = Complete("/");
-        Assert.Equal(new[] { "%mcp", "%model", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
+        Assert.Equal(new[] { "%mcp", "%model", "%permissions", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
         Assert.Equal(0, all.CursorStart);
         Assert.Equal(1, all.CursorEnd);
 
@@ -264,13 +264,13 @@ public sealed class MaieuticsCompletionTests
     public void RootCompletionListsCanonicalCommandsAndLegacyRoot()
     {
         var all = Complete("%");
-        Assert.Equal(new[] { "%maieutics", "%mcp", "%model", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
+        Assert.Equal(new[] { "%maieutics", "%mcp", "%model", "%permissions", "%plugin", "%session", "%status", "%workspace" }, all.Matches);
 
         var sharedPrefix = Complete("%m");
         Assert.Equal(new[] { "%maieutics", "%mcp", "%model" }, sharedPrefix.Matches);
 
         var pluginPrefix = Complete("%p");
-        Assert.Equal(new[] { "%plugin" }, pluginPrefix.Matches);
+        Assert.Equal(new[] { "%permissions", "%plugin" }, pluginPrefix.Matches);
     }
 
     [Fact]

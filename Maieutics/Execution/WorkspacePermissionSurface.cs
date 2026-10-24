@@ -79,4 +79,54 @@ internal static class WorkspacePermissionSurface
             kind == PermissionKind.Write ? "workspace_write_forbidden" : "workspace_read_forbidden",
             $"The session's permission policy denies this {PermissionKinds.GetName(kind)} of '{displayPath}'.");
     }
+
+    /// <summary>Judges one instruction-surface write against the kernel-internal
+    /// <c>instructions</c> domain (ADR 0032 decision 1): the workspace-root write baseline never
+    /// loosens this gate — only the session's explicit allows (physical workspace paths) admit,
+    /// and a matching deny refuses even then. The gate stays dormant in hosts without the
+    /// acquirer (the legacy containment-only posture) and denies fail-closed without a session.
+    /// The relative path is judged at its physical address, so profile layers (whose path
+    /// patterns the loader resolves to absolute) and session overrides (whose
+    /// <c>${var.workspace}</c> tokens expand at acquisition) speak one address space.</summary>
+    internal static void EnforceInstructions(
+        PermissionPolicyAcquirer? acquirer,
+        Workspace workspace,
+        string relativePath,
+        AgentSessionId? sessionId)
+    {
+        ArgumentNullException.ThrowIfNull(workspace);
+        if (acquirer is null) return;
+        if (InstructionSurface.IsInstructionSurface(relativePath) is false) return;
+        if (sessionId is null)
+            throw InstructionForbidden(relativePath);
+
+        var rules = acquirer.Acquire(PermissionLayer.Empty, sessionId).For(PermissionKind.Instructions);
+        var physical = PhysicalInstructionPath(workspace, relativePath);
+        if (rules.DenyAll ||
+            rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, physical)))
+            throw InstructionForbidden(relativePath);
+        if (rules.AllowAll ||
+            rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, physical)))
+            return;
+
+        throw InstructionForbidden(relativePath);
+    }
+
+    /// <summary>The physical address of one instruction surface: the workspace root joined with
+    /// the normalized relative path.</summary>
+    internal static string PhysicalInstructionPath(Workspace workspace, string relativePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        return Path.GetFullPath(Path.Combine(
+            workspace.Capture().RootPath,
+            relativePath.Replace('\\', Path.DirectorySeparatorChar)));
+    }
+
+    private static AgentToolException InstructionForbidden(string relativePath)
+    {
+        return new AgentToolException(
+            "instructions_write_forbidden",
+            $"'{relativePath}' is an instruction surface: model-initiated writes require an explicit allow " +
+            "in the calling session's permission policy.");
+    }
 }

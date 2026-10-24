@@ -80,7 +80,91 @@ internal static class DenoReplPolicyBuilder
             windowsPipeName);
         // The full acquisition path (ADR 0018 Phase 5): the launch-time baseline overlaid with
         // the configuration-owned layers; the override lookup scopes by the owning Agent session.
-        return acquirer.Acquire(baseline, ownerSessionId);
+        var composed = acquirer.Acquire(baseline, ownerSessionId);
+        // The instruction-surface overlay (ADR 0032): a cell writing an instruction file through
+        // the direct Deno path must meet the same gate the kernel tools apply, and the broker
+        // only understands path denies — so every instruction surface the composed policy does
+        // not explicitly allow becomes a write deny.
+        return DeriveInstructionDenyOverlay(composed, workingDirectory);
+    }
+
+    /// <summary>Composes the derived write-deny overlay for instruction surfaces onto an already
+    /// composed policy. The surfaces are enumerated from the working directory at acquisition
+    /// time (bounded, reparse points skipped): every existing AGENTS.md at any depth and every
+    /// file under <c>.agents/</c>. Files created later under a yet-unwalked tree are the
+    /// documented residual — the frontend-attached path is fully gated by the kernel tools.</summary>
+    internal static EffectivePolicy DeriveInstructionDenyOverlay(EffectivePolicy composed, string workingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(composed);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+
+        var rules = composed.For(PermissionKind.Instructions);
+        if (rules.AllowAll) return composed;
+
+        var denied = new List<string>();
+        foreach (var surface in EnumerateInstructionSurfaces(workingDirectory))
+        {
+            var allowed = rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, surface));
+            if (!allowed) denied.Add(surface);
+        }
+
+        if (denied.Count == 0) return composed;
+
+        var overlay = new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Write] = new() { Deny = denied }
+            }
+        };
+        return PermissionLayerStore.Build(
+            [
+                new PermissionLayer { Kinds = composed.Kinds },
+                overlay
+            ],
+            VariableTable.Expanded);
+    }
+
+    /// <summary>Yields the physical paths of the instruction surfaces that exist under the
+    /// working directory: every file beneath <c>.agents/</c> and every <c>AGENTS.md</c> at any
+    /// depth. The walk is bounded (a surface set beyond the cap is the documented residual) and
+    /// never crosses reparse points.</summary>
+    private static IEnumerable<string> EnumerateInstructionSurfaces(string workingDirectory)
+    {
+        const int maximumEntries = 10_000;
+        var visited = 0;
+        var pending = new Stack<string>([workingDirectory]);
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+            foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+            {
+                if (++visited > maximumEntries) yield break;
+                var attributes = entry.Attributes;
+                if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+
+                if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase)) continue;
+                    pending.Push(entry.FullName);
+                    continue;
+                }
+
+                if (entry.Name.Equals("AGENTS.md", StringComparison.OrdinalIgnoreCase) ||
+                    IsUnderAgentsDirectory(entry.FullName, workingDirectory))
+                    yield return entry.FullName;
+            }
+        }
+    }
+
+    private static bool IsUnderAgentsDirectory(string fullPath, string workingDirectory)
+    {
+        var root = Path.GetFullPath(workingDirectory);
+        var relative = Path.GetRelativePath(root, fullPath);
+        return relative.StartsWith(".agents", StringComparison.Ordinal) &&
+               (relative.Length == ".agents".Length ||
+                relative[".agents".Length] == Path.DirectorySeparatorChar ||
+                relative[".agents".Length] == Path.AltDirectorySeparatorChar);
     }
 
     internal static InvalidOperationException CreateMissingModuleGraphException()

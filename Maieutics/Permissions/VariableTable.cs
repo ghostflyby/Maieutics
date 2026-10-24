@@ -12,19 +12,28 @@ namespace Maieutics.Permissions;
 /// environment variable expanding differently on another machine.</summary>
 internal sealed class VariableTable
 {
+    /// <summary>A table whose patterns are already expanded: <see cref="Expand"/> returns each
+    /// pattern verbatim, for composing layers whose values came out of an earlier build (a
+    /// derived deny overlay on a composed policy) — re-expanding literal paths would misread any
+    /// <c>${</c> in them as a token.</summary>
+    internal static VariableTable Expanded { get; } = new(new NullVariableSource(), passthrough: true);
+
     private readonly IPermissionVariableSource _source;
     private readonly IReadOnlyDictionary<string, string> _fixedVariables;
     private readonly Func<string, string?> _getEnvironmentVariable;
+    private readonly bool _passthrough;
 
     internal VariableTable(
         IPermissionVariableSource source,
         IReadOnlyDictionary<string, string>? fixedVariables = null,
-        Func<string, string?>? getEnvironmentVariable = null)
+        Func<string, string?>? getEnvironmentVariable = null,
+        bool passthrough = false)
     {
         ArgumentNullException.ThrowIfNull(source);
         this._source = source;
         this._fixedVariables = fixedVariables ?? new Dictionary<string, string>(StringComparer.Ordinal);
         this._getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        this._passthrough = passthrough;
     }
 
     /// <summary>Expands every <c>${...}</c> token in <paramref name="pattern"/>. Patterns without
@@ -33,7 +42,7 @@ internal sealed class VariableTable
     internal string Expand(string pattern)
     {
         ArgumentNullException.ThrowIfNull(pattern);
-        if (pattern.IndexOf("${", StringComparison.Ordinal) < 0) return pattern;
+        if (_passthrough || pattern.IndexOf("${", StringComparison.Ordinal) < 0) return pattern;
 
         var builder = new StringBuilder(pattern.Length);
         var position = 0;
@@ -83,6 +92,14 @@ internal sealed class VariableTable
         }
 
         throw Malformed($"The variable '{name}' is not in the env.* or var.* namespace.");
+    }
+
+    private sealed class NullVariableSource : Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
     }
 
     private static PermissionException Unknown(string message)

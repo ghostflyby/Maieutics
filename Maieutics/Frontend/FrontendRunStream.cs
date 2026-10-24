@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using Maieutics.Agent;
 using Microsoft.Extensions.Logging;
@@ -20,18 +21,17 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     internal const int SubscriberQueueCapacity = 1024;
     private static readonly TimeSpan ShutdownCancelTimeout = TimeSpan.FromSeconds(15);
 
-    private readonly Lock gate = new();
-    private readonly List<FrontendEventFrame> replay = [];
-    private readonly List<Subscriber> subscribers = [];
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly AgentSessionId sessionId;
-    private readonly string ownRunId;
-    private readonly IAgentRun run;
-    private readonly FrontendDenoReplPresentationRouter? presentationRouter;
-    private readonly ILogger logger;
-    private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private Task pump = Task.CompletedTask;
-    private TaskCompletionSource replayAppended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Lock _gate = new();
+    private readonly List<FrontendEventFrame> _replay = [];
+    private readonly List<Subscriber> _subscribers = [];
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly AgentSessionId _sessionId;
+    private readonly string _ownRunId;
+    private readonly IAgentRun _run;
+    private readonly FrontendDenoReplPresentationRouter? _presentationRouter;
+    private readonly ILogger _logger;
+    private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _replayAppended = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes on the next frame appended to the
     /// replay buffer. The completed source is swapped for a fresh one under the same lock
@@ -41,26 +41,27 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return replayAppended.Task;
+                return _replayAppended.Task;
             }
         }
     }
 
     private void ReplayAppendedLocked()
     {
-        replayAppended.TrySetResult();
-        replayAppended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _replayAppended.TrySetResult();
+        _replayAppended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
-    private IAsyncDisposable? presentationScope;
-    private long oldestSequence;
-    private long latestSequence;
-    private int startState;
-    private int settleState;
-    private int disposeState;
-    private bool completed;
-    private bool publishClosed;
+
+    private IAsyncDisposable? _presentationScope;
+    private long _oldestSequence;
+    private long _latestSequence;
+    private int _startState;
+    private int _settleState;
+    private int _disposeState;
+    private bool _completed;
+    private bool _publishClosed;
 
     private FrontendRunStream(
         AgentSessionId sessionId,
@@ -69,12 +70,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         IAsyncDisposable? presentationScope,
         ILogger logger)
     {
-        this.sessionId = sessionId;
-        this.run = run;
-        ownRunId = run.Id.Value.ToString("N");
-        this.presentationRouter = presentationRouter;
-        this.presentationScope = presentationScope;
-        this.logger = logger;
+        this._sessionId = sessionId;
+        this._run = run;
+        _ownRunId = run.Id.Value.ToString("N");
+        this._presentationRouter = presentationRouter;
+        this._presentationScope = presentationScope;
+        this._logger = logger;
     }
 
     /// <summary>Creates the stream for a run without starting its pump, so the presentation
@@ -90,25 +91,27 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     /// <summary>Starts the pump. The stream owns the run's disposal and detaches the
     /// presentation scope once the terminal frame is published.</summary>
-    internal void Start(IAsyncDisposable? presentationScope)
+    internal void Start(IAsyncDisposable? scope)
     {
-        if (Interlocked.CompareExchange(ref startState, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _startState, 1, 0) != 0)
             throw new InvalidOperationException("The frontend run stream is already started.");
 
-        this.presentationScope = presentationScope;
-        pump = Task.Run(RunPumpAsync);
+        _presentationScope = scope;
+        // The pump settles its own outcome (terminal publish, fault log, run disposal);
+        // no external observation point observes the task itself.
+        _ = Task.Run(RunPumpAsync);
     }
 
     /// <summary>Gets the owning run identifier.</summary>
-    internal AgentRunId RunId => run.Id;
+    internal AgentRunId RunId => _run.Id;
 
     /// <summary>Gets the owning session identifier.</summary>
-    internal AgentSessionId SessionId => sessionId;
+    internal AgentSessionId SessionId => _sessionId;
 
-    internal IAgentRun Run => run;
+    internal IAgentRun Run => _run;
 
     /// <summary>Waits for the run to terminate; failures and cancellation surface here.</summary>
-    internal Task<AgentRunResult> Completion => run.Completion;
+    internal Task<AgentRunResult> Completion => _run.Completion;
 
     /// <summary>
     ///     Waits for the stream's full settlement: terminal frames published, the run
@@ -118,10 +121,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     ///     attaches that sink while wiring its run stream) can only start after this task
     ///     completes. Never faults.
     /// </summary>
-    internal Task Settled => disposal.Task;
+    internal Task Settled => _disposal.Task;
 
     /// <summary>Requests cooperative cancellation and waits for the run to terminate.</summary>
-    internal Task CancelAsync(CancellationToken cancellationToken) => run.CancelAsync(cancellationToken);
+    internal Task CancelAsync(CancellationToken cancellationToken) => _run.CancelAsync(cancellationToken);
 
     /// <summary>
     ///     Attaches a subscriber, returning the frames retained since
@@ -141,11 +144,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         var subscriber = new Subscriber(channel);
         IReadOnlyList<FrontendEventFrame> initial;
         int subscriberCount;
-        lock (gate)
+        lock (_gate)
         {
-            subscribers.Add(subscriber);
-            subscriberCount = subscribers.Count;
-            if (completed)
+            _subscribers.Add(subscriber);
+            subscriberCount = _subscribers.Count;
+            if (_completed)
             {
                 // The pump already published its terminal frame; complete the queue so the
                 // subscriber's drain loop ends instead of waiting forever.
@@ -155,9 +158,9 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             initial = BuildSnapshot(sinceSequence);
         }
 
-        logger.LogDebug(
+        _logger.LogDebug(
             "A subscriber attached to run {RunId}; {SubscriberCount} now subscribed.",
-            run.Id,
+            _run.Id,
             subscriberCount);
         return (initial, channel);
     }
@@ -166,20 +169,18 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// type and sequence (capped), read under the replay lock.</summary>
     internal IReadOnlyList<string> DescribeFrames()
     {
-        lock (gate)
+        lock (_gate)
         {
-            var lines = new List<string>(replay.Count);
-            var index = 0;
-            foreach (var frame in replay)
+            var lines = new List<string>(_replay.Count);
+            foreach (var frame in _replay)
             {
                 if (lines.Count >= 32)
                 {
-                    lines.Add($"… ({replay.Count - 32} more)");
+                    lines.Add($"… ({_replay.Count - 32} more)");
                     break;
                 }
 
                 lines.Add($"#{frame.Sequence}: {frame.Type}");
-                index++;
             }
 
             return lines;
@@ -194,11 +195,11 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         // A resuming client whose next expected frame precedes the oldest retained sequence
         // cannot rebuild the run from the buffer; run.missing tells it to refetch from the
         // transcript endpoint instead of silently rendering a truncated run.
-        if (sinceSequence > 0 && latestSequence > sinceSequence &&
-            (oldestSequence == 0 || sinceSequence + 1 < oldestSequence))
+        if (sinceSequence > 0 && _latestSequence > sinceSequence &&
+            (_oldestSequence == 0 || sinceSequence + 1 < _oldestSequence))
             snapshot.Add(MissingFrame());
 
-        snapshot.AddRange(replay.Where(frame => IsReplayable(frame, sinceSequence)));
+        snapshot.AddRange(_replay.Where(frame => IsReplayable(frame, sinceSequence)));
         return snapshot;
     }
 
@@ -206,21 +207,21 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     internal void Unsubscribe(Channel<FrontendEventFrame> channel)
     {
         int subscriberCount;
-        lock (gate)
+        lock (_gate)
         {
-            for (var index = subscribers.Count - 1; index >= 0; index--)
-                if (ReferenceEquals(subscribers[index].Channel, channel))
+            for (var index = _subscribers.Count - 1; index >= 0; index--)
+                if (ReferenceEquals(_subscribers[index].Channel, channel))
                 {
-                    subscribers[index].Channel.Writer.TryComplete();
-                    subscribers.RemoveAt(index);
+                    _subscribers[index].Channel.Writer.TryComplete();
+                    _subscribers.RemoveAt(index);
                 }
 
-            subscriberCount = subscribers.Count;
+            subscriberCount = _subscribers.Count;
         }
 
-        logger.LogDebug(
+        _logger.LogDebug(
             "A subscriber detached from run {RunId}; {SubscriberCount} remain subscribed.",
-            run.Id,
+            _run.Id,
             subscriberCount);
     }
 
@@ -232,7 +233,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     public void PublishPresentation(
         string type,
         string? displayId,
-        System.Text.Json.JsonElement data,
+        JsonElement data,
         CancellationToken cancellationToken)
     {
         _ = TryPublishPresentationFrame(type, displayId, data, cancellationToken);
@@ -246,14 +247,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     internal bool TryPublishPresentationFrame(
         string type,
         string? displayId,
-        System.Text.Json.JsonElement data,
+        JsonElement data,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (type == "input.request" &&
-            System.Text.Json.JsonSerializer.Deserialize(
-                data,
-                FrontendJsonContext.Default.FrontendInputRequest) is { } request)
+            data.Deserialize(FrontendJsonContext.Default.FrontendInputRequest) is { } request)
         {
             return PublishCore(
                 new FrontendEventFrame(
@@ -274,15 +273,15 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) != 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
         {
-            await disposal.Task.ConfigureAwait(false);
+            await _disposal.Task.ConfigureAwait(false);
             return;
         }
 
-        await lifetime.CancelAsync().ConfigureAwait(false);
-        await disposal.Task.ConfigureAwait(false);
-        lifetime.Dispose();
+        await _lifetime.CancelAsync().ConfigureAwait(false);
+        await _disposal.Task.ConfigureAwait(false);
+        _lifetime.Dispose();
     }
 
     /// <summary>Cancels the run so shutdown does not wait on a provider stream. The host's
@@ -297,36 +296,36 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         try
         {
-            await lifetime.CancelAsync().ConfigureAwait(false);
+            await _lifetime.CancelAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Cancelling run {RunId} for shutdown faulted.", run.Id);
+            _logger.LogWarning(exception, "Cancelling run {RunId} for shutdown faulted.", _run.Id);
         }
     }
 
     private async Task RunPumpAsync()
     {
-        logger.LogDebug("Frontend event pump started for run {RunId}.", run.Id);
+        _logger.LogDebug("Frontend event pump started for run {RunId}.", _run.Id);
         try
         {
-            Publish(new FrontendEventFrame("run.started", RunId: ownRunId));
+            Publish(new FrontendEventFrame("run.started", RunId: _ownRunId));
             Publish(new FrontendEventFrame("run.status", State: "busy"));
             var truncated = false;
-            await foreach (var agentEvent in run.Events
-                               .WithCancellation(lifetime.Token)
+            await foreach (var agentEvent in _run.Events
+                               .WithCancellation(_lifetime.Token)
                                .ConfigureAwait(false))
             {
                 if (agentEvent is AgentTurnTruncated) truncated = true;
                 if (agentEvent is AgentToolStarted startedEvent)
-                    presentationRouter?.OpenCall(sessionId, startedEvent.CallId);
+                    _presentationRouter?.OpenCall(_sessionId, startedEvent.CallId);
                 var rendered = AgentEventFrameMapper.Render(agentEvent);
                 if (rendered is not null) Publish(rendered);
             }
 
-            PublishTerminal(await run.Completion.ConfigureAwait(false), truncated);
+            PublishTerminal(await _run.Completion.ConfigureAwait(false), truncated);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
             // Shutdown; CancelForShutdownAsync records the cancellation source.
             await CancelForShutdownAsync().ConfigureAwait(false);
@@ -335,15 +334,15 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         {
             // The run itself was cancelled (frontend cancel endpoint); the completion task
             // already carried the failure, so only the pump's own observation path lands here.
-            logger.LogInformation(
+            _logger.LogInformation(
                 exception,
                 "Frontend run {RunId} of session {SessionId} was cancelled during execution; publishing run.failed with code {Code}.",
-                run.Id,
-                sessionId,
+                _run.Id,
+                _sessionId,
                 RunFailedCodes.Cancelled);
             PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
-                RunId: run.Id.Value.ToString("N"),
+                RunId: _run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.Cancelled,
                 Message: exception.Message));
             await SettleRunAsync().ConfigureAwait(false);
@@ -356,25 +355,25 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             // no log records of its own by design (docs/logging.md), the wire frame carries
             // the code but only to attached clients, and the run settles as "failed" with no
             // further detail. Without it a failed run is a silent 4xx/timeout to the caller.
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Frontend run {RunId} of session {SessionId} failed with agent code {Code}; publishing run.failed.",
-                run.Id,
-                sessionId,
+                _run.Id,
+                _sessionId,
                 code);
             PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
-                RunId: run.Id.Value.ToString("N"),
+                RunId: _run.Id.Value.ToString("N"),
                 Code: code,
                 Message: exception.Message));
             await SettleRunAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "The frontend event pump for run {RunId} failed unexpectedly.", run.Id);
+            _logger.LogError(exception, "The frontend event pump for run {RunId} failed unexpectedly.", _run.Id);
             PublishTerminalPair(new FrontendEventFrame(
                 "run.failed",
-                RunId: run.Id.Value.ToString("N"),
+                RunId: _run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.AgentError,
                 Message: "The agent turn failed."));
             await SettleRunAsync().ConfigureAwait(false);
@@ -388,20 +387,20 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             MarkCompleted();
             try
             {
-                if (presentationScope is not null) await presentationScope.DisposeAsync().ConfigureAwait(false);
+                if (_presentationScope is not null) await _presentationScope.DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 // A failed detach must not skip the settlement signal below: follow-up
                 // turns wait for it before they can attach the session's presentation
                 // sink again.
-                logger.LogWarning(
+                _logger.LogWarning(
                     exception,
                     "Detaching the presentation scope for run {RunId} failed.",
-                    run.Id);
+                    _run.Id);
             }
 
-            disposal.TrySetResult();
+            _disposal.TrySetResult();
         }
     }
 
@@ -416,8 +415,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// </summary>
     private async Task SettleRunAsync()
     {
-        if (Interlocked.Exchange(ref settleState, 1) != 0) return;
-        if (!run.Completion.IsCompleted)
+        if (Interlocked.Exchange(ref _settleState, 1) != 0) return;
+        if (!_run.Completion.IsCompleted)
         {
             // The pump exited without the run reaching a terminal state: either an
             // unanticipated failure, or shutdown racing a wedged provider. The sweep below
@@ -425,65 +424,65 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             // "failed"/"cancelled" outcome a caller observes may be this cancellation, not
             // the run's own result. Record it, or a settled-as-failed run is indistinguishable
             // from a provider fault in the logs.
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Frontend run {RunId} of session {SessionId} was still incomplete when the pump stopped draining it ({Status}); cancelling it to release the session's turn gate. The resulting outcome is this settlement, not the run's own result.",
-                run.Id,
-                sessionId,
-                DescribeCompletion(run.Completion));
+                _run.Id,
+                _sessionId,
+                DescribeCompletion(_run.Completion));
             try
             {
                 using var budget = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
                 budget.CancelAfter(ShutdownCancelTimeout);
-                await run.CancelAsync(budget.Token).ConfigureAwait(false);
+                await _run.CancelAsync(budget.Token).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     exception,
                     "Cancelling run {RunId} after the pump stopped draining it did not settle.",
-                    run.Id);
+                    _run.Id);
             }
         }
 
         await ObserveCompletionAsync().ConfigureAwait(false);
-        logger.LogDebug(
+        _logger.LogDebug(
             "Frontend run {RunId} settled with outcome {Outcome}{FailureCode}.",
-            run.Id,
-            DescribeCompletion(run.Completion),
-            DescribeFailure(run.Completion));
+            _run.Id,
+            DescribeCompletion(_run.Completion),
+            DescribeFailure(_run.Completion));
         try
         {
-            await run.DisposeAsync().ConfigureAwait(false);
+            await _run.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             // The run's terminal outcome already reached subscribers; disposal observation
             // must not escape the pump's finally.
-            logger.LogWarning(exception, "Disposing run {RunId} after the pump completed failed.", run.Id);
+            _logger.LogWarning(exception, "Disposing run {RunId} after the pump completed failed.", _run.Id);
         }
     }
 
     private async Task CancelForShutdownAsync()
     {
-        logger.LogInformation(
+        _logger.LogInformation(
             "Frontend run {RunId} of session {SessionId} is being cancelled because the host is shutting down; publishing run.failed with code {Code}.",
-            run.Id,
-            sessionId,
+            _run.Id,
+            _sessionId,
             RunFailedCodes.Cancelled);
         PublishTerminalPair(new FrontendEventFrame(
             "run.failed",
-            RunId: run.Id.Value.ToString("N"),
+            RunId: _run.Id.Value.ToString("N"),
             Code: RunFailedCodes.Cancelled,
             Message: "The host is shutting down."));
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
             timeout.CancelAfter(ShutdownCancelTimeout);
-            await run.CancelAsync(timeout.Token).ConfigureAwait(false);
+            await _run.CancelAsync(timeout.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Cancelling run {RunId} during shutdown did not settle.", run.Id);
+            _logger.LogWarning(exception, "Cancelling run {RunId} during shutdown did not settle.", _run.Id);
         }
 
         await ObserveCompletionAsync().ConfigureAwait(false);
@@ -493,7 +492,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         try
         {
-            await run.Completion.ConfigureAwait(false);
+            await _run.Completion.ConfigureAwait(false);
         }
         catch
         {
@@ -529,7 +528,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     {
         PublishTerminalPair(new FrontendEventFrame(
             "run.completed",
-            RunId: run.Id.Value.ToString("N"),
+            RunId: _run.Id.Value.ToString("N"),
             Truncated: result.Truncated || truncated,
             Model: result.ModelIdentity is { } identity
                 ? new FrontendModelIdentity(identity.ProfileId.Value, identity.Provider, identity.Model)
@@ -544,7 +543,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private FrontendEventFrame MissingFrame()
     {
-        return new FrontendEventFrame("run.missing", RunId: run.Id.Value.ToString("N"));
+        return new FrontendEventFrame("run.missing", RunId: _run.Id.Value.ToString("N"));
     }
 
     private bool IsReplayable(FrontendEventFrame frame, long sinceSequence)
@@ -553,7 +552,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         // best-effort — live delivery and terminal frames are exact, while a client that
         // missed child history refetches the report from the spawn tool's persisted result
         // (ADR 0030 decision 8). The parent run's own frames follow the strict contract.
-        if (frame.RunId is { } frameRun && frameRun != ownRunId)
+        if (frame.RunId is { } frameRun && frameRun != _ownRunId)
             return true;
         if (sinceSequence <= 0) return true;
         if (frame.Sequence is { } sequence) return sequence > sinceSequence;
@@ -568,17 +567,17 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private void MarkCompleted()
     {
-        lock (gate)
+        lock (_gate)
         {
-            completed = true;
+            _completed = true;
             // Belt and braces for every pump exit path: the terminal pair is the last frame
             // pair, so nothing may be appended after the stream stopped draining its run.
-            publishClosed = true;
+            _publishClosed = true;
             // Complete live queues so subscriber loops advance to the next run; late
             // subscribers still replay the buffer through Subscribe.
-            foreach (var subscriber in subscribers) subscriber.Channel.Writer.TryComplete();
+            foreach (var subscriber in _subscribers) subscriber.Channel.Writer.TryComplete();
 
-            subscribers.Clear();
+            _subscribers.Clear();
             // Completion advances every replay-derived observation (the snapshot's
             // channel completion included), so it notifies the same signal an append
             // does — a waiter parked awaiting the next append must wake for this.
@@ -612,13 +611,13 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// duplicate pair behind the first.</summary>
     private void PublishTerminalPair(FrontendEventFrame terminalFrame)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (publishClosed) return;
+            if (_publishClosed) return;
 
             PublishLocked(terminalFrame, trackSequence: true);
             PublishLocked(new FrontendEventFrame("run.status", State: "idle"), trackSequence: true);
-            publishClosed = true;
+            _publishClosed = true;
         }
 
         DisconnectOverflowingSubscribers();
@@ -626,7 +625,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     private bool PublishCore(FrontendEventFrame frame, bool trackSequence)
     {
-        lock (gate)
+        lock (_gate)
         {
             // A closed stream refuses frames outright: the run's terminal pair is its last
             // frame pair, and a client resuming with sinceSequence rebuilds the run from this
@@ -634,7 +633,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             // that already ended (invariant 7). The refusal is also the publisher's answer that
             // the presentation is no longer live: the approval and elicitation presenters deny
             // or cancel on it instead of waiting for a request no client will ever be offered.
-            if (publishClosed) return false;
+            if (_publishClosed) return false;
 
             PublishLocked(frame, trackSequence);
         }
@@ -644,21 +643,21 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     }
 
     /// <summary>Appends one frame to the replay buffer and the live subscriber queues. The
-    /// caller holds <see cref="gate" />.</summary>
+    /// caller holds <see cref="_gate" />.</summary>
     private void PublishLocked(FrontendEventFrame frame, bool trackSequence)
     {
         if (trackSequence && frame.Sequence is { } sequence)
         {
-            if (oldestSequence == 0) oldestSequence = sequence;
-            if (sequence > latestSequence) latestSequence = sequence;
+            if (_oldestSequence == 0) _oldestSequence = sequence;
+            if (sequence > _latestSequence) _latestSequence = sequence;
         }
 
-        replay.Add(frame);
+        _replay.Add(frame);
         ReplayAppendedLocked();
-        if (replay.Count > ReplayRetention)
+        if (_replay.Count > ReplayRetention)
         {
-            var evicted = replay[0];
-            replay.RemoveAt(0);
+            var evicted = _replay[0];
+            _replay.RemoveAt(0);
             // Retention evicts from the front of the buffer, so the oldest retained
             // sequence must follow the eviction: if it kept the all-time minimum,
             // resumed clients behind the eviction would look current and silently
@@ -666,19 +665,19 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             // surface as run.missing). Child frames are skipped: their sequences live
             // in their own run-local spaces.
             if (trackSequence &&
-                evicted.Sequence is { } evictedSequence && evictedSequence == oldestSequence)
+                evicted.Sequence is { } evictedSequence && evictedSequence == _oldestSequence)
             {
-                oldestSequence = 0;
-                foreach (var retained in replay)
-                    if (retained.RunId == ownRunId && retained.Sequence is { } retainedSequence)
+                _oldestSequence = 0;
+                foreach (var retained in _replay)
+                    if (retained.RunId == _ownRunId && retained.Sequence is { } retainedSequence)
                     {
-                        oldestSequence = retainedSequence;
+                        _oldestSequence = retainedSequence;
                         break;
                     }
             }
         }
 
-        foreach (var subscriber in subscribers)
+        foreach (var subscriber in _subscribers)
             if (!subscriber.Channel.Writer.TryWrite(frame))
                 subscriber.Faulted = true;
     }
@@ -690,24 +689,24 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private void DisconnectOverflowingSubscribers()
     {
         List<Subscriber>? overflowing = null;
-        lock (gate)
+        lock (_gate)
         {
-            for (var index = subscribers.Count - 1; index >= 0; index--)
-                if (subscribers[index].Faulted)
+            for (var index = _subscribers.Count - 1; index >= 0; index--)
+                if (_subscribers[index].Faulted)
                 {
                     overflowing ??= [];
-                    overflowing.Add(subscribers[index]);
-                    subscribers[index].Channel.Writer.TryComplete(
+                    overflowing.Add(_subscribers[index]);
+                    _subscribers[index].Channel.Writer.TryComplete(
                         new FrontendBackpressureException("The frontend subscriber queue overflowed."));
-                    subscribers.RemoveAt(index);
+                    _subscribers.RemoveAt(index);
                 }
         }
 
         if (overflowing is not null)
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Disconnected {Count} frontend subscriber(s) of run {RunId} for backpressure.",
                 overflowing.Count,
-                run.Id);
+                _run.Id);
     }
 
     private sealed class Subscriber(Channel<FrontendEventFrame> channel)
@@ -733,16 +732,16 @@ internal sealed class FrontendRunRegistry
 {
     private const int RetainedCompletedStreams = 16;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentRunId, FrontendRunStream> streams = [];
-    private readonly Queue<AgentRunId> completionOrder = [];
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentRunId, FrontendRunStream> _streams = [];
+    private readonly Queue<AgentRunId> _completionOrder = [];
 
     /// <summary>Registers a running stream and prunes the oldest completed ones.</summary>
     internal void Add(FrontendRunStream stream)
     {
-        lock (gate)
+        lock (_gate)
         {
-            streams[stream.RunId] = stream;
+            _streams[stream.RunId] = stream;
         }
 
         // Watch completion outside the registry lock: the watch may complete synchronously
@@ -752,9 +751,9 @@ internal sealed class FrontendRunRegistry
 
     internal bool TryGet(AgentRunId runId, out FrontendRunStream? stream)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return streams.TryGetValue(runId, out stream);
+            return _streams.TryGetValue(runId, out stream);
         }
     }
 
@@ -763,9 +762,9 @@ internal sealed class FrontendRunRegistry
     internal void BeginShutdown()
     {
         FrontendRunStream[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
-            snapshot = [.. streams.Values];
+            snapshot = [.. _streams.Values];
         }
 
         foreach (var stream in snapshot) stream.BeginShutdown();
@@ -783,15 +782,15 @@ internal sealed class FrontendRunRegistry
         }
 
         List<FrontendRunStream>? evicted = null;
-        lock (gate)
+        lock (_gate)
         {
-            if (!streams.TryGetValue(stream.RunId, out var current) || !ReferenceEquals(current, stream)) return;
+            if (!_streams.TryGetValue(stream.RunId, out var current) || !ReferenceEquals(current, stream)) return;
 
-            completionOrder.Enqueue(stream.RunId);
-            while (completionOrder.Count > RetainedCompletedStreams)
+            _completionOrder.Enqueue(stream.RunId);
+            while (_completionOrder.Count > RetainedCompletedStreams)
             {
-                var oldest = completionOrder.Dequeue();
-                if (streams.Remove(oldest, out var removed))
+                var oldest = _completionOrder.Dequeue();
+                if (_streams.Remove(oldest, out var removed))
                 {
                     evicted ??= [];
                     evicted.Add(removed);

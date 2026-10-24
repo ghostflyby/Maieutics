@@ -8,25 +8,20 @@ namespace Maieutics.Product.Tests;
 /// structured data and rejects absent or non-JSON objects with typed failures.</summary>
 public sealed class AgentObjectFunctionsTests : IAsyncDisposable
 {
-    private readonly string objectsRoot;
-
-    public AgentObjectFunctionsTests()
-    {
-        objectsRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-functions-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _objectsRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-functions-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(objectsRoot, CancellationToken.None);
+        await TempArea.DeleteAsync(_objectsRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 30_000)]
     public async Task FetchReturnsTheStoredJsonAsStructuredData()
     {
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
         var ingested = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("""{"answer": 42}""")));
 
         var value = await AgentObjectFunctions.FetchAsync(
@@ -39,7 +34,7 @@ public sealed class AgentObjectFunctionsTests : IAsyncDisposable
     [Fact(Timeout = 30_000)]
     public async Task FetchRejectsNonJsonObjectsWithATypedFailure()
     {
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
         var ingested = store.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("plain text")));
 
         var fetch = () => AgentObjectFunctions.FetchAsync(
@@ -52,7 +47,7 @@ public sealed class AgentObjectFunctionsTests : IAsyncDisposable
     [Fact(Timeout = 30_000)]
     public async Task FetchRejectsUnknownObjectsWithATypedFailure()
     {
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
         var functions = new AgentObjectFunctions(store);
         Assert.Equal("object_fetch", Assert.Single(functions.Functions).Name);
 
@@ -66,7 +61,7 @@ public sealed class AgentObjectFunctionsTests : IAsyncDisposable
     [Fact(Timeout = 30_000)]
     public async Task FetchRejectsMalformedIdsBeforeTouchingTheStore()
     {
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
 
         var fetch = () => AgentObjectFunctions.FetchAsync(
             store, "not-a-digest", TestContext.Current.CancellationToken);

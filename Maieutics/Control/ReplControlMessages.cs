@@ -79,7 +79,6 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(HostReplDeriveFailedPayload))]
 [JsonSerializable(typeof(HostReplPermissions))]
 [JsonSerializable(typeof(SkillsInvokePayload))]
-
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 /// <summary>The request the kernel sends a worker's <c>Skills</c> generator export
@@ -237,7 +236,7 @@ internal static class ReplExtensionPointName
     /// correct regardless of what the reporting side spelled.</summary>
     public static string? Canonicalize(string name)
     {
-        foreach (var candidate in (string[]) [McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, Tool, UiEvent, Skills])
+        foreach (var candidate in (string[])[McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, Tool, UiEvent, Skills])
             if (name.Equals(candidate, StringComparison.OrdinalIgnoreCase))
                 return candidate;
         return null;
@@ -270,12 +269,12 @@ internal sealed record ToolProgressPayload(
 /// <summary>Progress reporter a tool can pull from its invocation context.</summary>
 internal sealed class ReplToolProgress(Func<ToolProgressPayload, CancellationToken, ValueTask> report)
 {
-    private readonly Func<ToolProgressPayload, CancellationToken, ValueTask> report =
+    private readonly Func<ToolProgressPayload, CancellationToken, ValueTask> _report =
         report ?? throw new ArgumentNullException(nameof(report));
 
     public ValueTask ReportAsync(ToolProgressPayload progress, CancellationToken cancellationToken)
     {
-        return report(progress, cancellationToken);
+        return _report(progress, cancellationToken);
     }
 }
 
@@ -323,6 +322,9 @@ internal sealed record HostInvokeCancelPayload(string PluginId, string ExportNam
 /// No worker wake: the rediscover action is pure runtime.</summary>
 internal sealed record PluginTriggerPayload(string PluginId, string Trigger);
 
+// States is part of the host's extension-registry wire payload: the kernel no longer
+// mirrors per-plugin lifecycle state, but the field keeps the payload shape versioned.
+// ReSharper disable once NotAccessedPositionalProperty.Global
 internal sealed record ExtensionRegistryPayload(
     IReadOnlyList<ExtensionRegistryPlugin> Plugins,
     IReadOnlyList<PluginStatePayload>? States = null,
@@ -436,11 +438,19 @@ internal sealed record HostReplDeriveFailedPayload(
 ///     Aligns with <c>HostReplPermissions</c> in <c>deno/maieutics-plugin-host/host_repl_protocol.ts</c>.
 /// </summary>
 internal sealed record HostReplPermissions(
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Read = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Write = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Net = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Env = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Run = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Ffi = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Sys = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Import = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Read = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Write = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Net = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Env = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Run = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Ffi = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Sys = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    JsonElement? Import = null);

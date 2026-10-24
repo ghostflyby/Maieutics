@@ -1,10 +1,12 @@
 using System.Net.Sockets;
-using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
+using Maieutics.Execution;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.AspNetCore.Builder;
@@ -12,12 +14,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
-using System.Text;
-namespace Maieutics.Product.Tests;
 
-[Collection(ProductIntegrationCollection.Name)]
+namespace Maieutics.Product.Tests;
 
 /// <summary>
 ///     B5b (ADR 0020): the kernel sends <c>host.repl.derive</c> to the plugin host and the
@@ -32,6 +31,7 @@ namespace Maieutics.Product.Tests;
 ///     The actor-skeleton eval bridge (process_main.ts serving the WebSocket eval channel) is a
 ///     later migration step, so the eval channel here is driven directly.
 /// </summary>
+[Collection(ProductIntegrationCollection.Name)]
 public sealed class DenoReplHostDeriveTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(20);
@@ -250,9 +250,12 @@ public sealed class DenoReplHostDeriveTests
             new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
             deadline.Token);
         // A duplicate derive for the same session/generation is rejected synchronously.
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await harness.Manager.RequestReplDeriveAsync(
-            new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
-            deadline.Token); });
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () =>
+        {
+            await harness.Manager.RequestReplDeriveAsync(
+                new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
+                deadline.Token);
+        });
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"dup-session","generation":0,"pid":55}}""");
         Assert.False((await first).Failed);
@@ -312,7 +315,11 @@ public sealed class DenoReplHostDeriveTests
             harness.ControlHost.SocketPath,
             ReplEvalProtocol.WebSocketPath,
             deadline.Token);
+        // The serve task lives exactly as long as the eval socket: the test awaits it before
+        // the socket's using scope ends.
+        // ReSharper disable AccessToDisposedClosure
         var serveEval = Task.Run(() => ServeEvalAsync(evalSocket, credential, deadline.Token), deadline.Token);
+        // ReSharper restore AccessToDisposedClosure
 
         var generation = await start;
         await using (generation)
@@ -533,18 +540,18 @@ public sealed class DenoReplHostDeriveTests
 
         internal required PluginHostManager Manager { get; init; }
 
-        private WebApplication? application;
+        private WebApplication? _application;
 
         internal void Initialize(WebApplication app)
         {
-            application = app;
+            _application = app;
         }
 
         public async ValueTask DisposeAsync()
         {
             Host?.Dispose();
             await Manager.DisposeAsync().ConfigureAwait(false);
-            if (application is not null) await application.DisposeAsync().ConfigureAwait(false);
+            if (_application is not null) await _application.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -791,7 +798,7 @@ public sealed class DenoReplHostDeriveTests
         // Client frames must be masked (RFC 6455): the mask bit is 0x80 in the length byte, a
         // 4-byte masking key follows, and the payload is XORed with the key.
         var mask = new byte[4];
-        System.Security.Cryptography.RandomNumberGenerator.Fill(mask);
+        RandomNumberGenerator.Fill(mask);
         var header = new List<byte> { (byte)(0x80 | opcode) };
         var lengthValue = payload.Length;
         if (lengthValue < 126)
@@ -852,7 +859,7 @@ public sealed class DenoReplHostDeriveTests
     }
 
 
-    private sealed class FakeVariableSource : Execution.IPermissionVariableSource
+    private sealed class FakeVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

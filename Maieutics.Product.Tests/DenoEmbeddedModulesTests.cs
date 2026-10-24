@@ -52,35 +52,35 @@ public sealed partial class DenoEmbeddedModulesTests
         var modules = new PluginHostModule();
         try
         {
-        var missing = new List<string>();
+            var missing = new List<string>();
 
-        foreach (var file in Directory.EnumerateFiles(
-                     modules.ModuleDirectory,
-                     "*.ts",
-                     SearchOption.AllDirectories))
-        {
-            var source = await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken);
-            foreach (var match in ImportPattern().EnumerateMatches(source.AsSpan()))
+            foreach (var file in Directory.EnumerateFiles(
+                         modules.ModuleDirectory,
+                         "*.ts",
+                         SearchOption.AllDirectories))
             {
-                var specifier = source.Substring(match.Index + 1, match.Length - 2);
-                if (!specifier.StartsWith("./", StringComparison.Ordinal) &&
-                    !specifier.StartsWith("../", StringComparison.Ordinal))
+                var source = await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken);
+                foreach (var match in ImportPattern().EnumerateMatches(source.AsSpan()))
                 {
-                    continue;
+                    var specifier = source.Substring(match.Index + 1, match.Length - 2);
+                    if (!specifier.StartsWith("./", StringComparison.Ordinal) &&
+                        !specifier.StartsWith("../", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    var resolved = Path.GetFullPath(
+                        Path.Combine(Path.GetDirectoryName(file)!, specifier));
+                    if (!File.Exists(resolved))
+                        missing.Add($"{Path.GetRelativePath(modules.ModuleDirectory, file)} -> {specifier}");
                 }
-
-                var resolved = Path.GetFullPath(
-                    Path.Combine(Path.GetDirectoryName(file)!, specifier));
-                if (!File.Exists(resolved))
-                    missing.Add($"{Path.GetRelativePath(modules.ModuleDirectory, file)} -> {specifier}");
             }
-        }
 
-        Assert.Empty(missing);
+            Assert.Empty(missing);
         }
         finally
         {
-                            await TempArea.DeleteAsync(modules.ModuleDirectory, CancellationToken.None);
+            await TempArea.DeleteAsync(modules.ModuleDirectory, CancellationToken.None);
         }
     }
 

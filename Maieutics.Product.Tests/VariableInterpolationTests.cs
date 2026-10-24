@@ -4,7 +4,6 @@ using Maieutics.Permissions;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 public sealed class VariableInterpolationTests
 {
     [Fact]
@@ -67,7 +66,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.MAIEUTICS_VARIABLE_THAT_DOES_NOT_EXIST}");
 
-        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Fact]
@@ -77,7 +76,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${var.missing}");
 
-        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_unknown", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Fact]
@@ -87,7 +86,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand("${env.HOME");
 
-        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     [Theory]
@@ -101,7 +100,7 @@ public sealed class VariableInterpolationTests
 
         var expand = () => table.Expand(pattern);
 
-        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(() => expand.Invoke()).Code);
+        Assert.Equal("permission_variable_malformed", Assert.ThrowsAny<PermissionException>(expand.Invoke).Code);
     }
 
     private static VariableTable CreateTable(
@@ -125,20 +124,20 @@ public sealed class VariableInterpolationTests
 
     private sealed class EnvironmentVariableScope : IDisposable
     {
-        private readonly Dictionary<string, string?> original = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _original = new(StringComparer.Ordinal);
 
         internal EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
         {
             foreach (var (name, value) in values)
             {
-                original.Add(name, Environment.GetEnvironmentVariable(name));
+                _original.Add(name, Environment.GetEnvironmentVariable(name));
                 Environment.SetEnvironmentVariable(name, value);
             }
         }
 
         public void Dispose()
         {
-            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
+            foreach (var (name, value) in _original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 }

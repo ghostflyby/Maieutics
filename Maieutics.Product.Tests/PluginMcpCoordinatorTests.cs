@@ -24,6 +24,9 @@ public sealed class PluginMcpCoordinatorTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var generationFactory = new TestGenerationFactory();
         var currentDiscovery = PluginMcpDiscoveryResult.Success([CreateDefinition("one")]);
+        // The test reassigns the scripted discovery between phases and the coordinator reads
+        // it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             (_, cancellationToken) =>
             {
@@ -39,8 +42,8 @@ public sealed class PluginMcpCoordinatorTests
         var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
 
         Assert.True(await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token));
-        Assert.Single(generationFactory.Generations);
-        var originalGeneration = generationFactory.Generations[0];
+        var item = Assert.Single(generationFactory.Generations);
+        var originalGeneration = item;
         var originalLease = Assert.Single(coordinator.AcquireLeases());
 
         Assert.True(await coordinator.PublishRegistryAsync([Registration]).WaitAsync(deadline.Token));
@@ -219,6 +222,9 @@ public sealed class PluginMcpCoordinatorTests
         var blockNext = false;
         var discoveryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseDiscovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The test reassigns the scripted discovery and `blockNext` toggle between phases and
+        // the coordinator reads them live by design; phase boundaries quiesce the writes.
+        // ReSharper disable AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             async (_, cancellationToken) =>
             {
@@ -235,6 +241,7 @@ public sealed class PluginMcpCoordinatorTests
             },
             generationFactory.CreateAsync,
             NullLogger<PluginHostManager>.Instance);
+        // ReSharper restore AccessToModifiedClosure
         coordinator.Start();
         var forced = new HashSet<string>(["plugin"], StringComparer.Ordinal);
 
@@ -328,8 +335,11 @@ public sealed class PluginMcpCoordinatorTests
         var drop = false;
         var compositionCalls = 0;
         var toolCalls = 0;
+        // The test flips `drop` between phases and the fake reads it live by design; the
+        // chain callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var chain = new McpAdjustmentChain(
-            (adjusterPluginId, _, _, request, _) =>
+            (_, _, _, request, _) =>
             {
                 var body = request ?? default;
                 var reason = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("reason", out var value)
@@ -364,6 +374,9 @@ public sealed class PluginMcpCoordinatorTests
         var currentDiscovery = PluginMcpDiscoveryResult.Success(
             [CreateDefinition("one") with { Id = "plugin:provider::server" }]);
         var discoveryRuns = 0;
+        // The test reassigns the scripted discovery between phases and the coordinator reads
+        // it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
         await using var coordinator = new PluginMcpCoordinator(
             (_, cancellationToken) =>
             {
@@ -402,10 +415,10 @@ public sealed class PluginMcpCoordinatorTests
         // reconciliation, then assert the re-projected surface synchronously.
         await coordinator.RegistryReconciled.WaitAsync(deadline.Token);
         var projected = coordinator.AcquireLeases();
-        Assert.Single(projected);
+        var item = Assert.Single(projected);
         Assert.Equal(
             ["echo", "echo_alias"],
-            projected[0].Tools.Select(static function => function.Name).Order());
+            item.Tools.Select(static function => function.Name).Order());
         await projected[0].DisposeAsync();
 
         // The adjuster drops the server: it leaves the view before the merge, so
@@ -434,8 +447,8 @@ public sealed class PluginMcpCoordinatorTests
 
     private sealed class TestGenerationFactory : IAsyncDisposable
     {
-        private readonly CancellationTokenSource lifetime = new();
-        private readonly List<(McpServer Server, Task Completion)> servers = [];
+        private readonly CancellationTokenSource _lifetime = new();
+        private readonly List<(McpServer Server, Task Completion)> _servers = [];
 
         internal List<McpServerDefinition> Definitions { get; } = [];
 
@@ -445,19 +458,19 @@ public sealed class PluginMcpCoordinatorTests
 
         public async ValueTask DisposeAsync()
         {
-            await lifetime.CancelAsync();
-            foreach (var (server, _) in servers) await server.DisposeAsync();
+            await _lifetime.CancelAsync();
+            foreach (var (server, _) in _servers) await server.DisposeAsync();
 
-            foreach (var (_, completion) in servers)
+            foreach (var (_, completion) in _servers)
                 try
                 {
                     await completion;
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                 {
                 }
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal IMcpToolSurfaceAdjuster? ToolSurfaceAdjuster { get; init; }
@@ -511,7 +524,7 @@ public sealed class PluginMcpCoordinatorTests
                     ]
                 },
                 loggerFactory);
-            servers.Add((server, server.RunAsync(lifetime.Token)));
+            _servers.Add((server, server.RunAsync(_lifetime.Token)));
             IClientTransport transport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),
@@ -520,5 +533,8 @@ public sealed class PluginMcpCoordinatorTests
         }
     }
 
+    // The value is the tool's structured result; the assertions read the serialized JSON
+    // the client receives, so the property is carried for the tool's wire shape.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private sealed record EchoResult(string Value);
 }

@@ -30,31 +30,31 @@ internal interface ITerminalProcess : IAsyncDisposable
 
 internal sealed class LocalTerminalProcess : ITerminalProcess
 {
-    private readonly PtyProcess process;
+    private readonly PtyProcess _process;
 
     internal LocalTerminalProcess(PtyProcess process)
     {
-        this.process = process;
+        this._process = process;
         process.Exited += _ => Exited?.Invoke(this);
     }
 
-    public Stream BaseStream => process.BaseStream;
+    public Stream BaseStream => _process.BaseStream;
 
-    public int? ExitCode => process.ExitCode;
+    public int? ExitCode => _process.ExitCode;
 
-    public int? TerminationSignal => process.TerminationSignal;
+    public int? TerminationSignal => _process.TerminationSignal;
 
     public TimeSpan GracefulExitTimeout
     {
-        get => process.GracefulExitTimeout;
-        set => process.GracefulExitTimeout = value;
+        get => _process.GracefulExitTimeout;
+        set => _process.GracefulExitTimeout = value;
     }
 
     public event Action<ITerminalProcess>? Exited;
 
     public ValueTask DisposeAsync()
     {
-        return process.DisposeAsync();
+        return _process.DisposeAsync();
     }
 }
 

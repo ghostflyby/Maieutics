@@ -27,7 +27,8 @@ internal static class FrontendSkillExpansion
         SkillResourceProvider provider,
         IReadOnlyList<FrontendSkillMarkers.Marker> markers,
         CancellationToken cancellationToken)
-    {        var contents = ImmutableArray.CreateBuilder<AIContent>();
+    {
+        var contents = ImmutableArray.CreateBuilder<AIContent>();
         var expanded = new HashSet<string>(StringComparer.Ordinal);
         var totalBytes = 0L;
         foreach (var marker in markers)
@@ -55,7 +56,7 @@ internal static class FrontendSkillExpansion
                     $"The skill '{marker.Name}' is not in the current catalog (pruned, renamed, or disabled).");
             }
 
-            using (read.Content)
+            await using (read.Content)
             {
                 var body = new MemoryStream((int)Math.Min(read.Content.Length, int.MaxValue));
                 await read.Content.CopyToAsync(body, cancellationToken).ConfigureAwait(false);

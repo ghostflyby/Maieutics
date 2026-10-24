@@ -44,7 +44,7 @@ internal sealed record ApplicationPaths(
     /// <summary>Same-volume ingest staging for atomic blob publication.</summary>
     public string AgentStagingRoot => Path.Combine(AgentObjectsRoot, ".staging");
 
-    /// <summary>Creates the directory that backs <see cref="AgentDatabasePath" /> when persistence is enabled.</summary>
+    /// <summary>Creates the directory that backs <see cref="AgentFamiliesRoot" /> when persistence is enabled.</summary>
     public void EnsureAgentRoot()
     {
         Directory.CreateDirectory(AgentRoot);
@@ -53,6 +53,8 @@ internal sealed record ApplicationPaths(
     public static ApplicationPaths Resolve()
     {
         var isWindows = OperatingSystem.IsWindows();
+        // The platform is spelled macOS.
+        // ReSharper disable once InconsistentNaming
         var isMacOS = OperatingSystem.IsMacOS();
         var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var applicationData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -71,6 +73,8 @@ internal sealed record ApplicationPaths(
     /// <c>$XDG_DATA_HOME</c> (absolute paths only) and the <c>~/.local/share</c> default.</summary>
     internal static string ResolveDataRoot(
         bool isWindows,
+        // The platform is spelled macOS.
+        // ReSharper disable once InconsistentNaming
         bool isMacOS,
         string localApplicationData,
         string applicationData,
@@ -85,6 +89,8 @@ internal sealed record ApplicationPaths(
     /// root the OS may purge; Linux follows <c>$XDG_CACHE_HOME</c> (absolute paths only).</summary>
     internal static string ResolveCacheRoot(
         bool isWindows,
+        // The platform is spelled macOS.
+        // ReSharper disable once InconsistentNaming
         bool isMacOS,
         string localApplicationData,
         string? xdgCacheHome,
@@ -124,6 +130,8 @@ internal sealed record ApplicationPaths(
         return Path.Combine(tempPath, $"Maieutics-runtime-{userName}");
     }
 
+    // The platform is spelled macOS.
+    // ReSharper disable once InconsistentNaming
     private static string ResolvePosixLikeRoot(
         bool isWindows,
         bool isMacOS,

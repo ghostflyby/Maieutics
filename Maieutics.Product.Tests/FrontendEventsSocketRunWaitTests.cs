@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
@@ -13,12 +13,8 @@ namespace Maieutics.Product.Tests;
 /// queue mutation to wake the loop and recover the run, so the run is never served on that
 /// socket.</summary>
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendEventsSocketRunWaitTests
+public sealed class FrontendEventsSocketRunWaitTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper output;
-
-    public FrontendEventsSocketRunWaitTests(ITestOutputHelper output) => this.output = output;
-
     private void Trace(string message) =>
         TestTrace.Write(output, "events-run-wait", message);
 
@@ -85,7 +81,7 @@ public sealed class FrontendEventsSocketRunWaitTests
             $"/v1/agent/sessions/{sessionId}/turns",
             new { text = "direct after drain" },
             deadline.Token);
-        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
         var runId = body.GetProperty("runId").GetString();
         Assert.False(string.IsNullOrEmpty(runId));
@@ -102,7 +98,6 @@ public sealed class FrontendEventsSocketRunWaitTests
     }
 
 
-
     private static async Task<string[]> EnqueueAsync(
         Harness harness,
         string sessionId,
@@ -113,11 +108,14 @@ public sealed class FrontendEventsSocketRunWaitTests
             $"/v1/agent/sessions/{sessionId}/queue",
             new { items = texts.Select(text => new { text }) },
             cancellationToken).ConfigureAwait(false);
-        Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
-        return [.. body.GetProperty("items").EnumerateArray()
-            .Select(item => item.GetProperty("id").GetString()!)
-            .ToArray()];
+        return
+        [
+            .. body.GetProperty("items").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!)
+                .ToArray()
+        ];
     }
 
     /// <summary>Waits for the queue to report drained and returns the runId of the last
@@ -140,7 +138,7 @@ public sealed class FrontendEventsSocketRunWaitTests
             using var response = await harness.Client
                 .GetAsync($"/v1/agent/sessions/{sessionId}/queue", wait.Token)
                 .ConfigureAwait(false);
-            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var queue = await response.Content.ReadFromJsonAsync<JsonElement>(wait.Token).ConfigureAwait(false);
             if (queue.TryGetProperty("running", out var running))
             {
@@ -170,7 +168,7 @@ public sealed class FrontendEventsSocketRunWaitTests
         using var response = await harness.Client
             .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         return queue.GetProperty("items").GetArrayLength() == 0 &&
                !queue.TryGetProperty("running", out _);
@@ -187,7 +185,7 @@ public sealed class FrontendEventsSocketRunWaitTests
         using var response = await harness.Client
             .GetAsync($"/v1/agent/sessions/{sessionId}/queue", cancellationToken)
             .ConfigureAwait(false);
-        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var queue = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
         return queue.TryGetProperty("running", out var running) &&
                running.GetProperty("runId").GetString() is { } runId &&

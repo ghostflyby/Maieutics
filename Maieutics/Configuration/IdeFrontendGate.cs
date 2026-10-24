@@ -17,10 +17,10 @@ internal interface IIdeFrontendGate
     /// capability (process-wide). Profile-level: the family joins a run only when true.</summary>
     bool HasIdeFrontend { get; }
 
-/// <summary>Gets whether the addressed session has a live socket that announced
-/// IDE capability. Invocation-level: a tool call whose session lost its announcing
-/// socket fails typed instead of waiting out the request timeout.</summary>
-bool IsIdeFrontendConnected(string sessionId);
+    /// <summary>Gets whether the addressed session has a live socket that announced
+    /// IDE capability. Invocation-level: a tool call whose session lost its announcing
+    /// socket fails typed instead of waiting out the request timeout.</summary>
+    bool IsIdeFrontendConnected(string sessionId);
 }
 
 /// <summary>

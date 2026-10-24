@@ -7,9 +7,9 @@ namespace Maieutics.Product.Tests;
 
 public sealed class McpElicitationTests
 {
-    private static AgentToolCallId RegisterCall(McpElicitationCoordinator coordinator, out AgentSessionId sessionId)
+    private static AgentToolCallId RegisterCall(McpElicitationCoordinator coordinator)
     {
-        sessionId = AgentSessionId.Create();
+        var sessionId = AgentSessionId.Create();
         var callId = AgentToolCallId.Create();
         coordinator.RegisterCall(callId, sessionId);
         return callId;
@@ -36,7 +36,7 @@ public sealed class McpElicitationTests
         var coordinator = new McpElicitationCoordinator(
             new StubPresenter(_ => ValueTask.FromResult(new McpElicitationAnswer("accept", """{"token":"s3cret"}"""))),
             NullLogger.Instance);
-        var callId = RegisterCall(coordinator, out _);
+        var callId = RegisterCall(coordinator);
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
@@ -70,8 +70,8 @@ public sealed class McpElicitationTests
         var coordinator = new McpElicitationCoordinator(
             new StubPresenter(_ => ValueTask.FromResult(new McpElicitationAnswer("accept", null))),
             NullLogger.Instance);
-        var first = RegisterCall(coordinator, out _);
-        var second = RegisterCall(coordinator, out _);
+        var first = RegisterCall(coordinator);
+        var second = RegisterCall(coordinator);
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
@@ -87,12 +87,15 @@ public sealed class McpElicitationTests
         // in-flight gate closed while the second request is refused.
         var hold = new TaskCompletionSource<McpElicitationAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
+        // `calls` is the stub's interlocked counter; the assertions below read it only after
+        // the coordinator's in-flight work has settled.
+        // ReSharper disable once AccessToModifiedClosure
         var coordinator = new McpElicitationCoordinator(
             new StubPresenter(_ => Interlocked.Increment(ref calls) == 1
                 ? new ValueTask<McpElicitationAnswer>(hold.Task)
                 : ValueTask.FromResult(new McpElicitationAnswer("accept", null))),
             NullLogger.Instance);
-        RegisterCall(coordinator, out _);
+        RegisterCall(coordinator);
 
         var first = coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
         var second = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
@@ -111,7 +114,7 @@ public sealed class McpElicitationTests
             new StubPresenter(_ => new ValueTask<McpElicitationAnswer>(new TaskCompletionSource<McpElicitationAnswer>().Task)),
             NullLogger.Instance,
             waitTimeout: TimeSpan.FromMilliseconds(150));
-        RegisterCall(coordinator, out _);
+        RegisterCall(coordinator);
 
         var result = await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken);
 
@@ -124,7 +127,7 @@ public sealed class McpElicitationTests
         var coordinator = new McpElicitationCoordinator(
             new StubPresenter(_ => ValueTask.FromResult(new McpElicitationAnswer("decline", null))),
             NullLogger.Instance);
-        RegisterCall(coordinator, out _);
+        RegisterCall(coordinator);
 
         Assert.Equal("decline", (await coordinator.HandleElicitationAsync("srv", BuildRequest(), TestContext.Current.CancellationToken))
             .Action);
@@ -141,7 +144,7 @@ public sealed class McpElicitationTests
                 return ValueTask.FromResult(new McpElicitationAnswer("accept", null));
             }),
             NullLogger.Instance);
-        RegisterCall(coordinator, out _);
+        RegisterCall(coordinator);
 
         var result = await coordinator.HandleElicitationAsync(
             "srv",

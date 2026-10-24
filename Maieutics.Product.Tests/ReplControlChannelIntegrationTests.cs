@@ -12,7 +12,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 public sealed class ReplControlChannelIntegrationTests
 {
     private static readonly DenoPermissionBroker SharedBroker =

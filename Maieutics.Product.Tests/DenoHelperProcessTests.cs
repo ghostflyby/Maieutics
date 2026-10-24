@@ -42,15 +42,15 @@ public sealed class DenoHelperProcessTests
             using var cancellation = new CancellationTokenSource();
             var run = DenoHelperProcess.RunAsync(startInfo, "to prove kill-on-cancel.", cancellation.Token);
 
-            // The child is alive: its stamp file appears as an OS completion event.
+            // The child is alive: its stamp file appears as an OS completion event. The
+            // properties are assigned inside the using body so a throwing setter still
+            // disposes the watcher.
             using (var stampWatcher = new FileSystemWatcher(
                        Path.GetDirectoryName(stampPath) ?? ".",
-                       Path.GetFileName(stampPath))
-                   {
-                       EnableRaisingEvents = true,
-                       NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
-                   })
+                       Path.GetFileName(stampPath)))
             {
+                stampWatcher.EnableRaisingEvents = true;
+                stampWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName;
                 var stampCreated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 stampWatcher.Created += (_, _) => stampCreated.TrySetResult();
                 stampWatcher.Changed += (_, _) => stampCreated.TrySetResult();
@@ -75,18 +75,14 @@ public sealed class DenoHelperProcessTests
             // observer pass to confirm it is frozen.
             using (var deathWatcher = new FileSystemWatcher(
                        Path.GetDirectoryName(stampPath) ?? ".",
-                       Path.GetFileName(stampPath))
-                   {
-                       EnableRaisingEvents = true,
-                       NotifyFilter = NotifyFilters.LastWrite,
-                   })
+                       Path.GetFileName(stampPath)))
             {
-                var lastWrite = File.GetLastWriteTimeUtc(stampPath);
+                deathWatcher.EnableRaisingEvents = true;
+                deathWatcher.NotifyFilter = NotifyFilters.LastWrite;
                 var stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 deathWatcher.Changed += (_, _) =>
                 {
                     // Each write re-arms: the stamp is dead only when nothing arrives.
-                    lastWrite = File.GetLastWriteTimeUtc(stampPath);
                     stampIdle.TrySetResult();
                     stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 };

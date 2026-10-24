@@ -8,10 +8,14 @@ namespace Maieutics.Frontend;
 
 /// <summary>The discovery file a frontend reads to reach this executable.</summary>
 internal sealed record FrontendDiscoveryFile(
-    [property: System.Text.Json.Serialization.JsonPropertyName("version")] int Version,
-    [property: System.Text.Json.Serialization.JsonPropertyName("url")] string Url,
-    [property: System.Text.Json.Serialization.JsonPropertyName("token")] string Token,
-    [property: System.Text.Json.Serialization.JsonPropertyName("pid")] int Pid)
+    [property: System.Text.Json.Serialization.JsonPropertyName("version")]
+    int Version,
+    [property: System.Text.Json.Serialization.JsonPropertyName("url")]
+    string Url,
+    [property: System.Text.Json.Serialization.JsonPropertyName("token")]
+    string Token,
+    [property: System.Text.Json.Serialization.JsonPropertyName("pid")]
+    int Pid)
 {
     internal const int CurrentVersion = 1;
 }

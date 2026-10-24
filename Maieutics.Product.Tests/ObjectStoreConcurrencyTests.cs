@@ -10,19 +10,14 @@ namespace Maieutics.Product.Tests;
 /// observe the hit rather than an <c>IOException</c>.</summary>
 public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
 {
-    private readonly string objectsRoot;
-
-    public ObjectStoreConcurrencyTests()
-    {
-        objectsRoot = Path.Combine(
-            Path.GetTempPath(),
-            "maieutics-object-store-concurrency-tests",
-            Guid.NewGuid().ToString("N"));
-    }
+    private readonly string _objectsRoot = Path.Combine(
+        Path.GetTempPath(),
+        "maieutics-object-store-concurrency-tests",
+        Guid.NewGuid().ToString("N"));
 
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(objectsRoot, CancellationToken.None);
+        await TempArea.DeleteAsync(_objectsRoot, CancellationToken.None);
     }
 
     /// <summary>Many ingests of identical bytes, released simultaneously, must all succeed and
@@ -32,7 +27,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
     public async Task ConcurrentIngestsOfIdenticalContentAllSucceed()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
         var payload = Encoding.UTF8.GetBytes(new string('a', 64 * 1024));
         const int racers = 8;
 
@@ -50,7 +45,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
             Assert.All(results, result => Assert.Equal(payload.Length, result.Size));
         }
 
-        var staging = Path.Combine(objectsRoot, ".staging");
+        var staging = Path.Combine(_objectsRoot, ".staging");
         if (Directory.Exists(staging))
         {
             Assert.Empty(Directory.GetFiles(staging));
@@ -63,7 +58,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
     public async Task ConcurrentIngestsOfDistinctContentAllPublish()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
-        var store = new ObjectStore(objectsRoot);
+        var store = new ObjectStore(_objectsRoot);
         const int racers = 16;
 
         var payloads = Enumerable.Range(0, racers)
@@ -78,7 +73,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
         foreach (var result in results)
         {
             Assert.True(store.Exists(result.Sha256));
-            using var read = store.Open(result.Sha256);
+            await using var read = store.Open(result.Sha256);
             Assert.Equal(result.Size, read.Length);
         }
     }

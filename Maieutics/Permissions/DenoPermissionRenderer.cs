@@ -1,7 +1,6 @@
 namespace Maieutics.Permissions;
 
 using System.Text.Json;
-
 using Control;
 
 /// <summary>Renders an <see cref="EffectivePolicy"/> to the exact <c>--allow-*</c> / <c>--deny-*</c>

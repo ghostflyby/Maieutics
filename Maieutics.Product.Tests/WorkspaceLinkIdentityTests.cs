@@ -166,7 +166,7 @@ public sealed class WorkspaceLinkIdentityTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task RemountKeepsTheEntryDanglingWhenTheProjectMovedOutsideTheSearchedParent()
+    public void RemountKeepsTheEntryDanglingWhenTheProjectMovedOutsideTheSearchedParent()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();

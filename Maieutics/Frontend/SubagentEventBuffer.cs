@@ -15,10 +15,10 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     private const int EventsPerChildCapacity = 512;
     private const int RetainedChildCapacity = 32;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentSessionId, Queue<AgentEvent>> children = new();
-    private readonly Dictionary<AgentRunId, AgentSessionId> parentByChildRun = new();
-    private FrontendRunStream? stream;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentSessionId, Queue<AgentEvent>> _children = new();
+    private readonly Dictionary<AgentRunId, AgentSessionId> _parentByChildRun = new();
+    private FrontendRunStream? _stream;
 
     /// <summary>Diagnostic counter of settled notifications this tap accepted; incremented
     /// before the terminal frame is published so a missing frame with a count of one points
@@ -31,9 +31,9 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     internal void Attach(FrontendRunStream attachedStream)
     {
         ArgumentNullException.ThrowIfNull(attachedStream);
-        lock (gate)
+        lock (_gate)
         {
-            stream = attachedStream;
+            _stream = attachedStream;
         }
     }
 
@@ -44,11 +44,11 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
         CancellationToken cancellationToken)
     {
         FrontendRunStream? target;
-        lock (gate)
+        lock (_gate)
         {
-            target = stream;
+            target = _stream;
             if (target is not null)
-                parentByChildRun[childRunId] = target.SessionId;
+                _parentByChildRun[childRunId] = target.SessionId;
         }
 
         target?.PublishChildFrame(new FrontendEventFrame(
@@ -65,9 +65,9 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     {
         ArgumentNullException.ThrowIfNull(agentEvent);
         FrontendRunStream? target;
-        lock (gate)
+        lock (_gate)
         {
-            target = stream;
+            target = _stream;
             // Without a live stream the events fall back to the bounded per-child retained
             // buffer; with one, the stream's own replay retention takes over.
             if (target is null)
@@ -91,10 +91,10 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
         CancellationToken cancellationToken)
     {
         FrontendRunStream? target;
-        lock (gate)
+        lock (_gate)
         {
-            target = stream;
-            parentByChildRun.Remove(childRunId);
+            target = _stream;
+            _parentByChildRun.Remove(childRunId);
             SettledNotifications++;
         }
 
@@ -115,9 +115,9 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     /// endpoint; null when no live child run is attached to a frontend stream.</summary>
     internal bool TryGetParentSession(AgentRunId childRunId, out AgentSessionId parentSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return parentByChildRun.TryGetValue(childRunId, out parentSessionId);
+            return _parentByChildRun.TryGetValue(childRunId, out parentSessionId);
         }
     }
 
@@ -127,9 +127,9 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return [.. children.Keys];
+                return [.. _children.Keys];
             }
         }
     }
@@ -138,19 +138,19 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
     /// when the child is unknown or its buffer was evicted.</summary>
     internal IReadOnlyList<AgentEvent> Read(AgentSessionId childSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return children.TryGetValue(childSessionId, out var buffer) ? [.. buffer] : [];
+            return _children.TryGetValue(childSessionId, out var buffer) ? [.. buffer] : [];
         }
     }
 
     private void RetainLocked(AgentSessionId childSessionId, AgentEvent agentEvent)
     {
-        if (!children.TryGetValue(childSessionId, out var buffer))
+        if (!_children.TryGetValue(childSessionId, out var buffer))
         {
             EvictOldestChildLocked();
             buffer = new Queue<AgentEvent>(EventsPerChildCapacity);
-            children[childSessionId] = buffer;
+            _children[childSessionId] = buffer;
         }
 
         while (buffer.Count >= EventsPerChildCapacity)
@@ -160,10 +160,10 @@ internal sealed class SubagentEventBuffer : IAgentSubagentEventSink, IAgentSubag
 
     private void EvictOldestChildLocked()
     {
-        if (children.Count < RetainedChildCapacity)
+        if (_children.Count < RetainedChildCapacity)
             return;
 
-        var oldest = children.Keys.First();
-        children.Remove(oldest);
+        var oldest = _children.Keys.First();
+        _children.Remove(oldest);
     }
 }

@@ -93,7 +93,7 @@ public sealed class WorkspaceApplyPatchTests
         var cancellationToken = TestContext.Current.CancellationToken;
         var apply = Function(CreateFunctions(workspace.Path).Functions, "apply_patch");
         var missing = "*** Begin Patch\n*** Delete File: absent.txt\n*** End Patch\n";
-        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(missing)}}}""", cancellationToken))
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(missing)}}}"""))
             .Code);
 
         var conflict = "*** Begin Patch\n*** Add File: exists.txt\n+dup\n*** End Patch\n";
@@ -101,16 +101,16 @@ public sealed class WorkspaceApplyPatchTests
             workspace.Path + Path.DirectorySeparatorChar + "exists.txt",
             "already here\n",
             cancellationToken);
-        Assert.Equal("workspace_path_exists", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(conflict)}}}""", cancellationToken))
+        Assert.Equal("workspace_path_exists", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(conflict)}}}"""))
             .Code);
 
         var escaped = "*** Begin Patch\n*** Update File: missing-file.txt\n@@\n-a\n+b\n*** End Patch\n";
-        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(escaped)}}}""", cancellationToken))
+        Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(escaped)}}}"""))
             .Code);
 
         // .git stays denied through patch paths.
         var git = "*** Begin Patch\n*** Delete File: .git/config\n*** End Patch\n";
-        Assert.Equal("workspace_path_denied", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(git)}}}""", cancellationToken))
+        Assert.Equal("workspace_path_denied", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(git)}}}"""))
             .Code);
     }
 
@@ -132,7 +132,7 @@ public sealed class WorkspaceApplyPatchTests
                     "-    return 2\n" +
                     "+    return 3\n" +
                     "*** End Patch\n";
-        Assert.Equal("workspace_patch_context_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}""", cancellationToken))
+        Assert.Equal("workspace_patch_context_not_found", (await ShouldFailAsync(apply, $$"""{"patch":{{JsonSerializer.Serialize(patch)}}}"""))
             .Code);
     }
 
@@ -142,7 +142,7 @@ public sealed class WorkspaceApplyPatchTests
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("no sentinels")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** Add File: a.txt\n+one\n")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse(
-                "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n")).Code);
+            "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** End Patch\n")).Code);
     }
 
@@ -218,8 +218,7 @@ public sealed class WorkspaceApplyPatchTests
 
     private static async Task<AgentToolException> ShouldFailAsync(
         AIFunction function,
-        string json,
-        CancellationToken cancellationToken)
+        string json)
     {
         var invocation = await InvokeAsync(function, json);
         Assert.NotNull(invocation.Failure);

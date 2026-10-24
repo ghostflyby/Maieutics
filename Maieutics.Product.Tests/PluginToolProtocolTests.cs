@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Plugins;
 
@@ -339,7 +338,7 @@ public sealed class PluginToolProtocolTests
 
         Assert.True(succeeded);
         Assert.NotNull(result);
-        Assert.Equal(2, result!.Value.GetProperty("matches").GetArrayLength());
+        Assert.Equal(2, result.Value.GetProperty("matches").GetArrayLength());
     }
 
     [Fact]

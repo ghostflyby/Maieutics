@@ -15,11 +15,11 @@ internal sealed class TerminalFunctions
     private static readonly JsonSerializerOptions SerializerOptions =
         TerminalJsonSerializerContext.Default.Options;
 
-    private readonly TerminalRegistry registry;
+    private readonly TerminalRegistry _registry;
 
     public TerminalFunctions(TerminalRegistry registry)
     {
-        this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
         Functions =
         [
             CreateFunction(
@@ -87,7 +87,7 @@ internal sealed class TerminalFunctions
 
     private static void ValidateSnapshotRequest(int? maxCharacters)
     {
-        if (maxCharacters is { } max && max is < 1 or > MaximumFrameCharacters)
+        if (maxCharacters is { } and (< 1 or > MaximumFrameCharacters))
             throw new AgentToolException(
                 "terminal_invalid_arguments",
                 $"maxCharacters must be between 1 and {MaximumFrameCharacters}.");
@@ -123,7 +123,7 @@ internal sealed class TerminalFunctions
 
         ValidateSnapshotRequest(maxCharacters);
         var batch = TerminalInputBatchParser.Parse(input);
-        return await registry.ExecuteAsync(
+        return await _registry.ExecuteAsync(
             AgentToolContext.GetRequired(arguments),
             batch,
             new TerminalSnapshotRequest(full, maxCharacters),
@@ -150,12 +150,12 @@ internal sealed class TerminalFunctions
             throw new AgentToolException("terminal_invalid_arguments", "executable is required and cannot be empty.");
 
         ValidateSnapshotRequest(maxCharacters);
-        if (timeout is { } requested && requested is < 1 or > 600)
+        if (timeout is { } and (< 1 or > 600))
             throw new AgentToolException(
                 "terminal_invalid_arguments",
                 "timeout must be between 1 and 600 seconds.");
 
-        return await registry.RunOnceAsync(
+        return await _registry.RunOnceAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             executable,
             argumentsList ?? [],
@@ -181,7 +181,7 @@ internal sealed class TerminalFunctions
         {
             ValidateSnapshotRequest(maxCharacters);
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(registry.Snapshot(
+            return ValueTask.FromResult(_registry.Snapshot(
                 AgentToolContext.GetRequired(arguments).SessionId,
                 new TerminalSnapshotRequest(full, maxCharacters),
                 sessionId));
@@ -209,7 +209,7 @@ internal sealed class TerminalFunctions
             throw new AgentToolException("terminal_invalid_arguments", "text is required and cannot be empty.");
 
         ValidateSnapshotRequest(maxCharacters);
-        return await registry.PasteAsync(
+        return await _registry.PasteAsync(
             AgentToolContext.GetRequired(arguments),
             text,
             new TerminalSnapshotRequest(full, maxCharacters),
@@ -224,7 +224,7 @@ internal sealed class TerminalFunctions
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-        return await registry.CloseAsync(
+        return await _registry.CloseAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -236,7 +236,7 @@ internal sealed class TerminalFunctions
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(registry.List(AgentToolContext.GetRequired(arguments).SessionId));
+        return ValueTask.FromResult(_registry.List(AgentToolContext.GetRequired(arguments).SessionId));
     }
 
     [Description("Sends the terminal interrupt byte (Ctrl-C) to the foreground program.")]
@@ -251,7 +251,7 @@ internal sealed class TerminalFunctions
         CancellationToken cancellationToken = default)
     {
         ValidateSnapshotRequest(maxCharacters);
-        return await registry.InterruptAsync(
+        return await _registry.InterruptAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             new TerminalSnapshotRequest(full, maxCharacters),
             sessionId,

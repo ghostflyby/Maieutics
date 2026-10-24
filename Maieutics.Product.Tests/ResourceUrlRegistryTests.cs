@@ -58,9 +58,9 @@ public sealed class ResourceUrlRegistryTests
 
         var conflicts = registry.GetConflicts();
         Assert.Contains(conflicts, conflict =>
-            conflict.ProviderId == "custom-workspace" && conflict.Reason == "reserved_scheme");
+            conflict is { ProviderId: "custom-workspace", Reason: "reserved_scheme" });
         Assert.Contains(conflicts, conflict =>
-            conflict.ProviderId == "custom-file" && conflict.Reason == "reserved_scheme");
+            conflict is { ProviderId: "custom-file", Reason: "reserved_scheme" });
         Assert.DoesNotContain(conflicts, conflict => conflict.ProviderId == "mcp");
 
         Assert.True(ResourceRegistry.TryParseUri("workspace://local/a.txt", out var uri));
@@ -83,7 +83,7 @@ public sealed class ResourceUrlRegistryTests
             "workspace://local/a.txt",
             new ResourceReadRequest(1024),
             TestContext.Current.CancellationToken);
-        using (read.Content)
+        await using (read.Content)
         {
             using var buffered = new MemoryStream();
             await read.Content.CopyToAsync(buffered, TestContext.Current.CancellationToken);

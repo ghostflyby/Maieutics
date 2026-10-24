@@ -7,32 +7,36 @@ namespace Maieutics.Execution;
 /// <summary>Owns the terminal sessions of every Agent session. Sessions survive across turns and die with
 /// their Agent session or the process. Each session captures the effective policy of its owning Agent
 /// session at reserve time (ADR 0018 §7); the policy never changes mid-operation.</summary>
-internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions options,
-    ITerminalProcessFactory factory, ILogger<TerminalSession> logger, PermissionPolicyAcquirer acquirer) : IAsyncDisposable
+internal sealed class TerminalRegistry(
+    Workspace workspace,
+    TerminalOptions options,
+    ITerminalProcessFactory factory,
+    ILogger<TerminalSession> logger,
+    PermissionPolicyAcquirer acquirer) : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
 
-    private readonly TaskCompletionSource disposalCompletion =
+    private readonly TaskCompletionSource _disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentSessionId, Dictionary<string, TerminalSession>> sessions = [];
-    private int disposeState;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentSessionId, Dictionary<string, TerminalSession>> _sessions = [];
+    private int _disposeState;
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0)
         {
-            await disposalCompletion.Task.ConfigureAwait(false);
+            await _disposalCompletion.Task.ConfigureAwait(false);
             return;
         }
 
         Exception? failure = null;
         TerminalSession[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
-            snapshot = sessions.Values.SelectMany(static value => value.Values).ToArray();
-            sessions.Clear();
+            snapshot = _sessions.Values.SelectMany(static value => value.Values).ToArray();
+            _sessions.Clear();
         }
 
         try
@@ -46,11 +50,11 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         }
 
         if (failure is null)
-            disposalCompletion.TrySetResult();
+            _disposalCompletion.TrySetResult();
         else
-            disposalCompletion.TrySetException(failure);
+            _disposalCompletion.TrySetException(failure);
 
-        await disposalCompletion.Task.ConfigureAwait(false);
+        await _disposalCompletion.Task.ConfigureAwait(false);
     }
 
     internal async Task<TerminalRunResult> RunOnceAsync(
@@ -122,10 +126,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
     /// (ADR 0028): these stay readable at their task URI until closed.</summary>
     internal TerminalTaskHandle[] ListOneShotTasks()
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            return sessions
+            return _sessions
                 .SelectMany(static owned => owned.Value.Values.Select(session => (owned.Key, Session: session)))
                 .Where(static entry => entry.Session.Kind == TerminalSessionKind.OneShot)
                 .Select(static entry => ToTaskHandle(entry.Key, entry.Session))
@@ -137,10 +141,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
     /// the ids name no registered one-shot.</summary>
     internal TerminalTaskHandle? TryGetOneShotTask(AgentSessionId ownerSessionId, string sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(sessionId, out var session) &&
                 session.Kind == TerminalSessionKind.OneShot)
                 return ToTaskHandle(ownerSessionId, session);
@@ -199,10 +203,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
 
     private TerminalSession GetRegisteredOneShot(AgentSessionId ownerSessionId, string sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(sessionId, out var session) &&
                 session.Kind == TerminalSessionKind.OneShot)
                 return session;
@@ -222,10 +226,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
     internal TerminalInfo[] List(AgentSessionId ownerSessionId)
     {
         TerminalSession[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned)) return [];
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned)) return [];
             snapshot = owned.Values.ToArray();
         }
 
@@ -332,10 +336,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
     private TerminalSession GetOrReserveDefault(AgentSessionId ownerSessionId, string? sessionId)
     {
         var resolvedSessionId = ResolveSessionId(sessionId);
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(resolvedSessionId, out var existing))
                 return existing;
 
@@ -354,13 +358,13 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
         string executable,
         IReadOnlyList<string> launchArguments)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned))
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned))
             {
                 owned = new Dictionary<string, TerminalSession>(StringComparer.Ordinal);
-                sessions.Add(ownerSessionId, owned);
+                _sessions.Add(ownerSessionId, owned);
             }
 
             if (owned.TryGetValue(sessionId, out var existing)) return existing;
@@ -371,7 +375,6 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
                     $"An Agent session may own at most {options.MaxSessionsPerAgent} terminal sessions.");
 
             var created = new TerminalSession(
-                ownerSessionId,
                 sessionId,
                 isDefault,
                 workspace.Capture().RootPath,
@@ -389,10 +392,10 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
 
     private TerminalSession GetExisting(AgentSessionId ownerSessionId, string sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(sessionId, out var session))
                 return session;
         }
@@ -402,15 +405,15 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
 
     private void Remove(AgentSessionId ownerSessionId, string sessionId, TerminalSession expected)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!sessions.TryGetValue(ownerSessionId, out var owned) ||
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned) ||
                 !owned.TryGetValue(sessionId, out var current) ||
                 !ReferenceEquals(current, expected))
                 return;
 
             owned.Remove(sessionId);
-            if (owned.Count == 0) sessions.Remove(ownerSessionId);
+            if (owned.Count == 0) _sessions.Remove(ownerSessionId);
         }
     }
 
@@ -433,6 +436,6 @@ internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions opti
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 }

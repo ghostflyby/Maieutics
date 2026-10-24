@@ -59,9 +59,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// lost to backpressure.</summary>
     private sealed class RootWatchState
     {
-        private readonly Lock gate = new();
-        private readonly HashSet<string> pendingPaths = new(StringComparer.Ordinal);
-        private bool fullRescanPending;
+        private readonly Lock _gate = new();
+        private readonly HashSet<string> _pendingPaths = new(StringComparer.Ordinal);
+        private bool _fullRescanPending;
 
         internal Channel<bool> Signals { get; } = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
@@ -73,12 +73,12 @@ internal sealed class SkillCatalog : IAsyncDisposable
         /// only a doorbell and may coalesce freely.</summary>
         internal void Record(string fullPath)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (pendingPaths.Count >= MaximumPendingEventPaths)
-                    fullRescanPending = true;
+                if (_pendingPaths.Count >= MaximumPendingEventPaths)
+                    _fullRescanPending = true;
                 else
-                    pendingPaths.Add(fullPath);
+                    _pendingPaths.Add(fullPath);
             }
 
             Signals.Writer.TryWrite(true);
@@ -88,9 +88,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
         /// recovery, or an overflowed pending set) and arms the pump.</summary>
         internal void RecordFullRescan()
         {
-            lock (gate)
+            lock (_gate)
             {
-                fullRescanPending = true;
+                _fullRescanPending = true;
             }
 
             Signals.Writer.TryWrite(true);
@@ -101,34 +101,34 @@ internal sealed class SkillCatalog : IAsyncDisposable
         /// next window starts empty; paths recorded after the take arm the next batch.</summary>
         internal (string[] Paths, bool FullRescan) TakeBatch()
         {
-            lock (gate)
+            lock (_gate)
             {
-                string[] paths = [.. pendingPaths.OrderBy(static path => path, StringComparer.Ordinal)];
-                var fullRescan = fullRescanPending;
-                pendingPaths.Clear();
-                fullRescanPending = false;
+                string[] paths = [.. _pendingPaths.OrderBy(static path => path, StringComparer.Ordinal)];
+                var fullRescan = _fullRescanPending;
+                _pendingPaths.Clear();
+                _fullRescanPending = false;
                 return (paths, fullRescan);
             }
         }
     }
 
-    private readonly ImmutableArray<DeclaredRoot> roots;
-    private readonly TimeProvider timeProvider;
-    private readonly ILogger<SkillCatalog> logger;
-    private readonly Lock gate = new();
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly SkillDirectoryVisitCounter directoryVisits = new();
-    private readonly Dictionary<DeclaredRoot, Dictionary<string, SkillDescriptor>> rootSkills = new();
-    private readonly Dictionary<DeclaredRoot, RootWatchState> rootStates = new();
-    private readonly Dictionary<string, IReadOnlyList<SkillDescriptor>> pluginContributions = new(StringComparer.Ordinal);
-    private readonly List<Task> pumps = [];
-    private readonly List<FileSystemWatcher> watchers = [];
-    private readonly Action<SkillCatalogSnapshot>? onProgressiveCommit;
-    private volatile SkillCatalogSnapshot current = SkillCatalogSnapshot.Empty;
-    private TaskCompletionSource snapshotPublished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private int rebuildCount;
-    private bool disposed;
+    private readonly ImmutableArray<DeclaredRoot> _roots;
+    private readonly TimeProvider _timeProvider;
+    private readonly ILogger<SkillCatalog> _logger;
+    private readonly Lock _gate = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly SkillDirectoryVisitCounter _directoryVisits = new();
+    private readonly Dictionary<DeclaredRoot, Dictionary<string, SkillDescriptor>> _rootSkills = new();
+    private readonly Dictionary<DeclaredRoot, RootWatchState> _rootStates = new();
+    private readonly Dictionary<string, IReadOnlyList<SkillDescriptor>> _pluginContributions = new(StringComparer.Ordinal);
+    private readonly List<Task> _pumps = [];
+    private readonly List<FileSystemWatcher> _watchers = [];
+    private readonly Action<SkillCatalogSnapshot>? _onProgressiveCommit;
+    private volatile SkillCatalogSnapshot _current = SkillCatalogSnapshot.Empty;
+    private TaskCompletionSource _snapshotPublished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _rebuildCount;
+    private bool _disposed;
 
     private SkillCatalog(
         IEnumerable<(SkillSource Source, string RootDirectory)> roots,
@@ -147,13 +147,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
             ordered.Add(new DeclaredRoot(source, resolved));
         }
 
-        this.roots = ordered
+        this._roots = ordered
             .OrderBy(static root => root.Source)
             .ThenBy(static root => root.RootDirectory, StringComparer.Ordinal)
             .ToImmutableArray();
-        this.timeProvider = timeProvider;
-        this.logger = logger;
-        this.onProgressiveCommit = onProgressiveCommit;
+        this._timeProvider = timeProvider;
+        this._logger = logger;
+        this._onProgressiveCommit = onProgressiveCommit;
     }
 
     /// <summary>The composition-root factory: creates the root directories, runs the initial
@@ -179,7 +179,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
 
     /// <summary>The latest merged snapshot. Cheap to read; freshness is per-run by
     /// construction (ADR 0039 decision 5).</summary>
-    internal SkillCatalogSnapshot Current => current;
+    internal SkillCatalogSnapshot Current => _current;
 
     /// <summary>Completes when the next snapshot publication after this call lands,
     /// so callers can await a catalog change signal instead of polling
@@ -189,10 +189,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// — bounded callers are expected to carry their own deadline.</summary>
     internal Task WaitForNextSnapshotAsync()
     {
-        lock (gate)
+        lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            return snapshotPublished.Task;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _snapshotPublished.Task;
         }
     }
 
@@ -207,11 +207,11 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                var registered = watcherDebounceRegistered.Task;
+                var registered = _watcherDebounceRegistered.Task;
                 if (registered.IsCompleted)
-                    watcherDebounceRegistered = new TaskCompletionSource(
+                    _watcherDebounceRegistered = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                 return registered;
             }
@@ -224,9 +224,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return rebuildCount;
+                return _rebuildCount;
             }
         }
     }
@@ -234,7 +234,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// <summary>How many directories this catalog's discovery walks have enumerated — the
     /// observable the differential tests assert on (a change inside one known skill
     /// directory must touch a handful of directories, not the tree).</summary>
-    internal long DirectoryVisits => directoryVisits.Count;
+    internal long DirectoryVisits => _directoryVisits.Count;
 
     /// <summary>Replaces one plugin's skill contribution (ADR 0039 stages 2-3): each
     /// plugin owns exactly one slot — declarative roots, generator output, and (stage 3)
@@ -246,10 +246,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(pluginId);
         ArgumentNullException.ThrowIfNull(descriptors);
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
-            pluginContributions[pluginId] = descriptors;
+            if (_disposed) return;
+            _pluginContributions[pluginId] = descriptors;
             RebuildSnapshot();
         }
     }
@@ -259,9 +259,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
     internal void RemovePluginContribution(string pluginId)
     {
         ArgumentException.ThrowIfNullOrEmpty(pluginId);
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed || !pluginContributions.Remove(pluginId)) return;
+            if (_disposed || !_pluginContributions.Remove(pluginId)) return;
             RebuildSnapshot();
         }
     }
@@ -269,18 +269,18 @@ internal sealed class SkillCatalog : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Task[] pumpTasks;
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
-            disposed = true;
+            if (_disposed) return;
+            _disposed = true;
 
             // Watchers stop first so no new signals can arrive; the lifetime cancellation
             // then unwinds the pumps, and the awaited completions are observed afterwards.
-            foreach (var watcher in watchers) watcher.Dispose();
-            pumpTasks = [.. pumps];
+            foreach (var watcher in _watchers) watcher.Dispose();
+            pumpTasks = [.. _pumps];
         }
 
-        await lifetime.CancelAsync();
+        await _lifetime.CancelAsync();
         try
         {
             // A pump that already entered its (synchronous, cancellation-blind) rescan walk
@@ -290,26 +290,26 @@ internal sealed class SkillCatalog : IAsyncDisposable
             var completion = Task.WhenAll(pumpTasks);
             var bounded = await Task.WhenAny(
                 completion,
-                Task.Delay(ShutdownBudget, timeProvider)).ConfigureAwait(false);
+                Task.Delay(ShutdownBudget, _timeProvider)).ConfigureAwait(false);
             if (!ReferenceEquals(bounded, completion) && !completion.IsCompleted)
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Skill catalog disposal abandoned {Count} rescan pump(s) after the shutdown budget.",
                     pumpTasks.Length);
             await completion.ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogDebug(exception, "A skill root pump ended with an exception during shutdown.");
+            _logger.LogDebug(exception, "A skill root pump ended with an exception during shutdown.");
         }
         finally
         {
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
     }
 
     private void Start()
     {
-        foreach (var root in roots)
+        foreach (var root in _roots)
         {
             try
             {
@@ -317,13 +317,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     exception,
                     "The skill root '{Root}' cannot be created; the source stays disabled.",
                     root.RootDirectory);
-                lock (gate)
+                lock (_gate)
                 {
-                    rootSkills[root] = NewSkillMap();
+                    _rootSkills[root] = NewSkillMap();
                 }
                 continue;
             }
@@ -331,10 +331,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
             // Register the (empty) per-root map before scanning so every snapshot rebuild —
             // a pump of an earlier root, or the progressive commits below — observes one
             // consistent root set.
-            lock (gate)
+            lock (_gate)
             {
-                if (disposed) return;
-                rootSkills[root] = NewSkillMap();
+                if (_disposed) return;
+                _rootSkills[root] = NewSkillMap();
             }
 
             // The initial scan streams the walk and commits each discovered skill directory
@@ -342,21 +342,21 @@ internal sealed class SkillCatalog : IAsyncDisposable
             // The walk itself runs outside the gate (pumps of earlier roots are already
             // live); only the per-directory commit is serialized.
             foreach (var descriptor in SkillDirectoryDiscovery.EnumerateSubtree(
-                         root.RootDirectory, root.RootDirectory, root.Source, directoryVisits))
+                         root.RootDirectory, root.RootDirectory, root.Source, _directoryVisits))
             {
                 if (SkillDirectoryOf(descriptor) is not { } skillDirectory) continue;
                 SkillCatalogSnapshot committed;
-                lock (gate)
+                lock (_gate)
                 {
-                    if (disposed) return;
+                    if (_disposed) return;
                     ApplyChanges(root, [(skillDirectory, descriptor)]);
-                    committed = current;
+                    committed = _current;
                 }
 
                 // Outside the gate with the immutable just-published snapshot, on the
                 // same thread the commits serialized in, so observers see each
                 // progressive state in commit order.
-                onProgressiveCommit?.Invoke(committed);
+                _onProgressiveCommit?.Invoke(committed);
             }
 
             var state = new RootWatchState();
@@ -380,7 +380,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
             // fully recovers.
             watcher.Error += (_, args) =>
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     args.GetException(),
                     "The skill root watcher for '{Root}' failed; scheduling a recovery rescan.",
                     root.RootDirectory);
@@ -388,26 +388,26 @@ internal sealed class SkillCatalog : IAsyncDisposable
             };
             watcher.EnableRaisingEvents = true;
 
-            lock (gate)
+            lock (_gate)
             {
-                if (disposed)
+                if (_disposed)
                 {
                     watcher.Dispose();
                     break;
                 }
 
-                watchers.Add(watcher);
-                rootStates[root] = state;
-                pumps.Add(RunRootPumpAsync(root, state));
+                _watchers.Add(watcher);
+                _rootStates[root] = state;
+                _pumps.Add(RunRootPumpAsync(root, state));
             }
         }
 
         // The final rebuild is serialized against pump rebuilds: a pump that fired during
         // startup must not observe a half-committed root map, and this rebuild must
         // not overwrite a newer pump-published snapshot with stale inputs.
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
+            if (_disposed) return;
             RebuildSnapshot();
         }
     }
@@ -419,7 +419,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         try
         {
-            await foreach (var signal in state.Signals.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            await foreach (var signal in state.Signals.Reader.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
             {
                 _ = signal;
                 try
@@ -437,10 +437,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     // The debounce rides the injected time provider (a fake clock in tests
                     // advances past it); the registration is reported only after Task.Delay
                     // returned, so the wait's timer provably exists in the provider by then.
-                    var debounceWait = Task.Delay(RescanDebounce, timeProvider, lifetime.Token);
-                    lock (gate)
+                    var debounceWait = Task.Delay(RescanDebounce, _timeProvider, _lifetime.Token);
+                    lock (_gate)
                     {
-                        watcherDebounceRegistered.TrySetResult();
+                        _watcherDebounceRegistered.TrySetResult();
                     }
 
                     await debounceWait.ConfigureAwait(false);
@@ -452,10 +452,10 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     // released its region is diffed against the batch's own intermediate
                     // state, never a stale snapshot of it.
                     Dictionary<string, SkillDescriptor> known;
-                    lock (gate)
+                    lock (_gate)
                     {
-                        if (disposed) return;
-                        known = rootSkills[root];
+                        if (_disposed) return;
+                        known = _rootSkills[root];
                     }
 
                     var workingKnown = new HashSet<string>(known.Keys, StringComparer.Ordinal);
@@ -470,9 +470,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
                             BuildPathPlan(root, path, workingKnown, plan);
                     }
 
-                    lock (gate)
+                    lock (_gate)
                     {
-                        if (disposed) return;
+                        if (_disposed) return;
                         ApplyChanges(root, plan);
                     }
                 }
@@ -485,7 +485,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
                     // A differential pass failure (unreadable directory, transient IO) must
                     // not kill the pump: the previous snapshot stays active and the next
                     // watched change retries.
-                    logger.LogDebug(
+                    _logger.LogDebug(
                         exception,
                         "Diffing a watched change in the skill root '{Root}' failed; the last catalog stays active.",
                         root.RootDirectory);
@@ -498,7 +498,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "The skill root pump for '{Root}' stopped unexpectedly.", root.RootDirectory);
+            _logger.LogError(exception, "The skill root pump for '{Root}' stopped unexpectedly.", root.RootDirectory);
         }
     }
 
@@ -536,13 +536,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
     private void RecordWhereContained(string fullPath)
     {
         var normalized = Path.GetFullPath(fullPath);
-        foreach (var root in roots)
+        foreach (var root in _roots)
         {
             RootWatchState? state;
-            lock (gate)
+            lock (_gate)
             {
-                if (disposed) return;
-                if (!rootStates.TryGetValue(root, out state)) continue;
+                if (_disposed) return;
+                if (!_rootStates.TryGetValue(root, out state)) continue;
             }
 
             if (IsWithinWatchedRoot(root.RootDirectory, normalized)) state.Record(normalized);
@@ -584,7 +584,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
         if (containing is { } skillDirectory)
         {
             if (SkillDirectoryDiscovery.RediscoverSkillDirectory(
-                    skillDirectory, root.RootDirectory, root.Source, directoryVisits) is { } fresh)
+                    skillDirectory, root.RootDirectory, root.Source, _directoryVisits) is { } fresh)
             {
                 plan.Add((skillDirectory, fresh));
                 return;
@@ -619,7 +619,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
         var regionFullName = Path.GetFullPath(regionRoot);
         var fresh = new Dictionary<string, SkillDescriptor>(StringComparer.Ordinal);
         foreach (var descriptor in SkillDirectoryDiscovery.EnumerateSubtree(
-                     regionFullName, root.RootDirectory, root.Source, directoryVisits))
+                     regionFullName, root.RootDirectory, root.Source, _directoryVisits))
             if (SkillDirectoryOf(descriptor) is { } skillDirectory)
                 fresh[skillDirectory] = descriptor;
 
@@ -650,7 +650,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
     /// the per-root skill bound; replacements and removals always apply.</summary>
     private void ApplyChanges(DeclaredRoot root, IReadOnlyList<(string SkillDirectory, SkillDescriptor? Descriptor)> changes)
     {
-        if (!rootSkills.TryGetValue(root, out var known)) return;
+        if (!_rootSkills.TryGetValue(root, out var known)) return;
         foreach (var (skillDirectory, descriptor) in changes)
         {
             if (descriptor is null)
@@ -682,9 +682,9 @@ internal sealed class SkillCatalog : IAsyncDisposable
     {
         var merged = new Dictionary<string, SkillDescriptor>(StringComparer.Ordinal);
         var diagnostics = ImmutableArray.CreateBuilder<string>();
-        foreach (var root in roots)
+        foreach (var root in _roots)
         {
-            if (!rootSkills.TryGetValue(root, out var known)) continue;
+            if (!_rootSkills.TryGetValue(root, out var known)) continue;
 
             // Deterministic in-root order: the same-name winner is the first entry in
             // ordinal skill-directory order (equivalent to the former ordinal body-path
@@ -713,7 +713,7 @@ internal sealed class SkillCatalog : IAsyncDisposable
         // shadows workspace or user skills (ADR 0039 decision 1), and within a plugin
         // contribution the caller has already ordered its own production modes. Plugins
         // iterate in id order so shadowing between plugins is deterministic.
-        foreach (var (_, descriptors) in pluginContributions.OrderBy(
+        foreach (var (_, descriptors) in _pluginContributions.OrderBy(
                      static pair => pair.Key, StringComparer.Ordinal))
         {
             foreach (var descriptor in descriptors)
@@ -735,25 +735,25 @@ internal sealed class SkillCatalog : IAsyncDisposable
             }
         }
 
-        rebuildCount++;
+        _rebuildCount++;
         var skills = merged.Values
             .OrderBy(static skill => skill.Name, StringComparer.Ordinal)
             .ToImmutableArray();
-        current = new SkillCatalogSnapshot(skills, diagnostics.ToImmutable());
-        var published = snapshotPublished;
-        snapshotPublished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _current = new SkillCatalogSnapshot(skills, diagnostics.ToImmutable());
+        var published = _snapshotPublished;
+        _snapshotPublished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         published.TrySetResult();
-        logger.LogInformation(
+        _logger.LogInformation(
             "Skill catalog: {Count} skills ({Workspace} workspace, {User} user), {Diagnostics} diagnostics.",
             skills.Length,
-            current.Count(SkillSource.Workspace),
-            current.Count(SkillSource.User),
+            _current.Count(SkillSource.Workspace),
+            _current.Count(SkillSource.User),
             diagnostics.Count);
         if (diagnostics.Count > 0)
         {
             // The operator's only trace of why untrusted content did not load; debug level
             // because rebuilds fire on every watched change.
-            logger.LogDebug(
+            _logger.LogDebug(
                 "Skill catalog diagnostics: {Diagnostics}",
                 string.Join(" | ", diagnostics));
         }

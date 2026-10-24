@@ -11,9 +11,10 @@ public sealed class ScriptedChatClient(
     params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
     : IChatClient
 {
-    private readonly Lock gate = new();
+    private readonly Lock _gate = new();
+
     private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-        IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
+        IAsyncEnumerable<ChatResponseUpdate>>> _responses = new(responses);
 
     /// <summary>The requests streamed so far, cloned at the call boundary.</summary>
     public List<IReadOnlyList<ChatMessage>> Requests { get; } = [];
@@ -36,11 +37,11 @@ public sealed class ScriptedChatClient(
     {
         var request = messages.Select(message => message.Clone()).ToArray();
         Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> response;
-        lock (gate)
+        lock (_gate)
         {
             Requests.Add(request);
             Instructions.Add(options?.Instructions);
-            response = responses.Dequeue();
+            response = _responses.Dequeue();
         }
 
         return response(request, cancellationToken);
@@ -129,23 +130,23 @@ public sealed class StubChatClient : IChatClient
 /// <see cref="StubChatClient" /> when omitted, for wiring-only scenarios).</summary>
 public sealed class FixedProfileProvider : IAgentRunProfileProvider
 {
-    private readonly AgentRunProfile profile;
+    private readonly AgentRunProfile _profile;
 
     /// <summary>Returns the given profile on every acquire.</summary>
     public FixedProfileProvider(AgentRunProfile profile)
     {
-        this.profile = profile;
+        this._profile = profile;
     }
 
     /// <summary>Wraps the given client (or a stub) in a default profile.</summary>
     public FixedProfileProvider(IChatClient? chatClient = null)
     {
-        profile = new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions());
+        _profile = new AgentRunProfile(chatClient ?? new StubChatClient(), new AgentSessionOptions());
     }
 
     public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
     {
-        return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
+        return Task.FromResult<IAgentRunProfileLease>(new Lease(_profile));
     }
 
     private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease

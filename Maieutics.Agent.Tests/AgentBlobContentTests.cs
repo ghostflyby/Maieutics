@@ -2,8 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 /// <summary>The content triage point: small UTF-8 text stays inline; binary and oversized
@@ -111,8 +111,11 @@ public sealed class AgentBlobContentTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await AgentContentTriage.IngestAsync(
-                store, source, "text/plain", cancellationToken: cancellation.Token); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await AgentContentTriage.IngestAsync(
+                store, source, "text/plain", cancellationToken: cancellation.Token);
+        });
 
         Assert.Empty(store.CapturedBytes);
         Assert.Equal(0, source.TotalBytesRead);
@@ -136,8 +139,8 @@ public sealed class AgentBlobContentTests
         await run.Completion.WaitAsync(TestContext.Current.CancellationToken);
 
         var snapshot = session.GetTranscriptSnapshot();
-        Assert.Single(snapshot.Turns);
-        var inputMessage = snapshot.Turns[0].Messages[0];
+        var item = Assert.Single(snapshot.Turns);
+        var inputMessage = item.Messages[0];
         Assert.Equal(2, inputMessage.Contents.Count());
         Assert.True(AgentBlobContent.TryParse(inputMessage.Contents[1], out var descriptor));
         Assert.Equal(64, descriptor.Sha256.Length);
@@ -149,9 +152,7 @@ public sealed class AgentBlobContentTests
         var malformed = new DataContent(Encoding.UTF8.GetBytes("{\"sha256\":\"nope\"}"), AgentBlobContent.MediaType);
         var message = new ChatMessage(ChatRole.User, [malformed]);
 
-        var detach = () => AgentTranscriptCodec.DetachPrivateMessages([message]);
-
-        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => detach.Invoke());
+        Assert.ThrowsAny<AgentUnsupportedResponseException>(() => AgentTranscriptCodec.DetachPrivateMessages([message]));
     }
 
     [Fact(Timeout = 30_000)]
@@ -195,15 +196,13 @@ public sealed class AgentBlobContentTests
         Assert.Equivalent(new[] { descriptor.Sha256, envelopeSha }, references);
     }
 
-    private static async Task<List<AgentEvent>> ReadEventsAsync(
+    private static async Task ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)
     {
-        var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-            events.Add(agentEvent);
-
-        return events;
+        await foreach (var _ in run.Events.WithCancellation(cancellationToken))
+        {
+        }
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] deltas)
@@ -218,7 +217,7 @@ public sealed class AgentBlobContentTests
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public Dictionary<string, byte[]> Objects { get; } = new(StringComparer.Ordinal);
 
@@ -228,7 +227,7 @@ public sealed class AgentBlobContentTests
             content.CopyTo(buffer);
             var bytes = buffer.ToArray();
             var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-            lock (gate) Objects[sha256] = bytes;
+            lock (_gate) Objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length);
         }
 
@@ -266,7 +265,7 @@ public sealed class AgentBlobContentTests
     /// triage point must handle without buffering it whole.</summary>
     private sealed class NonSeekableStream(byte[] bytes) : Stream
     {
-        private int position;
+        private int _position;
 
         public int TotalBytesRead { get; private set; }
 
@@ -280,7 +279,7 @@ public sealed class AgentBlobContentTests
 
         public override long Position
         {
-            get => position;
+            get => _position;
             set => throw new NotSupportedException();
         }
 
@@ -291,18 +290,18 @@ public sealed class AgentBlobContentTests
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var read = Math.Min(buffer.Length, bytes.Length - position);
-            bytes.AsSpan(position, read).CopyTo(buffer.Span);
-            position += read;
+            var read = Math.Min(buffer.Length, bytes.Length - _position);
+            bytes.AsSpan(_position, read).CopyTo(buffer.Span);
+            _position += read;
             TotalBytesRead += read;
             return ValueTask.FromResult(read);
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            var read = Math.Min(count, bytes.Length - position);
-            Array.Copy(bytes, position, buffer, offset, read);
-            position += read;
+            var read = Math.Min(count, bytes.Length - _position);
+            Array.Copy(bytes, _position, buffer, offset, read);
+            _position += read;
             TotalBytesRead += read;
             return read;
         }

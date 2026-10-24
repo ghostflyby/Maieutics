@@ -212,7 +212,7 @@ public static class MaieuticsHost
             services.GetRequiredService<Workspace>());
         builder.Services.AddSingleton(static services =>
             new PermissionPolicyAcquirer(
-                () => services.GetRequiredService<IPermissionLayerSource>(),
+                services.GetRequiredService<IPermissionLayerSource>,
                 services.GetRequiredService<IPermissionVariableSource>()));
         builder.Services.AddSingleton<IMaieuticsRuntimeConfiguration>(static services =>
             services.GetRequiredService<MaieuticsRuntimeConfiguration>());
@@ -297,11 +297,10 @@ public static class MaieuticsHost
                 IPAddress.Loopback,
                 frontendOptions.Port,
                 listenOptions => { listenOptions.Protocols = HttpProtocols.Http1; }));
-        builder.Services.AddSingleton(static services => new FrontendCommRouter(
-            async (sessionId, message, cancellationToken) =>
-                await services.GetRequiredService<ReplControlHost>()
-                    .PushCommMessageAsync(sessionId, message, cancellationToken)
-                    .ConfigureAwait(false)));
+        builder.Services.AddSingleton(static services => new FrontendCommRouter(async (sessionId, message, cancellationToken) =>
+            await services.GetRequiredService<ReplControlHost>()
+                .PushCommMessageAsync(sessionId, message, cancellationToken)
+                .ConfigureAwait(false)));
         builder.Services.AddSingleton(CreateFrontendSessionService);
         builder.Services.AddSingleton<IFrontendSessionFramePublisher>(static services =>
             services.GetRequiredService<FrontendSessionService>());
@@ -385,14 +384,14 @@ public static class MaieuticsHost
         // the approval registry (portable setups and test isolation); the defaults stay under
         // the roaming application-data Maieutics directory.
         var pluginsRoot = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGINS_ROOT") is
-                { } configuredPluginsRoot and not { Length: 0 }
+            { } configuredPluginsRoot and not { Length: 0 }
             ? Path.GetFullPath(configuredPluginsRoot)
             : Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "Maieutics",
                 "plugins");
         var pluginApprovalsPath = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS") is
-                { } configuredApprovals and not { Length: 0 }
+            { } configuredApprovals and not { Length: 0 }
             ? Path.GetFullPath(configuredApprovals)
             : ApplicationPaths.Resolve().PluginApprovalsPath;
         builder.Services.AddSingleton(services => new PluginHostManager(
@@ -534,7 +533,7 @@ public static class MaieuticsHost
                 // Deferred: the registry is the frontend presenter, which reaches back into
                 // this tool list through the run-profile provider. Resolving per spawn breaks
                 // the construction cycle without changing the registration.
-                () => services.GetService<IAgentChildScopeRegistry>()));
+                services.GetService<IAgentChildScopeRegistry>));
         builder.Services.AddSingleton<IReadOnlyList<AIFunction>>(static services =>
         [
             .. services.GetRequiredService<WorkspaceFunctions>().Functions,
@@ -636,7 +635,7 @@ public static class MaieuticsHost
                 new TerminalTaskResourceSource(services.GetRequiredService<TerminalRegistry>()),
                 CreateAgentTaskResourceSource(services)
             ]),
-            new McpResourceProvider(() => services.GetRequiredService<MaieuticsRuntimeConfiguration>()),
+            new McpResourceProvider(services.GetRequiredService<MaieuticsRuntimeConfiguration>),
             new Skills.SkillResourceProvider(services.GetRequiredService<Skills.SkillCatalog>())
         };
         if (services.GetService<IAgentObjectStore>() is { } objectStore)
@@ -697,7 +696,8 @@ public static class MaieuticsHost
             () => services.GetRequiredService<MaieuticsAgentSessionManager>().ListLiveSessionIds());
     }
 
-    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)    {
+    private static FrontendSessionService CreateFrontendSessionService(IServiceProvider services)
+    {
         var runtimeConfiguration = services.GetService<IMaieuticsRuntimeConfiguration>();
         var workspace = services.GetService<Workspace>();
         return new FrontendSessionService(
@@ -776,22 +776,22 @@ public static class MaieuticsHost
     private static ModelOrchestrationSurface CreateModelOrchestrationSurface(IServiceProvider services)
     {
         var subagents = CreateSubagentOptions(services)
-            ?? new AgentSubagentOptions
-            {
-                MaxDepth = 1,
-                EventSink = services.GetRequiredService<SubagentEventBuffer>()
-            };
+                        ?? new AgentSubagentOptions
+                        {
+                            MaxDepth = 1,
+                            EventSink = services.GetRequiredService<SubagentEventBuffer>()
+                        };
         // Everything resolves lazily at request time: eager resolution here re-enters the
         // container mid-composition (the startup-deadlock class this file has seen).
         return new ModelOrchestrationSurface(
-            () => services.GetRequiredService<MaieuticsAgentSessionManager>(),
+            services.GetRequiredService<MaieuticsAgentSessionManager>,
             replSessionId => services.GetRequiredService<DenoReplRegistry>()
                 .TryGetOwnerSessionId(replSessionId),
             () => new AgentSessionOptions { Subagents = subagents },
-            () => services.GetRequiredService<IReadOnlyList<AIFunction>>(),
-            () => services.GetService<PermissionOverrideRegistry>())
+            services.GetRequiredService<IReadOnlyList<AIFunction>>,
+            services.GetService<PermissionOverrideRegistry>)
         {
-            TaskResources = () => services.GetRequiredService<TaskResourceProvider>()
+            TaskResources = services.GetRequiredService<TaskResourceProvider>
         };
     }
 
@@ -919,10 +919,10 @@ public static class MaieuticsHost
             ? target["maieutics.view/".Length..]
             : frame.TargetName ?? "unknown";
         JsonElement state = frame.Data is { ValueKind: JsonValueKind.Object } data &&
-            data.TryGetProperty("state", out var stateElement) &&
-            stateElement.ValueKind == JsonValueKind.Object
-                ? stateElement.Clone()
-                : JsonDocument.Parse("{}").RootElement.Clone();
+                            data.TryGetProperty("state", out var stateElement) &&
+                            stateElement.ValueKind == JsonValueKind.Object
+            ? stateElement.Clone()
+            : JsonDocument.Parse("{}").RootElement.Clone();
         var announcement = new Dictionary<string, object?>
         {
             ["application/vnd.maieutics.view+json"] = new Dictionary<string, object?>

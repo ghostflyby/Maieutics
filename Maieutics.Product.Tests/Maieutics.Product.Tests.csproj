@@ -1,42 +1,42 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
-        <IsPackable>false</IsPackable>
-        <!-- Tiered JIT (with OSR) tripped a runtime scheduling-loss race on .NET 10
-             (10.0.12, macOS arm64 + Linux x64 CI runners): under Release load a pending
-             short-timer/thread-pool continuation was never scheduled again while the
-             rest of the process kept running — a captured dump showed a 250ms
-             TimerQueueTimer with _everQueued = 0 forever unpicked, and test waits hung
-             to their 60s deadline (PluginWatcherTestWaits). Disabling tiered
-             compilation for the test host alone (the product keeps its defaults)
-             eliminated the hang locally (0/30 vs ~25% reproduction with tiering); the
-             runtime race itself is out of this repository's hands. -->
-        <TieredCompilation>false</TieredCompilation>
-    </PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Tiered JIT (with OSR) tripped a runtime scheduling-loss race on .NET 10
+         (10.0.12, macOS arm64 + Linux x64 CI runners): under Release load a pending
+         short-timer/thread-pool continuation was never scheduled again while the
+         rest of the process kept running — a captured dump showed a 250ms
+         TimerQueueTimer with _everQueued = 0 forever unpicked, and test waits hung
+         to their 60s deadline (PluginWatcherTestWaits). Disabling tiered
+         compilation for the test host alone (the product keeps its defaults)
+         eliminated the hang locally (0/30 vs ~25% reproduction with tiering); the
+         runtime race itself is out of this repository's hands. -->
+    <TieredCompilation>false</TieredCompilation>
+  </PropertyGroup>
 
-    <ItemGroup>
-        <PackageReference Include="coverlet.collector" Version="10.1.0" />
-        <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
-        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
-        <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0" />
-        <PackageReference Include="XTerm.NET" Version="3.0.0" />
-        <PackageReference Include="xunit.v3" Version="4.0.2" />
-        <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
-    </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="10.1.0"/>
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0"/>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.0"/>
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0"/>
+    <PackageReference Include="XTerm.NET" Version="3.0.0"/>
+    <PackageReference Include="xunit.v3" Version="4.0.2"/>
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1"/>
+  </ItemGroup>
 
-    <ItemGroup>
-        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj" />
-        <ProjectReference Include="..\Maieutics\Maieutics.csproj" />
-        <ProjectReference Include="..\Maieutics.Testing\Maieutics.Testing.csproj" />
-    </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
+    <ProjectReference Include="..\Maieutics\Maieutics.csproj"/>
+    <ProjectReference Include="..\Maieutics.Testing\Maieutics.Testing.csproj"/>
+  </ItemGroup>
 
-    <ItemGroup>
-        <Using Include="Xunit" />
-        <Using Include="Maieutics.Testing" />
-    </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit"/>
+    <Using Include="Maieutics.Testing"/>
+  </ItemGroup>
 
 
 </Project>

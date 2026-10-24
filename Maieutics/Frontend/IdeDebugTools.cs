@@ -44,10 +44,10 @@ internal sealed class IdeDebugTools
         return JsonDocument.Parse(buffer).RootElement.Clone();
     }
 
-    private readonly IdeRequestRegistry requests;
-    private readonly IIdeFrontendGate gate;
-    private readonly FrontendIdeSockets sockets;
-    private readonly Workspace workspace;
+    private readonly IdeRequestRegistry _requests;
+    private readonly IIdeFrontendGate _gate;
+    private readonly FrontendIdeSockets _sockets;
+    private readonly Workspace _workspace;
 
     public IdeDebugTools(
         IdeRequestRegistry requests,
@@ -55,10 +55,10 @@ internal sealed class IdeDebugTools
         FrontendIdeSockets sockets,
         Workspace workspace)
     {
-        this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this.gate = gate ?? throw new ArgumentNullException(nameof(gate));
-        this.sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        this._gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
 
         Functions =
         [
@@ -126,25 +126,13 @@ internal sealed class IdeDebugTools
             });
     }
 
-    private static string RequireSession(JsonElement parameters)
-    {
-        var sessionId = parameters.TryGetProperty("sessionId", out var session) &&
-                        session.ValueKind == JsonValueKind.String
-            ? session.GetString()
-            : null;
-        if (string.IsNullOrEmpty(sessionId))
-            throw new AgentToolException("ide_invalid_arguments", "sessionId is required.");
-
-        return sessionId;
-    }
-
     private async ValueTask<JsonElement> SendAsync(
         Func<AIContent, CancellationToken, ValueTask>? announce,
         string method,
         JsonElement parameters,
         CancellationToken cancellationToken)
     {
-        var registration = requests.Begin();
+        var registration = _requests.Begin();
         try
         {
             var envelope = JsonSerializer.SerializeToElement(
@@ -164,7 +152,7 @@ internal sealed class IdeDebugTools
             }
             else
             {
-                var sent = await sockets
+                var sent = await _sockets
                     .TrySendToAnnouncingAsync(
                         new FrontendEventFrame("ide.request", Data: envelope.GetProperty("ideRequest").Clone()),
                         cancellationToken)
@@ -193,11 +181,11 @@ internal sealed class IdeDebugTools
                 throw new AgentToolException(code, answer.ErrorMessage ?? "The IDE request failed.");
 
             return answer.Value ??
-                throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
+                   throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
         }
         finally
         {
-            requests.Abandon(registration.RequestId);
+            _requests.Abandon(registration.RequestId);
         }
     }
 
@@ -206,7 +194,7 @@ internal sealed class IdeDebugTools
         if (arguments.Context?.TryGetValue(typeof(AgentToolContext), out var value) == true &&
             value is AgentToolContext context)
         {
-            if (!gate.IsIdeFrontendConnected(context.SessionId.Value.ToString("N")))
+            if (!_gate.IsIdeFrontendConnected(context.SessionId.Value.ToString("N")))
                 throw new AgentToolException(
                     "ide_unavailable",
                     "No frontend connected to this session has announced IDE capability.");
@@ -216,14 +204,14 @@ internal sealed class IdeDebugTools
         var scriptSession = ScriptInvocationContext.TryGet(arguments)?.SessionId;
         if (scriptSession is { } sessionId)
         {
-            if (!gate.IsIdeFrontendConnected(sessionId))
+            if (!_gate.IsIdeFrontendConnected(sessionId))
                 throw new AgentToolException(
                     "ide_unavailable",
                     "No frontend connected to this session has announced IDE capability.");
             return;
         }
 
-        if (!gate.HasIdeFrontend)
+        if (!_gate.HasIdeFrontend)
             throw new AgentToolException(
                 "ide_unavailable",
                 "No frontend has announced IDE capability; the debug tools need the extension host's events socket.");
@@ -248,7 +236,8 @@ internal sealed class IdeDebugTools
     [Description("Starts a debug session by launch name or inline configuration.")]
     private async ValueTask<JsonElement> StartAsync(
         AIFunctionArguments arguments,
-        [Description("A launch configuration name from ide_debug_configurations.")] string? launchName = null,
+        [Description("A launch configuration name from ide_debug_configurations.")]
+        string? launchName = null,
         [Description("An inline debug configuration object ({type, request, ...}). Mutually exclusive with launchName.")]
         JsonElement? configuration = null,
         [Description("Pause at the first executable line after start. Defaults to false.")]
@@ -274,8 +263,10 @@ internal sealed class IdeDebugTools
     [Description("The session's state; optionally waits for the next transition from running.")]
     private async ValueTask<JsonElement> StateAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("Seconds to wait for the next transition (0-20). Defaults to 0.")] int? waitSeconds = null,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("Seconds to wait for the next transition (0-20). Defaults to 0.")]
+        int? waitSeconds = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -292,8 +283,10 @@ internal sealed class IdeDebugTools
     [Description("The call stack of a paused session.")]
     private async ValueTask<JsonElement> StackAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("The thread to inspect; defaults to the stopped thread.")] int? threadId = null,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("The thread to inspect; defaults to the stopped thread.")]
+        int? threadId = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -310,9 +303,12 @@ internal sealed class IdeDebugTools
     [Description("The variables of a stack frame, or the children of a variablesReference.")]
     private async ValueTask<JsonElement> VariablesAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("A frame id from ide_debug_stack — answers the frame's scopes flattened.")] int? frameId = null,
-        [Description("A variablesReference from a previous answer — answers its direct children.")] long? variablesReference = null,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("A frame id from ide_debug_stack — answers the frame's scopes flattened.")]
+        int? frameId = null,
+        [Description("A variablesReference from a previous answer — answers its direct children.")]
+        long? variablesReference = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -338,9 +334,12 @@ internal sealed class IdeDebugTools
     [Description("Evaluates one expression in the paused session's context.")]
     private async ValueTask<JsonElement> EvaluateAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("The expression to evaluate.")] string expression,
-        [Description("A frame id from ide_debug_stack to scope the evaluation.")] int? frameId = null,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("The expression to evaluate.")]
+        string expression,
+        [Description("A frame id from ide_debug_stack to scope the evaluation.")]
+        int? frameId = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -360,9 +359,12 @@ internal sealed class IdeDebugTools
     [Description("Sets or clears the breakpoints of one file on a live session.")]
     private async ValueTask<JsonElement> BreakpointsAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("The file's workspace://local address.")] string uri,
-        [Description("One selector per breakpoint: {'line': N}, {'anchor': [lines], 'occurrence'?}, or {'patch': diff}; empty clears the file's breakpoints.")] JsonElement[] points,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("The file's workspace://local address.")]
+        string uri,
+        [Description("One selector per breakpoint: {'line': N}, {'anchor': [lines], 'occurrence'?}, or {'patch': diff}; empty clears the file's breakpoints.")]
+        JsonElement[] points,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -376,14 +378,14 @@ internal sealed class IdeDebugTools
         // Decision 4's translation authority: the kernel maps the workspace URI to
         // the physical address before the request crosses.
         string fullPath;
-        var logicalRoot = workspace.Capture().ResolveLogical(uri, allowRoot: false);
+        var logicalRoot = _workspace.Capture().ResolveLogical(uri, allowRoot: false);
         var displayPath = logicalRoot.DisplayPath;
         if (uri.StartsWith("workspace://local/", StringComparison.Ordinal))
         {
             try
             {
-                var logical = workspace.Capture().ResolveLogical(uri, allowRoot: false);
-                fullPath = workspace.Capture().ToPhysicalPath(logical.Segments);
+                var logical = _workspace.Capture().ResolveLogical(uri, allowRoot: false);
+                fullPath = _workspace.Capture().ToPhysicalPath(logical.Segments);
                 uri = new Uri(fullPath).AbsoluteUri;
             }
             catch (WorkspaceException exception)
@@ -393,7 +395,7 @@ internal sealed class IdeDebugTools
         }
         else
         {
-            fullPath = workspace.Capture().ToPhysicalPath(logicalRoot.Segments);
+            fullPath = _workspace.Capture().ToPhysicalPath(logicalRoot.Segments);
         }
 
         // Selector resolution is kernel-side (the translation authority, decision
@@ -403,7 +405,7 @@ internal sealed class IdeDebugTools
         // partial resolution must not degrade into a partial replacement.
         IReadOnlyList<string> fileLines = Array.Empty<string>();
         if (points.Any(static point => point.ValueKind != JsonValueKind.Object ||
-            point.TryGetProperty("line", out _)))
+                                       point.TryGetProperty("line", out _)))
         {
             fileLines = await IdeSelector.ReadLinesAsync(fullPath, cancellationToken).ConfigureAwait(false);
         }
@@ -478,9 +480,12 @@ internal sealed class IdeDebugTools
     [Description("Steps, continues, or terminates a debug session.")]
     private async ValueTask<JsonElement> ControlAsync(
         AIFunctionArguments arguments,
-        [Description("The sessionId from ide_debug_start.")] string sessionId,
-        [Description("One of: continue, stepOver, stepIn, stepOut, terminate.")] string action,
-        [Description("The thread to control; defaults to the stopped thread.")] int? threadId = null,
+        [Description("The sessionId from ide_debug_start.")]
+        string sessionId,
+        [Description("One of: continue, stepOver, stepIn, stepOut, terminate.")]
+        string action,
+        [Description("The thread to control; defaults to the stopped thread.")]
+        int? threadId = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConnected(arguments);
@@ -509,38 +514,53 @@ internal sealed class IdeDebugTools
 
         return null;
     }
-
 }
 
 internal sealed record DebugStartParams(
-    [property: JsonPropertyName("launchName")] string? LaunchName,
-    [property: JsonPropertyName("configuration")] JsonElement? Configuration,
-    [property: JsonPropertyName("stopOnEntry")] bool StopOnEntry);
+    [property: JsonPropertyName("launchName")]
+    string? LaunchName,
+    [property: JsonPropertyName("configuration")]
+    JsonElement? Configuration,
+    [property: JsonPropertyName("stopOnEntry")]
+    bool StopOnEntry);
 
 internal sealed record DebugStateParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("waitSeconds")] int WaitSeconds);
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("waitSeconds")]
+    int WaitSeconds);
 
 internal sealed record DebugThreadParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("threadId")] int? ThreadId);
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("threadId")]
+    int? ThreadId);
 
 internal sealed record DebugVariablesParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("frameId")] int? FrameId,
-    [property: JsonPropertyName("variablesReference")] long? VariablesReference);
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("frameId")]
+    int? FrameId,
+    [property: JsonPropertyName("variablesReference")]
+    long? VariablesReference);
 
 internal sealed record DebugEvaluateParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("expression")] string Expression,
-    [property: JsonPropertyName("frameId")] int? FrameId);
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("expression")]
+    string Expression,
+    [property: JsonPropertyName("frameId")]
+    int? FrameId);
 
 internal sealed record DebugBreakpointsParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
     [property: JsonPropertyName("uri")] string Uri,
     [property: JsonPropertyName("lines")] int[] Lines);
 
 internal sealed record DebugControlParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
     [property: JsonPropertyName("action")] string Action,
-    [property: JsonPropertyName("threadId")] int? ThreadId);
+    [property: JsonPropertyName("threadId")]
+    int? ThreadId);

@@ -21,11 +21,12 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// supplies the configured value; this is the fallback for a host that supplies none.</summary>
     internal static readonly TimeSpan DefaultWaitTimeout = TimeSpan.FromSeconds(120);
 
-    private readonly IFrontendSessionFramePublisher publisher;
-    private readonly ILogger<FrontendToolApprovalPresenter> logger;
-    private readonly TimeSpan waitTimeout;
-    private readonly Lock gate = new();
-    private readonly Dictionary<string, TaskCompletionSource<AgentToolApprovalDecision>> pending =
+    private readonly IFrontendSessionFramePublisher _publisher;
+    private readonly ILogger<FrontendToolApprovalPresenter> _logger;
+    private readonly TimeSpan _waitTimeout;
+    private readonly Lock _gate = new();
+
+    private readonly Dictionary<string, TaskCompletionSource<AgentToolApprovalDecision>> _pending =
         new(StringComparer.Ordinal);
 
     /// <summary>Child session → owning session, so a request raised inside a subagent run is
@@ -33,8 +34,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// never announces a stream of its own (only frontend-submitted turns do), so presenting
     /// on the child id would find nothing and deny with a false "no frontend" reason. Bounded
     /// by the same discipline as the permission registry's child scopes.</summary>
-    private readonly Dictionary<AgentSessionId, AgentSessionId> parents = [];
-    private readonly Queue<AgentSessionId> parentOrder = new();
+    private readonly Dictionary<AgentSessionId, AgentSessionId> _parents = [];
+
+    private readonly Queue<AgentSessionId> _parentOrder = new();
     private const int MaximumParentScopes = 256;
 
     internal FrontendToolApprovalPresenter(
@@ -42,9 +44,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         ILogger<FrontendToolApprovalPresenter> logger,
         TimeSpan? waitTimeout = null)
     {
-        this.publisher = publisher;
-        this.logger = logger;
-        this.waitTimeout = waitTimeout ?? DefaultWaitTimeout;
+        this._publisher = publisher;
+        this._logger = logger;
+        this._waitTimeout = waitTimeout ?? DefaultWaitTimeout;
     }
 
     /// <summary>Registers a spawned child run's session under its owning session, so an
@@ -53,20 +55,20 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// (the request then denies, which is the safe direction).</summary>
     public void RegisterChildScope(AgentSessionId childSessionId, AgentSessionId parentSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!parents.TryAdd(childSessionId, parentSessionId)) return;
-            parentOrder.Enqueue(childSessionId);
-            while (parentOrder.Count > MaximumParentScopes) parents.Remove(parentOrder.Dequeue());
+            if (!_parents.TryAdd(childSessionId, parentSessionId)) return;
+            _parentOrder.Enqueue(childSessionId);
+            while (_parentOrder.Count > MaximumParentScopes) _parents.Remove(_parentOrder.Dequeue());
         }
     }
 
     /// <summary>Releases one child registration when its run settles.</summary>
     public void ReleaseChildScope(AgentSessionId childSessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            parents.Remove(childSessionId);
+            _parents.Remove(childSessionId);
         }
     }
 
@@ -74,9 +76,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// the session itself otherwise.</summary>
     private AgentSessionId PresentationSession(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return parents.TryGetValue(sessionId, out var parent) ? parent : sessionId;
+            return _parents.GetValueOrDefault(sessionId, sessionId);
         }
     }
 
@@ -93,15 +95,15 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         var requestId = RequestIdPrefix + Guid.NewGuid().ToString("N");
         var completion = new TaskCompletionSource<AgentToolApprovalDecision>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        lock (_gate)
         {
-            pending[requestId] = completion;
+            _pending[requestId] = completion;
         }
 
         bool published;
         try
         {
-            published = publisher.TryPublishPresentation(
+            published = _publisher.TryPublishPresentation(
                 PresentationSession(request.SessionId),
                 "input.request",
                 JsonSerializer.SerializeToElement(
@@ -120,12 +122,12 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         {
             // A throwing publisher must not leave a pending entry behind: a late answer would
             // otherwise draw a 200 for a decision nobody consumed.
-            lock (gate)
+            lock (_gate)
             {
-                pending.Remove(requestId);
+                _pending.Remove(requestId);
             }
 
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Publishing the approval request for tool '{Tool}' failed.",
                 request.ToolName);
@@ -135,9 +137,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
 
         if (!published)
         {
-            lock (gate)
+            lock (_gate)
             {
-                pending.Remove(requestId);
+                _pending.Remove(requestId);
             }
 
             // No live stream to present on (the run already settled, or the frontend is
@@ -147,7 +149,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         }
 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(waitTimeout);
+        budget.CancelAfter(_waitTimeout);
         try
         {
             return await completion.Task.WaitAsync(budget.Token).ConfigureAwait(false);
@@ -168,12 +170,12 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
             // their answer accepted (HTTP 200) while the model saw a timeout.
             if (!TryClaim(requestId)) return await completion.Task.ConfigureAwait(false);
 
-            logger.LogWarning(
+            _logger.LogWarning(
                 "The approval request for tool '{Tool}' timed out after {Seconds:0.#} seconds; denied.",
                 request.ToolName,
-                waitTimeout.TotalSeconds);
+                _waitTimeout.TotalSeconds);
             return AgentToolApprovalDecision.Deny(
-                $"The approval request timed out after {waitTimeout.TotalSeconds:0.#} seconds.");
+                $"The approval request timed out after {_waitTimeout.TotalSeconds:0.#} seconds.");
         }
         finally
         {
@@ -187,9 +189,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// discarded.</summary>
     private bool TryClaim(string requestId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return pending.Remove(requestId);
+            return _pending.Remove(requestId);
         }
     }
 
@@ -201,11 +203,11 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     internal bool TryCompleteInput(string requestId, string? action, string value)
     {
         TaskCompletionSource<AgentToolApprovalDecision>? completion;
-        lock (gate)
+        lock (_gate)
         {
             // The map removal is the claim: whoever removes the entry owns the outcome, so an
             // answer that races the wait's own timeout either wins outright or draws the 404.
-            if (!pending.Remove(requestId, out completion)) return false;
+            if (!_pending.Remove(requestId, out completion)) return false;
         }
 
         return completion.TrySetResult(MapDecision(action, value));

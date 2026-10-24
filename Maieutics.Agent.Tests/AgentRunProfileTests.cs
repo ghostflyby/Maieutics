@@ -45,9 +45,9 @@ public sealed class AgentRunProfileTests
     public void BlankHostedCapabilitiesAreRejected()
     {
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedCapabilities: ["WebSearch", " "]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch", " "]));
     }
 
     [Fact]
@@ -73,10 +73,10 @@ public sealed class AgentRunProfileTests
         var function = AIFunctionFactory.Create(() => "ok", "web_search");
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                tools: [function],
-                hostedTools: [new HostedWebSearchTool()]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            tools: [function],
+            hostedTools: [new HostedWebSearchTool()]));
     }
 
     [Fact]
@@ -85,14 +85,14 @@ public sealed class AgentRunProfileTests
         var function = AIFunctionFactory.Create(() => "ok", "read_text");
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedTools: [function]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedTools: [function]));
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]));
     }
 
     [Fact(Timeout = 30_000)]
@@ -203,8 +203,8 @@ public sealed class AgentRunProfileTests
         var result = await CompleteTurnAsync(session, "question", deadline.Token);
 
         Assert.Equal(identity, result.ModelIdentity);
-        Assert.Single(result.Transcript.Turns);
-        Assert.Equal(identity, result.Transcript.Turns[0].ModelIdentity);
+        var item = Assert.Single(result.Transcript.Turns);
+        Assert.Equal(identity, item.ModelIdentity);
         Assert.Equal(identity, session.GetTranscriptSnapshot().Turns[0].ModelIdentity);
     }
 
@@ -535,7 +535,7 @@ public sealed class AgentRunProfileTests
 
     private sealed class QueueProfileProvider(params TrackingProfileLease[] leases) : IAgentRunProfileProvider
     {
-        private readonly Queue<TrackingProfileLease> leases = new(leases);
+        private readonly Queue<TrackingProfileLease> _leases = new(leases);
 
         public int AcquireCount { get; private set; }
 
@@ -543,21 +543,21 @@ public sealed class AgentRunProfileTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             AcquireCount++;
-            return Task.FromResult<IAgentRunProfileLease>(leases.Dequeue());
+            return Task.FromResult<IAgentRunProfileLease>(_leases.Dequeue());
         }
     }
 
     private sealed class AsyncQueueProfileProvider(params Task<IAgentRunProfileLease>[] acquisitions)
         : IAgentRunProfileProvider
     {
-        private readonly Queue<Task<IAgentRunProfileLease>> acquisitions = new(acquisitions);
+        private readonly Queue<Task<IAgentRunProfileLease>> _acquisitions = new(acquisitions);
 
         public int AcquireCount { get; private set; }
 
         public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
         {
             AcquireCount++;
-            return acquisitions.Dequeue().WaitAsync(cancellationToken);
+            return _acquisitions.Dequeue().WaitAsync(cancellationToken);
         }
     }
 
@@ -587,7 +587,7 @@ public sealed class AgentRunProfileTests
         : IChatClient
     {
         private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
+            IAsyncEnumerable<ChatResponseUpdate>>> _responses = new(responses);
 
         public List<IReadOnlyList<ChatMessage>> Requests { get; } = [];
 
@@ -615,7 +615,7 @@ public sealed class AgentRunProfileTests
             Instructions.Add(options?.Instructions);
             ToolNames.Add(options?.Tools?.OfType<AIFunction>().Select(static tool => tool.Name).ToArray() ?? []);
             AllTools.Add(options?.Tools?.ToArray() ?? []);
-            return responses.Dequeue()(Requests[^1], cancellationToken);
+            return _responses.Dequeue()(Requests[^1], cancellationToken);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null)

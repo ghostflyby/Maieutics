@@ -49,48 +49,50 @@ internal sealed class PluginMcpCoordinator(
     ILogger logger,
     McpAdjustmentChain? adjustments = null) : IAsyncDisposable
 {
-    private readonly PluginMcpDiscovery discovery =
+    private readonly PluginMcpDiscovery _discovery =
         discovery ?? throw new ArgumentNullException(nameof(discovery));
 
-    private readonly Lock gate = new();
+    private readonly Lock _gate = new();
 
-    private readonly PluginMcpGenerationFactory generationFactory =
+    private readonly PluginMcpGenerationFactory _generationFactory =
         generationFactory ?? throw new ArgumentNullException(nameof(generationFactory));
 
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    private readonly List<Task> retirementObservers = [];
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly List<Task> _retirementObservers = [];
 
-    private readonly Channel<byte> revisionSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
+    private readonly Channel<byte> _revisionSignals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
         SingleReader = true,
         SingleWriter = false,
         FullMode = BoundedChannelFullMode.DropWrite
     });
 
-    private readonly Dictionary<string, string> adjustmentFingerprints = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _adjustmentFingerprints = new(StringComparer.Ordinal);
 
     /// <summary>The shared empty forced set for plain differential publishes.</summary>
     private static readonly IReadOnlySet<string> NoForcedPlugins = new HashSet<string>(StringComparer.Ordinal);
-    private IReadOnlyDictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>> contributions =
+
+    private IReadOnlyDictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>> _contributions =
         new Dictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>>();
 
-    private Task? disposal;
-    private int disposeState;
-    private IReadOnlyDictionary<string, McpServerGeneration> generations =
+    private Task? _disposal;
+    private int _disposeState;
+
+    private IReadOnlyDictionary<string, McpServerGeneration> _generations =
         new Dictionary<string, McpServerGeneration>(StringComparer.Ordinal);
 
-    private RegistryRevision? latestRevision;
-    private long nextRevision;
-    private Task refreshLoop = Task.CompletedTask;
-    private int startState;
+    private RegistryRevision? _latestRevision;
+    private long _nextRevision;
+    private Task _refreshLoop = Task.CompletedTask;
+    private int _startState;
 
     internal void Start()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-        if (Interlocked.Exchange(ref startState, 1) != 0) return;
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+        if (Interlocked.Exchange(ref _startState, 1) != 0) return;
 
-        refreshLoop = RunRefreshLoopAsync();
+        _refreshLoop = RunRefreshLoopAsync();
     }
 
     /// <summary>Plain differential publish: registrations new to the published set run
@@ -129,8 +131,8 @@ internal sealed class PluginMcpCoordinator(
     {
         ArgumentNullException.ThrowIfNull(registrations);
         ArgumentNullException.ThrowIfNull(forcedPlugins);
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-        if (Volatile.Read(ref startState) == 0)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+        if (Volatile.Read(ref _startState) == 0)
             throw new InvalidOperationException("The plugin MCP coordinator has not been started.");
 
         var normalized = registrations
@@ -141,10 +143,10 @@ internal sealed class PluginMcpCoordinator(
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         RegistryRevision revision;
         RegistryRevision? superseded;
-        lock (gate)
+        lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
-            superseded = latestRevision;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+            superseded = _latestRevision;
             // A superseded revision that never applied keeps its forced plugins owed:
             // the successor inherits them, or a plain publish would differential-skip
             // the forced registrations back to their stale contributions and silently
@@ -162,15 +164,15 @@ internal sealed class PluginMcpCoordinator(
             }
 
             revision = new RegistryRevision(
-                Interlocked.Increment(ref nextRevision),
+                Interlocked.Increment(ref _nextRevision),
                 normalized,
                 effectiveForced,
                 completion);
-            latestRevision = revision;
+            _latestRevision = revision;
         }
 
         superseded?.Completion.TrySetResult(false);
-        if (!revisionSignals.Writer.TryWrite(0) && Volatile.Read(ref disposeState) != 0)
+        if (!_revisionSignals.Writer.TryWrite(0) && Volatile.Read(ref _disposeState) != 0)
             completion.TrySetResult(false);
 
         return revision;
@@ -184,9 +186,9 @@ internal sealed class PluginMcpCoordinator(
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return latestRevision?.Completion.Task ?? Task.CompletedTask;
+                return _latestRevision?.Completion.Task ?? Task.CompletedTask;
             }
         }
     }
@@ -194,11 +196,11 @@ internal sealed class PluginMcpCoordinator(
     internal IReadOnlyList<McpServerGeneration.McpServerLease> AcquireLeases()
     {
         McpServerGeneration[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposeState) != 0) return [];
+            if (Volatile.Read(ref _disposeState) != 0) return [];
 
-            snapshot = generations.Values
+            snapshot = _generations.Values
                 .OrderBy(static generation => generation.Id, StringComparer.Ordinal)
                 .ToArray();
         }
@@ -225,11 +227,11 @@ internal sealed class PluginMcpCoordinator(
     /// unavailable error until the caller releases it, so a racy snapshot is safe.</summary>
     internal IReadOnlyList<McpServerGeneration> SnapshotGenerations()
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (Volatile.Read(ref disposeState) != 0) return [];
+            if (Volatile.Read(ref _disposeState) != 0) return [];
 
-            return generations.Values
+            return _generations.Values
                 .OrderBy(static generation => generation.Id, StringComparer.Ordinal)
                 .ToArray();
         }
@@ -238,15 +240,15 @@ internal sealed class PluginMcpCoordinator(
     public ValueTask DisposeAsync()
     {
         Task task;
-        lock (gate)
+        lock (_gate)
         {
-            if (disposal is null)
+            if (_disposal is null)
             {
-                Volatile.Write(ref disposeState, 1);
-                disposal = DisposeCoreAsync();
+                Volatile.Write(ref _disposeState, 1);
+                _disposal = DisposeCoreAsync();
             }
 
-            task = disposal;
+            task = _disposal;
         }
 
         return new ValueTask(task);
@@ -255,55 +257,55 @@ internal sealed class PluginMcpCoordinator(
     private async Task DisposeCoreAsync()
     {
         await Task.Yield();
-        revisionSignals.Writer.TryComplete();
-        await lifetime.CancelAsync().ConfigureAwait(false);
+        _revisionSignals.Writer.TryComplete();
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {
-            await refreshLoop.ConfigureAwait(false);
+            await _refreshLoop.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
 
         McpServerGeneration[] active;
         RegistryRevision? pending;
-        lock (gate)
+        lock (_gate)
         {
-            active = generations.Values.ToArray();
-            generations = new Dictionary<string, McpServerGeneration>(StringComparer.Ordinal);
-            contributions = new Dictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>>();
-            pending = latestRevision;
-            latestRevision = null;
+            active = _generations.Values.ToArray();
+            _generations = new Dictionary<string, McpServerGeneration>(StringComparer.Ordinal);
+            _contributions = new Dictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>>();
+            pending = _latestRevision;
+            _latestRevision = null;
         }
 
         pending?.Completion.TrySetResult(false);
         foreach (var generation in active) TrackRetirement(generation);
 
         Task[] retirements;
-        lock (gate)
+        lock (_gate)
         {
-            retirements = retirementObservers.ToArray();
+            retirements = _retirementObservers.ToArray();
         }
 
         await Task.WhenAll(retirements).ConfigureAwait(false);
-        lifetime.Dispose();
+        _lifetime.Dispose();
     }
 
     private async Task RunRefreshLoopAsync()
     {
         try
         {
-            await foreach (var signal in revisionSignals.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            await foreach (var signal in _revisionSignals.Reader.ReadAllAsync(_lifetime.Token).ConfigureAwait(false))
             {
                 if (signal != 0) continue;
-                while (revisionSignals.Reader.TryRead(out _))
+                while (_revisionSignals.Reader.TryRead(out _))
                 {
                 }
 
                 RegistryRevision? revision;
-                lock (gate)
+                lock (_gate)
                 {
-                    revision = latestRevision;
+                    revision = _latestRevision;
                 }
 
                 if (revision is null || revision.Completion.Task.IsCompleted) continue;
@@ -311,15 +313,15 @@ internal sealed class PluginMcpCoordinator(
                 var applied = false;
                 try
                 {
-                    applied = await ReconcileRevisionAsync(revision, lifetime.Token).ConfigureAwait(false);
+                    applied = await ReconcileRevisionAsync(revision, _lifetime.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                 {
                     break;
                 }
                 catch (Exception exception)
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         exception,
                         "Plugin MCP registry revision {Revision} could not be applied; the previous snapshot remains active.",
                         revision.Number);
@@ -330,7 +332,7 @@ internal sealed class PluginMcpCoordinator(
                 }
             }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
         }
     }
@@ -340,9 +342,9 @@ internal sealed class PluginMcpCoordinator(
         CancellationToken cancellationToken)
     {
         IReadOnlyDictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>> previousContributions;
-        lock (gate)
+        lock (_gate)
         {
-            previousContributions = contributions;
+            previousContributions = _contributions;
         }
 
         var active = revision.Registrations.ToHashSet();
@@ -363,14 +365,14 @@ internal sealed class PluginMcpCoordinator(
 
             try
             {
-                var result = await discovery(registration, cancellationToken).ConfigureAwait(false);
+                var result = await _discovery(registration, cancellationToken).ConfigureAwait(false);
                 if (result.IsSuccess)
                 {
                     candidateContributions[registration] = result.Definitions.ToArray();
                     continue;
                 }
 
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Plugin '{PluginId}' export '{ExportName}' MCP discovery failed ({Failure}); its previous contribution remains active.",
                     registration.PluginId,
                     registration.ExportName,
@@ -382,7 +384,7 @@ internal sealed class PluginMcpCoordinator(
             }
             catch (Exception exception)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     exception,
                     "Plugin '{PluginId}' export '{ExportName}' MCP discovery raised an unexpected failure; its previous contribution remains active.",
                     registration.PluginId,
@@ -448,7 +450,7 @@ internal sealed class PluginMcpCoordinator(
 
             if (string.Equals(existing.GenerationKey, definition.GenerationKey, StringComparison.Ordinal)) continue;
 
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin MCP discovery produced conflicting definitions for server '{ServerId}'; the previous snapshot remains active.",
                 definition.Id);
             definitions = [];
@@ -466,9 +468,9 @@ internal sealed class PluginMcpCoordinator(
         CancellationToken cancellationToken)
     {
         IReadOnlyDictionary<string, McpServerGeneration> previous;
-        lock (gate)
+        lock (_gate)
         {
-            previous = generations;
+            previous = _generations;
         }
 
         var next = new Dictionary<string, McpServerGeneration>(StringComparer.Ordinal);
@@ -485,7 +487,7 @@ internal sealed class PluginMcpCoordinator(
                     continue;
                 }
 
-                var generation = await generationFactory(definition, cancellationToken).ConfigureAwait(false);
+                var generation = await _generationFactory(definition, cancellationToken).ConfigureAwait(false);
                 created.Add(generation);
                 next.Add(definition.Id, generation);
             }
@@ -504,9 +506,9 @@ internal sealed class PluginMcpCoordinator(
 
         McpServerGeneration[] retired;
         var published = false;
-        lock (gate)
+        lock (_gate)
         {
-            if (!ReferenceEquals(latestRevision, revision) || Volatile.Read(ref disposeState) != 0)
+            if (!ReferenceEquals(_latestRevision, revision) || Volatile.Read(ref _disposeState) != 0)
             {
                 retired = [];
             }
@@ -514,8 +516,8 @@ internal sealed class PluginMcpCoordinator(
             {
                 var retained = next.Values.ToHashSet(ReferenceEqualityComparer.Instance);
                 retired = previous.Values.Where(generation => !retained.Contains(generation)).ToArray();
-                generations = next;
-                contributions = candidateContributions;
+                _generations = next;
+                _contributions = candidateContributions;
                 published = true;
             }
         }
@@ -538,20 +540,20 @@ internal sealed class PluginMcpCoordinator(
                 var fingerprint = adjustments.FingerprintFor(generation.Id);
                 if (createdSet.Contains(generation))
                 {
-                    adjustmentFingerprints[generation.Id] = fingerprint;
+                    _adjustmentFingerprints[generation.Id] = fingerprint;
                     continue;
                 }
 
-                if (adjustmentFingerprints.TryGetValue(generation.Id, out var stored) &&
+                if (_adjustmentFingerprints.TryGetValue(generation.Id, out var stored) &&
                     string.Equals(stored, fingerprint, StringComparison.Ordinal))
                     continue;
-                adjustmentFingerprints[generation.Id] = fingerprint;
+                _adjustmentFingerprints[generation.Id] = fingerprint;
                 pendingRefresh.Add(generation);
             }
 
             foreach (var generation in pendingRefresh)
             {
-                logger.LogInformation(
+                _logger.LogInformation(
                     "The adjustment chain changed for server '{ServerId}'; its tool surface will be re-projected.",
                     generation.Id);
                 generation.RequestToolRefresh();
@@ -564,19 +566,19 @@ internal sealed class PluginMcpCoordinator(
 
     private bool IsCurrent(RegistryRevision revision)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return Volatile.Read(ref disposeState) == 0 && ReferenceEquals(latestRevision, revision);
+            return Volatile.Read(ref _disposeState) == 0 && ReferenceEquals(_latestRevision, revision);
         }
     }
 
     private void TrackRetirement(McpServerGeneration generation)
     {
         var observer = ObserveRetirementAsync(generation);
-        lock (gate)
+        lock (_gate)
         {
-            retirementObservers.RemoveAll(static task => task.IsCompleted);
-            retirementObservers.Add(observer);
+            _retirementObservers.RemoveAll(static task => task.IsCompleted);
+            _retirementObservers.Add(observer);
         }
     }
 
@@ -588,7 +590,7 @@ internal sealed class PluginMcpCoordinator(
         }
         catch (Exception exception)
         {
-            logger.LogError(
+            _logger.LogError(
                 exception,
                 "Plugin-discovered MCP server '{ServerId}' failed to retire.",
                 generation.Id);

@@ -4,7 +4,7 @@ namespace Maieutics.Processes;
 
 /// <summary>Builds the allowlisted environment for a general (terminal or MCP) child from the
 /// effective policy's <c>env</c> grants. The default policy yields exactly the previous
-/// <see cref="Capture"/> allowlist, so existing terminal behavior is unchanged; when a layer
+/// <see cref="Capture(EffectivePolicy)"/> allowlist, so existing terminal behavior is unchanged; when a layer
 /// restricts <c>env</c>, only the granted names are carried. Provider credentials never cross into
 /// a shell child (AGENTS.md invariant 23: kinds a process sandbox cannot express are enforced by
 /// their owning layer — env is enforced here at spawn time).</summary>

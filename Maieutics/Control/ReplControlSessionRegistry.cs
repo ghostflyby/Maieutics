@@ -9,17 +9,17 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplControlSessionRegistry
 {
-    private readonly Lock changeLock = new();
-    private readonly ConcurrentDictionary<int, string> pluginHosts = new();
-    private readonly ConcurrentDictionary<int, string> sessions = new();
-    private readonly ConcurrentDictionary<int, string> ownerSessions = new();
-    private TaskCompletionSource registryChanged = CreateSignal();
+    private readonly Lock _changeLock = new();
+    private readonly ConcurrentDictionary<int, string> _pluginHosts = new();
+    private readonly ConcurrentDictionary<int, string> _sessions = new();
+    private readonly ConcurrentDictionary<int, string> _ownerSessions = new();
+    private TaskCompletionSource _registryChanged = CreateSignal();
 
     public void Register(int processId, string sessionId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        sessions[processId] = sessionId;
+        _sessions[processId] = sessionId;
         SignalChange();
     }
 
@@ -32,14 +32,14 @@ internal sealed class ReplControlSessionRegistry
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerSessionId);
-        ownerSessions[processId] = ownerSessionId;
+        _ownerSessions[processId] = ownerSessionId;
         SignalChange();
     }
 
     public void Unregister(int processId)
     {
-        sessions.TryRemove(processId, out _);
-        ownerSessions.TryRemove(processId, out _);
+        _sessions.TryRemove(processId, out _);
+        _ownerSessions.TryRemove(processId, out _);
         SignalChange();
     }
 
@@ -50,15 +50,15 @@ internal sealed class ReplControlSessionRegistry
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         while (true)
         {
-            if (sessions.ContainsKey(processId) || pluginHosts.ContainsKey(processId))
+            if (_sessions.ContainsKey(processId) || _pluginHosts.ContainsKey(processId))
                 return true;
 
             Task changed;
-            lock (changeLock)
+            lock (_changeLock)
             {
-                if (sessions.ContainsKey(processId) || pluginHosts.ContainsKey(processId))
+                if (_sessions.ContainsKey(processId) || _pluginHosts.ContainsKey(processId))
                     return true;
-                changed = registryChanged.Task;
+                changed = _registryChanged.Task;
             }
 
             await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -68,10 +68,10 @@ internal sealed class ReplControlSessionRegistry
     private void SignalChange()
     {
         TaskCompletionSource previous;
-        lock (changeLock)
+        lock (_changeLock)
         {
-            previous = registryChanged;
-            registryChanged = CreateSignal();
+            previous = _registryChanged;
+            _registryChanged = CreateSignal();
         }
         previous.TrySetResult();
     }
@@ -83,7 +83,7 @@ internal sealed class ReplControlSessionRegistry
 
     public bool TryGetSession(int processId, out string sessionId)
     {
-        if (sessions.TryGetValue(processId, out var value))
+        if (_sessions.TryGetValue(processId, out var value))
         {
             sessionId = value;
             return true;
@@ -96,7 +96,7 @@ internal sealed class ReplControlSessionRegistry
     /// <summary>The owning agent session id of a REPL child, when one was registered.</summary>
     public bool TryGetOwnerSession(int processId, out string ownerSessionId)
     {
-        if (ownerSessions.TryGetValue(processId, out var value))
+        if (_ownerSessions.TryGetValue(processId, out var value))
         {
             ownerSessionId = value;
             return true;
@@ -108,32 +108,32 @@ internal sealed class ReplControlSessionRegistry
 
     public bool IsOwnedBy(int processId, string sessionId)
     {
-        return sessions.TryGetValue(processId, out var owned) &&
+        return _sessions.TryGetValue(processId, out var owned) &&
                string.Equals(owned, sessionId, StringComparison.Ordinal);
     }
 
     public bool ContainsSession(string sessionId)
     {
-        return sessions.Values.Contains(sessionId, StringComparer.Ordinal);
+        return _sessions.Values.Contains(sessionId, StringComparer.Ordinal);
     }
 
     public void RegisterPluginHost(int processId, string hostId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(processId);
         ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
-        pluginHosts[processId] = hostId;
+        _pluginHosts[processId] = hostId;
         SignalChange();
     }
 
     public void UnregisterPluginHost(int processId)
     {
-        pluginHosts.TryRemove(processId, out _);
+        _pluginHosts.TryRemove(processId, out _);
         SignalChange();
     }
 
     public bool TryGetPluginHost(int processId, out string hostId)
     {
-        if (pluginHosts.TryGetValue(processId, out var value))
+        if (_pluginHosts.TryGetValue(processId, out var value))
         {
             hostId = value;
             return true;
@@ -145,7 +145,7 @@ internal sealed class ReplControlSessionRegistry
 
     public bool IsPluginHostOwnedBy(int processId, string hostId)
     {
-        return pluginHosts.TryGetValue(processId, out var owned) &&
+        return _pluginHosts.TryGetValue(processId, out var owned) &&
                string.Equals(owned, hostId, StringComparison.Ordinal);
     }
 }

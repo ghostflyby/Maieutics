@@ -286,16 +286,14 @@ public sealed class CapabilityRegistryTests
     [InlineData("https://api.example.com/v1/", "https://api.example.com/v1/")]
     public void DuplicateNormalizedUrlsAreRejected(string first, string second)
     {
-        var action = () => CreateRegistry($$"""
+        var assertion2 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry($$"""
         {
           "Endpoints": [
             { "Url": "{{first}}", "Capabilities": ["WebSearch"] },
             { "Url": "{{second}}", "Capabilities": ["Shell"] }
           ]
         }
-        """);
-
-        var assertion2 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*configured\\ more\\ than\\ once.*$", assertion2.Message);
     }
 
@@ -306,45 +304,39 @@ public sealed class CapabilityRegistryTests
     [InlineData("not a url")]
     public void InvalidEndpointUrlsAreRejected(string url)
     {
-        var action = () => CreateRegistry($$"""
+        var assertion3 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry($$"""
         {
           "Endpoints": [
             { "Url": "{{url}}", "Capabilities": ["WebSearch"] }
           ]
         }
-        """);
-
-        var assertion3 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*HTTP\\ or\\ HTTPS.*$", assertion3.Message);
     }
 
     [Fact]
     public void UserInfoInUrlIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion4 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Endpoints": [
             { "Url": "https://user:secret@api.example.com/v1", "Capabilities": ["WebSearch"] }
           ]
         }
-        """);
-
-        var assertion4 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*user\\ information.*$", assertion4.Message);
     }
 
     [Fact]
     public void QueryAndFragmentInUrlAreRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion5 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Endpoints": [
             { "Url": "https://api.example.com/v1?tenant=one", "Capabilities": ["WebSearch"] }
           ]
         }
-        """);
-
-        var assertion5 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*query\\ or\\ fragment.*$", assertion5.Message);
     }
 
@@ -375,15 +367,13 @@ public sealed class CapabilityRegistryTests
     [InlineData("123")]
     public void GrammarInvalidCapabilityNamesAreRejected(string capability)
     {
-        var action = () => CreateRegistry($$"""
+        var assertion6 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry($$"""
         {
           "Endpoints": [
             { "Url": "https://api.example.com/v1", "Capabilities": ["{{capability}}"] }
           ]
         }
-        """);
-
-        var assertion6 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*capability.*$", assertion6.Message);
     }
 
@@ -415,15 +405,13 @@ public sealed class CapabilityRegistryTests
     [Fact]
     public void InvalidLimitIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion7 = Assert.ThrowsAny<ArgumentOutOfRangeException>(() => CreateRegistry("""
         {
           "Endpoints": [
             { "Url": "https://api.example.com/v1", "Limits": { "MaxBuiltinToolCalls": 0 } }
           ]
         }
-        """);
-
-        var assertion7 = Assert.ThrowsAny<ArgumentOutOfRangeException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*at\\ least\\ 1.*$", assertion7.Message);
     }
 
@@ -453,76 +441,66 @@ public sealed class CapabilityRegistryTests
     [Fact]
     public void MissingUrlIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion8 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Endpoints": [
             { "Capabilities": ["WebSearch"] }
           ]
         }
-        """);
-
-        var assertion8 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*Url.*$", assertion8.Message);
     }
 
     [Fact]
     public void VendorEndpointHostsCannotBeClaimedByMultipleVendors()
     {
-        var action = () => CreateRegistry("""
+        var assertion9 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Vendors": {
             "opencode": { "Endpoints": ["https://gateway.example.com/v1"] },
             "other": { "Endpoints": ["https://gateway.example.com/v1/"] }
           }
         }
-        """);
-
-        var assertion9 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*claimed\\ by\\ both.*$", assertion9.Message);
     }
 
     [Fact]
     public void InvalidVendorIdentifierIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion10 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Vendors": {
             "op encode": { "Capabilities": ["WebSearch"] }
           }
         }
-        """);
-
-        var assertion10 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*Vendor\\ identifier.*$", assertion10.Message);
     }
 
     [Fact]
     public void InvalidVendorEndpointUrlIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion11 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Vendors": {
             "opencode": { "Endpoints": ["not a url"] }
           }
         }
-        """);
-
-        var assertion11 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*HTTP\\ or\\ HTTPS.*$", assertion11.Message);
     }
 
     [Fact]
     public void BlankVendorModelIdentifierIsRejected()
     {
-        var action = () => CreateRegistry("""
+        var assertion12 = Assert.ThrowsAny<ArgumentException>(() => CreateRegistry("""
         {
           "Vendors": {
             "opencode": { "Models": { " ": { "Capabilities": ["WebSearch"] } } }
           }
         }
-        """);
-
-        var assertion12 = Assert.ThrowsAny<ArgumentException>(() => action.Invoke());
+        """));
         Assert.Matches("(?is)^.*model\\ identifiers.*$", assertion12.Message);
     }
 

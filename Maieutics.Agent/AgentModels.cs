@@ -425,15 +425,20 @@ public sealed record AgentModelDescriptor
     /// <summary>Gets the provider family name.</summary>
     public string Provider { get; }
 
-    /// <summary>Gets the organization that owns the model, when known.</summary>
-    public string? OwnedBy { get; }
+/// <summary>Gets the organization that owns the model, when known.</summary>
+public string? OwnedBy { get; }
 
-    /// <summary>Gets the model creation timestamp, when known.</summary>
-    public DateTime? CreatedAt { get; }
+// CreatedAt and Family are part of the public model-metadata surface: they mirror what
+// the provider reports even where this repository's consumers do not read them yet.
 
-    /// <summary>Gets the maximum context window size, when known.</summary>
-    public long? ContextWindow { get; }
+/// <summary>Gets the model creation timestamp, when known.</summary>
+// ReSharper disable once UnusedAutoPropertyAccessor.Global
+public DateTime? CreatedAt { get; }
 
-    /// <summary>Gets the model family or architecture group, when known.</summary>
-    public string? Family { get; }
+/// <summary>Gets the maximum context window size, when known.</summary>
+public long? ContextWindow { get; }
+
+/// <summary>Gets the model family or architecture group, when known.</summary>
+// ReSharper disable once UnusedAutoPropertyAccessor.Global
+public string? Family { get; }
 }

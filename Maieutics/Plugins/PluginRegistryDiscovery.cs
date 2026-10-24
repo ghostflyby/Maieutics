@@ -69,9 +69,9 @@ internal static class PluginRegistryDiscovery
         try
         {
             var packageManifest = JsonSerializer.Deserialize(
-                File.ReadAllText(denoJsonLocal), PluginManifestJsonContext.Default.PluginManifestFile);
+                await File.ReadAllTextAsync(denoJsonLocal, cancellationToken), PluginManifestJsonContext.Default.PluginManifestFile);
             var pluginManifest = JsonSerializer.Deserialize(
-                File.ReadAllText(maieuticsLocal), PluginManifestJsonContext.Default.MaieuticsManifestFile);
+                await File.ReadAllTextAsync(maieuticsLocal, cancellationToken), PluginManifestJsonContext.Default.MaieuticsManifestFile);
             if (packageManifest is null || pluginManifest is null)
             {
                 diagnostics.Add($"Registry discovery: '{value}' has empty manifest files.");
@@ -179,8 +179,8 @@ internal static class PluginRegistryDiscovery
             // Identity fallback for npm packages without deno.json: package.json
             // (the sibling identity file) carries the canonical package name.
             var name = packageManifest?.Name
-                ?? ReadPackageJsonName(packageDir)
-                ?? key;
+                       ?? ReadPackageJsonName(packageDir)
+                       ?? key;
             var permissions = PluginManifest.ReadPermissions(packageManifest?.Permissions?.Default);
             var workers = new List<PluginWorkerDescriptor>();
             foreach (var (entrypoint, entryScript) in EnumerateRegistryEntrypoints(pluginManifest.Entrypoints))
@@ -253,8 +253,11 @@ internal static class PluginRegistryDiscovery
     }
 
     /// <summary>Toolchain mediation: `deno info --json {url}` fetches the URL into the
-    /// shared cache and reports its local path.</summary>
+    /// shared cache and reports its local path. Name and version mirror the toolchain's
+    /// answer; consumers resolve the local directory.</summary>
+    // ReSharper disable NotAccessedPositionalProperty.Global
     public sealed record NpmPackageInfo(string Name, string Version, string LocalPath);
+    // ReSharper restore NotAccessedPositionalProperty.Global
 
     /// <summary>`deno info --json npm:spec` resolves ranges/tags and reports the
     /// extracted package directory (browsable) under the shared npm cache.</summary>

@@ -69,21 +69,21 @@ internal sealed class McpToolProgressForwarder(
     string serverId,
     ILogger logger) : IProgress<ProgressNotificationValue>
 {
-    private readonly Lock gate = new();
-    private Task pendingTask = Task.CompletedTask;
-    private long version;
-    private bool silenced;
+    private readonly Lock _gate = new();
+    private Task _pendingTask = Task.CompletedTask;
+    private long _version;
+    private bool _silenced;
 
     public void Report(ProgressNotificationValue value)
     {
         Task antecedent;
         var successor = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        lock (_gate)
         {
-            if (silenced) return;
-            antecedent = pendingTask;
-            pendingTask = successor.Task;
-            version++;
+            if (_silenced) return;
+            antecedent = _pendingTask;
+            _pendingTask = successor.Task;
+            _version++;
         }
 
         _ = RunLinkAsync(value, antecedent, successor);
@@ -96,16 +96,16 @@ internal sealed class McpToolProgressForwarder(
         {
             long observed;
             Task tail;
-            lock (gate)
+            lock (_gate)
             {
-                observed = version;
-                tail = pendingTask;
+                observed = _version;
+                tail = _pendingTask;
             }
 
             await tail.ConfigureAwait(false);
-            lock (gate)
+            lock (_gate)
             {
-                if (version == observed) return;
+                if (_version == observed) return;
             }
         }
     }
@@ -117,7 +117,7 @@ internal sealed class McpToolProgressForwarder(
         try
         {
             await antecedent.ConfigureAwait(false);
-            if (Volatile.Read(ref silenced)) return;
+            if (Volatile.Read(ref _silenced)) return;
 
             var payload = new McpToolProgress(value.Progress, value.Total, value.Message);
             var content = new DataContent(
@@ -144,7 +144,7 @@ internal sealed class McpToolProgressForwarder(
 
     private void Silence(Exception exception, LogLevel level)
     {
-        lock (gate) silenced = true;
+        lock (_gate) _silenced = true;
         logger.Log(
             level,
             exception,

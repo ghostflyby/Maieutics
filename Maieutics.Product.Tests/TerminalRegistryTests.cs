@@ -105,8 +105,8 @@ public sealed class TerminalRegistryTests
         Assert.Equal("idle", first.State);
         Assert.Equal(2, registry.List(owner).Count());
 
-        var limitFailure = () => RunAsync(registry, owner, TestContext.Current.CancellationToken);
-        Assert.Equal("terminal_session_limit", (await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await limitFailure.Invoke(); })).Code);
+        Assert.Equal("terminal_session_limit", (await Assert.ThrowsAnyAsync<AgentToolException>(
+            async () => { await RunAsync(registry, owner, TestContext.Current.CancellationToken); })).Code);
     }
 
     [Fact(Timeout = 10_000)]

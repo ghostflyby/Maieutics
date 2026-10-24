@@ -77,7 +77,7 @@ public sealed class McpAdjustmentChainTests
             {
                 var body = request ?? default;
                 var ids = body.ValueKind == JsonValueKind.Object &&
-                    body.TryGetProperty("servers", out var servers)
+                          body.TryGetProperty("servers", out var servers)
                     ? string.Join(",", servers.EnumerateArray()
                         .Select(server => server.GetProperty("id").GetString()))
                     : string.Empty;
@@ -112,6 +112,9 @@ public sealed class McpAdjustmentChainTests
     {
         var snapshot = Snapshot(("adjuster", ["provider"]));
         var failing = true;
+        // The test flips `failing` between phases and the fake reads it live by design; the
+        // chain callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var chain = CreateChain(
             (_, _, _, _) =>
             {
@@ -152,7 +155,7 @@ public sealed class McpAdjustmentChainTests
             {
                 var body = request ?? default;
                 seenServers = body.ValueKind == JsonValueKind.Object &&
-                    body.TryGetProperty("servers", out var servers)
+                              body.TryGetProperty("servers", out var servers)
                     ? servers.GetRawText()
                     : string.Empty;
                 return Task.FromResult<JsonElement?>(Json("""{"servers":[]}"""));

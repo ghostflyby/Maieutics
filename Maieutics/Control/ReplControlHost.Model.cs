@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Commands;
+using Maieutics.Execution;
 using Maieutics.Permissions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
@@ -16,7 +18,7 @@ namespace Maieutics.Control;
 /// deadlock class (the published-binary smoke catches it; sample the hung process to see the
 /// re-entrant resolution chain).</summary>
 internal sealed record ModelOrchestrationSurface(
-    Func<Commands.MaieuticsAgentSessionManager> AgentSessions,
+    Func<MaieuticsAgentSessionManager> AgentSessions,
     Func<string, AgentSessionId?> ResolveOwnerSession,
     Func<AgentSessionOptions?> BaseSessionOptions,
     Func<IReadOnlyList<AIFunction>> Tools,
@@ -25,7 +27,7 @@ internal sealed record ModelOrchestrationSurface(
     /// <summary>The task plane this surface waits on and cancels through: one provider
     /// composes every authority, so the generic /v1/tasks endpoints address all task kinds
     /// uniformly. Resolved lazily at request time.</summary>
-    internal required Func<Execution.TaskResourceProvider> TaskResources { get; init; }
+    internal required Func<TaskResourceProvider> TaskResources { get; init; }
 }
 
 internal sealed partial class ReplControlHost
@@ -61,7 +63,7 @@ internal sealed partial class ReplControlHost
             return;
         }
 
-        if (orchestration is null)
+        if (_orchestration is null)
         {
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
@@ -71,14 +73,14 @@ internal sealed partial class ReplControlHost
         if (ownerSessionId is null) return;
         if (ResolveAgentSession(context, ownerSessionId.Value) is not { } session) return;
 
-        var baseSessionOptions = orchestration.BaseSessionOptions();
+        var baseSessionOptions = _orchestration.BaseSessionOptions();
         if (baseSessionOptions?.Subagents is null)
         {
             // The composition root disabled subagent spawning: the orchestration surface
             // honors the same deny-by-default knob as the model's own agent_spawn tool.
             await WriteSubagentErrorAsync(
-                context, StatusCodes.Status409Conflict, "agent_subagent_disabled",
-                "Subagent spawning is not enabled for this host.", cancellationToken)
+                    context, StatusCodes.Status409Conflict, "agent_subagent_disabled",
+                    "Subagent spawning is not enabled for this host.", cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -99,18 +101,18 @@ internal sealed partial class ReplControlHost
             // (the onChildSessionCreated callback), so a session-scoped deny applies from the
             // child's first instruction — not after the run already started.
             var onChildSessionCreated = (AgentSessionId childSessionId) =>
-                orchestration.Permissions()?.RegisterChildScope(childSessionId, ownerSessionId.Value);
+                _orchestration.Permissions()?.RegisterChildScope(childSessionId, ownerSessionId.Value);
             var spawner = session.TryCreateActiveRunSpawner();
             handle = spawner is not null
                 ? await spawner.StartChildAsync(
-                      spec, cancellationToken, onChildSessionCreated).ConfigureAwait(false)
+                    spec, cancellationToken, onChildSessionCreated).ConfigureAwait(false)
                 : await session.SubagentHost.StartDetachedChildAsync(
-                      spec,
-                      baseSessionOptions,
-                      orchestration.Tools(),
-                      cancellationToken,
-                      onChildSessionCreated)
-                  .ConfigureAwait(false);
+                        spec,
+                        baseSessionOptions,
+                        _orchestration.Tools(),
+                        cancellationToken,
+                        onChildSessionCreated)
+                    .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)
         {
@@ -137,14 +139,14 @@ internal sealed partial class ReplControlHost
         await WriteJsonAsync(context, new SubagentSpawnedPayload(
             handle.SessionId.Value.ToString("N"),
             handle.RunId.Value.ToString("N"),
-            Execution.AgentTaskResourceSource.ComposeUri(ownerSessionId.Value, handle.RunId),
+            AgentTaskResourceSource.ComposeUri(ownerSessionId.Value, handle.RunId),
             "working"), cancellationToken).ConfigureAwait(false);
     }
 
     private async Task HandleSubagentWaitAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
-        if (orchestration is null)
+        if (_orchestration is null)
         {
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
@@ -188,7 +190,7 @@ internal sealed partial class ReplControlHost
     private async Task HandleSubagentCancelAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
-        if (orchestration is null)
+        if (_orchestration is null)
         {
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
@@ -227,7 +229,7 @@ internal sealed partial class ReplControlHost
     private async Task HandleTaskWaitAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
-        if (orchestration is null)
+        if (_orchestration is null)
         {
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
@@ -235,7 +237,7 @@ internal sealed partial class ReplControlHost
 
         var uri = context.Request.Query["uri"].ToString();
         // task://{authority}/...: the authority varies per kind, so validate the scheme.
-        if (!Execution.ResourceRegistry.TryParseUri(uri, out var parsed) ||
+        if (!ResourceRegistry.TryParseUri(uri, out var parsed) ||
             !string.Equals(parsed.Scheme, "task", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -245,7 +247,7 @@ internal sealed partial class ReplControlHost
         var timeout = ReadBoundedTimeout(context) ?? TimeSpan.FromSeconds(60);
         try
         {
-            var snapshot = await orchestration.TaskResources()
+            var snapshot = await _orchestration.TaskResources()
                 .WaitTaskAsync(uri, timeout, cancellationToken).ConfigureAwait(false);
             await WriteJsonAsync(context, snapshot, cancellationToken).ConfigureAwait(false);
         }
@@ -256,7 +258,7 @@ internal sealed partial class ReplControlHost
                 $"The task '{uri}' did not reach a terminal state within {timeout}.",
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (Execution.ResourceException exception)
+        catch (ResourceException exception)
         {
             await WriteSubagentErrorAsync(
                 context, exception.Code switch
@@ -275,7 +277,7 @@ internal sealed partial class ReplControlHost
     private async Task HandleTaskCancelAsync(HttpContext context)
     {
         var cancellationToken = context.RequestAborted;
-        if (orchestration is null)
+        if (_orchestration is null)
         {
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
             return;
@@ -296,7 +298,7 @@ internal sealed partial class ReplControlHost
         }
 
         if (body is not { } cancelRequest || string.IsNullOrWhiteSpace(cancelRequest.Uri) ||
-            !Execution.ResourceRegistry.TryParseUri(cancelRequest.Uri, out var parsed) ||
+            !ResourceRegistry.TryParseUri(cancelRequest.Uri, out var parsed) ||
             !string.Equals(parsed.Scheme, "task", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -308,19 +310,18 @@ internal sealed partial class ReplControlHost
 
         try
         {
-            var snapshot = await orchestration.TaskResources()
+            var snapshot = await _orchestration.TaskResources()
                 .CancelTaskAsync(cancelRequest.Uri, ownerSessionId.Value, cancellationToken)
                 .ConfigureAwait(false);
             await WriteJsonAsync(context, snapshot, cancellationToken).ConfigureAwait(false);
         }
-        catch (Execution.ResourceException exception)
+        catch (ResourceException exception)
         {
             await WriteSubagentErrorAsync(
                 context, exception.Code switch
                 {
                     "resource_not_found" => StatusCodes.Status404NotFound,
                     "task_forbidden" => StatusCodes.Status403Forbidden,
-                    "task_cancel_failed" => StatusCodes.Status502BadGateway,
                     _ => StatusCodes.Status502BadGateway
                 }, exception.Code, exception.Message, cancellationToken).ConfigureAwait(false);
         }
@@ -335,7 +336,7 @@ internal sealed partial class ReplControlHost
             return null;
         }
 
-        var owner = orchestration!.ResolveOwnerSession(replSessionId);
+        var owner = _orchestration!.ResolveOwnerSession(replSessionId);
         if (owner is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -350,7 +351,7 @@ internal sealed partial class ReplControlHost
         AgentSession? session;
         try
         {
-            session = orchestration!.AgentSessions().Resolve(ownerSessionId) as AgentSession;
+            session = _orchestration!.AgentSessions().Resolve(ownerSessionId) as AgentSession;
         }
         catch (AgentSessionNotFoundException)
         {
@@ -395,13 +396,13 @@ internal sealed partial class ReplControlHost
                     (int?)result.Usage.TotalTokenCount)), cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task WriteJsonAsync(HttpContext context, Execution.TaskResourceSnapshot value, CancellationToken cancellationToken)
+    private async Task WriteJsonAsync(HttpContext context, TaskResourceSnapshot value, CancellationToken cancellationToken)
     {
         context.Response.ContentType = "application/json";
         await JsonSerializer.SerializeAsync(
             context.Response.Body,
             value,
-            Execution.TaskResourceJsonContext.Default.TaskResourceSnapshot,
+            TaskResourceJsonContext.Default.TaskResourceSnapshot,
             cancellationToken).ConfigureAwait(false);
     }
 

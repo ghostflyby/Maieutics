@@ -188,11 +188,14 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             // error-text hash.
             var preC = loaded with
             {
-                DataEntries = [.. loaded.DataEntries.Select(entry =>
-                    entry.Name == "unresolved"
-                        ? new PluginDataEntry(entry.Name, null,
-                            $"The data entry file '{LiteralVariablePath}' does not exist.")
-                        : entry)]
+                DataEntries =
+                [
+                    .. loaded.DataEntries.Select(entry =>
+                        entry.Name == "unresolved"
+                            ? new PluginDataEntry(entry.Name, null,
+                                $"The data entry file '{LiteralVariablePath}' does not exist.")
+                            : entry)
+                ]
             };
             Assert.Equal(PreCLiteralVariablePathFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(preC, root)));
             Assert.NotEqual(PreCLiteralVariablePathFingerprint, PluginDeclarationFingerprint.Compute(WithStableWorkerUrls(loaded, root)));
@@ -281,12 +284,15 @@ public sealed class PluginDeclarationFingerprintGoldenTests
             .AbsoluteUri.TrimEnd('/');
         return descriptor with
         {
-            Workers = [.. descriptor.Workers.Select(worker => worker with
-            {
-                EntryUrl = worker.EntryUrl.StartsWith(rootUrl, StringComparison.Ordinal)
-                    ? StableRootUrl + worker.EntryUrl[rootUrl.Length..]
-                    : worker.EntryUrl
-            })]
+            Workers =
+            [
+                .. descriptor.Workers.Select(worker => worker with
+                {
+                    EntryUrl = worker.EntryUrl.StartsWith(rootUrl, StringComparison.Ordinal)
+                        ? StableRootUrl + worker.EntryUrl[rootUrl.Length..]
+                        : worker.EntryUrl
+                })
+            ]
         };
     }
 

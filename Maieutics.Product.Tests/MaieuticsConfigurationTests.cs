@@ -15,8 +15,7 @@ namespace Maieutics.Product.Tests;
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class MaieuticsConfigurationTests
 {
-
-/// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
+    /// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
     /// Windows a config-file watcher or an exiting MCP stdio child can hold a file for a
     /// short while after the test body completes. The lock holder has no completion
     /// signal, so the retry waits by delay — asynchronously, never blocking a pool
@@ -186,9 +185,7 @@ public sealed class MaieuticsConfigurationTests
                 {
                     // An unknown section must be tolerated rather than rejected; the point of the
                     // test is that a configuration with no model or provider still initializes.
-                    ["UnknownSection"] = new JsonObject
-                    {
-                    }
+                    ["UnknownSection"] = new JsonObject()
                 }
             }.ToJsonString(),
             deadline.Token);
@@ -225,6 +222,9 @@ public sealed class MaieuticsConfigurationTests
 
         var factory = new TrackingChatClientFactory
         {
+            // The cancellation source outlives every callback: the using scope spans the host
+            // disposal in the finally below, so a creation callback can never fire after it.
+            // ReSharper disable once AccessToDisposedClosure
             ClientCreated = _ => cancellation.Cancel()
         };
         var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
@@ -319,7 +319,7 @@ public sealed class MaieuticsConfigurationTests
             Assert.True(selection.HasSessionOverride);
             Assert.True(Assert.Single(selection.Profiles).IsAutomatic);
 
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal("model-alpha", client.Model);
             Assert.NotNull(lease.Profile.ModelIdentity);
@@ -364,14 +364,20 @@ public sealed class MaieuticsConfigurationTests
         {
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            // The cancellation source outlives every callback: the using scope spans the host
+            // disposal in the finally below, so a creation callback can never fire after it.
+            // ReSharper disable once AccessToDisposedClosure
             factory.ClientCreated = model =>
             {
                 if (model == "model-alpha") cancellation.Cancel();
             };
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await runtime
-                .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
-                .AsTask(); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await runtime
+                    .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
+                    .AsTask();
+            });
 
             Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
@@ -409,7 +415,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
 
             await WriteAndWaitForReloadAsync(
@@ -465,7 +471,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
@@ -521,6 +527,8 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
 
+            // The selection task is awaited before the runtime's using scope ends.
+            // ReSharper disable once AccessToDisposedClosure
             var selection = Task.Run(
                 () => runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token).AsTask(),
                 deadline.Token);
@@ -751,6 +759,8 @@ public sealed class MaieuticsConfigurationTests
         try
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
+            // The initialization task is awaited before the host's using scope ends.
+            // ReSharper disable once AccessToDisposedClosure
             var initialization = Task.Run(
                 () => InitializeRuntimeAsync(host.Services, deadline.Token),
                 deadline.Token);
@@ -1102,7 +1112,7 @@ public sealed class MaieuticsConfigurationTests
             }
 
             Assert.ThrowsAny<ArgumentOutOfRangeException>(() =>
-                    new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate());
+                new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate());
             new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate();
         }
         finally
@@ -1150,8 +1160,7 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
             Assert.Equal(2, runtime.Version);
             Assert.True(((Func<MaieuticsConfigurationReloadInfo, bool>)(reload => reload.Attempt == runtime.CompletedReloadAttempt &&
-                reload.Outcome == MaieuticsConfigurationReloadOutcome.Applied &&
-                reload.ActiveVersion == 2))(runtime.GetStatus().LastReload));
+                                                                                  reload is { Outcome: MaieuticsConfigurationReloadOutcome.Applied, ActiveVersion: 2 }))(runtime.GetStatus().LastReload));
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 Assert.Equal(1_200, lease.Profile.Options.MaxHistoryBytes);
@@ -1227,7 +1236,7 @@ public sealed class MaieuticsConfigurationTests
         {
             var configuration = host.Services.GetRequiredService<IConfiguration>();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
-            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
             Assert.Equal("one", firstClient.Model);
             Assert.Equal("first", firstLease.Profile.Options.SystemPrompt);
@@ -1290,7 +1299,6 @@ public sealed class MaieuticsConfigurationTests
             Assert.Equal(acceptedVersion, runtime.Version);
             Assert.Equal(MaieuticsConfigurationReloadOutcome.Rejected, runtime.GetStatus().LastReload.Outcome);
             Assert.Equal("three", (await AcquireClientAsync(runtime)).Model);
-
         }
         finally
         {
@@ -1332,13 +1340,13 @@ public sealed class MaieuticsConfigurationTests
             Assert.Equal("one", initialSelection.SelectedProfileId);
             Assert.False(initialSelection.HasSessionOverride);
 
-            await using var firstLease = await runtime.AcquireAsync(deadline.Token);
+            var firstLease = await runtime.AcquireAsync(deadline.Token);
             var firstClient = Assert.IsType<TrackingChatClient>(firstLease.Profile.ChatClient);
             Assert.Equal(new AgentModelIdentity(
                 new AgentModelProfileId("one"), "Fake", "model-one"), firstLease.Profile.ModelIdentity);
 
             await runtime.SelectModelProfileAsync("TWO", deadline.Token);
-            await using var secondLease = await runtime.AcquireAsync(deadline.Token);
+            var secondLease = await runtime.AcquireAsync(deadline.Token);
             var secondClient = Assert.IsType<TrackingChatClient>(secondLease.Profile.ChatClient);
             Assert.True(runtime.GetModelProfileSelection().HasSessionOverride);
 
@@ -1854,15 +1862,13 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
             // The active automatic override is reported alongside configured profiles.
             Assert.Single(runtime.GetStatus().CapabilityProfiles, profile =>
-                profile.SourceId == "vendor" &&
-                profile.ModelId == "model-alpha" &&
-                profile.KnownVendor &&
+                profile is { SourceId: "vendor", ModelId: "model-alpha", KnownVendor: true } &&
                 profile.HostedCapabilities.SequenceEqual(["WebSearch"]));
 
             await WriteAndWaitForReloadAsync(
@@ -1911,7 +1917,7 @@ public sealed class MaieuticsConfigurationTests
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
             await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
             await runtime.SelectModelProfileAsync("@vendor/model-alpha", deadline.Token);
-            await using var lease = await runtime.AcquireAsync(deadline.Token);
+            var lease = await runtime.AcquireAsync(deadline.Token);
             var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
             Assert.Equal(["WebSearch"], lease.Profile.HostedCapabilities);
 
@@ -2009,20 +2015,20 @@ public sealed class MaieuticsConfigurationTests
     ];
 
     private static string CreateSourceOnlyConfiguration(
-                JsonArray endpoints,
+        JsonArray endpoints,
         params NamedSource[] sources)
     {
         return CreateSourceOnlyConfigurationCore(endpoints, sources);
     }
 
     private static string CreateSourceOnlyConfiguration(
-                params NamedSource[] sources)
+        params NamedSource[] sources)
     {
         return CreateSourceOnlyConfigurationCore(null, sources);
     }
 
     private static string CreateSourceOnlyConfigurationCore(
-                JsonArray? endpoints,
+        JsonArray? endpoints,
         NamedSource[] sources)
     {
         var sourceNodes = new JsonObject();
@@ -2395,13 +2401,13 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed class TrackingChatClient(string model) : IChatClient
     {
-        private int disposalCount;
+        private int _disposalCount;
 
         public string Model { get; } = model;
 
         public bool Disposed => DisposalCount != 0;
 
-        public int DisposalCount => Volatile.Read(ref disposalCount);
+        public int DisposalCount => Volatile.Read(ref _disposalCount);
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -2426,7 +2432,7 @@ public sealed class MaieuticsConfigurationTests
 
         public void Dispose()
         {
-            Interlocked.Increment(ref disposalCount);
+            Interlocked.Increment(ref _disposalCount);
         }
     }
 
@@ -2606,28 +2612,28 @@ public sealed class MaieuticsConfigurationTests
 
     private sealed class EnvironmentVariableScope : IDisposable
     {
-        private readonly Dictionary<string, string?> original = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _original = new(StringComparer.Ordinal);
 
         public EnvironmentVariableScope(IReadOnlyDictionary<string, string?> values)
         {
             foreach (var (name, value) in values)
             {
-                original.Add(name, Environment.GetEnvironmentVariable(name));
+                _original.Add(name, Environment.GetEnvironmentVariable(name));
                 Environment.SetEnvironmentVariable(name, value);
             }
         }
 
         public void Dispose()
         {
-            foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
+            foreach (var (name, value) in _original) Environment.SetEnvironmentVariable(name, value);
         }
     }
 
     private sealed class CoordinatedDiscoveryChatClientFactory : IConfiguredChatClientFactory
     {
-        private int discoveryCount;
+        private int _discoveryCount;
 
-        public int DiscoveryCount => Volatile.Read(ref discoveryCount);
+        public int DiscoveryCount => Volatile.Read(ref _discoveryCount);
 
         public TaskCompletionSource FirstDiscoveryStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2649,7 +2655,7 @@ public sealed class MaieuticsConfigurationTests
             string revision,
             CancellationToken cancellationToken)
         {
-            if (Interlocked.Increment(ref discoveryCount) == 1)
+            if (Interlocked.Increment(ref _discoveryCount) == 1)
             {
                 FirstDiscoveryStarted.TrySetResult();
                 await ReleaseFirstDiscovery.Task.WaitAsync(cancellationToken);

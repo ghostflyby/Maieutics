@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-
 namespace Maieutics.Product.Tests;
 
 /// <summary>A fake <c>deno</c> executable for manager tests that must not launch a real

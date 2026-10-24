@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -40,7 +41,7 @@ public sealed class FrontendProcessSmokeTests
             // The tool result rides inside the tool message's JSON-escaped
             // content, so match a substring without quotes or colons.
             expectedToolResultText: "smoke.txt");
-        var process = StartHostProcess(provider.Endpoint, deadline.Token, workspace);
+        var process = StartHostProcess(provider.Endpoint, workspace);
         try
         {
             var discovery = await process.WaitForDiscoveryAsync(deadline.Token);
@@ -135,7 +136,6 @@ public sealed class FrontendProcessSmokeTests
 
     private static SmokeHostProcess StartHostProcess(
         Uri endpoint,
-        CancellationToken cancellationToken,
         string? workspaceRoot = null)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
@@ -172,7 +172,7 @@ public sealed class FrontendProcessSmokeTests
         // Env config uses the double-underscore section separator.
         startInfo.Environment["Maieutics__Providers__OpenAI__Endpoint"] = endpoint.ToString();
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
-            OpenAiApiFlavor.ChatCompletions.ToString();
+            nameof(OpenAiApiFlavor.ChatCompletions);
         if (workspaceRoot is not null) startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
@@ -181,7 +181,7 @@ public sealed class FrontendProcessSmokeTests
         startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
 
         var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("The Maieutics process could not be started.");
+                      ?? throw new InvalidOperationException("The Maieutics process could not be started.");
         Console.WriteLine($"[smoke] host pid {process.Id} discovery {discoveryPath}");
         var stderrTail = TailStream(process, redirectError: true);
         // Stdout must be drained even though the protocol lives on the discovery file:
@@ -244,9 +244,9 @@ public sealed class FrontendProcessSmokeTests
     {
         // Teardown must run at most once: the explicit finally dispose would
         // otherwise double-kill.
-        private int disposeState;
+        private int _disposeState;
 
-        public string DiscoveryPath { get; } = discoveryPath;
+        private string DiscoveryPath { get; } = discoveryPath;
 
         /// <summary>Waits for the discovery file's appearance within the remaining test
         /// budget. A dead child is reported immediately; otherwise the shared reader retries
@@ -265,7 +265,7 @@ public sealed class FrontendProcessSmokeTests
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+            if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
 
             try
             {
@@ -275,7 +275,7 @@ public sealed class FrontendProcessSmokeTests
                 }
             }
             catch (Exception exception) when (
-                exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+                exception is InvalidOperationException or Win32Exception)
             {
                 // The process instance lost its association (already reaped by the OS)
                 // or the OS refused the kill because the child just exited.

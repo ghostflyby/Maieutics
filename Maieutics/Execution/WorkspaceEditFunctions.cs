@@ -29,13 +29,13 @@ internal sealed class WorkspaceEditFunctions
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
         };
 
-    private readonly Workspace workspace;
-    private readonly PermissionPolicyAcquirer? acquirer;
-    private readonly int maximumWriteBytes;
-    private readonly int maximumEditedFileBytes;
-    private readonly int maximumDiffBytes;
-    private readonly int maximumDiffLines;
-    private readonly IWorkspaceIoBridge? bridge;
+    private readonly Workspace _workspace;
+    private readonly PermissionPolicyAcquirer? _acquirer;
+    private readonly int _maximumWriteBytes;
+    private readonly int _maximumEditedFileBytes;
+    private readonly int _maximumDiffBytes;
+    private readonly int _maximumDiffLines;
+    private readonly IWorkspaceIoBridge? _bridge;
 
     internal WorkspaceEditFunctions(
         Workspace workspace,
@@ -46,17 +46,17 @@ internal sealed class WorkspaceEditFunctions
         int maximumDiffLines = DefaultMaximumDiffLines,
         IWorkspaceIoBridge? bridge = null)
     {
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this.acquirer = acquirer;
-        this.bridge = bridge;
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._acquirer = acquirer;
+        this._bridge = bridge;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumWriteBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEditedFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffLines);
-        this.maximumWriteBytes = maximumWriteBytes;
-        this.maximumEditedFileBytes = maximumEditedFileBytes;
-        this.maximumDiffBytes = maximumDiffBytes;
-        this.maximumDiffLines = maximumDiffLines;
+        this._maximumWriteBytes = maximumWriteBytes;
+        this._maximumEditedFileBytes = maximumEditedFileBytes;
+        this._maximumDiffBytes = maximumDiffBytes;
+        this._maximumDiffLines = maximumDiffLines;
 
         Functions =
         [
@@ -107,7 +107,7 @@ internal sealed class WorkspaceEditFunctions
     /// denied fail-closed instead of crashing the invocation.</summary>
     private void GateInstructionSurface(string? relativePath, AIFunctionArguments arguments)
     {
-        if (acquirer is null || relativePath is null || !InstructionSurface.IsInstructionSurface(relativePath))
+        if (_acquirer is null || relativePath is null || !InstructionSurface.IsInstructionSurface(relativePath))
         {
             return;
         }
@@ -121,7 +121,7 @@ internal sealed class WorkspaceEditFunctions
                 "in the calling session's permission policy.");
         }
 
-        var policy = acquirer.Acquire(PermissionLayer.Empty, sessionId);
+        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
         var rules = policy.For(PermissionKind.Write);
         if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)) ||
             !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)))
@@ -148,7 +148,7 @@ internal sealed class WorkspaceEditFunctions
     /// <summary>The per-file write bound, exposed so the IDE bridge's apply step
     /// can pre-validate computed content before entering the gated write
     /// (ADR 0042 decision 6 — the whole edit is validated before mutating).</summary>
-    internal int MaximumWriteBytes => maximumWriteBytes;
+    internal int MaximumWriteBytes => _maximumWriteBytes;
 
     /// <summary>Applies one computed final content through the same gated write
     /// path <c>write_text</c> uses — the instruction-surface gate (ADR 0032),
@@ -169,13 +169,13 @@ internal sealed class WorkspaceEditFunctions
                 throw new WorkspaceException("workspace_invalid_arguments", "uri is required.");
 
             var bytes = EncodeUtf8(content);
-            if (bytes.Length > maximumWriteBytes)
+            if (bytes.Length > _maximumWriteBytes)
                 throw new WorkspaceException(
                     "workspace_file_too_large",
-                    $"write_text writes at most {maximumWriteBytes} UTF-8 bytes per file.");
+                    $"write_text writes at most {_maximumWriteBytes} UTF-8 bytes per file.");
 
-            var snapshot = workspace.Capture();
-            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var snapshot = _workspace.Capture();
+            var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
             {
                 try
@@ -202,9 +202,9 @@ internal sealed class WorkspaceEditFunctions
             if (target.Exists)
             {
                 beforeSize = new FileInfo(target.FullPath).Length;
-                if (beforeSize <= maximumEditedFileBytes)
+                if (beforeSize <= _maximumEditedFileBytes)
                 {
-                    var bounded = await snapshot.ReadAsync(target.FullPath, target.Segments, maximumEditedFileBytes, cancellationToken)
+                    var bounded = await snapshot.ReadAsync(target.FullPath, target.Segments, _maximumEditedFileBytes, cancellationToken)
                         .ConfigureAwait(false);
                     if (!bounded.ExceededLimit)
                     {
@@ -226,7 +226,7 @@ internal sealed class WorkspaceEditFunctions
             // instead of pretending the file was empty.
             var diff = target.Exists && beforeText is null
                 ? null
-                : UnifiedDiff.Create(beforeText, content, target.DisplayPath, maximumDiffBytes, maximumDiffLines);
+                : UnifiedDiff.Create(beforeText, content, target.DisplayPath, _maximumDiffBytes, _maximumDiffLines);
             return new WriteTextResult(
                 target.Uri,
                 target.Exists ? "updated" : "created",
@@ -265,7 +265,7 @@ internal sealed class WorkspaceEditFunctions
         var exists = true;
         try
         {
-            answeredText = await channel.ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+            answeredText = await channel.ReadTextAsync(logical.Segments, _maximumEditedFileBytes, cancellationToken)
                 .ConfigureAwait(false);
             beforeSize = Encoding.UTF8.GetByteCount(answeredText);
         }
@@ -302,7 +302,7 @@ internal sealed class WorkspaceEditFunctions
             bytes.Length,
             answeredText is null
                 ? null
-                : UnifiedDiff.Create(answeredText, content, logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                : UnifiedDiff.Create(answeredText, content, logical.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
     }
 
     /// <summary>The bridged edit_text flow, extracted so the uncovered fallback can
@@ -312,7 +312,6 @@ internal sealed class WorkspaceEditFunctions
         WorkspaceSnapshot snapshot,
         WorkspaceBridgeChannel channel,
         string uri,
-        AIFunctionArguments arguments,
         string oldText,
         string newText,
         bool? replaceAll,
@@ -323,7 +322,7 @@ internal sealed class WorkspaceEditFunctions
         try
         {
             answered = await channel
-                .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                .ReadTextAsync(logical.Segments, _maximumEditedFileBytes, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
@@ -335,9 +334,9 @@ internal sealed class WorkspaceEditFunctions
 
         var bridgeBeforeBytes = EncodeUtf8(answered);
         var bridgeBefore = TryDecodeText(bridgeBeforeBytes, out var bridgeHadBom) ??
-            throw new WorkspaceException(
-                "workspace_binary_file",
-                "The file is not UTF-8 text, so edit_text cannot edit it.");
+                           throw new WorkspaceException(
+                               "workspace_binary_file",
+                               "The file is not UTF-8 text, so edit_text cannot edit it.");
 
         var (bridgeSearch, bridgeReplacement) = MatchLineEndings(bridgeBefore, oldText, newText);
         var bridgeOccurrences = CountOccurrences(bridgeBefore, bridgeSearch);
@@ -368,8 +367,8 @@ internal sealed class WorkspaceEditFunctions
             bridgeBefore,
             bridgeAfter,
             logical.DisplayPath,
-            maximumDiffBytes,
-            maximumDiffLines);
+            _maximumDiffBytes,
+            _maximumDiffLines);
         return new EditTextResult(
             logical.Uri,
             bridgeOccurrences,
@@ -386,8 +385,7 @@ internal sealed class WorkspaceEditFunctions
         [Description("The exact current text to replace, including indentation. Must appear exactly " +
                      "once unless replaceAll is true.")]
         string oldText,
-        [Description("The replacement text.")]
-        string newText,
+        [Description("The replacement text.")] string newText,
         [Description("Replace every occurrence. Defaults to false.")]
         bool? replaceAll = null,
         CancellationToken cancellationToken = default)
@@ -408,13 +406,13 @@ internal sealed class WorkspaceEditFunctions
                     "workspace_invalid_arguments",
                     "newText must differ from oldText.");
 
-            var snapshot = workspace.Capture();
-            var editBridged = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var snapshot = _workspace.Capture();
+            var editBridged = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (editBridged is { } channel)
             {
                 try
                 {
-                    return await EditBridgedAsync(snapshot, channel, uri, arguments, oldText, newText, replaceAll, cancellationToken)
+                    return await EditBridgedAsync(snapshot, channel, uri, oldText, newText, replaceAll, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (WorkspaceBridgeCoverageException)
@@ -429,25 +427,25 @@ internal sealed class WorkspaceEditFunctions
                     "workspace_not_regular_file",
                     "Workspace edit tools can edit only regular files.");
 
-            if (new FileInfo(file.FullPath).Length > maximumEditedFileBytes)
+            if (new FileInfo(file.FullPath).Length > _maximumEditedFileBytes)
                 throw new WorkspaceException(
                     "workspace_file_too_large",
-                    $"edit_text edits files of at most {maximumEditedFileBytes} bytes.");
+                    $"edit_text edits files of at most {_maximumEditedFileBytes} bytes.");
 
             var bounded = await snapshot.ReadAsync(
                 file.FullPath,
                 file.Segments,
-                maximumEditedFileBytes,
+                _maximumEditedFileBytes,
                 cancellationToken).ConfigureAwait(false);
             if (bounded.ExceededLimit)
                 throw new WorkspaceException(
                     "workspace_file_too_large",
-                    $"edit_text edits files of at most {maximumEditedFileBytes} bytes.");
+                    $"edit_text edits files of at most {_maximumEditedFileBytes} bytes.");
 
             var before = TryDecodeText(bounded.Bytes, out var hadByteOrderMark) ??
-                throw new WorkspaceException(
-                    "workspace_binary_file",
-                    "The file is not UTF-8 text, so edit_text cannot edit it.");
+                         throw new WorkspaceException(
+                             "workspace_binary_file",
+                             "The file is not UTF-8 text, so edit_text cannot edit it.");
 
             var (search, replacement) = MatchLineEndings(before, oldText, newText);
             var occurrences = CountOccurrences(before, search);
@@ -471,8 +469,8 @@ internal sealed class WorkspaceEditFunctions
                 before,
                 after,
                 WorkspaceSnapshot.ToDisplayPath(file.Segments),
-                maximumDiffBytes,
-                maximumDiffLines);
+                _maximumDiffBytes,
+                _maximumDiffLines);
             return new EditTextResult(file.Uri, occurrences, bounded.Bytes.Length, bytes.Length, diff!);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -499,8 +497,8 @@ internal sealed class WorkspaceEditFunctions
                 throw new WorkspaceException("workspace_invalid_arguments", "patch is required.");
 
             var document = ApplyPatchParser.Parse(patch);
-            var snapshot = workspace.Capture();
-            var channel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+            var snapshot = _workspace.Capture();
+            var channel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             var files = ImmutableArray.CreateBuilder<ApplyPatchFileResult>(document.Files.Length);
             foreach (var change in document.Files)
             {
@@ -546,7 +544,7 @@ internal sealed class WorkspaceEditFunctions
                     target.DisplayPath,
                     "created",
                     null,
-                    UnifiedDiff.Create(null, change.Diff ?? "", target.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(null, change.Diff ?? "", target.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
             }
             case "update_file":
             {
@@ -561,22 +559,22 @@ internal sealed class WorkspaceEditFunctions
                         "workspace_not_regular_file",
                         "Workspace edit tools can edit only regular files.");
 
-                if (new FileInfo(file.FullPath).Length > maximumEditedFileBytes)
+                if (new FileInfo(file.FullPath).Length > _maximumEditedFileBytes)
                     throw new WorkspaceException(
                         "workspace_file_too_large",
-                        $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
+                        $"edit tools edit files of at most {_maximumEditedFileBytes} bytes.");
 
-                var bounded = await snapshot.ReadAsync(file.FullPath, file.Segments, maximumEditedFileBytes, cancellationToken)
+                var bounded = await snapshot.ReadAsync(file.FullPath, file.Segments, _maximumEditedFileBytes, cancellationToken)
                     .ConfigureAwait(false);
                 if (bounded.ExceededLimit)
                     throw new WorkspaceException(
                         "workspace_file_too_large",
-                        $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
+                        $"edit tools edit files of at most {_maximumEditedFileBytes} bytes.");
 
                 var before = TryDecodeText(bounded.Bytes, out var hadByteOrderMark) ??
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+                             throw new WorkspaceException(
+                                 "workspace_binary_file",
+                                 $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
 
                 var after = ApplyChangeSections(before, change.Path, change.Changes);
                 if (string.Equals(before, after, StringComparison.Ordinal))
@@ -599,7 +597,7 @@ internal sealed class WorkspaceEditFunctions
                         moved.DisplayPath,
                         "created",
                         WorkspaceSnapshot.ToDisplayPath(file.Segments),
-                        UnifiedDiff.Create(before, after, moved.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                        UnifiedDiff.Create(before, after, moved.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
                 }
 
                 await WriteFileAsync(snapshot, file.AsWriteTarget(), bytes, create: false, cancellationToken)
@@ -608,7 +606,7 @@ internal sealed class WorkspaceEditFunctions
                     WorkspaceSnapshot.ToDisplayPath(file.Segments),
                     "updated",
                     null,
-                    UnifiedDiff.Create(before, after, WorkspaceSnapshot.ToDisplayPath(file.Segments), maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(before, after, WorkspaceSnapshot.ToDisplayPath(file.Segments), _maximumDiffBytes, _maximumDiffLines));
             }
             case "delete_file":
             {
@@ -624,7 +622,7 @@ internal sealed class WorkspaceEditFunctions
                     WorkspaceSnapshot.ToDisplayPath(file.Segments),
                     "deleted",
                     null,
-                    UnifiedDiff.Create(beforeText, "", WorkspaceSnapshot.ToDisplayPath(file.Segments), maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(beforeText, "", WorkspaceSnapshot.ToDisplayPath(file.Segments), _maximumDiffBytes, _maximumDiffLines));
             }
             default:
                 throw new WorkspaceException(
@@ -682,7 +680,7 @@ internal sealed class WorkspaceEditFunctions
                     logical.DisplayPath,
                     "created",
                     null,
-                    UnifiedDiff.Create(null, change.Diff ?? "", logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(null, change.Diff ?? "", logical.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
             }
             case "update_file":
             {
@@ -696,7 +694,7 @@ internal sealed class WorkspaceEditFunctions
                 try
                 {
                     answered = await channel
-                        .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                        .ReadTextAsync(logical.Segments, _maximumEditedFileBytes, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (WorkspaceException exception) when (exception.Code == "workspace_invalid_utf8")
@@ -707,9 +705,9 @@ internal sealed class WorkspaceEditFunctions
                 }
 
                 var before = TryDecodeText(EncodeUtf8(answered), out var hadByteOrderMark) ??
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+                             throw new WorkspaceException(
+                                 "workspace_binary_file",
+                                 $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
 
                 var after = ApplyChangeSections(before, change.Path, change.Changes);
                 if (string.Equals(before, after, StringComparison.Ordinal))
@@ -728,7 +726,7 @@ internal sealed class WorkspaceEditFunctions
                         moved.DisplayPath,
                         "created",
                         logical.DisplayPath,
-                        UnifiedDiff.Create(before, after, moved.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                        UnifiedDiff.Create(before, after, moved.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
                 }
 
                 await channel.EnsureCleanAsync(logical.Segments, cancellationToken).ConfigureAwait(false);
@@ -744,7 +742,7 @@ internal sealed class WorkspaceEditFunctions
                     logical.DisplayPath,
                     "updated",
                     null,
-                    UnifiedDiff.Create(before, after, logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(before, after, logical.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
             }
             case "delete_file":
             {
@@ -753,7 +751,7 @@ internal sealed class WorkspaceEditFunctions
                 try
                 {
                     beforeText = await channel
-                        .ReadTextAsync(logical.Segments, maximumEditedFileBytes, cancellationToken)
+                        .ReadTextAsync(logical.Segments, _maximumEditedFileBytes, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (WorkspaceException exception) when (
@@ -769,7 +767,7 @@ internal sealed class WorkspaceEditFunctions
                     logical.DisplayPath,
                     "deleted",
                     null,
-                    UnifiedDiff.Create(beforeText, "", logical.DisplayPath, maximumDiffBytes, maximumDiffLines));
+                    UnifiedDiff.Create(beforeText, "", logical.DisplayPath, _maximumDiffBytes, _maximumDiffLines));
             }
             default:
                 throw new WorkspaceException(
@@ -821,10 +819,10 @@ internal sealed class WorkspaceEditFunctions
         }
 
         var body = string.Join(crlf ? "\r\n" : "\n", lines);
-        var trailing = endsWithNewline(before) ? crlf ? "\r\n" : "\n" : "";
+        var trailing = EndsWithNewline(before) ? crlf ? "\r\n" : "\n" : "";
         return body + trailing;
 
-        static bool endsWithNewline(string text)
+        static bool EndsWithNewline(string text)
         {
             return text.Length > 0 && (text.EndsWith('\n') || text.EndsWith('\r'));
         }
@@ -951,12 +949,12 @@ internal sealed class WorkspaceEditFunctions
         WorkspacePath path,
         CancellationToken cancellationToken)
     {
-        if (new FileInfo(path.FullPath).Length > maximumEditedFileBytes) return null;
+        if (new FileInfo(path.FullPath).Length > _maximumEditedFileBytes) return null;
 
         var bounded = await snapshot.ReadAsync(
                 path.FullPath,
                 path.Segments,
-                maximumEditedFileBytes,
+                _maximumEditedFileBytes,
                 cancellationToken)
             .ConfigureAwait(false);
         if (bounded.ExceededLimit) return null;

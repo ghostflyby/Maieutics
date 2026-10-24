@@ -61,7 +61,7 @@ public sealed class PluginHostStartupAvailabilityTests
             Assert.NotNull(observed);
 
             // Let the scan finish so startup can proceed to its (irrelevant here) host launch.
-            File.WriteAllText(release, string.Empty);
+            await File.WriteAllTextAsync(release, string.Empty, deadline.Token);
             await TolerateStartupFailureAsync(start);
         }
         finally
@@ -84,7 +84,7 @@ public sealed class PluginHostStartupAvailabilityTests
         }
         catch (Exception exception) when
             (exception is TimeoutException or InvalidOperationException or IOException
-                or System.ComponentModel.Win32Exception)
+                 or System.ComponentModel.Win32Exception)
         {
         }
     }
@@ -149,11 +149,9 @@ public sealed class PluginHostStartupAvailabilityTests
 
         using var watcher = new FileSystemWatcher(
             Path.GetDirectoryName(path) ?? ".",
-            Path.GetFileName(path))
-        {
-            EnableRaisingEvents = true,
-            NotifyFilter = NotifyFilters.FileName,
-        };
+            Path.GetFileName(path));
+        watcher.EnableRaisingEvents = true;
+        watcher.NotifyFilter = NotifyFilters.FileName;
         var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         watcher.Created += (_, _) => created.TrySetResult();
 

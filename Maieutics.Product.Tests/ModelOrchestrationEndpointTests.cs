@@ -236,7 +236,7 @@ public sealed class ModelOrchestrationEndpointTests
             NullLogger<ReplControlHost>.Instance,
             orchestration: surface);
         var application = await ReplControlTestHost.StartAsync(socketPath, host, cancellationToken);
-        return new Harness(application, host, manager, overrides, buffer, terminals, terminalProcess);
+        return new Harness(application, host, manager, terminals, terminalProcess);
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
@@ -252,8 +252,6 @@ public sealed class ModelOrchestrationEndpointTests
         WebApplication application,
         ReplControlHost host,
         MaieuticsAgentSessionManager manager,
-        PermissionOverrideRegistry overrides,
-        SubagentEventBuffer buffer,
         TerminalRegistry terminals,
         FakeTerminalProcess terminalProcess) : IAsyncDisposable
     {
@@ -262,10 +260,6 @@ public sealed class ModelOrchestrationEndpointTests
         internal ReplControlHost Host { get; } = host;
 
         internal MaieuticsAgentSessionManager Manager { get; } = manager;
-
-        internal PermissionOverrideRegistry Overrides { get; } = overrides;
-
-        internal SubagentEventBuffer Buffer { get; } = buffer;
 
         internal TerminalRegistry Terminals { get; } = terminals;
 
@@ -327,6 +321,4 @@ public sealed class ModelOrchestrationEndpointTests
             await Application.DisposeAsync().ConfigureAwait(false);
         }
     }
-
-
 }

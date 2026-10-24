@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
@@ -18,7 +20,7 @@ public sealed class TaskResourceTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task TaskProviderClaimsOneAuthorityPerSource()
+    public void TaskProviderClaimsOneAuthorityPerSource()
     {
         _ = TestContext.Current.CancellationToken;
         var registry = new ResourceRegistry([
@@ -45,14 +47,14 @@ public sealed class TaskResourceTests
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await unknownAuthority.Invoke(); })).Code);
 
         var malformedPath = () => provider.ReadAsync(
-                $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/onlyonesegment",
+                $"task://terminal/{AgentSessionId.Create().Value:N}/onlyonesegment",
                 request,
                 token)
             .AsTask();
         Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await malformedPath.Invoke(); })).Code);
 
         var unknownSession = () => provider.ReadAsync(
-                $"task://terminal/{AgentSessionId.Create().Value.ToString("N")}/{Guid.NewGuid().ToString("N")}",
+                $"task://terminal/{AgentSessionId.Create().Value:N}/{Guid.NewGuid():N}",
                 request,
                 token)
             .AsTask();
@@ -74,7 +76,7 @@ public sealed class TaskResourceTests
         var result = await runTask;
 
         Assert.False(result.Settled);
-        Assert.Equal($"task://terminal/{owner.Value.ToString("N")}/{result.SessionId}", result.TaskUri);
+        Assert.Equal($"task://terminal/{owner.Value:N}/{result.SessionId}", result.TaskUri);
 
         var snapshot = await ReadSnapshotAsync(harness, result.TaskUri!);
         Assert.Equal(result.TaskUri, snapshot.GetProperty("uri").GetString());
@@ -149,9 +151,8 @@ public sealed class TaskResourceTests
         var owner = AgentSessionId.Create();
         var result = await StartTimedOutOneShotAsync(harness, owner);
 
-        var timeout = () => harness.Provider.WaitTaskAsync(
-            result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
-        Assert.Equal("task_wait_timeout", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await timeout.Invoke(); })).Code);
+        Assert.Equal("task_wait_timeout", (await Assert.ThrowsAnyAsync<ResourceException>(async () => await harness.Provider.WaitTaskAsync(
+            result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken))).Code);
 
         harness.Process.EndOfOutput();
         harness.Process.RaiseExited(0);
@@ -171,9 +172,11 @@ public sealed class TaskResourceTests
         Assert.Equal("cancel", snapshot.Status);
         Assert.Equal("closed", snapshot.Terminal!.State);
 
-        var gone = () => harness.Provider.ReadAsync(
-            result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
-        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.ReadAsync(
+                result.TaskUri!, new ResourceReadRequest(16 * 1024), TestContext.Current.CancellationToken);
+        })).Code);
     }
 
     [Fact(Timeout = 10_000)]
@@ -198,9 +201,11 @@ public sealed class TaskResourceTests
         var owner = AgentSessionId.Create();
         var result = await StartTimedOutOneShotAsync(harness, owner);
 
-        var forbidden = () => harness.Provider.CancelTaskAsync(
-            result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
-        Assert.Equal("task_forbidden", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await forbidden.Invoke(); })).Code);
+        Assert.Equal("task_forbidden", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.CancelTaskAsync(
+                result.TaskUri!, AgentSessionId.Create(), TestContext.Current.CancellationToken);
+        })).Code);
 
         var stillWorking = await ReadSnapshotAsync(harness, result.TaskUri!);
         Assert.Equal("working", stillWorking.GetProperty("status").GetString());
@@ -235,23 +240,23 @@ public sealed class TaskResourceTests
 
     private sealed class InMemoryAgentObjectStore : IAgentObjectStore
     {
-        private readonly Dictionary<string, byte[]> objects = [];
+        private readonly Dictionary<string, byte[]> _objects = [];
 
         public AgentObjectDescriptor Ingest(Stream content)
         {
             using var buffered = new MemoryStream();
             content.CopyTo(buffered);
             var bytes = buffered.ToArray();
-            var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes))
                 .ToLowerInvariant();
-            objects[sha256] = bytes;
+            _objects[sha256] = bytes;
             return new AgentObjectDescriptor(sha256, bytes.Length, "application/json");
         }
 
         public Stream Open(string sha256)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(
-                    sha256, "^[0-9a-f]{64}$") || !objects.TryGetValue(sha256, out var bytes))
+            if (!Regex.IsMatch(
+                    sha256, "^[0-9a-f]{64}$") || !_objects.TryGetValue(sha256, out var bytes))
                 throw new FileNotFoundException("No such object.", sha256);
             return new MemoryStream(bytes, writable: false);
         }

@@ -1,6 +1,6 @@
+using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
-using Maieutics.Agent;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging;
@@ -50,29 +50,29 @@ internal sealed class LocalDenoReplSessionFactory(
     IReplPolicyRegistrar? replPolicyRegistrar = null)
     : IDenoReplSessionFactory
 {
-    private readonly ReplControlCredentialRegistry credentialRegistry =
+    private readonly ReplControlCredentialRegistry _credentialRegistry =
         credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
 
-    private readonly ReplControlHost controlHost =
+    private readonly ReplControlHost _controlHost =
         controlHost ?? throw new ArgumentNullException(nameof(controlHost));
 
-    private readonly ReplEvalWebSocketHost evalHost =
+    private readonly ReplEvalWebSocketHost _evalHost =
         evalHost ?? throw new ArgumentNullException(nameof(evalHost));
 
-    private readonly ILogger<DenoReplProcess> logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly ILogger<DenoReplProcess> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-    private readonly DenoReplModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
+    private readonly DenoReplModule _modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
-    private readonly DenoReplOptions options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly DenoReplOptions _options = options ?? throw new ArgumentNullException(nameof(options));
 
-    private readonly ReplOutputWebSocketHost outputHost =
+    private readonly ReplOutputWebSocketHost _outputHost =
         outputHost ?? throw new ArgumentNullException(nameof(outputHost));
 
-    private readonly PluginHostManager? pluginHosts = pluginHosts;
+    private readonly PluginHostManager? _pluginHosts = pluginHosts;
 
-    private readonly IReplPolicyRegistrar? replPolicyRegistrar = replPolicyRegistrar;
+    private readonly IReplPolicyRegistrar? _replPolicyRegistrar = replPolicyRegistrar;
 
-    private readonly ReplControlSessionRegistry sessionRegistry =
+    private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
     public async Task<IDenoReplGeneration> StartAsync(
@@ -86,7 +86,7 @@ internal sealed class LocalDenoReplSessionFactory(
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentOutOfRangeException.ThrowIfNegative(generation);
 
-        using var timeout = new CancellationTokenSource(options.StartupTimeout);
+        using var timeout = new CancellationTokenSource(_options.StartupTimeout);
         using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         DenoReplProcess? process = null;
         try
@@ -99,18 +99,18 @@ internal sealed class LocalDenoReplSessionFactory(
             // the kernel-derived start below performs. A resolution failure only disables the
             // pre-cache for this session; the start itself is unchanged.
             var policy = await DenoReplPolicyCache.PrepareAsync(
-                replPolicyRegistrar,
-                options.Executable,
-                modules.ModuleDirectory,
+                _replPolicyRegistrar,
+                _options.Executable,
+                _modules.ModuleDirectory,
                 workingDirectory,
-                modules.ConfigFile,
-                modules.LockFile,
-                controlHost.ControlAddress,
-                controlHost.WindowsPipeName,
+                _modules.ConfigFile,
+                _modules.LockFile,
+                _controlHost.ControlAddress,
+                _controlHost.WindowsPipeName,
                 sessionId,
                 ownerSessionId,
                 acquirer,
-                logger,
+                _logger,
                 startup.Token).ConfigureAwait(false);
 
             // Host-derived path (ADR 0020 B5b): the plugin host is the spawner. The kernel decides
@@ -120,7 +120,7 @@ internal sealed class LocalDenoReplSessionFactory(
             // host not connected, no eval channel from the host-derived child) falls back to the
             // kernel-derived path below — the dual-track keeps sessions working while the
             // migration skeleton is in place.
-            if (options.HostDerivedRepl && pluginHosts is not null &&
+            if (_options.HostDerivedRepl && _pluginHosts is not null &&
                 await TryStartHostDerivedAsync(
                     policy,
                     sessionId,
@@ -133,30 +133,30 @@ internal sealed class LocalDenoReplSessionFactory(
 
             process = await DenoReplProcess.StartAsync(
                 new DenoReplProcessOptions(
-                    options.Executable,
-                    modules.MainUrl,
-                    modules.ConfigFile,
-                    modules.LockFile,
-                    modules.ModuleDirectory,
+                    _options.Executable,
+                    _modules.MainUrl,
+                    _modules.ConfigFile,
+                    _modules.LockFile,
+                    _modules.ModuleDirectory,
                     workingDirectory,
-                    controlHost.ControlAddress,
+                    _controlHost.ControlAddress,
                     sessionId,
                     generation,
-                    modules.ClientUrl,
-                    controlHost.WindowsPipeName,
+                    _modules.ClientUrl,
+                    _controlHost.WindowsPipeName,
                     broker,
-                    options.AutoInstallModuleGraph),
-                logger,
+                    _options.AutoInstallModuleGraph),
+                _logger,
                 acquirer,
                 ownerSessionId,
                 startup.Token).ConfigureAwait(false);
-            sessionRegistry.Register(process.ProcessId, sessionId);
+            _sessionRegistry.Register(process.ProcessId, sessionId);
             // The owner mapping backs the script tools' session-scoped gates (ADR 0042
             // decision 12): the hello identity is the REPL-local session id; the gates
             // key on the agent session the frontend announces against.
-            sessionRegistry.RegisterOwner(process.ProcessId, ownerSessionId.Value.ToString("N"));
+            _sessionRegistry.RegisterOwner(process.ProcessId, ownerSessionId.Value.ToString("N"));
 
-            var connection = evalHost.WaitForConnectionAsync(sessionId, generation, startup.Token);
+            var connection = _evalHost.WaitForConnectionAsync(sessionId, generation, startup.Token);
             var connected = connection;
             var completed = process.Completion;
             var first = await Task.WhenAny(connected, completed).WaitAsync(startup.Token).ConfigureAwait(false);
@@ -175,13 +175,13 @@ internal sealed class LocalDenoReplSessionFactory(
             return new LocalDenoReplGeneration(
                 process,
                 socket,
-                outputHost,
+                _outputHost,
                 sessionId,
                 generation,
-                options.ShutdownTimeout,
-                sessionRegistry,
-                credentialRegistry,
-                replPolicyRegistrar);
+                _options.ShutdownTimeout,
+                _sessionRegistry,
+                _credentialRegistry,
+                _replPolicyRegistrar);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -222,10 +222,10 @@ internal sealed class LocalDenoReplSessionFactory(
         var derive = BuildDerivePayload(policy, sessionId, generation, workingDirectory);
         try
         {
-            var outcome = await pluginHosts!.RequestReplDeriveAsync(derive, cancellationToken).ConfigureAwait(false);
+            var outcome = await _pluginHosts!.RequestReplDeriveAsync(derive, cancellationToken).ConfigureAwait(false);
             if (outcome.Failed)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "The plugin host could not derive a REPL for session '{SessionId}': {Message}. " +
                     "Falling back to a kernel-derived REPL.",
                     sessionId,
@@ -233,16 +233,16 @@ internal sealed class LocalDenoReplSessionFactory(
                 return null;
             }
 
-            var connection = evalHost.WaitForConnectionAsync(sessionId, generation, cancellationToken);
+            var connection = _evalHost.WaitForConnectionAsync(sessionId, generation, cancellationToken);
             var socket = await connection.ConfigureAwait(false);
             return new HostDerivedDenoReplGeneration(
                 socket,
-                outputHost,
+                _outputHost,
                 sessionId,
                 generation,
-                options.ShutdownTimeout,
-                credentialRegistry,
-                replPolicyRegistrar);
+                _options.ShutdownTimeout,
+                _credentialRegistry,
+                _replPolicyRegistrar);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -250,7 +250,7 @@ internal sealed class LocalDenoReplSessionFactory(
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "The host-derived REPL start for session '{SessionId}' failed; falling back to a kernel-derived REPL.",
                 sessionId);
@@ -270,13 +270,13 @@ internal sealed class LocalDenoReplSessionFactory(
         return new HostReplDerivePayload(
             sessionId,
             generation,
-            modules.ProcessMainUrl,
+            _modules.ProcessMainUrl,
             DenoReplEnvironment.Build(
-                controlHost.ControlAddress,
+                _controlHost.ControlAddress,
                 sessionId,
                 generation,
-                modules.ClientUrl,
-                controlHost.WindowsPipeName,
+                _modules.ClientUrl,
+                _controlHost.WindowsPipeName,
                 workspaceRoot: workingDirectory),
             policy is null ? null : DenoPermissionRenderer.BuildHostReplPermissions(policy),
             Report: true);
@@ -284,23 +284,23 @@ internal sealed class LocalDenoReplSessionFactory(
 
     private async Task StopFailedStartAsync(DenoReplProcess process, string sessionId)
     {
-        sessionRegistry.Unregister(process.ProcessId);
-        credentialRegistry.Remove(sessionId);
-        DenoReplPolicyCache.Clear(replPolicyRegistrar, sessionId);
+        _sessionRegistry.Unregister(process.ProcessId);
+        _credentialRegistry.Remove(sessionId);
+        DenoReplPolicyCache.Clear(_replPolicyRegistrar, sessionId);
         await process.DisposeAsync().ConfigureAwait(false);
     }
 }
 
 internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
 {
-    private readonly ReplControlCredentialRegistry credentialRegistry;
-    private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly DenoReplProcess process;
-    private readonly IReplPolicyRegistrar? replPolicyRegistrar;
-    private readonly string sessionId;
-    private readonly ReplControlSessionRegistry sessionRegistry;
-    private readonly TimeSpan shutdownTimeout;
-    private int disposeState;
+    private readonly ReplControlCredentialRegistry _credentialRegistry;
+    private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly DenoReplProcess _process;
+    private readonly IReplPolicyRegistrar? _replPolicyRegistrar;
+    private readonly string _sessionId;
+    private readonly ReplControlSessionRegistry _sessionRegistry;
+    private readonly TimeSpan _shutdownTimeout;
+    private int _disposeState;
 
     internal LocalDenoReplGeneration(
         DenoReplProcess process,
@@ -313,13 +313,13 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         ReplControlCredentialRegistry credentialRegistry,
         IReplPolicyRegistrar? replPolicyRegistrar)
     {
-        this.process = process;
+        this._process = process;
         Connection = connection;
-        this.sessionId = sessionId;
-        this.shutdownTimeout = shutdownTimeout;
-        this.sessionRegistry = sessionRegistry;
-        this.credentialRegistry = credentialRegistry;
-        this.replPolicyRegistrar = replPolicyRegistrar;
+        this._sessionId = sessionId;
+        this._shutdownTimeout = shutdownTimeout;
+        this._sessionRegistry = sessionRegistry;
+        this._credentialRegistry = credentialRegistry;
+        this._replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
         OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }
@@ -333,24 +333,24 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
 
     public Task Completion { get; }
 
-    public int? ExitCode => process.ExitCode;
+    public int? ExitCode => _process.ExitCode;
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0)
         {
             try
             {
                 await StopCoreAsync(true, CancellationToken.None).ConfigureAwait(false);
-                disposal.TrySetResult();
+                _disposal.TrySetResult();
             }
             catch (Exception exception)
             {
-                disposal.TrySetException(exception);
+                _disposal.TrySetException(exception);
             }
         }
 
-        await disposal.Task.ConfigureAwait(false);
+        await _disposal.Task.ConfigureAwait(false);
     }
 
     public Task ShutdownAsync(CancellationToken cancellationToken)
@@ -360,31 +360,31 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
 
     public Task TerminateAsync()
     {
-        return process.StopAsync();
+        return _process.StopAsync();
     }
 
     private async Task StopCoreAsync(bool disposing, CancellationToken cancellationToken)
     {
-        using var timeout = new CancellationTokenSource(shutdownTimeout);
+        using var timeout = new CancellationTokenSource(_shutdownTimeout);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         Exception? failure = null;
         try
         {
             await Connection.ShutdownAsync(shutdown.Token).ConfigureAwait(false);
-            await process.Completion.WaitAsync(shutdown.Token).ConfigureAwait(false);
+            await _process.Completion.WaitAsync(shutdown.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             failure = exception;
-            await process.StopAsync().ConfigureAwait(false);
+            await _process.StopAsync().ConfigureAwait(false);
         }
         finally
         {
-            sessionRegistry.Unregister(process.ProcessId);
-            credentialRegistry.Remove(sessionId);
+            _sessionRegistry.Unregister(_process.ProcessId);
+            _credentialRegistry.Remove(_sessionId);
             // This generation's policy is spent: a restart re-caches its own policy on start, and
             // a closed session must not leave a stale policy behind (ADR 0020, B4 cache lifecycle).
-            DenoReplPolicyCache.Clear(replPolicyRegistrar, sessionId);
+            DenoReplPolicyCache.Clear(_replPolicyRegistrar, _sessionId);
         }
 
         if (!disposing && failure is not null) throw failure;
@@ -392,7 +392,7 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
 
     private async Task ObserveCompletionAsync()
     {
-        var first = await Task.WhenAny(process.Completion, Connection.Completion).ConfigureAwait(false);
+        var first = await Task.WhenAny(_process.Completion, Connection.Completion).ConfigureAwait(false);
         await first.ConfigureAwait(false);
     }
 }
@@ -408,13 +408,13 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
 /// </summary>
 internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
 {
-    private readonly ReplControlCredentialRegistry credentialRegistry;
-    private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly ReplEvalWebSocketConnection connection;
-    private readonly IReplPolicyRegistrar? replPolicyRegistrar;
-    private readonly string sessionId;
-    private readonly TimeSpan shutdownTimeout;
-    private int disposeState;
+    private readonly ReplControlCredentialRegistry _credentialRegistry;
+    private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly ReplEvalWebSocketConnection _connection;
+    private readonly IReplPolicyRegistrar? _replPolicyRegistrar;
+    private readonly string _sessionId;
+    private readonly TimeSpan _shutdownTimeout;
+    private int _disposeState;
 
     internal HostDerivedDenoReplGeneration(
         ReplEvalWebSocketConnection connection,
@@ -425,16 +425,16 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
         ReplControlCredentialRegistry credentialRegistry,
         IReplPolicyRegistrar? replPolicyRegistrar)
     {
-        this.connection = connection;
-        this.sessionId = sessionId;
-        this.shutdownTimeout = shutdownTimeout;
-        this.credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
-        this.replPolicyRegistrar = replPolicyRegistrar;
+        this._connection = connection;
+        this._sessionId = sessionId;
+        this._shutdownTimeout = shutdownTimeout;
+        this._credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+        this._replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
         OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }
 
-    public IDenoReplConnection Connection => connection;
+    public IDenoReplConnection Connection => _connection;
 
     /// <summary>The output frame stream for this generation's process. The host-derived child
     /// opens the output endpoint as part of its startup, so the wait resolves once the output
@@ -447,20 +447,20 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0)
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0)
         {
             try
             {
                 await StopCoreAsync(true, CancellationToken.None).ConfigureAwait(false);
-                disposal.TrySetResult();
+                _disposal.TrySetResult();
             }
             catch (Exception exception)
             {
-                disposal.TrySetException(exception);
+                _disposal.TrySetException(exception);
             }
         }
 
-        await disposal.Task.ConfigureAwait(false);
+        await _disposal.Task.ConfigureAwait(false);
     }
 
     public Task ShutdownAsync(CancellationToken cancellationToken)
@@ -470,32 +470,32 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
 
     public Task TerminateAsync()
     {
-        return connection.DisposeAsync().AsTask();
+        return _connection.DisposeAsync().AsTask();
     }
 
     private async Task StopCoreAsync(bool disposing, CancellationToken cancellationToken)
     {
-        using var timeout = new CancellationTokenSource(shutdownTimeout);
+        using var timeout = new CancellationTokenSource(_shutdownTimeout);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         Exception? failure = null;
         try
         {
-            await connection.ShutdownAsync(shutdown.Token).ConfigureAwait(false);
-            await connection.Completion.WaitAsync(shutdown.Token).ConfigureAwait(false);
+            await _connection.ShutdownAsync(shutdown.Token).ConfigureAwait(false);
+            await _connection.Completion.WaitAsync(shutdown.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             failure = exception;
-            await connection.DisposeAsync().ConfigureAwait(false);
+            await _connection.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
-            credentialRegistry.Remove(sessionId);
+            _credentialRegistry.Remove(_sessionId);
             // This generation's policy is spent: a restart re-caches its own policy on start, and
             // a closed session must not leave a stale policy behind (ADR 0020, B4 cache lifecycle).
             // The host's host.repl.exited report releases the pid-scoped session identity and the
             // broker policy registration.
-            DenoReplPolicyCache.Clear(replPolicyRegistrar, sessionId);
+            DenoReplPolicyCache.Clear(_replPolicyRegistrar, _sessionId);
         }
 
         if (!disposing && failure is not null) throw failure;
@@ -503,7 +503,7 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
 
     private async Task ObserveCompletionAsync()
     {
-        await connection.Completion.ConfigureAwait(false);
+        await _connection.Completion.ConfigureAwait(false);
     }
 }
 

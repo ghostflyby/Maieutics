@@ -1,8 +1,7 @@
 using System.Text.Json;
-using Maieutics.Agent;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 /// <summary>
@@ -40,8 +39,8 @@ public sealed class AgentToolApprovalTests
         Assert.Equal("Not allowed.", resolved.Reason);
 
         // The turn committed: the denial is model input, not a rollback.
-        Assert.Single(result.Transcript.Turns);
-        var toolResult = result.Transcript.Turns[0].Messages
+        var item = Assert.Single(result.Transcript.Turns);
+        var toolResult = item.Messages
             .SelectMany(static message => message.Contents)
             .OfType<FunctionResultContent>()
             .Single();
@@ -178,8 +177,7 @@ public sealed class AgentToolApprovalTests
         await entered.Task.WaitAsync(deadline.Token);
 
         await run.CancelAsync(deadline.Token);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => run.Completion.WaitAsync(deadline.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion.WaitAsync(deadline.Token));
 
         Assert.False(invoked, "a cancelled turn must not execute the pending tool");
     }
@@ -404,18 +402,18 @@ public sealed class AgentToolApprovalTests
     /// overrides <see cref="AIFunction.AdditionalProperties" /> the same way).</summary>
     private sealed class ClassifiedTool : DelegatingAIFunction
     {
-        private readonly AdditionalPropertiesDictionary properties;
+        private readonly AdditionalPropertiesDictionary _properties;
 
         internal ClassifiedTool(AIFunction inner, AgentToolClassification classification)
             : base(inner)
         {
-            properties = new AdditionalPropertiesDictionary
+            _properties = new AdditionalPropertiesDictionary
             {
                 [AgentToolClassification.PropertiesKey] = classification,
             };
         }
 
-        public override IReadOnlyDictionary<string, object?> AdditionalProperties => properties;
+        public override IReadOnlyDictionary<string, object?> AdditionalProperties => _properties;
     }
 
     private static AgentSession CreateSession(
@@ -438,9 +436,6 @@ public sealed class AgentToolApprovalTests
             },
             tools: [tool ?? CreateTool("guarded")]);
     }
-
-    private static CancellationTokenSource CreateDeadline()
-        => TestDeadlines.Create(TestContext.Current.CancellationToken, Deadline);
 
     private static async Task<IReadOnlyList<AgentEvent>> ReadEventsAsync(
         IAgentRun run,
@@ -470,7 +465,7 @@ public sealed class AgentToolApprovalTests
     /// <summary>Records every approval request and answers from the supplied function.</summary>
     private sealed class RecordingGate : IAgentToolApprovalGate
     {
-        private readonly Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> body;
+        private readonly Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> _body;
 
         internal RecordingGate(Func<AgentToolApprovalRequest, AgentToolApprovalDecision> body)
             : this((request, _) => ValueTask.FromResult(body(request)))
@@ -480,7 +475,7 @@ public sealed class AgentToolApprovalTests
         internal RecordingGate(
             Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> body)
         {
-            this.body = body;
+            this._body = body;
         }
 
         internal List<AgentToolApprovalRequest> Requests { get; } = [];
@@ -490,8 +485,7 @@ public sealed class AgentToolApprovalTests
             CancellationToken cancellationToken)
         {
             Requests.Add(request);
-            return body(request, cancellationToken);
+            return _body(request, cancellationToken);
         }
     }
-
 }

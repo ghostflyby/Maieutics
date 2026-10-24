@@ -40,8 +40,8 @@ public sealed class SubagentFrontendFramesTests
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
         var initial = initialList.ToList();
-        var trace = string.Join("|", initial.Select(static frame =>
-            $"{frame.Type}@{frame.RunId?[..6]}"))
+        _ = string.Join("|", initial.Select(static frame =>
+                $"{frame.Type}@{frame.RunId?[..6]}"))
             + $"; settledNotifications={harness.Buffer.SettledNotifications}";
 
         var parentRunId = accepted.RunId;
@@ -78,7 +78,7 @@ public sealed class SubagentFrontendFramesTests
         var parentReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var harness = CreateHarness(
             postToolParentResponse: "done",
-            childResponse: (messages, token) => ChildHangAsync(childStarted, token),
+            childResponse: (_, token) => ChildHangAsync(childStarted, token),
             parentRelease: parentReleased.Task);
 
         var accepted = await harness.Service.StartTurnAsync(
@@ -155,7 +155,7 @@ public sealed class SubagentFrontendFramesTests
             // When parentRelease is set, park the parent model so CancelRunAsync can run
             // while the parent run is still in-flight (the child is still alive).
             if (parentRelease is not null)
-                return WaitAndStreamAsync(parentRelease, postToolParentResponse, token);
+                return WaitAndStreamAsync(parentRelease, postToolParentResponse);
 
             return StreamAsync(postToolParentResponse);
         }
@@ -215,7 +215,8 @@ public sealed class SubagentFrontendFramesTests
 
     private static async IAsyncEnumerable<ChatResponseUpdate> ChildHangAsync(
         TaskCompletionSource started,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken)
     {
         started.TrySetResult();
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
@@ -255,8 +256,7 @@ public sealed class SubagentFrontendFramesTests
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> WaitAndStreamAsync(
-        Task release, string text,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        Task release, string text)
     {
         await release;
         yield return new ChatResponseUpdate(ChatRole.Assistant, text);
@@ -279,8 +279,6 @@ public sealed class SubagentFrontendFramesTests
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
-
-
 }
 
 internal sealed record SpawnValue(string Status);

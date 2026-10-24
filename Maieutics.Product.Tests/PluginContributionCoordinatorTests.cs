@@ -1,5 +1,6 @@
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
+using Maieutics.Skills;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
@@ -29,8 +30,8 @@ public sealed class PluginContributionCoordinatorTests
         // wait on and the registry-wide publish is synchronous — no settle window.
         await coordinator.FlightIdle;
 
-        Assert.Single(wide.Frames);
-        Assert.Single(wide.Frames[0].Registrations);
+        var item = Assert.Single(wide.Frames);
+        Assert.Single(item.Registrations);
         Assert.False(wide.Guarded[0], "the registry frame's plain branch publishes unguarded");
         Assert.Empty(perPlugin.Invocations);
     }
@@ -173,8 +174,8 @@ public sealed class PluginContributionCoordinatorTests
             snapshot,
             ContributionFrameInput.NoForcedPlugins,
             []));
-        Assert.Single(wide.Frames);
-        Assert.Equal(2, wide.Frames[0].Registrations.Count());
+        var item = Assert.Single(wide.Frames);
+        Assert.Equal(2, item.Registrations.Count());
         Assert.True(wide.Guarded[0], "approval publishes take the disposed-coordinator guard");
         // The input carries no per-plugin targets, so nothing is scheduled: awaiting the
         // coordinator's idle edge confirms it without a settle window.
@@ -373,6 +374,9 @@ public sealed class PluginContributionCoordinatorTests
             (_, _) => throw new InvalidOperationException("no definitions reach generation construction"),
             NullLogger<PluginHostManager>.Instance);
         coordinator.Start();
+        // The adapter's factory reads the coordinator live; the adapter is used only inside
+        // the coordinator's using scope.
+        // ReSharper disable once AccessToDisposedClosure
         var adapter = new McpContributionDelivery(
             "McpDiscover",
             "McpDiscover",
@@ -464,7 +468,7 @@ public sealed class PluginContributionCoordinatorTests
             for (var i = 0; i < 20_000; i++)
                 _ = adapter.HoldsFace(i % 2 == 0 ? "p1" : "p3");
         }, TestContext.Current.CancellationToken));
-        var writers = Enumerable.Range(0, 4).Select(channel => Task.Run(() =>
+        var writers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
         {
             for (var i = 0; i < 5_000; i++)
                 adapter.PublishFrame(frame, guardDisposed: true);
@@ -485,31 +489,31 @@ public sealed class PluginContributionCoordinatorTests
     private static IReadOnlyList<string> Names(IReadOnlyList<ContributionDescriptor> entries) =>
         entries.Select(static entry => entry.IdentityKey).ToArray();
 
-    private static Skills.SkillDescriptor CreateSkill(string name) =>
-        new(name, $"description of {name}", Skills.SkillSource.PluginGenerated, RootDirectory: "/");
+    private static SkillDescriptor CreateSkill(string name) =>
+        new(name, $"description of {name}", SkillSource.PluginGenerated, RootDirectory: "/");
 
     private sealed class FakeDelivery(string kindName, ContributionDeliveryShape shape) : IContributionDelivery
     {
-        private readonly object sync = new();
-        private TaskCompletionSource release = NewTcs();
-        private TaskCompletionSource changed = NewTcs();
-        private bool holdPasses;
-        private int activePasses;
-        private int completedPasses;
+        private readonly object _sync = new();
+        private TaskCompletionSource _release = NewTcs();
+        private TaskCompletionSource _changed = NewTcs();
+        private bool _holdPasses;
+        private int _activePasses;
+        private int _completedPasses;
 
         /// <summary>Completes the change signal and swaps in a fresh source. Every
         /// observable state mutation of this double notifies, so waits on its state are
         /// signal-driven, never timer-sliced.</summary>
         private void NotifyChangedLocked()
         {
-            changed.TrySetResult();
-            changed = NewTcs();
+            _changed.TrySetResult();
+            _changed = NewTcs();
         }
 
         /// <summary>Notify from outside a lock hold; takes the lock only for the swap.</summary>
         private void NotifyChanged()
         {
-            lock (sync)
+            lock (_sync)
             {
                 NotifyChangedLocked();
             }
@@ -529,15 +533,15 @@ public sealed class PluginContributionCoordinatorTests
 
         public List<bool> Guarded { get; } = [];
 
-        public int ActivePasses => Volatile.Read(ref activePasses);
+        public int ActivePasses => Volatile.Read(ref _activePasses);
 
-        public int CompletedPasses => Volatile.Read(ref completedPasses);
+        public int CompletedPasses => Volatile.Read(ref _completedPasses);
 
         public bool HoldsFace(string pluginId) => false;
 
         public void PublishFrame(ContributionFrameInput frame, bool guardDisposed)
         {
-            lock (sync)
+            lock (_sync)
             {
                 Frames.Add(frame);
                 Guarded.Add(guardDisposed);
@@ -548,33 +552,33 @@ public sealed class PluginContributionCoordinatorTests
         public Task ReconcileAsync(string pluginId, CancellationToken cancellationToken)
         {
             TaskCompletionSource? gate;
-            lock (sync)
+            lock (_sync)
             {
                 Invocations.Add(pluginId);
                 if (FailNextPass)
                 {
                     FailNextPass = false;
-                    Interlocked.Increment(ref completedPasses);
+                    Interlocked.Increment(ref _completedPasses);
                     NotifyChanged();
                     throw new InvalidOperationException("simulated pass failure");
                 }
 
-                gate = holdPasses ? release : null;
+                gate = _holdPasses ? _release : null;
                 if (gate is null)
                 {
-                    Interlocked.Increment(ref completedPasses);
+                    Interlocked.Increment(ref _completedPasses);
                     NotifyChanged();
                     return Task.CompletedTask;
                 }
 
-                Interlocked.Increment(ref activePasses);
+                Interlocked.Increment(ref _activePasses);
                 NotifyChanged();
             }
 
             return gate.Task.ContinueWith(_ =>
             {
-                Interlocked.Decrement(ref activePasses);
-                Interlocked.Increment(ref completedPasses);
+                Interlocked.Decrement(ref _activePasses);
+                Interlocked.Increment(ref _completedPasses);
                 NotifyChanged();
             });
         }
@@ -585,20 +589,20 @@ public sealed class PluginContributionCoordinatorTests
         /// gate until the next release).</summary>
         public void HoldPasses()
         {
-            lock (sync)
+            lock (_sync)
             {
-                holdPasses = true;
-                release = NewTcs();
+                _holdPasses = true;
+                _release = NewTcs();
             }
         }
 
         public void ReleasePass()
         {
             TaskCompletionSource gate;
-            lock (sync)
+            lock (_sync)
             {
-                gate = release;
-                release = NewTcs();
+                gate = _release;
+                _release = NewTcs();
             }
 
             gate.TrySetResult();
@@ -615,10 +619,10 @@ public sealed class PluginContributionCoordinatorTests
             while (true)
             {
                 Task signal;
-                lock (sync)
+                lock (_sync)
                 {
                     if (predicate()) return;
-                    signal = changed.Task;
+                    signal = _changed.Task;
                 }
 
                 try

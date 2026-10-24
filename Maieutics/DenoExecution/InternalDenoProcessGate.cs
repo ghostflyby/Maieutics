@@ -16,20 +16,20 @@ internal static class InternalDenoProcessGate
     /// child must never turn into a failure, so only a genuinely wedged slot trips it.</summary>
     private static readonly TimeSpan WaitBudget = TimeSpan.FromSeconds(120);
 
-    private static SemaphoreSlim? liveChildren;
-    private static int? enabledLimit;
+    private static SemaphoreSlim? _liveChildren;
+    private static int? _enabledLimit;
 
     /// <summary>The configured slot count while the gate is enabled, or null when the
     /// gate is inert (production). Internal test observability: a wiring test asserts the
     /// suite enabled it with the expected budget.</summary>
-    internal static int? EnabledLimit => enabledLimit;
+    internal static int? EnabledLimit => _enabledLimit;
 
     /// <summary>Enables the gate with <paramref name="limit"/> live-child slots.</summary>
     internal static void EnableForTests(int limit)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        liveChildren = new SemaphoreSlim(limit, limit);
-        enabledLimit = limit;
+        _liveChildren = new SemaphoreSlim(limit, limit);
+        _enabledLimit = limit;
     }
 
     /// <summary>Acquires one live-child slot when the gate is enabled, or returns the
@@ -38,7 +38,7 @@ internal static class InternalDenoProcessGate
     internal static async Task<ChildSlotLease> AcquireAsync(
         CancellationToken cancellationToken)
     {
-        var gate = liveChildren;
+        var gate = _liveChildren;
         if (gate is null) return ChildSlotLease.None;
 
         try
@@ -65,14 +65,14 @@ internal readonly struct ChildSlotLease : IDisposable
 {
     internal static readonly ChildSlotLease None = default;
 
-    private readonly SemaphoreSlim? gate;
+    private readonly SemaphoreSlim? _gate;
 
-    private ChildSlotLease(SemaphoreSlim gate) => this.gate = gate;
+    private ChildSlotLease(SemaphoreSlim gate) => this._gate = gate;
 
     internal static ChildSlotLease Acquired(SemaphoreSlim gate) => new(gate);
 
     /// <summary>Whether the lease carries a real slot (the gate is enabled).</summary>
-    internal bool HasSlot => gate is not null;
+    internal bool HasSlot => _gate is not null;
 
-    public void Dispose() => gate?.Release();
+    public void Dispose() => _gate?.Release();
 }

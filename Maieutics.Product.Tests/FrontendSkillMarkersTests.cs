@@ -77,31 +77,32 @@ public sealed class FrontendSkillMarkersTests
     }
 }
 
-public sealed class FrontendSkillExpansionTests : IDisposable
+public sealed class FrontendSkillExpansionTests : IAsyncDisposable
 {
-    private readonly string root =
+    private readonly string _root =
         Path.Combine(Path.GetTempPath(), $"maieutics-skill-expand-{Guid.NewGuid():N}");
 
-    private readonly List<SkillCatalog> catalogs = [];
+    private readonly List<SkillCatalog> _catalogs = [];
 
-    public async void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        foreach (var catalog in catalogs)
+        foreach (var catalog in _catalogs)
             await catalog.DisposeAsync();
         try
         {
-            await TempArea.DeleteAsync(root, CancellationToken.None);
+            await TempArea.DeleteAsync(_root, CancellationToken.None);
         }
         catch (DirectoryNotFoundException)
         {
         }
     }
 
+
     private SkillResourceProvider CreateProvider(params (string Name, string Body)[] skills)
     {
         foreach (var (name, body) in skills)
         {
-            var directory = Path.Combine(root, name);
+            var directory = Path.Combine(_root, name);
             Directory.CreateDirectory(directory);
             File.WriteAllText(
                 Path.Combine(directory, "SKILL.md"),
@@ -109,10 +110,10 @@ public sealed class FrontendSkillExpansionTests : IDisposable
         }
 
         var catalog = SkillCatalog.Create(
-            [(SkillSource.Workspace, root)],
+            [(SkillSource.Workspace, _root)],
             new FakeTimeProvider(),
             NullLogger<SkillCatalog>.Instance);
-        catalogs.Add(catalog);
+        _catalogs.Add(catalog);
         return new SkillResourceProvider(catalog);
     }
 

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentTranscriptStoreTests
@@ -58,8 +58,8 @@ public sealed class AgentTranscriptStoreTests
         await ReadEventsAsync(next, deadline.Token);
         Assert.Equal("second", (await next.Completion.WaitAsync(deadline.Token)).AssistantMessage.Text);
 
-        Assert.Single(store.Turns);
-        Assert.Equal("again", store.Turns[0].Messages[0].Text);
+        var item = Assert.Single(store.Turns);
+        Assert.Equal("again", item.Messages[0].Text);
     }
 
     [Fact(Timeout = 30_000)]
@@ -84,15 +84,13 @@ public sealed class AgentTranscriptStoreTests
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
         => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
-    private static async Task<List<AgentEvent>> ReadEventsAsync(
+    private static async Task ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)
     {
-        var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-            events.Add(agentEvent);
-
-        return events;
+        await foreach (var _ in run.Events.WithCancellation(cancellationToken))
+        {
+        }
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamAsync(params string[] deltas)
@@ -106,23 +104,20 @@ public sealed class AgentTranscriptStoreTests
 
     private sealed class RecordingTranscriptStore : IAgentTranscriptStore
     {
-        private readonly Lock gate = new();
+        private readonly Lock _gate = new();
 
         public List<AgentTranscriptTurn> Turns { get; } = [];
 
         public List<AgentSessionId> SessionIds { get; } = [];
 
-        public List<IReadOnlyList<string>> References { get; } = [];
-
         public bool FailOnAppend { get; set; }
 
         public void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences)
         {
-            lock (gate)
+            lock (_gate)
             {
                 if (FailOnAppend) throw new InvalidOperationException("The transcript store is unavailable.");
                 SessionIds.Add(sessionId);
-                References.Add(objectReferences);
                 Turns.Add(new AgentTranscriptTurn(
                     turn.RunId,
                     turn.Messages.Select(message => message.Clone()).ToArray(),
@@ -141,5 +136,4 @@ public sealed class AgentTranscriptStoreTests
             throw new NotSupportedException();
         }
     }
-
 }

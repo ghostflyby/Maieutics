@@ -7,7 +7,6 @@ using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Maieutics.Plugins.Contributions;
 using Maieutics.Processes;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
@@ -119,9 +118,8 @@ public sealed class McpProcessPolicyTests
         }
 
         await using var session = CreateTerminalSession(executable, policy);
-        var terminalRefused = await Record.ExceptionAsync(
-                () => session.StartAsync(TestContext.Current.CancellationToken))
-            is AgentToolException refusal && refusal.Code == "terminal_start_failed";
+        var terminalRefused = await Record.ExceptionAsync(() => session.StartAsync(TestContext.Current.CancellationToken))
+            is AgentToolException { Code: "terminal_start_failed" };
 
         // One verdict for both launch surfaces: the same grant admits or refuses the same
         // command identically, including the directory-boundary cases.
@@ -157,7 +155,7 @@ public sealed class McpProcessPolicyTests
 
         Assert.True(
             failure is ArgumentException,
-            $"expected the owning scope's run grant to refuse the command, got: {failure?.GetType().FullName ?? "null"}");
+            $"expected the owning scope's run grant to refuse the command, got: {failure.GetType().FullName}");
     }
 
     [Fact(Timeout = 30_000)]
@@ -257,11 +255,9 @@ public sealed class McpProcessPolicyTests
 
         using var watcher = new FileSystemWatcher(
             Path.GetDirectoryName(probe) ?? ".",
-            Path.GetFileName(probe))
-        {
-            EnableRaisingEvents = true,
-            NotifyFilter = NotifyFilters.FileName,
-        };
+            Path.GetFileName(probe));
+        watcher.EnableRaisingEvents = true;
+        watcher.NotifyFilter = NotifyFilters.FileName;
         var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         watcher.Created += (_, _) => created.TrySetResult();
 
@@ -284,11 +280,9 @@ public sealed class McpProcessPolicyTests
         {
             using var watcher = new FileSystemWatcher(
                 Path.GetDirectoryName(probe) ?? ".",
-                Path.GetFileName(probe))
-            {
-                EnableRaisingEvents = true,
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
-            };
+                Path.GetFileName(probe));
+            watcher.EnableRaisingEvents = true;
+            watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName;
             var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             watcher.Created += (_, _) => written.TrySetResult();
             watcher.Changed += (_, _) => written.TrySetResult();
@@ -393,7 +387,6 @@ public sealed class McpProcessPolicyTests
     private static TerminalSession CreateTerminalSession(string executable, EffectivePolicy policy)
     {
         return new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),

@@ -21,7 +21,10 @@ internal abstract class ContributionDescriptor
     public string IdentityKey { get; }
 
     /// <summary>Non-null marks an inert entry: it stays visible in its list but never
-    /// reaches the consumption face (the skills inert-diagnostic precedent).</summary>
+    /// reaches the consumption face (the skills inert-diagnostic precedent). Consumers
+    /// currently read the marker through the wrapped domain records; the descriptor
+    /// carries it so the framework's shape stays uniform.</summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global
     public string? Diagnostic { get; }
 }
 

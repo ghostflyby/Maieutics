@@ -40,7 +40,7 @@ internal static class FrontendDiscoveryFile
                 {
                     // FileShare.ReadWrite: a concurrent reader (or a scanner that opens
                     // shared) must not turn this probe into a lock conflict.
-                    using var stream = new FileStream(
+                    await using var stream = new FileStream(
                         path,
                         FileMode.Open,
                         FileAccess.Read,
@@ -61,7 +61,7 @@ internal static class FrontendDiscoveryFile
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested &&
-                                                  !cancellationToken.IsCancellationRequested)
+                                                 !cancellationToken.IsCancellationRequested)
         {
             throw new InvalidOperationException(
                 $"The frontend discovery file '{path}' was not readable within {budget.TotalSeconds:0.#}s.",

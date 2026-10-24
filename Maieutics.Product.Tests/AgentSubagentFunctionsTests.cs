@@ -52,9 +52,10 @@ public sealed class AgentSubagentFunctionsTests
 
         // After the turn the child is no longer on the plane (join-before-complete), and the
         // plane reports that as a typed miss rather than a stale snapshot.
-        var gone = () => harness.Provider.WaitTaskAsync(
-            taskUri, TimeSpan.FromSeconds(1), deadline.Token);
-        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await gone.Invoke(); })).Code);
+        Assert.Equal("resource_not_found", (await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await harness.Provider.WaitTaskAsync(taskUri, TimeSpan.FromSeconds(1), deadline.Token);
+        })).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -98,8 +99,8 @@ public sealed class AgentSubagentFunctionsTests
 
         // The real agent_spawn adapter registered the child scope under the calling session
         // (ADR 0030 decision 3), so the child resolves through the parent's override.
-        Assert.Single(overrides.ChildScopes);
-        Assert.Equal(session.Id, overrides.ChildScopes[0].Parent);
+        var item = Assert.Single(overrides.ChildScopes);
+        Assert.Equal(session.Id, item.Parent);
         Assert.Same(parentLayer, overrides.TryGet(overrides.ChildScopes[0].Child));
     }
 
@@ -162,7 +163,7 @@ public sealed class AgentSubagentFunctionsTests
             },
             functions.Functions);
         reference.Session = session;
-        return new Harness(session, provider, functions, buffer);
+        return new Harness(session, provider, buffer);
 
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
@@ -185,8 +186,7 @@ public sealed class AgentSubagentFunctionsTests
         foreach (var content in messages.SelectMany(message => message.Contents)
                      .OfType<FunctionResultContent>())
         {
-            if (content.Result is JsonElement envelope &&
-                envelope.ValueKind == JsonValueKind.Object &&
+            if (content.Result is JsonElement { ValueKind: JsonValueKind.Object } envelope &&
                 envelope.TryGetProperty("value", out var value) &&
                 value.TryGetProperty("taskUri", out var taskUri) &&
                 taskUri.GetString() is { } uri)
@@ -199,14 +199,11 @@ public sealed class AgentSubagentFunctionsTests
     private sealed class Harness(
         AgentSession session,
         TaskResourceProvider provider,
-        AgentSubagentFunctions functions,
         SubagentEventBuffer buffer)
     {
         internal AgentSession Session { get; } = session;
 
         internal TaskResourceProvider Provider { get; } = provider;
-
-        internal AgentSubagentFunctions Functions { get; } = functions;
 
         internal SubagentEventBuffer Buffer { get; } = buffer;
     }
@@ -218,18 +215,18 @@ public sealed class AgentSubagentFunctionsTests
 
     private static AIFunction CreateProbeTool()
     {
-        async ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
+        ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
         {
             _ = AgentSubagentContext.GetRequired(arguments);
             var attached = arguments.Context is not null &&
                            arguments.Context.ContainsKey(typeof(IAgentSubagentSpawner));
-            return JsonSerializer.SerializeToElement(
+            return ValueTask.FromResult(JsonSerializer.SerializeToElement(
                 new ProbeValue(attached ? "attached" : "missing"),
-                ProbeJsonContext.Default.ProbeValue);
+                ProbeJsonContext.Default.ProbeValue));
         }
 
         return AIFunctionFactory.Create(
-            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)Invoke,
+            Invoke,
             new AIFunctionFactoryOptions
             {
                 Name = "subagent_probe",
@@ -241,26 +238,6 @@ public sealed class AgentSubagentFunctionsTests
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
-
-    private static AIFunction CreateSpawnTool(
-        string name,
-        Func<AIFunctionArguments, CancellationToken, Task<JsonElement>> body)
-    {
-        ValueTask<JsonElement> Invoke(AIFunctionArguments arguments, CancellationToken cancellationToken)
-        {
-            return new ValueTask<JsonElement>(body(arguments, cancellationToken));
-        }
-
-        return AIFunctionFactory.Create(
-            (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)Invoke,
-            new AIFunctionFactoryOptions
-            {
-                Name = name,
-                Description = $"Test spawn tool {name}.",
-                SerializerOptions = SubagentFrameJsonContext.Default.Options,
-                ExcludeResultSchema = true
-            });
-    }
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(IAgentRun run, CancellationToken cancellationToken)
     {
@@ -297,7 +274,6 @@ public sealed class AgentSubagentFunctionsTests
                     arguments.ToDictionary(static argument => argument.Name, static argument => argument.Value))
             ]);
     }
-
 }
 
 internal sealed record ProbeValue(string Status);
@@ -306,4 +282,3 @@ internal sealed record ProbeValue(string Status);
 [JsonSerializable(typeof(JsonElement?))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal sealed partial class ProbeJsonContext : JsonSerializerContext;
-

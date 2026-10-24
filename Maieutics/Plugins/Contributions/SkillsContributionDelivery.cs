@@ -1,6 +1,8 @@
+using System.Text;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.Permissions;
+using Maieutics.Skills;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Plugins.Contributions;
@@ -31,7 +33,7 @@ internal sealed class SkillsContributionDelivery(
     string extensionPointName,
     ContributionSlotTable table,
     ContributionCoordinator engine,
-    Skills.SkillCatalog? skillCatalog,
+    SkillCatalog? skillCatalog,
     VariableTable? manifestVariables,
     Func<string?>? workspaceRootAccessor,
     ILogger logger) : IContributionDelivery
@@ -46,10 +48,10 @@ internal sealed class SkillsContributionDelivery(
         SkillsContributionKind.Instance.Metadata.MaxComputedEntries
         ?? throw new InvalidOperationException("The skills metadata must declare the computed-entries bound.");
 
-    private readonly PluginHostManager host = host ?? throw new ArgumentNullException(nameof(host));
-    private readonly ContributionSlotTable table = table ?? throw new ArgumentNullException(nameof(table));
-    private readonly ContributionCoordinator engine = engine ?? throw new ArgumentNullException(nameof(engine));
-    private readonly ILogger logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly PluginHostManager _host = host ?? throw new ArgumentNullException(nameof(host));
+    private readonly ContributionSlotTable _table = table ?? throw new ArgumentNullException(nameof(table));
+    private readonly ContributionCoordinator _engine = engine ?? throw new ArgumentNullException(nameof(engine));
+    private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     public string KindName { get; } = kindName;
 
@@ -57,7 +59,15 @@ internal sealed class SkillsContributionDelivery(
 
     public string ExtensionPointName { get; } = extensionPointName;
 
-    public bool HoldsFace(string pluginId) => table.HoldsFace(pluginId);
+    public bool HoldsFace(string pluginId)
+    {
+        // The slot table owns no lock: every method — this read included — runs under the
+        // host manager's gate, matching the reconcile and commit paths.
+        lock (_host.Gate)
+        {
+            return _table.HoldsFace(pluginId);
+        }
+    }
 
     public void PublishFrame(ContributionFrameInput frame, bool guardDisposed)
     {
@@ -71,7 +81,11 @@ internal sealed class SkillsContributionDelivery(
     {
         if (skillCatalog is null) return;
 
-        var input = host.CaptureSkillPassInputLock(pluginId, KindName, ExtensionPointName);
+        // `host` is deliberately touched outside the gate here and inside `lock (host.Gate)`
+        // elsewhere: CaptureSkillPassInputLock takes the gate itself, and the invoke below
+        // must await without holding it.
+        // ReSharper disable once InconsistentlySynchronizedField
+        var input = _host.CaptureSkillPassInputLock(pluginId, KindName, ExtensionPointName);
         if (input.Descriptor is null)
         {
             RemoveContribution(pluginId);
@@ -84,7 +98,7 @@ internal sealed class SkillsContributionDelivery(
 
         try
         {
-            var contribution = new List<Skills.SkillDescriptor>();
+            var contribution = new List<SkillDescriptor>();
             foreach (var entry in input.DeclaredEntries)
                 CollectDeclarativeSkills(
                     pluginId, input.Descriptor.RootDirectory, input.Descriptor.Permissions, entry.Data, contribution);
@@ -94,9 +108,12 @@ internal sealed class SkillsContributionDelivery(
             // export-set diff alone would never fire again), matching the MCP
             // coordinator's "never-succeeded stays new" discipline.
             var invokeFailed = false;
+            // `host` is deliberately touched outside the gate here: the invoke must await
+            // without holding the manager's gate (the sticky commit re-acquires it).
+            // ReSharper disable once InconsistentlySynchronizedField
             foreach (var exportName in input.GeneratorExports)
             {
-                var outcome = await host.InvokeExtensionPointAsync(
+                var outcome = await _host.InvokeExtensionPointAsync(
                     pluginId,
                     exportName,
                     ExtensionPointName,
@@ -105,7 +122,7 @@ internal sealed class SkillsContributionDelivery(
                 if (outcome.IsError)
                 {
                     invokeFailed = true;
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "Plugin '{PluginId}' skill generator '{Export}' failed ({Code}): {Message}; keeping its last good contribution.",
                         pluginId,
                         exportName,
@@ -117,7 +134,7 @@ internal sealed class SkillsContributionDelivery(
                 if (ParseGeneratedSkills(outcome.Value) is not { Count: > 0 } parsed)
                 {
                     invokeFailed = true;
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "Plugin '{PluginId}' skill generator '{Export}' returned no usable descriptors; keeping its last good contribution.",
                         pluginId,
                         exportName);
@@ -129,14 +146,14 @@ internal sealed class SkillsContributionDelivery(
                 // every export's part, so sibling exports never replace each other.
                 // Exports that vanished keep their sticky part until the plugin's
                 // slot itself is removed.
-                lock (host.Gate)
+                lock (_host.Gate)
                 {
                     // The token recheck keeps a straggler pass from writing a dead
                     // generation's sticky part into a cleared slot bag: the stop path
                     // cancels the lifetime before it clears, so a pass that already
                     // received its invokes must not commit them afterwards.
                     if (input.InvokeToken.IsCancellationRequested) return;
-                    table.SetGenerated(
+                    _table.SetGenerated(
                         pluginId,
                         new SlotSourceKey(pluginId, exportName, ExtensionPointName),
                         Wrap(parsed));
@@ -148,13 +165,13 @@ internal sealed class SkillsContributionDelivery(
             // The generation token check declines a commit racing the stop path —
             // the stop cancels the lifetime BEFORE it clears every contribution,
             // so a straggler pass cannot resurrect a cleared slot.
-            lock (host.Gate)
+            lock (_host.Gate)
             {
-                if (input.InvokeToken.IsCancellationRequested || host.IsApprovalBlockedLock(pluginId)) return;
-                engine.SetRetryPending(KindName, pluginId, invokeFailed);
-                table.SetDeclared(pluginId, Wrap(contribution));
-                skillCatalog.UpdatePluginContribution(pluginId, Unwrap(table.Compose(pluginId)));
-                table.MarkSlotHeld(pluginId);
+                if (input.InvokeToken.IsCancellationRequested || _host.IsApprovalBlockedLock(pluginId)) return;
+                _engine.SetRetryPending(KindName, pluginId, invokeFailed);
+                _table.SetDeclared(pluginId, Wrap(contribution));
+                skillCatalog.UpdatePluginContribution(pluginId, Unwrap(_table.Compose(pluginId)));
+                _table.MarkSlotHeld(pluginId);
             }
         }
         catch (OperationCanceledException)
@@ -165,7 +182,7 @@ internal sealed class SkillsContributionDelivery(
         {
             // One plugin's poison degrades only that plugin: its sticky parts stay
             // as the contribution, and other plugins' passes are unaffected.
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Reconciling plugin '{PluginId}' skill contributions failed; its last contributions stay active.",
                 pluginId);
@@ -178,11 +195,11 @@ internal sealed class SkillsContributionDelivery(
     public void RemoveContribution(string pluginId)
     {
         if (skillCatalog is null) return;
-        lock (host.Gate)
+        lock (_host.Gate)
         {
-            if (!table.Remove(pluginId)) return;
+            if (!_table.Remove(pluginId)) return;
             // The slot is gone (blocked or removed): no retry can succeed anymore.
-            engine.SetRetryPending(KindName, pluginId, pending: false);
+            _engine.SetRetryPending(KindName, pluginId, pending: false);
             skillCatalog.RemovePluginContribution(pluginId);
         }
     }
@@ -192,15 +209,15 @@ internal sealed class SkillsContributionDelivery(
     /// concurrent reconcile pass cannot interleave its commit.</summary>
     /// <returns>The number of usable published entries, or null when this host carries no
     /// skill catalog (the capability is unavailable).</returns>
-    public int? Publish(string pluginId, IReadOnlyList<Skills.SkillDescriptor> published)
+    public int? Publish(string pluginId, IReadOnlyList<SkillDescriptor> published)
     {
         if (skillCatalog is null) return null;
 
-        lock (host.Gate)
+        lock (_host.Gate)
         {
-            table.SetPublished(pluginId, Wrap(published));
-            skillCatalog.UpdatePluginContribution(pluginId, Unwrap(table.Compose(pluginId)));
-            table.MarkSlotHeld(pluginId);
+            _table.SetPublished(pluginId, Wrap(published));
+            skillCatalog.UpdatePluginContribution(pluginId, Unwrap(_table.Compose(pluginId)));
+            _table.MarkSlotHeld(pluginId);
         }
 
         return published.Count(static skill => skill.Diagnostic is null);
@@ -210,18 +227,18 @@ internal sealed class SkillsContributionDelivery(
     /// that held one, so the caller can detach them from the catalog under the gate.</summary>
     public IReadOnlyList<string> ClearAll()
     {
-        lock (host.Gate)
+        lock (_host.Gate)
         {
-            return table.ClearAll();
+            return _table.ClearAll();
         }
     }
 
-    private static IReadOnlyList<ContributionDescriptor> Wrap(IReadOnlyList<Skills.SkillDescriptor> skills)
+    private static IReadOnlyList<ContributionDescriptor> Wrap(IReadOnlyList<SkillDescriptor> skills)
     {
         return skills.Select(static skill => (ContributionDescriptor)new SkillEntryContribution(skill)).ToArray();
     }
 
-    private static IReadOnlyList<Skills.SkillDescriptor> Unwrap(IReadOnlyList<ContributionDescriptor> entries)
+    private static IReadOnlyList<SkillDescriptor> Unwrap(IReadOnlyList<ContributionDescriptor> entries)
     {
         return entries
             .Select(static entry => entry is SkillEntryContribution skill
@@ -241,7 +258,7 @@ internal sealed class SkillsContributionDelivery(
         string rootDirectory,
         PluginPermissionGrants grants,
         JsonElement data,
-        List<Skills.SkillDescriptor> results)
+        List<SkillDescriptor> results)
     {
         if (data.ValueKind != JsonValueKind.Object ||
             !data.TryGetProperty("roots", out var roots) ||
@@ -301,7 +318,7 @@ internal sealed class SkillsContributionDelivery(
                 continue;
             }
 
-            if (!Skills.SkillDirectoryDiscovery.IsWithinRoot(rootDirectory, resolved) &&
+            if (!SkillDirectoryDiscovery.IsWithinRoot(rootDirectory, resolved) &&
                 !IsCoveredByReadGrant(grants.Read, rootDirectory, resolved))
             {
                 results.Add(InertSkill(
@@ -312,7 +329,7 @@ internal sealed class SkillsContributionDelivery(
                 continue;
             }
 
-            results.AddRange(Skills.SkillDirectoryDiscovery.Discover(resolved, Skills.SkillSource.PluginDeclared));
+            results.AddRange(SkillDirectoryDiscovery.Discover(resolved, SkillSource.PluginDeclared));
             index++;
         }
     }
@@ -355,12 +372,12 @@ internal sealed class SkillsContributionDelivery(
     /// array of {name, description, body?} objects under the same bounds a filesystem
     /// skill satisfies. Invalid entries ride as inert diagnostics; a non-array value is
     /// null.</summary>
-    internal static List<Skills.SkillDescriptor>? ParseGeneratedSkills(
+    internal static List<SkillDescriptor>? ParseGeneratedSkills(
         JsonElement? value,
-        Skills.SkillSource source = Skills.SkillSource.PluginGenerated)
+        SkillSource source = SkillSource.PluginGenerated)
     {
         if (value is not { ValueKind: JsonValueKind.Array } array) return null;
-        var results = new List<Skills.SkillDescriptor>();
+        var results = new List<SkillDescriptor>();
         foreach (var entry in array.EnumerateArray())
         {
             if (results.Count >= MaximumComputedSkillEntries)
@@ -390,7 +407,7 @@ internal sealed class SkillsContributionDelivery(
                        bodyElement.ValueKind == JsonValueKind.String
                 ? bodyElement.GetString()
                 : null;
-            if (string.IsNullOrWhiteSpace(name) || !Skills.SkillDescriptor.IsValidName(name))
+            if (string.IsNullOrWhiteSpace(name) || !SkillDescriptor.IsValidName(name))
             {
                 results.Add(InertSkill(
                     SourceLabel(source),
@@ -399,21 +416,21 @@ internal sealed class SkillsContributionDelivery(
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(description) || !Skills.SkillFrontmatter.IsCleanScalar(description))
+            if (string.IsNullOrWhiteSpace(description) || !SkillFrontmatter.IsCleanScalar(description))
             {
                 results.Add(InertSkill(name, "entry", "The generated skill has no clean one-line description."));
                 continue;
             }
 
-            if (description.Length > Skills.SkillDescriptor.MaximumDescriptionLength)
-                description = description[..Skills.SkillDescriptor.MaximumDescriptionLength];
-            if (body is { Length: > Skills.SkillDescriptor.MaximumGeneratedBodyCharacters })
+            if (description.Length > SkillDescriptor.MaximumDescriptionLength)
+                description = description[..SkillDescriptor.MaximumDescriptionLength];
+            if (body is { Length: > SkillDescriptor.MaximumGeneratedBodyCharacters })
             {
                 results.Add(InertSkill(name, "entry", "The generated skill body exceeds the size bound."));
                 continue;
             }
 
-            results.Add(new Skills.SkillDescriptor(
+            results.Add(new SkillDescriptor(
                 name,
                 description,
                 source,
@@ -429,15 +446,15 @@ internal sealed class SkillsContributionDelivery(
     private static string SanitizeEcho(string? value)
     {
         if (string.IsNullOrEmpty(value)) return string.Empty;
-        var builder = new System.Text.StringBuilder();
+        var builder = new StringBuilder();
         foreach (var character in value.Length > 32 ? value[..32] : value)
             builder.Append(character < ' ' || character == '\u007f' ? '?' : character);
         return builder.ToString();
     }
 
-    private static string SourceLabel(Skills.SkillSource source)
+    private static string SourceLabel(SkillSource source)
     {
-        return source == Skills.SkillSource.PluginPublished ? "published" : "generator";
+        return source == SkillSource.PluginPublished ? "published" : "generator";
     }
 
     /// <summary>The generator invoke request: the live workspace root (or null) — never
@@ -450,12 +467,12 @@ internal sealed class SkillsContributionDelivery(
             ReplControlJsonContext.Default.SkillsInvokePayload);
     }
 
-    private static Skills.SkillDescriptor InertSkill(string pluginId, string slot, string diagnostic)
+    private static SkillDescriptor InertSkill(string pluginId, string slot, string diagnostic)
     {
-        return new Skills.SkillDescriptor(
+        return new SkillDescriptor(
             $"{pluginId}:{slot}",
             string.Empty,
-            Skills.SkillSource.PluginDeclared,
+            SkillSource.PluginDeclared,
             RootDirectory: "/",
             Diagnostic: diagnostic);
     }

@@ -18,12 +18,12 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
     // hold the same file; each handle appends, so writers must not truncate on open.
     private const FileShare SharedAccess = FileShare.ReadWrite | FileShare.Delete;
 
-    private readonly Lock gate = new();
-    private readonly StreamWriter writer = OpenWriter(logDirectory);
+    private readonly Lock _gate = new();
+    private readonly StreamWriter _writer = OpenWriter(logDirectory);
 
-    /// <summary>Read and written only under <see cref="gate" />, so it cannot be observed as
+    /// <summary>Read and written only under <see cref="_gate" />, so it cannot be observed as
     /// stale against the writer it guards.</summary>
-    private bool disposed;
+    private bool _disposed;
 
     /// <inheritdoc />
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
@@ -36,15 +36,16 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
         // was set — reach a disposed StreamWriter and throw ObjectDisposedException into the
         // logging pipeline, the opposite of what `Write` promises. Holding the gate also makes
         // concurrent disposers safe without a separate flag dance.
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
-            disposed = true;
-            writer.Dispose();
+            if (_disposed) return;
+            _disposed = true;
+            _writer.Dispose();
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>Async disposal for <c>await using</c> consumers; the sink's teardown is
+    /// synchronous.</summary>
     public ValueTask DisposeAsync()
     {
         Dispose();
@@ -66,16 +67,16 @@ internal sealed class FileLoggerProvider(string logDirectory) : ILoggerProvider
     private void Write(LogLevel logLevel, string category, string message, Exception? exception)
     {
         var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {logLevel}] {category}: {message}";
-        lock (gate)
+        lock (_gate)
         {
             // A record racing disposal is dropped rather than thrown into the logging pipeline.
             // The check is authoritative: disposal sets the flag and disposes the writer under
             // this same gate, so a writer that is visible here is not yet disposed.
-            if (disposed) return;
-            writer.WriteLine(line);
+            if (_disposed) return;
+            _writer.WriteLine(line);
             if (exception is not null)
             {
-                writer.WriteLine(exception.ToString());
+                _writer.WriteLine(exception.ToString());
             }
         }
     }

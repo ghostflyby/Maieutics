@@ -50,7 +50,6 @@ public sealed class TerminalSessionTests
         EffectivePolicy policy)
     {
         return new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
@@ -83,7 +82,6 @@ public sealed class TerminalSessionTests
         var options = TestOptions();
         options.StartupTimeout = TimeSpan.FromMilliseconds(100);
         var session = new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
@@ -489,7 +487,6 @@ public sealed class TerminalSessionTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var factory = new StalledTerminalProcessFactory(release.Task, fake);
         var session = new TerminalSession(
-            AgentSessionId.Create(),
             Guid.NewGuid().ToString("N"),
             true,
             Directory.GetCurrentDirectory(),
@@ -629,11 +626,11 @@ internal sealed class FakeTerminalProcessFactory(FakeTerminalProcess process) : 
 internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTerminalProcess? process = null)
     : ITerminalProcessFactory
 {
-    private readonly TaskCompletionSource startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Completes when the product has entered <see cref="Start"/> and is blocked on
     /// the release gate; tests await this instead of pacing against a sleep.</summary>
-    internal Task StartEntered => startEntered.Task;
+    internal Task StartEntered => _startEntered.Task;
 
     public ITerminalProcess Start(
         string shell,
@@ -643,7 +640,7 @@ internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTer
         int columns,
         int rows)
     {
-        startEntered.TrySetResult();
+        _startEntered.TrySetResult();
         pendingRelease.Wait();
         return process ?? new FakeTerminalProcess();
     }
@@ -651,14 +648,14 @@ internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTer
 
 internal sealed class FakeTerminalProcess : ITerminalProcess
 {
-    private readonly FakePtyStream stream;
+    private readonly FakePtyStream _stream;
 
     internal FakeTerminalProcess(int? failOnWrite = null)
     {
-        stream = new FakePtyStream(failOnWrite);
+        _stream = new FakePtyStream(failOnWrite);
     }
 
-    public Stream BaseStream => stream;
+    public Stream BaseStream => _stream;
 
     public int? ExitCode { get; private set; }
 
@@ -668,15 +665,15 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public event Action<ITerminalProcess>? Exited;
 
-    public IReadOnlyList<string> HexWrites => [.. stream.Writes.Select(Convert.ToHexString)];
+    public IReadOnlyList<string> HexWrites => [.. _stream.Writes.Select(Convert.ToHexString)];
 
     public bool Disposed { get; private set; }
 
     /// <summary>Completes when the session disposes this process, so the late-spawn reclaim
     /// can be awaited instead of polled.</summary>
-    internal Task DisposedSignal => disposed.Task;
+    internal Task DisposedSignal => _disposed.Task;
 
-    private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public void RaiseExited(int exitCode)
     {
@@ -692,29 +689,29 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
     public void Emit(params string[] texts)
     {
-        stream.Emit(Encoding.UTF8.GetBytes(string.Concat(texts)));
+        _stream.Emit(Encoding.UTF8.GetBytes(string.Concat(texts)));
     }
 
     public void EndOfOutput()
     {
-        stream.EndOfOutput();
+        _stream.EndOfOutput();
     }
 
     public ValueTask DisposeAsync()
     {
         Disposed = true;
-        disposed.TrySetResult();
+        _disposed.TrySetResult();
         return ValueTask.CompletedTask;
     }
 
     private sealed class FakePtyStream : Stream
     {
-        private readonly Channel<byte[]> chunks = Channel.CreateUnbounded<byte[]>();
-        private readonly int? failOnWrite;
+        private readonly Channel<byte[]> _chunks = Channel.CreateUnbounded<byte[]>();
+        private readonly int? _failOnWrite;
 
         internal FakePtyStream(int? failOnWrite)
         {
-            this.failOnWrite = failOnWrite;
+            this._failOnWrite = failOnWrite;
         }
 
         internal List<byte[]> Writes { get; } = [];
@@ -737,29 +734,29 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
         internal void Emit(byte[] bytes)
         {
-            chunks.Writer.TryWrite(bytes);
+            _chunks.Writer.TryWrite(bytes);
         }
 
         internal void EndOfOutput()
         {
-            chunks.Writer.TryComplete();
+            _chunks.Writer.TryComplete();
         }
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            if (!await chunks.Reader.WaitToReadAsync(cancellationToken)) return 0;
-            if (!chunks.Reader.TryRead(out var chunk)) return 0;
+            if (!await _chunks.Reader.WaitToReadAsync(cancellationToken)) return 0;
+            if (!_chunks.Reader.TryRead(out var chunk)) return 0;
 
             var count = Math.Min(buffer.Length, chunk.Length);
             chunk.AsSpan(0, count).CopyTo(buffer.Span);
-            if (count < chunk.Length) chunks.Writer.TryWrite(chunk[count..]);
+            if (count < chunk.Length) _chunks.Writer.TryWrite(chunk[count..]);
             return count;
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
             WriteCount++;
-            if (failOnWrite is { } fail && WriteCount >= fail)
+            if (_failOnWrite is { } fail && WriteCount >= fail)
                 throw new IOException("The pty child closed its terminal.");
 
             Writes.Add(buffer.ToArray());

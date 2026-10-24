@@ -189,7 +189,7 @@ internal static class AgentTranscriptCodec
                 }
 
         return new AgentContentCompatibilityException(
-            typeof(ChatMessage).FullName ?? typeof(ChatMessage).Name,
+            typeof(ChatMessage).FullName ?? nameof(ChatMessage),
             innerException);
     }
 
@@ -325,9 +325,7 @@ internal static class AgentTranscriptCodec
                 if (AgentBlobContent.TryParse(content, out var descriptor))
                     references.Add(descriptor.Sha256);
 
-                if (content is FunctionResultContent result &&
-                    result.Result is JsonElement envelope &&
-                    envelope.ValueKind == JsonValueKind.Object &&
+                if (content is FunctionResultContent { Result: JsonElement { ValueKind: JsonValueKind.Object } envelope } &&
                     envelope.TryGetProperty("object", out var objectProperty) &&
                     objectProperty.ValueKind == JsonValueKind.Object &&
                     objectProperty.TryGetProperty("sha256", out var shaProperty) &&

@@ -72,12 +72,13 @@ public sealed class BuiltinToolCallLimitChatClientTests
         var inner = new StubChatClient([], response);
         using var client = new BuiltinToolCallLimitChatClient(inner);
 
-        var act = () => client.GetResponseAsync(
-            [new ChatMessage(ChatRole.User, "search")],
-            OptionsWithLimit(1),
-            TestContext.Current.CancellationToken);
-
-        Assert.Equal("MaxBuiltinToolCalls", (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () => { await act.Invoke(); })).LimitName);
+        Assert.Equal("MaxBuiltinToolCalls", (await Assert.ThrowsAnyAsync<AgentToolLimitExceededException>(async () =>
+        {
+            await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "search")],
+                OptionsWithLimit(1),
+                TestContext.Current.CancellationToken);
+        })).LimitName);
     }
 
     private static ChatOptions OptionsWithLimit(int limit)
@@ -117,7 +118,8 @@ public sealed class BuiltinToolCallLimitChatClientTests
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken = default)
         {
             foreach (var update in updates)
             {

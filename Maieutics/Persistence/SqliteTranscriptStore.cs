@@ -34,17 +34,17 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         return Path.Combine(familiesRoot, familyId.Value.ToString("N"), "history.db");
     }
 
-    private readonly Lock gate = new();
-    private readonly SqliteConnection connection;
-    private readonly Func<string?>? workspaceRootAccessor;
-    private bool disposed;
+    private readonly Lock _gate = new();
+    private readonly SqliteConnection _connection;
+    private readonly Func<string?>? _workspaceRootAccessor;
+    private bool _disposed;
 
     public SqliteTranscriptStore(
         string databasePath,
         Func<string?>? workspaceRootAccessor = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
-        this.workspaceRootAccessor = workspaceRootAccessor;
+        this._workspaceRootAccessor = workspaceRootAccessor;
         // Register the provider and SQLite's serialized threading default before opening: a
         // process that reached Microsoft.Data.Sqlite without this assembly's module initializer
         // having run would otherwise open connections with no mutex on a multi-thread engine.
@@ -53,11 +53,11 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
         // Pooling disabled: each family store holds exactly one connection for its lifetime, and
         // pooled handles would keep deleted family directories locked on Windows.
-        connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+        _connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
         try
         {
-            connection.Open();
-            using var pragmas = connection.CreateCommand();
+            _connection.Open();
+            using var pragmas = _connection.CreateCommand();
             // Journal mode is queried back to fail loudly on filesystems (network shares) that
             // cannot provide WAL, instead of silently degrading to rollback-journal locking.
             pragmas.CommandText = """
@@ -72,7 +72,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         {
             // A rejected store must not leak its open handle: on Windows it would keep the
             // database file locked after the constructor failed.
-            connection.Dispose();
+            _connection.Dispose();
             throw;
         }
     }
@@ -84,10 +84,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         var now = DateTimeOffset.UtcNow.ToString("O");
         var messages = AgentTranscriptEncoding.Encode(turn.Messages);
         var familyId = sessionId.Value.ToString("N");
-        lock (gate)
+        lock (_gate)
         {
-            using var transaction = connection.BeginTransaction();
-            var session = connection.CreateCommand();
+            using var transaction = _connection.BeginTransaction();
+            var session = _connection.CreateCommand();
             session.Transaction = transaction;
             // Rows that already exist (fork heads, sessions named before their first commit)
             // keep every stored column and only gain the still-missing preview from their
@@ -100,10 +100,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             session.Parameters.AddWithValue("$id", familyId);
             session.Parameters.AddWithValue("$now", now);
             session.Parameters.AddWithValue("$preview", (object?)ComputePreview(turn) ?? DBNull.Value);
-            session.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+            session.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             session.ExecuteNonQuery();
 
-            var append = connection.CreateCommand();
+            var append = _connection.CreateCommand();
             append.Transaction = transaction;
             append.CommandText = """
                 INSERT INTO turns(session_id, seq, run_id, truncated, profile_id, model_provider,
@@ -136,7 +136,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 
             if (objectReferences.Count > 0)
             {
-                var seq = connection.CreateCommand();
+                var seq = _connection.CreateCommand();
                 seq.Transaction = transaction;
                 seq.CommandText = "SELECT COALESCE(MAX(seq), -1) FROM turns WHERE session_id = $id;";
                 seq.Parameters.AddWithValue("$id", familyId);
@@ -148,7 +148,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 
                 foreach (var sha256 in objectReferences.Distinct(StringComparer.Ordinal))
                 {
-                    var reference = connection.CreateCommand();
+                    var reference = _connection.CreateCommand();
                     reference.Transaction = transaction;
                     reference.CommandText = """
                         INSERT OR IGNORE INTO blob_refs(session_id, seq, sha256)
@@ -172,10 +172,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     public void SetTitle(AgentSessionId sessionId, string? title)
     {
         var id = sessionId.Value.ToString("N");
-        lock (gate)
+        lock (_gate)
         {
-            using var transaction = connection.BeginTransaction();
-            var command = connection.CreateCommand();
+            using var transaction = _connection.BeginTransaction();
+            var command = _connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO sessions(id, created_at, last_activity_at, turn_count, title, preview, workspace_root)
@@ -185,7 +185,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
-            command.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+            command.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             command.ExecuteNonQuery();
             transaction.Commit();
         }
@@ -205,7 +205,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             throw new ArgumentOutOfRangeException(nameof(forkPointSeq), forkPointSeq,
                 "The fork point cannot be negative.");
 
-        lock (gate)
+        lock (_gate)
         {
             // parent_session_id carries no foreign key (an ALTER TABLE cannot add
             // one), so the parent's presence is enforced explicitly at creation
@@ -216,8 +216,8 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     $"The fork parent '{parentSessionId.Value.ToString("N")}' has no row in this family database.");
             }
 
-            using var transaction = connection.BeginTransaction();
-            var command = connection.CreateCommand();
+            using var transaction = _connection.BeginTransaction();
+            var command = _connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
                 INSERT INTO sessions(
@@ -228,7 +228,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             command.Parameters.AddWithValue("$id", forkId.Value.ToString("N"));
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
-            command.Parameters.AddWithValue("$workspace", (object?)workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+            command.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             command.Parameters.AddWithValue("$parent", parentSessionId.Value.ToString("N"));
             command.Parameters.AddWithValue("$forkPoint", forkPointSeq);
             command.ExecuteNonQuery();
@@ -245,7 +245,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     public AgentTranscript? LoadTranscript(AgentSessionId sessionId)
     {
         var id = sessionId.Value.ToString("N");
-        lock (gate)
+        lock (_gate)
         {
             // Resolve the parent chain from the target back to its root before reading any
             // turns, so a broken link fails loudly instead of silently truncating history.
@@ -289,7 +289,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     /// is absent.</summary>
     private (string? Parent, long? ForkPoint)? ReadSessionRow(string id)
     {
-        using var query = connection.CreateCommand();
+        using var query = _connection.CreateCommand();
         query.CommandText = "SELECT parent_session_id, fork_point_seq FROM sessions WHERE id = $id;";
         query.Parameters.AddWithValue("$id", id);
         using var reader = query.ExecuteReader();
@@ -304,7 +304,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     /// <c>seq &lt; limit</c>, in commit order.</summary>
     private void AppendTurns(string id, long? limit, ImmutableArray<AgentTranscriptTurn>.Builder builder)
     {
-        using var turns = connection.CreateCommand();
+        using var turns = _connection.CreateCommand();
         turns.CommandText = """
             SELECT seq, run_id, truncated, profile_id, model_provider, model_name, messages
             FROM turns
@@ -330,9 +330,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     }
 
     public IReadOnlyList<AgentSessionDescriptor> ListSessions()
-    {        lock (gate)
+    {
+        lock (_gate)
         {
-            using var query = connection.CreateCommand();
+            using var query = _connection.CreateCommand();
             query.CommandText = """
                 SELECT id, created_at, last_activity_at, turn_count, title, preview, workspace_root,
                        parent_session_id, fork_point_seq
@@ -365,9 +366,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     /// across family databases is the live set for object garbage collection.</summary>
     internal IReadOnlyCollection<string> GetReferencedObjectIds()
     {
-        lock (gate)
+        lock (_gate)
         {
-            using var query = connection.CreateCommand();
+            using var query = _connection.CreateCommand();
             query.CommandText = "SELECT DISTINCT sha256 FROM blob_refs;";
             using var reader = query.ExecuteReader();
             var ids = new List<string>();
@@ -381,9 +382,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     /// derived inspection view is rebuilt from these pairs.</summary>
     internal IReadOnlyList<(AgentSessionId Session, string Sha256)> GetSessionObjectReferences()
     {
-        lock (gate)
+        lock (_gate)
         {
-            using var query = connection.CreateCommand();
+            using var query = _connection.CreateCommand();
             query.CommandText = "SELECT session_id, sha256 FROM blob_refs ORDER BY session_id, seq;";
             using var reader = query.ExecuteReader();
             var references = new List<(AgentSessionId, string)>();
@@ -400,18 +401,18 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, true)) return;
-        lock (gate)
+        if (Interlocked.Exchange(ref _disposed, true)) return;
+        lock (_gate)
         {
-            connection.Dispose();
+            _connection.Dispose();
         }
     }
 
     private void Migrate()
     {
-        lock (gate)
+        lock (_gate)
         {
-            using var version = connection.CreateCommand();
+            using var version = _connection.CreateCommand();
             version.CommandText = "PRAGMA user_version;";
             var current = Convert.ToInt32(version.ExecuteScalar());
 
@@ -423,8 +424,8 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 
             if (current == CurrentSchemaVersion) return;
 
-            using var transaction = connection.BeginTransaction();
-            var migrate = connection.CreateCommand();
+            using var transaction = _connection.BeginTransaction();
+            var migrate = _connection.CreateCommand();
             migrate.Transaction = transaction;
             // The table script is idempotent (IF NOT EXISTS), so a fresh database and any
             // older version converge here. The ALTER steps are not idempotent, so each is
@@ -465,6 +466,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     """;
             }
 
+            // Migration-ladder step: with the current schema at version 4 the guard is always
+            // true today, and it goes live again when the next schema version lands.
+            // ReSharper disable once ConditionIsAlwaysTrueOrFalse
             if (current < 4)
             {
                 script += """

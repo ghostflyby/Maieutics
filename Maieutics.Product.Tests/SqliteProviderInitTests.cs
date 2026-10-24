@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using Maieutics.Persistence;
 using Microsoft.Data.Sqlite;
-using SQLitePCL;
 
 namespace Maieutics.Product.Tests;
 
@@ -43,7 +42,7 @@ public sealed class SqliteProviderInitTests
             using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
             connection.Open();
 
-            var handle = ((sqlite3?)connection.Handle)?.DangerousGetHandle() ?? IntPtr.Zero;
+            var handle = connection.Handle?.DangerousGetHandle() ?? IntPtr.Zero;
             Assert.NotEqual(IntPtr.Zero, handle);
 
             // Which native library the process bound decides where to look the symbol up.
@@ -156,9 +155,9 @@ public sealed class SqliteProviderInitTests
 
             // Every observer must find a usable provider: this connection would fail — or
             // carry no mutex — had the caller returned before initialization completed.
-            using var connection = new SqliteConnection("Data Source=:memory:");
+            await using var connection = new SqliteConnection("Data Source=:memory:");
             connection.Open();
-            using var command = connection.CreateCommand();
+            await using var command = connection.CreateCommand();
             command.CommandText = "SELECT sqlite_version();";
             Assert.NotNull(command.ExecuteScalar());
         }, cancellationToken)).ToArray();

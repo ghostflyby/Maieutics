@@ -12,16 +12,16 @@ namespace Maieutics.Product.Tests;
 /// disabled-persistence guard, and object pruning. No automatic restore exists by design.</summary>
 public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 {
-    private readonly string databaseDirectory;
-    private readonly string objectsRoot;
+    private readonly string _databaseDirectory;
+    private readonly string _objectsRoot;
 
     public MaieuticsAgentSessionManagerTests()
     {
-        databaseDirectory = Path.Combine(
+        _databaseDirectory = Path.Combine(
             Path.GetTempPath(),
             "maieutics-session-manager-tests",
             Guid.NewGuid().ToString("N"));
-        objectsRoot = Path.Combine(databaseDirectory, "objects");
+        _objectsRoot = Path.Combine(_databaseDirectory, "objects");
     }
 
     public async ValueTask DisposeAsync()
@@ -29,29 +29,29 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         // WAL teardown and external scanners (antivirus, indexer) can hold the database
         // handle past the last close on Windows; the shared helper retries with an
         // asynchronous backoff so a teardown lock never masks the test result.
-        await TempArea.DeleteAsync(databaseDirectory, TestContext.Current.CancellationToken);
+        await TempArea.DeleteAsync(_databaseDirectory, TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public void PruneObjectsRemovesOnlyUnreferencedObjectsPastTheGrace()
     {
         var sessionId = AgentSessionId.Create();
-        var objectStore = new ObjectStore(objectsRoot);
+        var objectStore = new ObjectStore(_objectsRoot);
         var keep = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("keep")));
         var freshOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("fresh")));
         var staleOrphan = objectStore.Ingest(new MemoryStream(Encoding.UTF8.GetBytes("stale")));
         File.SetLastWriteTimeUtc(
-            Path.Combine(objectsRoot, staleOrphan.Sha256[..2], staleOrphan.Sha256),
+            Path.Combine(_objectsRoot, staleOrphan.Sha256[..2], staleOrphan.Sha256),
             DateTime.UtcNow - TimeSpan.FromHours(2));
 
         using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
         {
-            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question", "Answer"), [keep.Sha256]);
+            store.AppendTurn(sessionId, Turn("a", "Question", "Answer"), [keep.Sha256]);
         }
 
         using var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance,
             reclaimer: objectStore);
@@ -89,8 +89,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var sessionId = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(sessionId)))
         {
-            store.AppendTurn(sessionId, Turn(sessionId, "a", "Question one", "Answer one"), []);;
-            store.AppendTurn(sessionId, Turn(sessionId, "b", "Question two", "Answer two"), []);;
+            store.AppendTurn(sessionId, Turn("a", "Question one", "Answer one"), []);
+            store.AppendTurn(sessionId, Turn("b", "Question two", "Answer two"), []);
         }
 
         using var manager = CreateManager();
@@ -103,8 +103,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         Assert.Equal("Answer two", manager.GetTranscriptSnapshot().Turns[1].Messages[^1].Text);
 
         var sessions = manager.ListStoredSessions();
-        Assert.Single(sessions);
-        Assert.Equal(sessionId, sessions[0].Id);
+        var item = Assert.Single(sessions);
+        Assert.Equal(sessionId, item.Id);
         Assert.Equal(2, sessions[0].TurnCount);
 
         var afterNew = manager.StartNew();
@@ -126,12 +126,12 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var newer = AgentSessionId.Create();
         using (var first = new SqliteTranscriptStore(FamilyPath(older)))
         {
-            first.AppendTurn(older, Turn(older, "a", "old question", "old answer"), []);;
+            first.AppendTurn(older, Turn("a", "old question", "old answer"), []);
         }
 
         using (var second = new SqliteTranscriptStore(FamilyPath(newer)))
         {
-            second.AppendTurn(newer, Turn(newer, "b", "new question", "new answer"), []);;
+            second.AppendTurn(newer, Turn("b", "new question", "new answer"), []);
         }
 
         using var manager = CreateManager();
@@ -154,8 +154,8 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var source = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
-            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
-            store.AppendTurn(source, Turn(source, "b", "Question two", "Answer two"), []);
+            store.AppendTurn(source, Turn("a", "Question one", "Answer one"), []);
+            store.AppendTurn(source, Turn("b", "Question two", "Answer two"), []);
         }
 
         using var manager = CreateManager();
@@ -164,16 +164,16 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
 
         // The fork is active and its history ends at the fork point.
         Assert.Equal(forkId, manager.Id);
-        Assert.Single(manager.GetTranscriptSnapshot().Turns);
-        Assert.Equal("Question one", manager.GetTranscriptSnapshot().Turns[0].Messages[0].Text);
+        var item = Assert.Single(manager.GetTranscriptSnapshot().Turns);
+        Assert.Equal("Question one", item.Messages[0].Text);
 
         // The head row lives in the source's family database with lineage and an
         // auto-derived title.
         var head = manager.FindDescriptor(forkId);
         Assert.NotNull(head);
-        Assert.Equal(source, head?.ParentSessionId);
-        Assert.Equal(1, head?.ForkPointSeq);
-        Assert.Equal("Question one · branch @ turn 2", head?.Title);
+        Assert.Equal(source, head.ParentSessionId);
+        Assert.Equal(1, head.ForkPointSeq);
+        Assert.Equal("Question one · branch @ turn 2", head.Title);
         Assert.Single(manager.LoadStoredTranscript(forkId)!.Turns);
 
         // The source session is untouched and still loadable.
@@ -186,7 +186,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var source = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
-            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
+            store.AppendTurn(source, Turn("a", "Question one", "Answer one"), []);
         }
 
         using var manager = CreateManager();
@@ -201,7 +201,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
             var assertion14 = Assert.ThrowsAny<InvalidOperationException>(() => store.CreateForkSession(
-                    AgentSessionId.Create(), AgentSessionId.Create(), 0, null));
+                AgentSessionId.Create(), AgentSessionId.Create(), 0, null));
             Assert.Matches("(?is)^.*has\\ no\\ row.*$", assertion14.Message);
         }
 
@@ -214,13 +214,13 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var stored = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
         {
-            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+            store.AppendTurn(stored, Turn("a", "Question", "Answer"), []);
         }
 
         var neverComplete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var manager = new MaieuticsAgentSessionManager(
             new FixedProfileProvider(new HangingChatClient(neverComplete.Task)),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance);
 
@@ -253,7 +253,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
             stored.Add(id);
             using (var store = new SqliteTranscriptStore(FamilyPath(id)))
             {
-                store.AppendTurn(id, Turn(id, (index + 1).ToString(), "Question", "Answer"), []);
+                store.AppendTurn(id, Turn((index + 1).ToString(), "Question", "Answer"), []);
             }
         }
 
@@ -276,7 +276,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var stored = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
         {
-            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+            store.AppendTurn(stored, Turn("a", "Question", "Answer"), []);
         }
 
         using var manager = CreateManager();
@@ -296,7 +296,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var stored = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
         {
-            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+            store.AppendTurn(stored, Turn("a", "Question", "Answer"), []);
         }
 
         using var manager = CreateManager();
@@ -323,7 +323,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var source = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(source)))
         {
-            store.AppendTurn(source, Turn(source, "a", "Question one", "Answer one"), []);
+            store.AppendTurn(source, Turn("a", "Question one", "Answer one"), []);
         }
 
         using var manager = CreateManager();
@@ -347,7 +347,7 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         var stored = AgentSessionId.Create();
         using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
         {
-            store.AppendTurn(stored, Turn(stored, "a", "Question", "Answer"), []);
+            store.AppendTurn(stored, Turn("a", "Question", "Answer"), []);
         }
 
         using var manager = CreateManager();
@@ -388,16 +388,15 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
     {
         return new MaieuticsAgentSessionManager(
             new FixedProfileProvider(),
-            databaseDirectory,
+            _databaseDirectory,
             familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
             NullLogger<MaieuticsAgentSessionManager>.Instance);
     }
 
     private string FamilyPath(AgentSessionId familyId) =>
-        SqliteTranscriptStore.FamilyDatabasePath(databaseDirectory, familyId);
+        SqliteTranscriptStore.FamilyDatabasePath(_databaseDirectory, familyId);
 
     private static AgentTranscriptTurn Turn(
-        AgentSessionId sessionId,
         string runIdSuffix,
         string userText,
         string assistantText)
@@ -433,5 +432,4 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
         {
         }
     }
-
 }

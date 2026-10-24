@@ -243,8 +243,7 @@ internal sealed class MaieuticsCommandExecutor(
                 .Append(", ")
                 .Append(plugin.WorkerCount)
                 .Append(" worker(s)");
-            if (plugin.State == PluginApprovalState.Approved &&
-                plugin.RequestedFingerprint.Length >= 8)
+            if (plugin is { State: PluginApprovalState.Approved, RequestedFingerprint.Length: >= 8 })
                 output.Append(", fingerprint ")
                     .Append(MarkdownText.CodeSpan(plugin.RequestedFingerprint[..8]));
             else if (plugin.RequestedFingerprint.Length >= 8)
@@ -371,6 +370,9 @@ internal sealed class MaieuticsCommandExecutor(
         return (remainder[..index], tokens[^1]);
     }
 
+    // The parameter exists to reject unexpected arguments — the precondition is the
+    // status command's whole use of it.
+    // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
     private string ExecuteStatusCommand(string[] arguments)
     {
         if (arguments.Length != 2)

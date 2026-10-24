@@ -1,7 +1,8 @@
-using Maieutics.Permissions;
-using Maieutics.Agent;
 using System.Diagnostics;
+using System.Globalization;
+using Maieutics.Agent;
 using Maieutics.DenoExecution;
+using Maieutics.Permissions;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.DenoRepl;
@@ -29,24 +30,24 @@ internal sealed record DenoReplProcessOptions(
 /// flags, and the policy registered at spawn carries the control-channel and module-graph grants.</summary>
 internal sealed class DenoReplProcess : IAsyncDisposable
 {
-    private readonly DenoRunProcess inner;
+    private readonly DenoRunProcess _inner;
 
     private DenoReplProcess(DenoRunProcess inner)
     {
-        this.inner = inner;
+        this._inner = inner;
     }
 
-    internal int ProcessId => inner.ProcessId;
+    internal int ProcessId => _inner.ProcessId;
 
-    internal Task Completion => inner.Completion;
+    internal Task Completion => _inner.Completion;
 
-    internal int? ExitCode => inner.ExitCode;
+    internal int? ExitCode => _inner.ExitCode;
 
-    internal Task<string> StandardError => inner.StandardError ?? Task.FromResult(string.Empty);
+    internal Task<string> StandardError => _inner.StandardError ?? Task.FromResult(string.Empty);
 
     public ValueTask DisposeAsync()
     {
-        return inner.DisposeAsync();
+        return _inner.DisposeAsync();
     }
 
     internal static async Task<DenoReplProcess> StartAsync(
@@ -77,19 +78,19 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
             await InstallModuleGraphAsync(options, cancellationToken).ConfigureAwait(false);
             policy = await DenoReplPolicyBuilder.BuildAsync(
-                    options.Executable,
-                    options.ModuleDirectory,
-                    options.WorkingDirectory,
-                    options.ConfigFile,
-                    options.LockFile,
-                    options.IpcAddress,
-                    options.WindowsPipeName,
-                    acquirer,
-                    ownerSessionId,
-                    logger,
-                    cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
+                             options.Executable,
+                             options.ModuleDirectory,
+                             options.WorkingDirectory,
+                             options.ConfigFile,
+                             options.LockFile,
+                             options.IpcAddress,
+                             options.WindowsPipeName,
+                             acquirer,
+                             ownerSessionId,
+                             logger,
+                             cancellationToken)
+                         .ConfigureAwait(false)
+                     ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
         }
 
         var startInfo = new ProcessStartInfo
@@ -150,7 +151,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
 
     internal Task StopAsync()
     {
-        return inner.StopAsync();
+        return _inner.StopAsync();
     }
 
     private static async Task InstallModuleGraphAsync(
@@ -225,7 +226,7 @@ internal static class DenoReplEnvironment
         {
             [IpcAddress] = ipcAddress,
             [SessionId] = sessionId,
-            [Generation] = generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            [Generation] = generation.ToString(CultureInfo.InvariantCulture),
             [ClientModule] = clientModule
         };
         if (!string.IsNullOrWhiteSpace(workspaceRoot)) environment[WorkspaceRoot] = workspaceRoot;
@@ -239,8 +240,8 @@ internal static class DenoReplEnvironment
                              ?? throw new InvalidOperationException("SystemRoot is not configured.");
             environment["SystemRoot"] = systemRoot;
             environment[PipeName] = windowsPipeName
-                ?? throw new InvalidOperationException(
-                    "The Windows named-pipe bootstrap is required for the REPL child environment.");
+                                    ?? throw new InvalidOperationException(
+                                        "The Windows named-pipe bootstrap is required for the REPL child environment.");
         }
 
         return environment;

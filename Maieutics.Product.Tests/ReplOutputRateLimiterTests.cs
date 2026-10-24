@@ -118,13 +118,13 @@ public sealed class ReplOutputRateLimiterTests
 
     private sealed class FakeClock
     {
-        private long timestamp;
+        private long _timestamp;
 
-        internal long Timestamp() => Interlocked.Read(ref timestamp);
+        internal long Timestamp() => Interlocked.Read(ref _timestamp);
 
         internal void Advance(TimeSpan duration)
         {
-            Interlocked.Add(ref timestamp, checked((long)(duration.TotalSeconds * Frequency)));
+            Interlocked.Add(ref _timestamp, checked((long)(duration.TotalSeconds * Frequency)));
         }
     }
 }

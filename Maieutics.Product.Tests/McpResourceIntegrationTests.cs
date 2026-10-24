@@ -27,14 +27,17 @@ public sealed class McpResourceIntegrationTests
         Assert.Equal("test://static/hello", Assert.Single(catalog.Resources).Uri);
         Assert.Equal("test://users/{id}", Assert.Single(catalog.Templates).UriTemplate);
 
-        var provider = new McpResourceProvider(() => harness.Source);
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "mcp" && claim.Authority == null);
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "static");
-        Assert.Contains(provider.Claims, claim => claim.Scheme == "test" && claim.Authority == "users");
+        // Hoisted: the harness source is a fixed object, and a local capture keeps the
+        // factory lambda from referencing the using-scoped harness.
+        var source = harness.Source;
+        var provider = new McpResourceProvider(() => source);
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "mcp", Authority: null });
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "test", Authority: "static" });
+        Assert.Contains(provider.Claims, claim => claim is { Scheme: "test", Authority: "users" });
 
         var entries = await provider.ListAsync(deadline.Token);
         Assert.Equal(2, entries.Count());
-        Assert.Contains(entries, entry => entry.Kind == "resource" && entry.Uri == "test://static/hello");
+        Assert.Contains(entries, entry => entry is { Kind: "resource", Uri: "test://static/hello" });
         Assert.Contains(entries, entry => entry.Kind == "template");
     }
 
@@ -44,13 +47,14 @@ public sealed class McpResourceIntegrationTests
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await ResourceServerHarness.StartAsync(deadline.Token);
-        var provider = new McpResourceProvider(() => harness.Source);
+        var source = harness.Source;
+        var provider = new McpResourceProvider(() => source);
 
         var exact = await provider.ReadAsync(
             "test://static/hello",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (exact.Content)
+        await using (exact.Content)
         {
             Assert.Equal("text/plain", exact.MimeType);
             using var buffered = new MemoryStream();
@@ -62,25 +66,27 @@ public sealed class McpResourceIntegrationTests
             "test://users/42",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (templated.Content)
+        await using (templated.Content)
         {
             using var buffered = new MemoryStream();
             templated.Content.CopyTo(buffered);
             Assert.Equal("user 42", Encoding.UTF8.GetString(buffered.ToArray()));
         }
 
-        Func<Task> missing = async () => await provider.ReadAsync(
-            "test://absent",
-            new ResourceReadRequest(1024),
-            deadline.Token);
-        var assertions = await Assert.ThrowsAnyAsync<ResourceException>(async () => { await missing.Invoke(); });
+        var assertions = await Assert.ThrowsAnyAsync<ResourceException>(async () =>
+        {
+            await provider.ReadAsync(
+                "test://absent",
+                new ResourceReadRequest(1024),
+                deadline.Token);
+        });
         Assert.Equal("resource_not_found", assertions.Code);
 
         var escape = await provider.ReadAsync(
             $"mcp://{harness.ServerId}/{Uri.EscapeDataString("test://static/hello")}",
             new ResourceReadRequest(1024),
             deadline.Token);
-        using (escape.Content)
+        await using (escape.Content)
         {
             using var buffered = new MemoryStream();
             escape.Content.CopyTo(buffered);
@@ -95,9 +101,10 @@ public sealed class McpResourceIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         using var workspace = TemporaryWorkspace.Create();
         await using var harness = await ResourceServerHarness.StartAsync(deadline.Token);
+        var source = harness.Source;
         var registry = new ResourceRegistry([
             new WorkspaceResourceProvider(Workspace.Create(workspace.Path, workspace.Path)),
-            new McpResourceProvider(() => harness.Source)
+            new McpResourceProvider(() => source)
         ]);
 
         Assert.True(ResourceRegistry.TryParseUri("workspace://local/", out var root));
@@ -115,9 +122,9 @@ public sealed class McpResourceIntegrationTests
 
     private sealed class ResourceServerHarness : IAsyncDisposable
     {
-        private readonly CancellationTokenSource lifetime;
-        private readonly McpServerGeneration generation;
-        private readonly Task serverTask;
+        private readonly CancellationTokenSource _lifetime;
+        private readonly McpServerGeneration _generation;
+        private readonly Task _serverTask;
 
         private ResourceServerHarness(
             CancellationTokenSource lifetime,
@@ -125,35 +132,32 @@ public sealed class McpResourceIntegrationTests
             Task serverTask,
             CatalogSource catalogSource)
         {
-            this.lifetime = lifetime;
-            this.generation = generation;
-            this.serverTask = serverTask;
-            this.catalogSource = catalogSource;
+            this._lifetime = lifetime;
+            this._generation = generation;
+            this._serverTask = serverTask;
             Source = catalogSource;
         }
 
         internal string ServerId => "test-server";
 
-        internal McpServerGeneration Generation => generation;
+        internal McpServerGeneration Generation => _generation;
 
         internal IMcpResourceCatalogSource Source { get; }
 
-        private readonly CatalogSource catalogSource;
-
         public async ValueTask DisposeAsync()
         {
-            var retirement = generation.Retire();
-            await lifetime.CancelAsync();
+            var retirement = _generation.Retire();
+            await _lifetime.CancelAsync();
             try
             {
-                await serverTask;
+                await _serverTask;
             }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
             {
             }
 
             await retirement.WaitAsync(TimeSpan.FromSeconds(10));
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal static async Task<ResourceServerHarness> StartAsync(CancellationToken cancellationToken)
@@ -183,7 +187,7 @@ public sealed class McpResourceIntegrationTests
                     ],
                     Handlers = new McpServerHandlers
                     {
-                        ListResourcesHandler = (request, ct) => ValueTask.FromResult(
+                        ListResourcesHandler = (_, _) => ValueTask.FromResult(
                             new ListResourcesResult
                             {
                                 Resources =
@@ -196,7 +200,7 @@ public sealed class McpResourceIntegrationTests
                                     }
                                 ]
                             }),
-                        ListResourceTemplatesHandler = (request, ct) =>
+                        ListResourceTemplatesHandler = (_, _) =>
                             ValueTask.FromResult(
                                 new ListResourceTemplatesResult
                                 {
@@ -210,7 +214,7 @@ public sealed class McpResourceIntegrationTests
                                         }
                                     ]
                                 }),
-                        ReadResourceHandler = (request, ct) => ValueTask.FromResult(
+                        ReadResourceHandler = (request, _) => ValueTask.FromResult(
                             new ReadResourceResult
                             {
                                 Contents =
@@ -265,16 +269,16 @@ public sealed class McpResourceIntegrationTests
 
         private sealed class CatalogSource : IMcpResourceCatalogSource
         {
-            private volatile McpServerGeneration? generation;
+            private volatile McpServerGeneration? _currentGeneration;
 
             internal void Attach(McpServerGeneration generation)
             {
-                this.generation = generation;
+                _currentGeneration = generation;
             }
 
             public IReadOnlyList<McpResourceServerAccess> GetResourceServers()
             {
-                return generation is { } value
+                return _currentGeneration is { } value
                     ? [new McpResourceServerAccess("test-server", value.GetResourceCatalog(), value)]
                     : [];
             }

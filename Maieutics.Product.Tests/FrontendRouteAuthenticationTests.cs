@@ -9,7 +9,6 @@ using Maieutics.Frontend;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -169,13 +168,12 @@ public sealed class FrontendRouteAuthenticationTests
         {
             result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
             message.Write(buffer, 0, result.Count);
-        }
-        while (!result.EndOfMessage);
+        } while (!result.EndOfMessage);
 
         Assert.Equal(WebSocketMessageType.Text, result.MessageType);
         using var document = JsonDocument.Parse(message.ToArray());
         return document.RootElement.GetProperty("type").GetString()
-            ?? throw new InvalidOperationException("The events frame carried no type.");
+               ?? throw new InvalidOperationException("The events frame carried no type.");
     }
 
     /// <summary>A bare <c>WebApplication</c> hosting the real frontend endpoint table with
@@ -183,11 +181,11 @@ public sealed class FrontendRouteAuthenticationTests
     /// registered routes are exactly the frontend API surface under test.</summary>
     private sealed class FrontendFixture : IAsyncDisposable
     {
-        private readonly WebApplication application;
-        private readonly FrontendOptions options;
-        private readonly FrontendHost host;
-        private readonly MaieuticsAgentSessionManager manager;
-        private readonly HttpClient client;
+        private readonly WebApplication _application;
+        private readonly FrontendOptions _options;
+        private readonly FrontendHost _host;
+        private readonly MaieuticsAgentSessionManager _manager;
+        private readonly HttpClient _client;
 
         private FrontendFixture(
             WebApplication application,
@@ -195,49 +193,49 @@ public sealed class FrontendRouteAuthenticationTests
             FrontendHost host,
             MaieuticsAgentSessionManager manager)
         {
-            this.application = application;
-            this.options = options;
-            this.host = host;
-            this.manager = manager;
+            this._application = application;
+            this._options = options;
+            this._host = host;
+            this._manager = manager;
             // No default Authorization header: the anonymous probes must reach the
             // gate without a token, so callers attach credentials per request.
-            client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
+            _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };
         }
 
-        public HttpClient Client => client;
+        public HttpClient Client => _client;
 
-        public string Token => options.Token;
+        public string Token => _options.Token;
 
-        public int Port => options.Port;
+        public int Port => _options.Port;
 
         public IReadOnlyList<RouteEndpoint> EnumerateRouteEndpoints() =>
-            ((IEndpointRouteBuilder)application).DataSources
-                .SelectMany(static source => source.Endpoints)
-                .OfType<RouteEndpoint>()
-                .ToArray();
+            ((IEndpointRouteBuilder)_application).DataSources
+            .SelectMany(static source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .ToArray();
 
         public async Task<string> CreateForegroundSessionAsync(CancellationToken cancellationToken)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/agent/session");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.Token);
-            using var response = await client.SendAsync(
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.Token);
+            using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             Assert.True(
                 response.IsSuccessStatusCode,
                 $"The foreground session could not be described: {(int)response.StatusCode}.");
             var session = await response.Content.ReadFromJsonAsync(
-                    FrontendJsonContext.Default.FrontendSessionInfo, cancellationToken)
-                ?? throw new InvalidOperationException("The session description body was empty.");
+                              FrontendJsonContext.Default.FrontendSessionInfo, cancellationToken)
+                          ?? throw new InvalidOperationException("The session description body was empty.");
             return session.Id;
         }
 
         public async ValueTask DisposeAsync()
         {
-            client.Dispose();
-            await application.StopAsync(CancellationToken.None);
-            await host.DisposeAsync();
-            manager.Dispose();
-            await application.DisposeAsync();
+            _client.Dispose();
+            await _application.StopAsync(CancellationToken.None);
+            await _host.DisposeAsync();
+            _manager.Dispose();
+            await _application.DisposeAsync();
         }
 
         public static async Task<FrontendFixture> StartAsync(CancellationToken cancellationToken)
@@ -274,6 +272,4 @@ public sealed class FrontendRouteAuthenticationTests
             return new FrontendFixture(application, options, host, manager);
         }
     }
-
-
 }

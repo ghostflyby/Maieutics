@@ -91,7 +91,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task OpenIsIdempotentAndStartupRemountsRegisteredLinks()
+    public void OpenIsIdempotentAndStartupRemountsRegisteredLinks()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -113,7 +113,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task ForeignLinksStateDirectoryAndInTargetLinksStayRejected()
+    public void ForeignLinksStateDirectoryAndInTargetLinksStayRejected()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -188,7 +188,7 @@ public sealed class WorkspaceLinksTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task OpeningFailsWithTypedErrorsForMissingUnsupportedAndCyclingTargets()
+    public void OpeningFailsWithTypedErrorsForMissingUnsupportedAndCyclingTargets()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         using var workspace = TemporaryWorkspace.Create();
@@ -196,8 +196,8 @@ public sealed class WorkspaceLinksTests
         var context = Workspace.Create(home);
 
         Assert.ThrowsAny<DirectoryNotFoundException>(() => context.OpenLink(
-                Path.Combine(workspace.ParentPath, "missing"),
-                null));
+            Path.Combine(workspace.ParentPath, "missing"),
+            null));
 
         if (OperatingSystem.IsWindows())
         {
@@ -242,10 +242,13 @@ public sealed class WorkspaceLinksTests
             TestContext.Current.CancellationToken);
         Assert.Contains("Projects: none", closed.Markdown);
 
-        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () => { await executor.ExecuteAsync(
-            "%workspace use somewhere",
-            null,
-            TestContext.Current.CancellationToken); });
+        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () =>
+        {
+            await executor.ExecuteAsync(
+                "%workspace use somewhere",
+                null,
+                TestContext.Current.CancellationToken);
+        });
     }
 
     private static string TargetHash(string canonicalTarget, int characters)

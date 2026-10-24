@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Maieutics.Agent;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
 using GatedOpenAiServer = Maieutics.Testing.GatedModelProvider;
@@ -11,18 +12,14 @@ using GatedOpenAiServer = Maieutics.Testing.GatedModelProvider;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-public sealed class FrontendTurnQueueIntegrationTests
+public sealed class FrontendTurnQueueIntegrationTests(ITestOutputHelper output)
 {
     private const string Answer = "queued answer";
-
-    private readonly ITestOutputHelper output;
 
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
     /// whether the run under test ever reached the provider gate. Null until a test that
     /// needs the diagnostic sets it; one class instance serves exactly one test.</summary>
-    private GatedOpenAiServer? provider;
-
-    public FrontendTurnQueueIntegrationTests(ITestOutputHelper output) => this.output = output;
+    private GatedOpenAiServer? _diagnosticProvider;
 
     private void Trace(string message) =>
         TestTrace.Write(output, "queue-test", message);
@@ -78,7 +75,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         provider.ReleaseNext();
         Assert.True(second.Task.IsCompleted, "the second release must reach the request that is still parked instead of "
-            + "completing an already-released entry again");
+                                             + "completing an already-released entry again");
         Assert.Equal(0, provider.ParkedRequests);
 
         provider.ReleaseAll();
@@ -381,7 +378,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(160));
         var provider = new GatedOpenAiServer(answer: Answer);
         // Exposed to the shared wait helpers for their timeout diagnostics.
-        this.provider = provider;
+        _diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         Trace("harness booted");
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
@@ -477,7 +474,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(100));
         var provider = new GatedOpenAiServer(answer: Answer);
-        this.provider = provider;
+        _diagnosticProvider = provider;
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
@@ -593,7 +590,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         var manager = harness.SessionManager;
-        var addressed = new Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
+        var addressed = new AgentSessionId(Guid.ParseExact(sessionId, "N"));
 
         // No queue work: no pin. The lease is acquired synchronously with the enqueue
         // commit, so a session with queued work is pinned from that moment.
@@ -635,7 +632,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         return await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<JsonElement> WaitForQueueAsync(
+    private async Task WaitForQueueAsync(
         Harness harness,
         string sessionId,
         Func<JsonElement, bool> predicate,
@@ -653,7 +650,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             {
                 var queue = await GetQueueAsync(harness, sessionId, wait.Token).ConfigureAwait(false);
                 polls++;
-                if (predicate(queue)) return queue;
+                if (predicate(queue)) return;
 
                 if (polls % 10 == 0)
                     Trace($"queue poll #{polls}: {QueueSummary(queue)}");
@@ -665,7 +662,7 @@ public sealed class FrontendTurnQueueIntegrationTests
         catch (OperationCanceledException exception) when (wait.IsCancellationRequested)
         {
             throw new InvalidOperationException(
-                $"the queue state never matched after {polls} polls; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}",
+                $"the queue state never matched after {polls} polls; provider parked={_diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}",
                 exception);
         }
     }
@@ -842,7 +839,7 @@ public sealed class FrontendTurnQueueIntegrationTests
             // whether the run ever reached the provider gate (parked=0 means the
             // submission itself stalled before issuing the provider request).
             throw new InvalidOperationException(
-                $"no matching queue.updated frame; provider parked={provider?.ParkedRequests.ToString() ?? "n/a"}; "
+                $"no matching queue.updated frame; provider parked={_diagnosticProvider?.ParkedRequests.ToString() ?? "n/a"}; "
                 + $"frames seen: [{string.Join("; ", seen)}]",
                 exception);
         }
@@ -852,7 +849,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         // `running` is optional on the wire: absent OR null both mean no running item.
         var running = queue.TryGetProperty("running", out var state) &&
-            state.ValueKind == JsonValueKind.Object
+                      state.ValueKind == JsonValueKind.Object
             ? state.GetProperty("itemId").GetString()
             : null;
         var items = ItemIds(queue);

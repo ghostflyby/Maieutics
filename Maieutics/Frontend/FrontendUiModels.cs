@@ -29,24 +29,33 @@ internal sealed record FrontendUiFormField(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("label")] string? Label = null,
     [property: JsonPropertyName("type")] string Type = "text",
-    [property: JsonPropertyName("choices")] IReadOnlyList<FrontendUiFormChoice>? Choices = null,
-    [property: JsonPropertyName("required")] bool? Required = null,
-    [property: JsonPropertyName("placeholder")] string? Placeholder = null);
+    [property: JsonPropertyName("choices")]
+    IReadOnlyList<FrontendUiFormChoice>? Choices = null,
+    [property: JsonPropertyName("required")]
+    bool? Required = null,
+    [property: JsonPropertyName("placeholder")]
+    string? Placeholder = null);
 
 /// <summary>The <c>maieutics/form</c> family state carried on comm_open and in the announcement.</summary>
 internal sealed record FrontendUiFormState(
     [property: JsonPropertyName("title")] string? Title = null,
     [property: JsonPropertyName("fields")] IReadOnlyList<FrontendUiFormField>? Fields = null,
-    [property: JsonPropertyName("submitLabel")] string? SubmitLabel = null,
-    [property: JsonPropertyName("cancelLabel")] string? CancelLabel = null,
+    [property: JsonPropertyName("submitLabel")]
+    string? SubmitLabel = null,
+    [property: JsonPropertyName("cancelLabel")]
+    string? CancelLabel = null,
     [property: JsonPropertyName("values")] Dictionary<string, object?>? Values = null)
-{}
+{
+}
 
 /// <summary>The announcement value inside the <see cref="FrontendUiWire.ViewMime" /> display member.</summary>
 internal sealed record FrontendUiFormAnnouncement(
-    [property: JsonPropertyName("modelId")] string ModelId,
-    [property: JsonPropertyName("viewFamily")] string ViewFamily,
-    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("modelId")]
+    string ModelId,
+    [property: JsonPropertyName("viewFamily")]
+    string ViewFamily,
+    [property: JsonPropertyName("version")]
+    string Version,
     [property: JsonPropertyName("state")] FrontendUiFormState State);
 
 /// <summary>The native uplink dialect: state deltas and one-shot events.</summary>
@@ -54,7 +63,8 @@ internal sealed record FrontendUiUplinkPayload(
     [property: JsonPropertyName("method")] string? Method = null,
     [property: JsonPropertyName("state")] Dictionary<string, object?>? State = null,
     [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("payload")] JsonElement? Payload = null);
+    [property: JsonPropertyName("payload")]
+    JsonElement? Payload = null);
 
 /// <summary>
 ///     Handler surface of one kernel-owned form model: submit/cancel arrive as one-shot
@@ -73,27 +83,24 @@ internal sealed record FrontendFormHandlers(
 /// </summary>
 internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDisposable
 {
-    private readonly FrontendCommRouter router;
-    private readonly AgentSessionId sessionId;
-    private readonly FrontendUiFormState state;
-    private readonly FrontendFormHandlers handlers;
-    private readonly string commId = Guid.NewGuid().ToString("N");
-    private readonly Lock gate = new();
-    private bool disposed;
+    private readonly FrontendCommRouter _router;
+    private readonly AgentSessionId _sessionId;
+    private readonly FrontendFormHandlers _handlers;
+    private readonly string _commId = Guid.NewGuid().ToString("N");
+    private readonly Lock _gate = new();
+    private bool _disposed;
 
     private FrontendFormModel(
         FrontendCommRouter router,
         AgentSessionId sessionId,
-        FrontendUiFormState state,
         FrontendFormHandlers handlers)
     {
-        this.router = router;
-        this.sessionId = sessionId;
-        this.state = state;
-        this.handlers = handlers;
+        this._router = router;
+        this._sessionId = sessionId;
+        this._handlers = handlers;
     }
 
-    internal string CommId => commId;
+    internal string CommId => _commId;
 
     /// <summary>Uplink routing (kernel-owned): message frames decode through the native
     /// dialect, close releases the model. Unknown shapes are ignored (invariant 18).</summary>
@@ -115,17 +122,17 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
                     return;
                 }
 
-                if (payload?.Method == "event" && payload.Name == "submit")
+                if (payload is { Method: "event", Name: "submit" })
                 {
                     var values = DecodeValues(payload.Payload);
-                    if (handlers.OnSubmit is { } onSubmit)
+                    if (_handlers.OnSubmit is { } onSubmit)
                     {
                         await onSubmit(values, cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (payload?.Method == "event" && payload.Name == "cancel")
+                else if (payload is { Method: "event", Name: "cancel" })
                 {
-                    if (handlers.OnCancel is { } onCancel)
+                    if (_handlers.OnCancel is { } onCancel)
                     {
                         await onCancel(cancellationToken).ConfigureAwait(false);
                     }
@@ -141,16 +148,16 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
 
     public async ValueTask DisposeAsync()
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (disposed) return;
-            disposed = true;
+            if (_disposed) return;
+            _disposed = true;
         }
 
-        handlers.Closed?.Invoke();
-        await router.PublishFromKernelAsync(
-            sessionId.ToString(),
-            new ReplCommMessage(ReplCommKind.Close, commId, null, null, null, []),
+        _handlers.Closed?.Invoke();
+        await _router.PublishFromKernelAsync(
+            _sessionId.ToString(),
+            new ReplCommMessage(ReplCommKind.Close, _commId, null, null, null, []),
             owner: null,
             CancellationToken.None).ConfigureAwait(false);
     }
@@ -166,20 +173,20 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
         FrontendFormHandlers handlers,
         CancellationToken cancellationToken)
     {
-        var model = new FrontendFormModel(router, sessionId, state, handlers);
+        var model = new FrontendFormModel(router, sessionId, handlers);
         var open = JsonSerializer.SerializeToElement(
             new Dictionary<string, object?> { ["state"] = state },
             FrontendJsonContext.Default.DictionaryStringObject);
         await router.PublishFromKernelAsync(
             sessionId.ToString(),
-            new ReplCommMessage(ReplCommKind.Open, model.commId, FrontendUiWire.FormTarget, open, null, []),
+            new ReplCommMessage(ReplCommKind.Open, model._commId, FrontendUiWire.FormTarget, open, null, []),
             owner: model,
             cancellationToken).ConfigureAwait(false);
 
         var announcement = new Dictionary<string, object?>
         {
             [FrontendUiWire.ViewMime] = new FrontendUiFormAnnouncement(
-                model.commId,
+                model._commId,
                 FrontendUiWire.FormFamily,
                 FrontendUiWire.FormVersion,
                 state),
@@ -254,11 +261,16 @@ internal sealed record FrontendPluginSurfaceEntry(
     string? FormError,
     string? PageUrl);
 
-/// <summary>The gateway entrance as Frontend may consume it (ADR 0038 stage 4).</summary>
+/// <summary>The gateway entrance as Frontend may consume it (ADR 0038 stage 4). The
+/// gateway seam is wired on the host side; the frontend consumes it through the
+/// composed <c>GetHttpGateway</c> surface, so the carried fields are part of the
+/// contract even before a reader lands.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record FrontendPluginGateway(
     string Hostname,
     int Port,
     string Token);
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 /// <summary>
 ///     Plugin-surface seam (ADR 0038 stage 4): the composition root binds this to the

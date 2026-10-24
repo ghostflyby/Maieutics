@@ -37,8 +37,7 @@ internal static class FrontendPromptExpansion
                     .Select(static pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
             if (!expanded.Add((marker.ServerId, marker.Name, queryKey))) continue;
 
-            var access = servers.FirstOrDefault(
-                server => string.Equals(server.Id, marker.ServerId, StringComparison.Ordinal));
+            var access = servers.FirstOrDefault(server => string.Equals(server.Id, marker.ServerId, StringComparison.Ordinal));
             if (access is null)
             {
                 throw new FrontendFailureException(
@@ -46,8 +45,7 @@ internal static class FrontendPromptExpansion
                     $"The MCP server '{marker.ServerId}' is not in the current session view (removed, or its plugin was revoked).");
             }
 
-            var descriptor = access.Catalog.Prompts.FirstOrDefault(
-                prompt => string.Equals(prompt.Name, marker.Name, StringComparison.Ordinal));
+            var descriptor = access.Catalog.Prompts.FirstOrDefault(prompt => string.Equals(prompt.Name, marker.Name, StringComparison.Ordinal));
             if (descriptor is null)
             {
                 var state = access.Generation.GetInfo().State;
@@ -140,6 +138,10 @@ internal static class FrontendPromptExpansion
             var partIndex = 0;
             var droppedBlocks = 0;
             var promptBytes = 0L;
+            // The MCP SDK annotates Messages non-nullable, but it deserializes a server's
+            // JSON: an absent field still reaches here as null, so the fallback is runtime
+            // defense, not dead code.
+            // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
             foreach (var message in result.Messages ?? [])
             {
                 partIndex++;

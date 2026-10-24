@@ -85,6 +85,6 @@ internal static class SkillFrontmatter
 
     private static bool IsFence(string line)
     {
-        return line.Length == 3 && line[0] == '-' && line[1] == '-' && line[2] == '-';
+        return line is ['-', '-', '-'];
     }
 }

@@ -54,6 +54,9 @@ public interface IAgentChildScopeRegistry
 /// <param name="Arguments">Detached untrusted model arguments.</param>
 /// <param name="Classification">The tool's declared hints, or null when it declares none.</param>
 /// <param name="Reason">Why this call needs approval. This is policy text, never model output.</param>
+// RunId and CallId are part of the public approval-request contract: gate implementations
+// correlate and log with them even though the built-in gates key on SessionId.
+// ReSharper disable NotAccessedPositionalProperty.Global
 public sealed record AgentToolApprovalRequest(
     AgentSessionId SessionId,
     AgentRunId RunId,
@@ -89,8 +92,8 @@ public sealed record AgentToolApprovalDecision(bool Approved, string Reason, boo
 ///     Decides whether one tool call may execute. The Agent runtime calls this immediately
 ///     before invoking a function, after <see cref="AgentToolStarted" /> and before any side
 ///     effect. Implementations own their waiting budget and must return a terminal decision:
-///     they never throw for user absence, and a cancelled
-///     <paramref name="cancellationToken" /> means the run ended, not that the user declined.
+///     they never throw for user absence, and a cancelled wait means the run ended, not
+///     that the user declined.
 /// </summary>
 /// <remarks>
 ///     A denial is a recoverable tool failure — the model receives a typed
@@ -125,9 +128,9 @@ public sealed class AgentToolApprovalMemory
     /// being finite.</summary>
     private const int Capacity = 1024;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AllowanceKey, bool> perSession = new(AllowanceKeyComparer.Instance);
-    private readonly Queue<AllowanceKey> order = new();
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AllowanceKey, bool> _perSession = new(AllowanceKeyComparer.Instance);
+    private readonly Queue<AllowanceKey> _order = new();
 
     /// <summary>Records that the session's user allowed the tool for the rest of the session.
     /// The classification is part of the key: a plugin reload can change what the same tool
@@ -140,11 +143,11 @@ public sealed class AgentToolApprovalMemory
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         var key = new AllowanceKey(sessionId, toolName, classification);
-        lock (gate)
+        lock (_gate)
         {
-            if (!perSession.TryAdd(key, true)) return;
-            order.Enqueue(key);
-            while (order.Count > Capacity) perSession.Remove(order.Dequeue());
+            if (!_perSession.TryAdd(key, true)) return;
+            _order.Enqueue(key);
+            while (_order.Count > Capacity) _perSession.Remove(_order.Dequeue());
         }
     }
 
@@ -155,9 +158,9 @@ public sealed class AgentToolApprovalMemory
         AgentToolClassification? classification = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        lock (gate)
+        lock (_gate)
         {
-            return perSession.ContainsKey(new AllowanceKey(sessionId, toolName, classification));
+            return _perSession.ContainsKey(new AllowanceKey(sessionId, toolName, classification));
         }
     }
 
@@ -167,20 +170,20 @@ public sealed class AgentToolApprovalMemory
     /// live entry early — harmless (the user is asked again) and bounded.</summary>
     public void Clear(AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var key in perSession.Keys.Where(key => key.SessionId == sessionId).ToArray())
-                perSession.Remove(key);
+            foreach (var key in _perSession.Keys.Where(key => key.SessionId == sessionId).ToArray())
+                _perSession.Remove(key);
         }
     }
 
     /// <summary>Drops every remembered allowance.</summary>
     public void ClearAll()
     {
-        lock (gate)
+        lock (_gate)
         {
-            perSession.Clear();
-            order.Clear();
+            _perSession.Clear();
+            _order.Clear();
         }
     }
 

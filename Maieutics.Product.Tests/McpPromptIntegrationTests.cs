@@ -1,8 +1,8 @@
 using System.IO.Pipelines;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -23,7 +23,7 @@ public sealed class McpPromptIntegrationTests
 
         var catalog = harness.Generation.GetPromptCatalog();
         Assert.Equal(4, catalog.Prompts.Count());
-        Assert.Contains(catalog.Prompts, prompt => prompt.Name == "code_review" && prompt.Title == "Code review");
+        Assert.Contains(catalog.Prompts, prompt => prompt is { Name: "code_review", Title: "Code review" });
         Assert.Contains(catalog.Prompts, prompt => prompt.Name == "image_only");
         var review = catalog.Prompts.Single(prompt => prompt.Name == "code_review");
         Assert.Equivalent(new[] { new McpPromptArgumentDescriptor("language", "The language to review", false), new McpPromptArgumentDescriptor("depth", null, true) }, review.Arguments);
@@ -36,13 +36,11 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("code_review", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -52,13 +50,12 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        var code = (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("code_review", new Dictionary<string, string> { ["depth"] = "deep", ["nope"] = "x" })],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code;
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -68,19 +65,17 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var unknownServer = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [],
             [Marker("code_review", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownServer.Invoke(); })).Code);
+            deadline.Token))).Code);
 
-        var unknownPrompt = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("absent", [])],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-        Assert.Equal(FrontendErrors.McpPromptUnknown, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await unknownPrompt.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -131,13 +126,11 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        Assert.Equal(FrontendErrors.McpPromptResultInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("image_only", new Dictionary<string, string>())],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptResultInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -166,8 +159,8 @@ public sealed class McpPromptIntegrationTests
 
 file sealed class PromptServerHarness : IAsyncDisposable
 {
-    private readonly CancellationTokenSource lifetime;
-    private readonly Task serverTask;
+    private readonly CancellationTokenSource _lifetime;
+    private readonly Task _serverTask;
 
     private PromptServerHarness(
         McpServerGeneration generation,
@@ -177,8 +170,8 @@ file sealed class PromptServerHarness : IAsyncDisposable
     {
         Generation = generation;
         Access = access;
-        this.lifetime = lifetime;
-        this.serverTask = serverTask;
+        this._lifetime = lifetime;
+        this._serverTask = serverTask;
     }
 
     internal McpServerGeneration Generation { get; }
@@ -192,19 +185,16 @@ file sealed class PromptServerHarness : IAsyncDisposable
         {
             await retirement.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        catch (TimeoutException)
-        {
-        }
-        await lifetime.CancelAsync();
+        catch (TimeoutException) { }
+
+        await _lifetime.CancelAsync();
         try
         {
-            await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await _serverTask.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        catch (TimeoutException)
-        {
-        }
+        catch (TimeoutException) { }
 
-        lifetime.Dispose();
+        _lifetime.Dispose();
     }
 
     internal static async Task<PromptServerHarness> StartAsync(CancellationToken cancellationToken)
@@ -232,7 +222,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                 ],
                 Handlers = new McpServerHandlers
                 {
-                    ListPromptsHandler = (request, ct) => ValueTask.FromResult(new ListPromptsResult
+                    ListPromptsHandler = (_, _) => ValueTask.FromResult(new ListPromptsResult
                     {
                         Prompts =
                         [
@@ -257,7 +247,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                             new Prompt { Name = "mixed", Description = "Text plus image" }
                         ]
                     }),
-                    GetPromptHandler = (request, ct) => ValueTask.FromResult(request.Params?.Name switch
+                    GetPromptHandler = (request, _) => ValueTask.FromResult(request.Params.Name switch
                     {
                         "image_only" => new GetPromptResult
                         {
@@ -348,6 +338,6 @@ file sealed class PromptServerHarness : IAsyncDisposable
 
     private static string? Arg(RequestContext<GetPromptRequestParams> request, string name)
     {
-        return request.Params?.Arguments is { } args && args.TryGetValue(name, out var value) ? value.ToString() : null;
+        return request.Params.Arguments is { } args && args.TryGetValue(name, out var value) ? value.ToString() : null;
     }
 }

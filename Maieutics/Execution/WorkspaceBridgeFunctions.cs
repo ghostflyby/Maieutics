@@ -1,8 +1,8 @@
+using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Collections.Immutable;
 using Maieutics.Agent;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
@@ -32,18 +32,18 @@ internal sealed class WorkspaceBridgeFunctions
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
         };
 
-    private readonly Workspace workspace;
-    private readonly IWorkspaceIoBridge? bridge;
-    private readonly PermissionPolicyAcquirer? acquirer;
+    private readonly Workspace _workspace;
+    private readonly IWorkspaceIoBridge? _bridge;
+    private readonly PermissionPolicyAcquirer? _acquirer;
 
     internal WorkspaceBridgeFunctions(
         Workspace workspace,
         IWorkspaceIoBridge? bridge,
         PermissionPolicyAcquirer? acquirer = null)
     {
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this.bridge = bridge;
-        this.acquirer = acquirer;
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._bridge = bridge;
+        this._acquirer = acquirer;
 
         Functions =
         [
@@ -81,7 +81,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Reads one workspace file's full text through the IDE bridge.")]
     private async ValueTask<JsonElement> ReadFileAsync(
-        [Description("A workspace://local URI.")] string uri,
+        [Description("A workspace://local URI.")]
+        string uri,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -105,7 +106,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Writes one workspace file's full text through the IDE bridge.")]
     private async ValueTask<JsonElement> WriteFileAsync(
-        [Description("A workspace://local URI; missing parents are created.")] string uri,
+        [Description("A workspace://local URI; missing parents are created.")]
+        string uri,
         [Description("The complete file content, written verbatim as UTF-8 without a byte order mark.")]
         string content,
         AIFunctionArguments arguments,
@@ -140,7 +142,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Lists one workspace directory through the IDE bridge.")]
     private async ValueTask<JsonElement> ListAsync(
-        [Description("A workspace://local directory URI; the root lists the workspace root.")] string? uri,
+        [Description("A workspace://local directory URI; the root lists the workspace root.")]
+        string? uri,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -163,10 +166,12 @@ internal sealed class WorkspaceBridgeFunctions
         return JsonSerializer.SerializeToElement(
             new WorkspaceFsListValue(
                 logical.Uri,
-                [.. listing.Entries.Select(static entry => new WorkspaceFsEntryValue(
-                    entry.Name,
-                    entry.Kind,
-                    entry.SizeBytes))],
+                [
+                    .. listing.Entries.Select(static entry => new WorkspaceFsEntryValue(
+                        entry.Name,
+                        entry.Kind,
+                        entry.SizeBytes))
+                ],
                 false),
             WorkspaceBridgeJsonSerializerContext.Default.WorkspaceFsListValue);
     }
@@ -176,13 +181,13 @@ internal sealed class WorkspaceBridgeFunctions
         AIFunctionArguments arguments,
         bool allowRoot = false)
     {
-        var channel = WorkspaceToolCalls.AcquireBridge(bridge, arguments);
+        var channel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
         if (channel is null)
             throw new AgentToolException(
                 "workspace_bridge_inactive",
                 "No IDE frontend is serving the workspace file system; the caller falls back to direct file I/O.");
 
-        return (channel, workspace.Capture().ResolveLogical(uri, allowRoot));
+        return (channel, _workspace.Capture().ResolveLogical(uri, allowRoot));
     }
 
     private void EnforcePolicy(
@@ -190,7 +195,7 @@ internal sealed class WorkspaceBridgeFunctions
         WorkspaceLogicalPath logical,
         AIFunctionArguments arguments)
     {
-        if (acquirer is null) return;
+        if (_acquirer is null) return;
 
         var sessionId = TryParseSession(arguments);
         if (sessionId is null)
@@ -206,8 +211,8 @@ internal sealed class WorkspaceBridgeFunctions
 
         // Broker parity: the broker matches the physical path a direct Deno call would
         // open, so the bridged path is judged against the same absolute address.
-        var physical = workspace.Capture().ToPhysicalPath(logical.Segments);
-        var policy = acquirer.Acquire(PermissionLayer.Empty, sessionId);
+        var physical = _workspace.Capture().ToPhysicalPath(logical.Segments);
+        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
         var rules = policy.For(kind);
         var allowed = rules.AllowAll ||
                       rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, physical));
@@ -222,7 +227,7 @@ internal sealed class WorkspaceBridgeFunctions
 
     private void GateInstructionSurface(string relativePath, AIFunctionArguments arguments)
     {
-        if (acquirer is null || !InstructionSurface.IsInstructionSurface(relativePath)) return;
+        if (_acquirer is null || !InstructionSurface.IsInstructionSurface(relativePath)) return;
 
         var sessionId = TryParseSession(arguments);
         if (sessionId is null)
@@ -231,7 +236,7 @@ internal sealed class WorkspaceBridgeFunctions
                 $"'{relativePath}' is an instruction surface: model-initiated writes require an explicit " +
                 "allow in the calling session's permission policy.");
 
-        var policy = acquirer.Acquire(PermissionLayer.Empty, sessionId);
+        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
         var rules = policy.For(PermissionKind.Write);
         if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)) ||
             !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)))

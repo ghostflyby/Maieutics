@@ -9,16 +9,16 @@ namespace Maieutics.Product.Tests;
 /// reopen, session metadata, and schema-version refusal (ADR 0009 metadata store, v1).</summary>
 public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
 {
-    private readonly string databaseDirectory;
-    private readonly string databasePath;
+    private readonly string _databaseDirectory;
+    private readonly string _databasePath;
 
     public SqliteTranscriptStoreTests()
     {
-        databaseDirectory = Path.Combine(
+        _databaseDirectory = Path.Combine(
             Path.GetTempPath(),
             "maieutics-transcript-store-tests",
             Guid.NewGuid().ToString("N"));
-        databasePath = Path.Combine(databaseDirectory, "history.db");
+        _databasePath = Path.Combine(_databaseDirectory, "history.db");
     }
 
     /// <summary>A WAL database's last handle can outlive the store's disposal by a moment
@@ -27,25 +27,25 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     /// delete that turns that window into a cleanup failure.</summary>
     public async ValueTask DisposeAsync()
     {
-        await TempArea.DeleteAsync(databaseDirectory, CancellationToken.None);
+        await TempArea.DeleteAsync(_databaseDirectory, CancellationToken.None);
     }
 
     [Fact]
     public void AppendedObjectReferencesFeedGarbageCollection()
     {
         var sessionId = AgentSessionId.Create();
-        var turn = Turn(sessionId, "a", identity: null, truncated: false,
+        var turn = Turn("a", identity: null, truncated: false,
             ("user", "Question"), ("assistant", "Answer"));
         var referenced = new string('b', 64);
         var alsoReferenced = new string('c', 64);
 
-        using (var store = new SqliteTranscriptStore(databasePath))
+        using (var store = new SqliteTranscriptStore(_databasePath))
         {
             store.AppendTurn(sessionId, turn, [referenced, alsoReferenced, referenced]);
             store.AppendTurn(sessionId, turn, []);
         }
 
-        using var reopened = new SqliteTranscriptStore(databasePath);
+        using var reopened = new SqliteTranscriptStore(_databasePath);
         var references = reopened.GetReferencedObjectIds();
         Assert.Equivalent(new[] { referenced, alsoReferenced }, references);
     }
@@ -53,8 +53,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     [Fact]
     public void MigratesVersionOneDatabasesToTheCurrentSchema()
     {
-        Directory.CreateDirectory(databaseDirectory);
-        using (var legacy = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        Directory.CreateDirectory(_databaseDirectory);
+        using (var legacy = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             legacy.Open();
             using var script = legacy.CreateCommand();
@@ -72,9 +72,9 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             script.ExecuteNonQuery();
         }
 
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         Assert.Single(store.ListSessions());
-        using var check = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+        using var check = new SqliteConnection($"Data Source={_databasePath};Pooling=False");
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
@@ -84,9 +84,9 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     [Fact]
     public void MigratesVersionThreeDatabasesWithoutLosingMetadata()
     {
-        Directory.CreateDirectory(databaseDirectory);
+        Directory.CreateDirectory(_databaseDirectory);
         var sessionId = AgentSessionId.Create();
-        using (var v3 = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        using (var v3 = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             v3.Open();
             using var script = v3.CreateCommand();
@@ -107,7 +107,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             script.ExecuteNonQuery();
         }
 
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         var descriptor = Assert.Single(store.ListSessions());
         Assert.Equal(sessionId, descriptor.Id);
         Assert.Equal("v3 title", descriptor.Title);
@@ -119,9 +119,9 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     [Fact]
     public void MigratesVersionTwoDatabasesWithoutLosingMetadata()
     {
-        Directory.CreateDirectory(databaseDirectory);
+        Directory.CreateDirectory(_databaseDirectory);
         var sessionId = AgentSessionId.Create();
-        using (var v2 = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        using (var v2 = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             v2.Open();
             using var script = v2.CreateCommand();
@@ -141,7 +141,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             script.ExecuteNonQuery();
         }
 
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         var descriptor = Assert.Single(store.ListSessions());
         Assert.Equal(sessionId, descriptor.Id);
         Assert.Equal(1, descriptor.TurnCount);
@@ -158,11 +158,11 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         // The accessor moves between calls: a rewrite of the write-once stamp on
         // the second turn would surface as the second root winning.
         var calls = 0;
-        using var store = new SqliteTranscriptStore(databasePath, () => calls++ == 0 ? "/repos/alpha" : "/repos/beta");
+        using var store = new SqliteTranscriptStore(_databasePath, () => calls++ == 0 ? "/repos/alpha" : "/repos/beta");
 
-        store.AppendTurn(sessionId, Turn(sessionId, "a", identity, truncated: false,
+        store.AppendTurn(sessionId, Turn("a", identity, truncated: false,
             ("user", "First\nquestion\r\nspans lines"), ("assistant", "Answer")), []);
-        store.AppendTurn(sessionId, Turn(sessionId, "b", identity: null, truncated: false,
+        store.AppendTurn(sessionId, Turn("b", identity: null, truncated: false,
             ("user", "Second question"), ("assistant", "Answer two")), []);
 
         var descriptor = Assert.Single(store.ListSessions());
@@ -174,8 +174,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     public void PreviewIsTruncatedToTheDisplayCap()
     {
         var sessionId = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
-        store.AppendTurn(sessionId, Turn(sessionId, "a", identity: null, truncated: false,
+        using var store = new SqliteTranscriptStore(_databasePath);
+        store.AppendTurn(sessionId, Turn("a", identity: null, truncated: false,
             ("user", new string('x', 500)), ("assistant", "Answer")), []);
 
         var descriptor = Assert.Single(store.ListSessions());
@@ -189,8 +189,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     {
         var committed = AgentSessionId.Create();
         var unknown = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath, () => "/repos/alpha");
-        store.AppendTurn(committed, Turn(committed, "a", identity: null, truncated: false,
+        using var store = new SqliteTranscriptStore(_databasePath, () => "/repos/alpha");
+        store.AppendTurn(committed, Turn("a", identity: null, truncated: false,
             ("user", "Question"), ("assistant", "Answer")), []);
 
         store.SetTitle(committed, "Refactor vfs lenses");
@@ -226,27 +226,25 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         var sessionId = AgentSessionId.Create();
         var identity = new AgentModelIdentity(new AgentModelProfileId("default"), "OpenAI", "gpt-test");
         var first = Turn(
-            sessionId,
             "a",
             identity,
             truncated: false,
             ("user", "Question one"),
             ("assistant", "Answer one"));
         var second = Turn(
-            sessionId,
             "b",
             identity: null,
             truncated: true,
             ("user", "Question two"),
             ("assistant", "Answer two"));
 
-        using (var store = new SqliteTranscriptStore(databasePath))
+        using (var store = new SqliteTranscriptStore(_databasePath))
         {
             store.AppendTurn(sessionId, first, []);
             store.AppendTurn(sessionId, second, []);
         }
 
-        using var reopened = new SqliteTranscriptStore(databasePath);
+        using var reopened = new SqliteTranscriptStore(_databasePath);
         var transcript = reopened.LoadTranscript(sessionId);
         Assert.NotNull(transcript);
         Assert.Equal(sessionId, transcript.SessionId);
@@ -260,8 +258,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         Assert.Equal(["Question two", "Answer two"], transcript.Turns[1].Messages.Select(message => message.Text));
 
         var sessions = reopened.ListSessions();
-        Assert.Single(sessions);
-        Assert.Equal(sessionId, sessions[0].Id);
+        var item = Assert.Single(sessions);
+        Assert.Equal(sessionId, item.Id);
         Assert.Equal(2, sessions[0].TurnCount);
         Assert.True(sessions[0].LastActivityAt >= sessions[0].CreatedAt);
     }
@@ -279,7 +277,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             [new ChatMessage(ChatRole.User, "ask"), assistant],
             modelIdentity: null);
 
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         store.AppendTurn(sessionId, turn, []);
         var loaded = store.LoadTranscript(sessionId);
 
@@ -292,7 +290,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     [Fact]
     public void UnknownSessionsLoadAsAbsent()
     {
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         Assert.Null(store.LoadTranscript(AgentSessionId.Create()));
         Assert.Empty(store.ListSessions());
     }
@@ -303,12 +301,12 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         var root = AgentSessionId.Create();
         var fork = AgentSessionId.Create();
         var identity = new AgentModelIdentity(new AgentModelProfileId("default"), "OpenAI", "gpt-test");
-        using var store = new SqliteTranscriptStore(databasePath, () => "/repos/alpha");
-        store.AppendTurn(root, Turn(root, "a", identity, truncated: false,
+        using var store = new SqliteTranscriptStore(_databasePath, () => "/repos/alpha");
+        store.AppendTurn(root, Turn("a", identity, truncated: false,
             ("user", "Question one"), ("assistant", "Answer one")), []);
-        store.AppendTurn(root, Turn(root, "b", identity: null, truncated: false,
+        store.AppendTurn(root, Turn("b", identity: null, truncated: false,
             ("user", "Question two"), ("assistant", "Answer two")), []);
-        store.AppendTurn(root, Turn(root, "c", identity: null, truncated: false,
+        store.AppendTurn(root, Turn("c", identity: null, truncated: false,
             ("user", "Question three"), ("assistant", "Answer three")), []);
 
         store.CreateForkSession(fork, root, forkPointSeq: 2, title: "root · branch @ turn 3");
@@ -323,7 +321,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         Assert.Equal(3, store.LoadTranscript(root)!.Turns.Count());
 
         // The fork's own turns append after the prefix.
-        store.AppendTurn(fork, Turn(fork, "d", identity: null, truncated: false,
+        store.AppendTurn(fork, Turn("d", identity: null, truncated: false,
             ("user", "Fork question"), ("assistant", "Fork answer")), []);
         var grown = store.LoadTranscript(fork)!.Turns;
         Assert.Equal(3, grown.Count());
@@ -342,15 +340,15 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         var root = AgentSessionId.Create();
         var forkA = AgentSessionId.Create();
         var forkB = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         foreach (var suffix in new[] { "a", "b", "c" })
         {
-            store.AppendTurn(root, Turn(root, suffix, identity: null, truncated: false,
+            store.AppendTurn(root, Turn(suffix, identity: null, truncated: false,
                 ("user", $"Question {suffix}"), ("assistant", $"Answer {suffix}")), []);
         }
 
         store.CreateForkSession(forkA, root, forkPointSeq: 2, title: null);
-        store.AppendTurn(forkA, Turn(forkA, "d", identity: null, truncated: false,
+        store.AppendTurn(forkA, Turn("d", identity: null, truncated: false,
             ("user", "Question d"), ("assistant", "Answer d")), []);
         // forkB keeps all three of forkA's visible turns.
         store.CreateForkSession(forkB, forkA, forkPointSeq: 3, title: null);
@@ -367,7 +365,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     {
         var renamed = AgentSessionId.Create();
         var freshFork = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
+        using var store = new SqliteTranscriptStore(_databasePath);
         store.SetTitle(renamed, "Named before first turn");
         store.CreateForkSession(freshFork, renamed, forkPointSeq: 0, title: null);
 
@@ -385,8 +383,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         // first), so this simulates external corruption of the parent links.
         var a = AgentSessionId.Create();
         var b = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
-        using (var raw = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        using var store = new SqliteTranscriptStore(_databasePath);
+        using (var raw = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             raw.Open();
             using var insert = raw.CreateCommand();
@@ -401,8 +399,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             insert.ExecuteNonQuery();
         }
 
-        var load = () => store.LoadTranscript(a);
-        var assertion33 = Assert.ThrowsAny<InvalidOperationException>(() => load.Invoke());
+        var assertion33 = Assert.ThrowsAny<InvalidOperationException>(() => store.LoadTranscript(a));
         Assert.Matches("(?is)^.*exceeds\\ 64.*$", assertion33.Message);
     }
 
@@ -411,8 +408,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     {
         var missing = AgentSessionId.Create().Value.ToString("N");
         var fork = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath);
-        using (var raw = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        using var store = new SqliteTranscriptStore(_databasePath);
+        using (var raw = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             raw.Open();
             using var insert = raw.CreateCommand();
@@ -432,13 +429,13 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     {
         var root = AgentSessionId.Create();
         var fork = AgentSessionId.Create();
-        using var store = new SqliteTranscriptStore(databasePath, () => "/repos/alpha");
-        store.AppendTurn(root, Turn(root, "a", identity: null, truncated: false,
+        using var store = new SqliteTranscriptStore(_databasePath, () => "/repos/alpha");
+        store.AppendTurn(root, Turn("a", identity: null, truncated: false,
             ("user", "Original question"), ("assistant", "Answer")), []);
         store.CreateForkSession(fork, root, forkPointSeq: 0, title: null);
 
         Assert.Null(store.ListSessions().Single(session => session.Id == fork).Preview);
-        store.AppendTurn(fork, Turn(fork, "b", identity: null, truncated: false,
+        store.AppendTurn(fork, Turn("b", identity: null, truncated: false,
             ("user", "Fork question"), ("assistant", "Fork answer")), []);
 
         var descriptor = store.ListSessions().Single(session => session.Id == fork);
@@ -449,8 +446,8 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     [Fact]
     public void RefusesDatabasesWrittenByANewerSchema()
     {
-        Directory.CreateDirectory(databaseDirectory);
-        using (var newer = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        Directory.CreateDirectory(_databaseDirectory);
+        using (var newer = new SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             newer.Open();
             using var bump = newer.CreateCommand();
@@ -458,13 +455,12 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
             bump.ExecuteNonQuery();
         }
 
-        var open = () => new SqliteTranscriptStore(databasePath);
+        var open = () => new SqliteTranscriptStore(_databasePath);
         var assertion35 = Assert.ThrowsAny<InvalidOperationException>(() => open.Invoke());
         Assert.Matches("(?is)^.*newer\\ build.*$", assertion35.Message);
     }
 
     private static AgentTranscriptTurn Turn(
-        AgentSessionId sessionId,
         string runIdSuffix,
         AgentModelIdentity? identity,
         bool truncated,

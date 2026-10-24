@@ -5,12 +5,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using Maieutics.Agent;
-using Maieutics.Mcp;
 using Maieutics.Commands;
 using Maieutics.DenoRepl;
+using Maieutics.Mcp;
 using Maieutics.Persistence;
+using Maieutics.Skills;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,26 +34,26 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// <summary>The native view-family capability version advertised in capabilities (ADR 0038).</summary>
     internal const int FrontendUiCapabilityVersion = 1;
 
-    private readonly FrontendOptions options;
-    private readonly FrontendSessionService service;
-    private readonly FrontendElicitationPresenter elicitationPresenter;
-    private readonly FrontendToolApprovalPresenter? toolApprovalPresenter;
-    private readonly FrontendTurnQueue turnQueue;
-    private readonly ObjectStore? objectStore;
-    private readonly FrontendCommRouter? commRouter;
+    private readonly FrontendSessionService _service;
+    private readonly FrontendElicitationPresenter _elicitationPresenter;
+    private readonly FrontendToolApprovalPresenter? _toolApprovalPresenter;
+    private readonly FrontendTurnQueue _turnQueue;
+    private readonly ObjectStore? _objectStore;
+    private readonly FrontendCommRouter? _commRouter;
 
     /// <summary>The live comm router, so tests can observe a session plane's live-set
     /// transitions through its completion signal instead of probing with hello reads.</summary>
-    internal FrontendCommRouter? CommRouter => commRouter;
-    private readonly IFrontendPluginSurface? pluginSurface;
-    private readonly Skills.SkillCatalog? skillCatalog;
-    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;
-    private readonly IdeRequestRegistry? ideRequests;
-    private readonly FrontendIdeSockets? ideSockets;
-    private readonly ILogger<FrontendHost> logger;
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly byte[] expectedToken;
-    private int disposeState;
+    internal FrontendCommRouter? CommRouter => _commRouter;
+
+    private readonly IFrontendPluginSurface? _pluginSurface;
+    private readonly SkillCatalog? _skillCatalog;
+    private readonly Func<IReadOnlyList<McpPromptServerAccess>>? _promptServersAccessor;
+    private readonly IdeRequestRegistry? _ideRequests;
+    private readonly FrontendIdeSockets? _ideSockets;
+    private readonly ILogger<FrontendHost> _logger;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly byte[] _expectedToken;
+    private int _disposeState;
 
     public FrontendHost(
         FrontendOptions options,
@@ -62,31 +64,30 @@ internal sealed class FrontendHost : IAsyncDisposable
         ObjectStore? objectStore = null,
         FrontendCommRouter? commRouter = null,
         IFrontendPluginSurface? pluginSurface = null,
-        Skills.SkillCatalog? skillCatalog = null,
+        SkillCatalog? skillCatalog = null,
         Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null,
         IdeRequestRegistry? ideRequests = null,
         FrontendIdeSockets? ideSockets = null,
         FrontendToolApprovalPresenter? toolApprovalPresenter = null)
     {
-        this.options = options;
-        this.service = service;
-        this.turnQueue = turnQueue;
-        this.logger = logger;
-        this.ideRequests = ideRequests;
-        this.ideSockets = ideSockets;
-        this.elicitationPresenter = elicitationPresenter
-            ?? new FrontendElicitationPresenter(
-                NoFramesPublisher.Instance,
-                new FrontendFormModelHost(
-                    commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
-                    NoFramesPublisher.Instance));
-        this.toolApprovalPresenter = toolApprovalPresenter;
-        this.objectStore = objectStore;
-        this.commRouter = commRouter;
-        this.pluginSurface = pluginSurface;
-        this.skillCatalog = skillCatalog;
-        this.promptServersAccessor = promptServersAccessor;
-        expectedToken = Encoding.UTF8.GetBytes(options.Token);
+        this._service = service;
+        this._turnQueue = turnQueue;
+        this._logger = logger;
+        this._ideRequests = ideRequests;
+        this._ideSockets = ideSockets;
+        this._elicitationPresenter = elicitationPresenter
+                                     ?? new FrontendElicitationPresenter(
+                                         NoFramesPublisher.Instance,
+                                         new FrontendFormModelHost(
+                                             commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
+                                             NoFramesPublisher.Instance));
+        this._toolApprovalPresenter = toolApprovalPresenter;
+        this._objectStore = objectStore;
+        this._commRouter = commRouter;
+        this._pluginSurface = pluginSurface;
+        this._skillCatalog = skillCatalog;
+        this._promptServersAccessor = promptServersAccessor;
+        _expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 
     /// <summary>Requests cancellation of every retained run (so shutdown does not wait on a
@@ -95,7 +96,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// observed by their owners instead of awaited by the caller.</summary>
     internal void BeginShutdown()
     {
-        service.BeginShutdown();
+        _service.BeginShutdown();
         _ = ObserveShutdownCancelAsync();
     }
 
@@ -103,11 +104,11 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         try
         {
-            await lifetime.CancelAsync().ConfigureAwait(false);
+            await _lifetime.CancelAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "The frontend host shutdown cancellation faulted.");
+            _logger.LogError(exception, "The frontend host shutdown cancellation faulted.");
         }
     }
 
@@ -128,7 +129,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                logger.LogError(
+                _logger.LogError(
                     exception,
                     "Unhandled exception on {Method} {Path}.",
                     context.Request.Method,
@@ -182,7 +183,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposeState, 1) == 0) await lifetime.CancelAsync().ConfigureAwait(false);
+        if (Interlocked.Exchange(ref _disposeState, 1) == 0) await _lifetime.CancelAsync().ConfigureAwait(false);
     }
 
     /// <summary>Endpoint metadata marking an endpoint as part of the frontend web API plane:
@@ -227,8 +228,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         // arrive as a query parameter on the endpoints that opted in via metadata.
         var acceptsQueryToken = endpoint.Metadata.GetMetadata<FrontendQueryTokenMetadata>() is not null;
         if (!TryGetBearerToken(context, out var provided) && !(acceptsQueryToken &&
-                TryGetQueryToken(context, out provided)) ||
-            !CryptographicOperations.FixedTimeEquals(expectedToken, provided))
+                                                               TryGetQueryToken(context, out provided)) ||
+            !CryptographicOperations.FixedTimeEquals(_expectedToken, provided))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(
@@ -268,14 +269,14 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// entrance token is embedded only in approved plugins' page links.</summary>
     private IResult HandlePlugins()
     {
-        if (pluginSurface is null)
+        if (_pluginSurface is null)
         {
             return Results.Json(
                 new FrontendPluginsResponse([]),
                 FrontendJsonContext.Default.FrontendPluginsResponse);
         }
 
-        var surfaces = pluginSurface.GetPluginSurfaces();
+        var surfaces = _pluginSurface.GetPluginSurfaces();
         var plugins = surfaces.Select(surface => new FrontendPluginInfo(
             surface.Id,
             surface.Name,
@@ -287,8 +288,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                     surface.Form.Fields,
                     surface.Form.SubmitLabel,
                     surface.Form.CancelLabel),
-                surface.FormError,
-                surface.PageUrl)).ToArray();
+            surface.FormError,
+            surface.PageUrl)).ToArray();
         return Results.Json(
             new FrontendPluginsResponse(plugins),
             FrontendJsonContext.Default.FrontendPluginsResponse);
@@ -299,7 +300,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// Approval is enforced inside the manager's sink path; failures are typed.</summary>
     private async Task<IResult> HandlePublishPluginForm(string pluginId, CancellationToken cancellationToken)
     {
-        if (pluginSurface is null)
+        if (_pluginSurface is null)
         {
             return Results.Json(
                 new FrontendError("plugins_unavailable", "The plugin host is not available."),
@@ -309,7 +310,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            await pluginSurface.PublishUiFormAsync(pluginId, cancellationToken).ConfigureAwait(false);
+            await _pluginSurface.PublishUiFormAsync(pluginId, cancellationToken).ConfigureAwait(false);
             return Results.Json(
                 new FrontendPluginFormPublished(pluginId, "*"),
                 FrontendJsonContext.Default.FrontendPluginFormPublished);
@@ -329,7 +330,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// frontend built for skills degrades to "no skills offered" on hosts without them.</summary>
     private IResult HandleSkills()
     {
-        var snapshot = skillCatalog?.Current ?? Skills.SkillCatalogSnapshot.Empty;
+        var snapshot = _skillCatalog?.Current ?? SkillCatalogSnapshot.Empty;
         var skills = snapshot.Skills
             .Select(static skill => new FrontendSkillInfo(
                 skill.Name,
@@ -347,7 +348,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// host without MCP servers answers an empty list.</summary>
     private IResult HandlePrompts()
     {
-        var prompts = (promptServersAccessor?.Invoke() ?? [])
+        var prompts = (_promptServersAccessor?.Invoke() ?? [])
             .SelectMany(static server => server.Catalog.Prompts.Select(prompt => (server, prompt)))
             .Select(static entry =>
             {
@@ -375,18 +376,18 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private IResult HandleCapabilities()
     {
-        var session = service.DescribeSession();
+        var session = _service.DescribeSession();
         return Results.Json(new FrontendCapabilities(
             FrontendProtocol.Version,
             typeof(FrontendHost).Assembly.GetName().Version?.ToString() ?? "0.0.0",
             session,
-            service.WorkspaceRoot,
-            commRouter is null
+            _service.WorkspaceRoot,
+            _commRouter is null
                 ? null
                 : new FrontendCommCapability(
                     FrontendCommRouter.Version,
                     ReplCommLimits.MaximumMessageBytes),
-            Ui: commRouter is null
+            Ui: _commRouter is null
                 ? null
                 : new FrontendUiCapability(
                     FrontendUiCapabilityVersion,
@@ -396,23 +397,23 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private IResult HandleSession()
     {
-        return Results.Json(service.DescribeSession(), FrontendJsonContext.Default.FrontendSessionInfo);
+        return Results.Json(_service.DescribeSession(), FrontendJsonContext.Default.FrontendSessionInfo);
     }
 
     private IResult HandleNewSession()
     {
-        return Results.Json(service.StartNew(), FrontendJsonContext.Default.FrontendSessionInfo);
+        return Results.Json(_service.StartNew(), FrontendJsonContext.Default.FrontendSessionInfo);
     }
 
     private IResult HandleListSessions()
     {
-        return Results.Json(service.ListStoredSessions(), FrontendJsonContext.Default.FrontendStoredSessionArray);
+        return Results.Json(_service.ListStoredSessions(), FrontendJsonContext.Default.FrontendStoredSessionArray);
     }
 
     private async Task HandleResumeSession(HttpContext context, string sessionId)
     {
         await GuardAsync(context, () => Task.FromResult(
-            Results.Json(service.Resume(sessionId), FrontendJsonContext.Default.FrontendSessionInfo)));
+            Results.Json(_service.Resume(sessionId), FrontendJsonContext.Default.FrontendSessionInfo)));
     }
 
     private async Task HandleRenameSession(HttpContext context, string sessionId)
@@ -422,7 +423,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         if (request is null) return;
 
         await GuardAsync(context, () => Task.FromResult(
-            Results.Json(service.Rename(sessionId, request.Title), FrontendJsonContext.Default.FrontendRenameResponse)));
+            Results.Json(_service.Rename(sessionId, request.Title), FrontendJsonContext.Default.FrontendRenameResponse)));
     }
 
     private async Task HandleForkSession(HttpContext context, string sessionId)
@@ -432,14 +433,14 @@ internal sealed class FrontendHost : IAsyncDisposable
         if (request is null) return;
 
         await GuardAsync(context, async () => Results.Json(
-            await service.ForkAsync(sessionId, request, context.RequestAborted).ConfigureAwait(false),
+            await _service.ForkAsync(sessionId, request, context.RequestAborted).ConfigureAwait(false),
             FrontendJsonContext.Default.FrontendForkResponse));
     }
 
     private async Task HandleModelProfiles(HttpContext context)
     {
         await GuardAsync(context, () => Task.FromResult(
-            Results.Json(service.ListModelProfiles(), FrontendJsonContext.Default.FrontendModelProfileArray)));
+            Results.Json(_service.ListModelProfiles(), FrontendJsonContext.Default.FrontendModelProfileArray)));
     }
 
     private async Task HandleGcSession(HttpContext context, string sessionId)
@@ -453,17 +454,17 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        await GuardAsync(context, () => Task.FromResult<IResult>(
+        await GuardAsync(context, () => Task.FromResult(
             Results.Json(new FrontendCommandResponse(
-                $"**GC** removed {service.PruneObjects(sessionId, graceHours)} unreferenced object(s) (grace {graceHours} h)."),
+                    $"**GC** removed {_service.PruneObjects(sessionId, graceHours)} unreferenced object(s) (grace {graceHours} h)."),
                 FrontendJsonContext.Default.FrontendCommandResponse)));
     }
 
     private async Task HandleRepairSession(HttpContext context, string sessionId)
     {
-        await GuardAsync(context, () => Task.FromResult<IResult>(
+        await GuardAsync(context, () => Task.FromResult(
             Results.Json(new FrontendCommandResponse(
-                    $"**View** ensured {service.RepairObjectView(sessionId)} object link(s) under view/sessions."),
+                    $"**View** ensured {_service.RepairObjectView(sessionId)} object link(s) under view/sessions."),
                 FrontendJsonContext.Default.FrontendCommandResponse)));
     }
 
@@ -481,14 +482,14 @@ internal sealed class FrontendHost : IAsyncDisposable
             if (MaieuticsCommandLanguage.IsCommandCell(request.Text))
             {
                 var addressed = ParseOptionalSessionId(sessionId)
-                    ?? throw new FrontendFailureException(
-                        FrontendErrors.InvalidRequest, "The session id is not valid.");
-                var (markdown, movedForeground) = await service
+                                ?? throw new FrontendFailureException(
+                                    FrontendErrors.InvalidRequest, "The session id is not valid.");
+                var (markdown, movedForeground) = await _service
                     .ExecuteCommandAsync(request.Text, addressed, context.RequestAborted)
                     .ConfigureAwait(false);
                 // The addressed session unless THIS command moved the foreground.
                 var answerSession = movedForeground
-                    ? service.DescribeSession().Id
+                    ? _service.DescribeSession().Id
                     : addressed.Value.ToString("N");
                 context.Response.StatusCode = StatusCodes.Status200OK;
                 await context.Response.WriteAsJsonAsync(
@@ -497,7 +498,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 return;
             }
 
-            var accepted = await service
+            var accepted = await _service
                 .StartTurnAsync(sessionId, request.Text, context.RequestAborted)
                 .ConfigureAwait(false);
             context.Response.StatusCode = StatusCodes.Status202Accepted;
@@ -523,24 +524,24 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         try
         {
-            if (context.Request.ContentLength is { } declared && declared > service.MaxIngestBytes)
+            if (context.Request.ContentLength is { } declared && declared > _service.MaxIngestBytes)
                 throw Oversized();
 
             // Kestrel's own body cap would end the request as a bare 413 before the typed
             // failure can be written; the bounded stream below enforces the bound instead.
-            if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>()
+            if (context.Features.Get<IHttpMaxRequestBodySizeFeature>()
                 is { } bodySize)
                 bodySize.MaxRequestBodySize = null;
 
-            using var bounded = new BoundedBodyStream(context.Request.Body, service.MaxIngestBytes, Oversized());
+            await using var bounded = new BoundedBodyStream(context.Request.Body, _service.MaxIngestBytes, Oversized());
             // Kestrel forbids synchronous reads on the request body while the object store's
             // ingest is a synchronous hash-and-write pass; the bounded async copy bridges the
             // two. The copy is capped by the same bound, so the buffer is bounded too.
             using var buffered = new MemoryStream(
-                (int)Math.Min(context.Request.ContentLength ?? 0, service.MaxIngestBytes));
+                (int)Math.Min(context.Request.ContentLength ?? 0, _service.MaxIngestBytes));
             await bounded.CopyToAsync(buffered, context.RequestAborted).ConfigureAwait(false);
             buffered.Position = 0;
-            var uploaded = service.IngestObject(sessionId, buffered);
+            var uploaded = _service.IngestObject(sessionId, buffered);
             context.Response.StatusCode = StatusCodes.Status200OK;
             await context.Response.WriteAsJsonAsync(
                 uploaded,
@@ -563,7 +564,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// the typed oversized-payload failure instead of letting a chunked body grow unchecked.</summary>
     private sealed class BoundedBodyStream(Stream inner, long bound, FrontendFailureException over) : Stream
     {
-        private long remaining = bound;
+        private long _remaining = bound;
 
         public override bool CanRead => true;
 
@@ -586,8 +587,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             var read = inner.Read(buffer, offset, count);
             if (read > 0)
             {
-                remaining -= read;
-                if (remaining < 0) throw over;
+                _remaining -= read;
+                if (_remaining < 0) throw over;
             }
 
             return read;
@@ -600,8 +601,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (read > 0)
             {
-                remaining -= read;
-                if (remaining < 0) throw over;
+                _remaining -= read;
+                if (_remaining < 0) throw over;
             }
 
             return read;
@@ -617,7 +618,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private async Task HandleTranscript(HttpContext context, string sessionId)
     {
         await GuardAsync(context, () => Task.FromResult(
-            Results.Json(service.GetTranscript(sessionId), FrontendJsonContext.Default.FrontendTranscript)));
+            Results.Json(_service.GetTranscript(sessionId), FrontendJsonContext.Default.FrontendTranscript)));
     }
 
     /// <summary>Serves the session's server-side turn queue snapshot (ADR 0025): the
@@ -642,7 +643,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         try
         {
             var texts = request.Items is null ? [] : request.Items.Select(item => item.Text).ToArray();
-            response = turnQueue.Enqueue(sessionId, texts);
+            response = _turnQueue.Enqueue(sessionId, texts);
         }
         catch (FrontendFailureException exception)
         {
@@ -662,8 +663,8 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         return GuardAsync(context, () =>
         {
-            turnQueue.Remove(sessionId, itemId);
-            return Task.FromResult<IResult>(Results.NoContent());
+            _turnQueue.Remove(sessionId, itemId);
+            return Task.FromResult(Results.NoContent());
         });
     }
 
@@ -672,8 +673,8 @@ internal sealed class FrontendHost : IAsyncDisposable
     {
         return GuardAsync(context, () =>
         {
-            turnQueue.Clear(sessionId);
-            return Task.FromResult<IResult>(Results.NoContent());
+            _turnQueue.Clear(sessionId);
+            return Task.FromResult(Results.NoContent());
         });
     }
 
@@ -681,15 +682,15 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// the full-state snapshot with texts.</summary>
     private FrontendQueueSnapshot QueueSnapshot(string sessionId)
     {
-        service.EnsureSessionResolved(sessionId);
-        return turnQueue.Snapshot(sessionId);
+        _service.EnsureSessionResolved(sessionId);
+        return _turnQueue.Snapshot(sessionId);
     }
 
     private async Task HandleCancel(HttpContext context, string runId)
     {
         await GuardAsync(context, async () =>
         {
-            await service.CancelRunAsync(runId, context.RequestAborted).ConfigureAwait(false);
+            await _service.CancelRunAsync(runId, context.RequestAborted).ConfigureAwait(false);
             return Results.Json(new FrontendCommandResponse("cancel requested"),
                 FrontendJsonContext.Default.FrontendCommandResponse);
         });
@@ -706,6 +707,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         // The source-generated binder accepts JSON null even for the non-nullable
         // property; an empty string is the documented dismiss answer, null is not.
+        // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
         if (request.Value is null)
         {
             await WriteErrorAsync(context, FrontendErrors.InvalidRequest, "The input answer must carry a value.");
@@ -716,10 +718,10 @@ internal sealed class FrontendHost : IAsyncDisposable
         // lookup, so an id can never cross-wire to the wrong registry; an unmatched id is the
         // documented 404.
         var completed = FrontendToolApprovalPresenter.OwnsRequestId(requestId)
-            ? toolApprovalPresenter?.TryCompleteInput(requestId, request.Action, request.Value) == true
+            ? _toolApprovalPresenter?.TryCompleteInput(requestId, request.Action, request.Value) == true
             : request.Action is not null
-                ? elicitationPresenter.TryCompleteInput(requestId, request.Action, request.Value)
-                : service.TryCompleteInput(requestId, request.Value);
+                ? _elicitationPresenter.TryCompleteInput(requestId, request.Action, request.Value)
+                : _service.TryCompleteInput(requestId, request.Value);
         if (!completed)
         {
             await WriteErrorAsync(
@@ -745,7 +747,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             .ConfigureAwait(false);
         if (request is null) return;
 
-        if (ideRequests is null)
+        if (_ideRequests is null)
         {
             await WriteErrorAsync(
                 context,
@@ -790,7 +792,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        if (!ideRequests.TryComplete(requestId, answer))
+        if (!_ideRequests.TryComplete(requestId, answer))
         {
             await WriteErrorAsync(
                 context,
@@ -812,10 +814,10 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            var (markdown, _) = await service.ExecuteCommandAsync(request.Text, null, context.RequestAborted)
+            var (markdown, _) = await _service.ExecuteCommandAsync(request.Text, null, context.RequestAborted)
                 .ConfigureAwait(false);
             await context.Response.WriteAsJsonAsync(
-                new FrontendCommandResponse(markdown, service.DescribeSession().Id),
+                new FrontendCommandResponse(markdown, _service.DescribeSession().Id),
                 FrontendJsonContext.Default.FrontendCommandResponse).ConfigureAwait(false);
         }
         catch (MaieuticsCommandException exception)
@@ -841,7 +843,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         try
         {
-            var completion = service.Complete(request);
+            var completion = _service.Complete(request);
             await context.Response.WriteAsJsonAsync(
                 completion,
                 FrontendJsonContext.Default.FrontendCompleteResponse).ConfigureAwait(false);
@@ -855,7 +857,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private async Task HandleStatus(HttpContext context)
     {
         await GuardAsync(context, () => Task.FromResult(
-            Results.Json(new FrontendStatusResponse(service.CaptureStatusMarkdown()),
+            Results.Json(new FrontendStatusResponse(_service.CaptureStatusMarkdown()),
                 FrontendJsonContext.Default.FrontendStatusResponse)));
     }
 
@@ -871,7 +873,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        if (objectStore is null || !objectStore.Exists(objectId))
+        if (_objectStore is null || !_objectStore.Exists(objectId))
         {
             await WriteErrorAsync(context, FrontendErrors.NotFound, $"No object matches '{objectId}'.");
             return;
@@ -880,7 +882,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         // Content-addressed objects are immutable: unconditional client caching is the
         // contract (same URL = same bytes forever).
         context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
-        await Results.Stream(objectStore.Open(objectId), "application/octet-stream")
+        await Results.Stream(_objectStore.Open(objectId), "application/octet-stream")
             .ExecuteAsync(context).ConfigureAwait(false);
     }
 
@@ -918,7 +920,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        if (!service.SessionExists(sessionId))
+        if (!_service.SessionExists(sessionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
@@ -927,12 +929,19 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        FrontendSessionInfo helloSession = service.DescribeSession(sessionId);
+        FrontendSessionInfo helloSession = _service.DescribeSession(sessionId);
 
+        // The socket, peer source, and send gate below are disposed when this handler returns.
+        // Every closure that touches them — the announcer send, the hello and run.missing
+        // writes, the queue flush, the frame loop, and the close write — is awaited inside the
+        // handler, the announcer is withdrawn in the finally before the drain completes, and
+        // only then does the using scope end. The analyzer cannot see that sequencing, so the
+        // disposed-closure findings are suppressed for this handler's scope.
+        // ReSharper disable AccessToDisposedClosure
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
-            lifetime.Token);
+            _lifetime.Token);
         // A WebSocket permits a single outstanding send, and this socket has three writers
         // that run on different flows: the run frame stream served below, its interleaved
         // queue flush, and the ide.push delegate the announce registration hands to
@@ -955,19 +964,22 @@ internal sealed class FrontendHost : IAsyncDisposable
             }
         }
 
-        Guid? ideRegistration = ideAnnounced && ideSockets is not null
-            ? ideSockets.Announce(sessionId, (frame, token) => SendAsync(() => SendFrameAsync(socket, frame, token), token))
+        Guid? ideRegistration = ideAnnounced && _ideSockets is not null
+            ? _ideSockets.Announce(sessionId, (frame, token) => SendAsync(() => SendFrameAsync(socket, frame, token), token))
             : null;
-        logger.LogDebug(
+        _logger.LogDebug(
             "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
             sessionId,
             context.Request.Path,
             since,
             ideAnnounced);
+        // Copied before the closure: the loop below rewrites `since` for later runs, and the
+        // hello frame must pin the replay status of the socket as opened.
+        var replayed = since > 0;
         await SendAsync(
             () => SendFrameAsync(
                 socket,
-                new FrontendEventFrame("hello", Session: helloSession, Replayed: since > 0),
+                new FrontendEventFrame("hello", Session: helloSession, Replayed: replayed),
                 peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
@@ -975,7 +987,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             if (singleRunId is not null)
             {
-                if (!service.TryGetRun(singleRunId, out var runStream) || runStream is null)
+                if (!_service.TryGetRun(singleRunId, out var runStream) || runStream is null)
                 {
                     await SendAsync(
                         () => SendFrameAsync(
@@ -1006,11 +1018,11 @@ internal sealed class FrontendHost : IAsyncDisposable
                 // view; shared by the pre-serve flush and the run-frame interleaving.
                 async Task FlushQueueAsync(CancellationToken token)
                 {
-                    var (frameSnapshot, latestQueueVersion) = turnQueue.FrameSnapshot(sessionId);
+                    var (frameSnapshot, latestQueueVersion) = _turnQueue.FrameSnapshot(sessionId);
                     if (latestQueueVersion == queueVersion) return;
 
                     queueVersion = latestQueueVersion;
-                    logger.LogTrace(
+                    _logger.LogTrace(
                         "Flushing queue.updated for session {SessionId} at version {QueueVersion}.",
                         sessionId,
                         queueVersion);
@@ -1038,8 +1050,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // neither be missed nor double-served); a queue wake writes one
                     // full-state queue.updated frame straight on the socket.
                     var runWait = pendingRunWait ??=
-                        service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
-                    var queueWait = turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
+                        _service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
+                    var queueWait = _turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
                     var settled = await Task.WhenAny(queueWait, runWait).ConfigureAwait(false);
 
                     // Flush queue state BEFORE serving a run: one worker transition fires
@@ -1085,10 +1097,10 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
-            if (ideRegistration is { } registration) ideSockets?.Withdraw(sessionId, registration);
+            if (ideRegistration is { } registration) _ideSockets?.Withdraw(sessionId, registration);
             await peer.CancelAsync().ConfigureAwait(false);
             await drain.ConfigureAwait(false);
-            logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);
+            _logger.LogDebug("Events socket for session {SessionId} closed.", sessionId);
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
                 // The close frame is a write like any other, so it takes the gate too —
@@ -1111,6 +1123,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 }
             }
         }
+        // ReSharper restore AccessToDisposedClosure
     }
 
     /// <summary>Observes a run wait that was still pending when the events loop ended.
@@ -1214,7 +1227,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 nextFrame = channel.Reader.WaitToReadAsync(cancellationToken).AsTask();
                 while (channel.Reader.TryRead(out var frame))
                 {
-                    await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
+                    // Copied per iteration: `frame` is one variable across the loop, and the
+                    // awaited send must pin the frame it was handed.
+                    var currentFrame = frame;
+                    await send(() => SendFrameAsync(socket, currentFrame, cancellationToken), cancellationToken).ConfigureAwait(false);
                     if (queueWake.IsCompleted)
                     {
                         await queueWake.ConfigureAwait(false);
@@ -1251,7 +1267,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// </summary>
     private async Task HandleComms(HttpContext context, string sessionId)
     {
-        if (commRouter is null)
+        if (_commRouter is null)
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
@@ -1282,7 +1298,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        if (!service.SessionExists(sessionId))
+        if (!_service.SessionExists(sessionId))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             await context.Response.WriteAsJsonAsync(
@@ -1291,11 +1307,18 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        var plane = commRouter.PlaneFor(sessionId);
+        var plane = _commRouter.PlaneFor(sessionId);
+
+        // Same lifecycle shape as the events socket: the socket, peer source, and send gate
+        // are disposed after the finally has withdrawn the subscription, cancelled the peer,
+        // awaited the uplink, and written the close frame — every closure below completes
+        // inside that sequence. The disposed-closure findings are suppressed for this
+        // handler's scope.
+        // ReSharper disable AccessToDisposedClosure
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var peer = CancellationTokenSource.CreateLinkedTokenSource(
             context.RequestAborted,
-            lifetime.Token);
+            _lifetime.Token);
         using var sendGate = new SemaphoreSlim(1, 1);
         async Task SendAsync(Func<Task> write)
         {
@@ -1330,7 +1353,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         // an open published in between lands in both initial replay and live, folded by
         // comm id.
         var (initial, channel, truncated) = plane.Subscribe(since);
-        var uplink = ServeCommUplinkAsync(socket, commRouter, sessionId, plane, SendAsync, peer.Token);
+        var uplink = ServeCommUplinkAsync(socket, _commRouter, sessionId, SendAsync, peer.Token);
         try
         {
             await SendAsync(() => SendTextFrameAsync(
@@ -1373,6 +1396,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             await uplink.ConfigureAwait(false);
             await CloseAsyncOutput(WebSocketCloseStatus.NormalClosure, "stream ended").ConfigureAwait(false);
         }
+        // ReSharper restore AccessToDisposedClosure
     }
 
     /// <summary>Reads uplink comm frames until the socket closes; the loop owns its own
@@ -1381,9 +1405,8 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// policy close.</summary>
     private async Task ServeCommUplinkAsync(
         WebSocket socket,
-        FrontendCommRouter commRouter,
+        FrontendCommRouter router,
         string sessionId,
-        FrontendCommStream plane,
         Func<Func<Task>, Task> send,
         CancellationToken cancellationToken)
     {
@@ -1403,7 +1426,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     message = FrontendCommEnvelope.Decode(payload).Message;
                 }
                 catch (Exception exception) when (exception is InvalidDataException or
-                    JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+                                                      JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException)
                 {
                     // Invariant 17: a malformed frame ends this connection with a typed
                     // close instead of crashing the receive loop.
@@ -1416,7 +1439,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
                 try
                 {
-                    await commRouter
+                    await router
                         .PushToReplAsync(sessionId, message, cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -1571,7 +1594,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             // The handler already began a response, so this error cannot reach the client:
             // the request ends with whatever was partially written.
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Frontend route {Method} {Path} failed with {Code} after the response had started; the client received a partial response.",
                 context.Request.Method,
                 context.Request.Path.Value,
@@ -1579,7 +1602,7 @@ internal sealed class FrontendHost : IAsyncDisposable
             return;
         }
 
-        logger.LogDebug(
+        _logger.LogDebug(
             "Frontend route {Method} {Path} rejected with {Code}.",
             context.Request.Method,
             context.Request.Path.Value,
@@ -1618,11 +1641,11 @@ internal sealed class FrontendHostedService(
     IHostApplicationLifetime lifetime,
     ILogger<FrontendHostedService> logger) : IHostedService
 {
-    private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        lifetime.ApplicationStarted.Register(() => started.TrySetResult());
+        lifetime.ApplicationStarted.Register(() => _started.TrySetResult());
         _ = PublishDiscoveryAsync();
         lifetime.ApplicationStopping.Register(() =>
         {
@@ -1638,7 +1661,7 @@ internal sealed class FrontendHostedService(
     {
         try
         {
-            await started.Task.ConfigureAwait(false);
+            await _started.Task.ConfigureAwait(false);
             options.WriteDiscoveryFile();
         }
         catch (Exception exception)

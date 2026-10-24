@@ -23,7 +23,7 @@ internal sealed record IdeRawEdit(
 /// <summary>
 ///     Pure component behind the IDE bridge's apply step (ADR 0042 stage C,
 ///     decision 6): parses the agent-side edit envelope
-    ///     — <c>{"changes": {"workspace://local/…": [{"range": …, "newText": …}]}}</c>
+///     — <c>{"changes": {"workspace://local/…": [{"range": …, "newText": …}]}}</c>
 ///     — into validated per-file targets and computes each file's new content
 ///     with LSP non-overlap semantics. Range validation converts the 1-based
 ///     agent positions to offsets over the file's real line table (original

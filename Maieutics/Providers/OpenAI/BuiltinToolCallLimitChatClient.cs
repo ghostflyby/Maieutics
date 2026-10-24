@@ -30,7 +30,8 @@ internal sealed class BuiltinToolCallLimitChatClient(IChatClient innerClient) : 
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
     {
         var seen = 0;
         var limit = ReadMaxBuiltinToolCalls(options);

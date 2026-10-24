@@ -13,19 +13,19 @@ internal sealed class TestChildProcess : IAsyncDisposable
 {
     private static readonly TimeSpan ReapBudget = TimeSpan.FromSeconds(10);
 
-    private readonly Process process;
-    private ChildSlotLease slot;
-    private bool disposed;
+    private readonly Process _process;
+    private readonly ChildSlotLease _slot;
+    private bool _disposed;
 
     private TestChildProcess(Process process, ChildSlotLease slot)
     {
-        this.process = process;
-        this.slot = slot;
+        this._process = process;
+        this._slot = slot;
     }
 
-    internal int Id => process.Id;
+    internal int Id => _process.Id;
 
-    internal Process Raw => process;
+    internal Process Raw => _process;
 
     /// <summary>Starts the child behind the shared budget. A failed start releases the
     /// slot before rethrowing, so a spawn failure cannot wedge the budget.</summary>
@@ -55,26 +55,26 @@ internal sealed class TestChildProcess : IAsyncDisposable
     /// and disposal still kill the tree.</summary>
     internal async Task<string> ReadToEndAsync(CancellationToken cancellationToken)
     {
-        var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        var stdout = _process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderr = _process.StandardError.ReadToEndAsync(cancellationToken);
+        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         var outputs = await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
         return outputs[0] + outputs[1];
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (disposed) return;
-        disposed = true;
+        if (_disposed) return;
+        _disposed = true;
         try
         {
-            if (!process.HasExited)
+            if (!_process.HasExited)
             {
-                process.Kill(entireProcessTree: true);
+                _process.Kill(entireProcessTree: true);
                 using var reap = new CancellationTokenSource(ReapBudget);
                 try
                 {
-                    await process.WaitForExitAsync(reap.Token).ConfigureAwait(false);
+                    await _process.WaitForExitAsync(reap.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -89,8 +89,8 @@ internal sealed class TestChildProcess : IAsyncDisposable
         }
         finally
         {
-            process.Dispose();
-            slot.Dispose();
+            _process.Dispose();
+            _slot.Dispose();
         }
     }
 }

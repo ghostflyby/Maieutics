@@ -138,6 +138,4 @@ public sealed class FrontendTerminalFrameTests
     }
 
     private sealed record Harness(MaieuticsAgentSessionManager Manager, FrontendSessionService Service);
-
-
 }

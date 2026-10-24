@@ -53,21 +53,19 @@ public sealed class AnthropicUsageTests
         // A run result whose usage stayed null is the defect: the stream reported 1 input
         // and 1 output token, and the run result must record them.
         var usage = result.Usage ??
-            throw new InvalidOperationException("The run result recorded no token usage.");
+                    throw new InvalidOperationException("The run result recorded no token usage.");
         Assert.Equal(1L, usage.InputTokenCount);
         Assert.Equal(1L, usage.OutputTokenCount);
         Assert.Equal(2L, usage.TotalTokenCount);
         Assert.Equal("Hello from Claude", result.AssistantMessage.Text);
     }
 
-    private static async Task<List<AgentEvent>> ReadEventsAsync(
+    private static async Task ReadEventsAsync(
         IAgentRun run,
         CancellationToken cancellationToken)
     {
-        var events = new List<AgentEvent>();
-        await foreach (var agentEvent in run.Events.WithCancellation(cancellationToken))
-            events.Add(agentEvent);
-
-        return events;
+        await foreach (var _ in run.Events.WithCancellation(cancellationToken))
+        {
+        }
     }
 }

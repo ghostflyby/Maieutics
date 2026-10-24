@@ -38,6 +38,8 @@ public sealed class GitDiffParserTests
         Assert.Equal("added tail", hunk.Lines[4].Text);
     }
 
+    // The diff prefixes are literally a/ and b/.
+    // ReSharper disable once InconsistentNaming
     [Fact]
     public void ParsesMultipleFilesAndStripsABPrefixes()
     {
@@ -144,20 +146,20 @@ public sealed class GitDiffParserTests
     {
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse("not a diff at all")).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 @@ -1 +1 @@
                 -old
                 """)).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ -1 +1 @@
                 -old
                 """)).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ not-a-header @@

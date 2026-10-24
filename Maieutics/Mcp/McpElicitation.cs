@@ -40,46 +40,37 @@ internal sealed record McpElicitationAnswer(string Action, string? ContentJson);
 /// (ADR 0029 decision 3): the elicitation handler asks here which Agent session owns the
 /// in-flight tool call, and requests are refused (answered cancel) when attribution is
 /// ambiguous or a bound would be exceeded.</summary>
-internal sealed class McpElicitationCoordinator
+internal sealed class McpElicitationCoordinator(
+    IMcpElicitationPresenter? presenter,
+    ILogger logger,
+    TimeSpan? waitTimeout = null)
 {
     private const int MaximumMessageCharacters = 4 * 1024;
     private const int MaximumSchemaBytes = 16 * 1024;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentToolCallId, AgentSessionId> inFlightCalls = [];
-    private readonly IMcpElicitationPresenter? presenter;
-    private readonly ILogger logger;
-    private readonly TimeSpan waitTimeout;
-    private int inFlightElicitations;
-    private bool refused;
-
-    public McpElicitationCoordinator(
-        IMcpElicitationPresenter? presenter,
-        ILogger logger,
-        TimeSpan? waitTimeout = null)
-    {
-        this.presenter = presenter;
-        this.logger = logger;
-        this.waitTimeout = waitTimeout ?? TimeSpan.FromSeconds(120);
-    }
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentToolCallId, AgentSessionId> _inFlightCalls = [];
+    private readonly TimeSpan _waitTimeout = waitTimeout ?? TimeSpan.FromSeconds(120);
+    private int _inFlightElicitations;
+    private bool _refused;
 
     internal bool IsEnabled => presenter is not null;
 
     /// <summary>Records one in-flight tool call so a concurrent elicitation can be attributed.</summary>
     public void RegisterCall(AgentToolCallId callId, AgentSessionId sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            inFlightCalls[callId] = sessionId;
+            _inFlightCalls[callId] = sessionId;
         }
     }
 
     /// <summary>Removes a finished tool call's attribution.</summary>
     public void UnregisterCall(AgentToolCallId callId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            inFlightCalls.Remove(callId);
+            _inFlightCalls.Remove(callId);
         }
     }
 
@@ -91,12 +82,12 @@ internal sealed class McpElicitationCoordinator
         ElicitRequestParams request,
         CancellationToken cancellationToken)
     {
-        if (presenter is null || Volatile.Read(ref refused))
+        if (presenter is null || Volatile.Read(ref _refused))
             return CancelResult();
 
         // One in-flight elicitation per server: a second concurrent request is refused rather
         // than queued, so a chatty server cannot stack prompts.
-        if (Interlocked.CompareExchange(ref inFlightElicitations, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _inFlightElicitations, 1, 0) != 0)
         {
             logger.LogWarning(
                 "MCP server {ServerId} raised an elicitation while another is pending; answered cancel.",
@@ -106,6 +97,9 @@ internal sealed class McpElicitationCoordinator
 
         try
         {
+            // Message is annotated non-nullable but arrives through JSON: an elicit request
+            // without a message reaches here as null, so the fallback is runtime defense.
+            // ReSharper disable once NullCoalescingConditionIsAlwaysNotNullAccordingToAPIContract
             var message = request.Message ?? string.Empty;
             if (message.Length > MaximumMessageCharacters)
             {
@@ -123,7 +117,7 @@ internal sealed class McpElicitationCoordinator
             {
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(
                     requested,
-                    McpJsonUtilities.GetTypeInfo<ElicitRequestParams.RequestSchema>(McpJsonUtilities.DefaultOptions));
+                    McpJsonUtilities.DefaultOptions.GetTypeInfo<ElicitRequestParams.RequestSchema>());
                 if (bytes.Length > MaximumSchemaBytes)
                 {
                     logger.LogWarning(
@@ -151,7 +145,7 @@ internal sealed class McpElicitationCoordinator
             // The wait is bounded (ADR 0029 decision 3): an absent user answers cancel inside
             // the budget, and the wait still honours the caller's cancellation for shutdown.
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            waitCts.CancelAfter(waitTimeout);
+            waitCts.CancelAfter(_waitTimeout);
             McpElicitationAnswer answer;
             try
             {
@@ -188,7 +182,7 @@ internal sealed class McpElicitationCoordinator
         }
         finally
         {
-            Interlocked.Exchange(ref inFlightElicitations, 0);
+            Interlocked.Exchange(ref _inFlightElicitations, 0);
         }
     }
 
@@ -196,7 +190,7 @@ internal sealed class McpElicitationCoordinator
     /// outside a terminal answer, so a broken frontend cannot be probed repeatedly.</summary>
     internal void Refuse()
     {
-        Volatile.Write(ref refused, true);
+        Volatile.Write(ref _refused, true);
     }
 
     /// <summary>Returns the single Agent session with an in-flight call on this generation,
@@ -204,9 +198,9 @@ internal sealed class McpElicitationCoordinator
     private AgentSessionId? AttributeSession(string serverId)
     {
         AgentSessionId? attributed = null;
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var sessionId in inFlightCalls.Values.Distinct())
+            foreach (var sessionId in _inFlightCalls.Values.Distinct())
             {
                 if (attributed is not null)
                 {

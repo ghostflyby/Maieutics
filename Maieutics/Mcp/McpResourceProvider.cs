@@ -16,16 +16,16 @@ internal sealed class McpResourceProvider : IResourceCatalogProvider
     private const string EscapeHatchScheme = "mcp";
     private const string EscapeHatchPrefix = "mcp://";
 
-    private readonly Func<IMcpResourceCatalogSource> sourceFactory;
+    private readonly Func<IMcpResourceCatalogSource> _sourceFactory;
 
     internal McpResourceProvider(Func<IMcpResourceCatalogSource> sourceFactory)
     {
-        this.sourceFactory = sourceFactory ?? throw new ArgumentNullException(nameof(sourceFactory));
+        this._sourceFactory = sourceFactory ?? throw new ArgumentNullException(nameof(sourceFactory));
     }
 
     /// <summary>Resolved on first use: the composition root wires this provider into the
     /// registry while the runtime configuration itself is still being constructed.</summary>
-    private IMcpResourceCatalogSource Source => field ??= sourceFactory();
+    private IMcpResourceCatalogSource Source => field ??= _sourceFactory();
 
     public string Id => "mcp";
 
@@ -148,7 +148,9 @@ internal sealed class McpResourceProvider : IResourceCatalogProvider
                    server.Catalog.Resources.Any(resource =>
                        string.Equals(resource.Uri, uri, StringComparison.Ordinal))) ??
                servers.FirstOrDefault(server => server.Catalog.Contains(uri));
-    }    private async ValueTask<ResourceReadResult> ReadFromServerAsync(
+    }
+
+    private async ValueTask<ResourceReadResult> ReadFromServerAsync(
         McpResourceServerAccess server,
         string resourceUri,
         ResourceReadRequest request,

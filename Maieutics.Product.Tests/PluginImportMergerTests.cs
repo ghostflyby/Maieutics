@@ -53,7 +53,8 @@ public sealed class PluginImportMergerTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"mc-merge-{Guid.NewGuid():N}");
         var (imports, _, _) = Merge(
-            Plugin("a", rootDirectory: root, imports: [
+            Plugin("a", rootDirectory: root, imports:
+            [
                 Entry("./util.ts", "./util.ts"),
                 Entry("../shared.ts", "../shared.ts"),
             ]));
@@ -78,7 +79,8 @@ public sealed class PluginImportMergerTests
     public void SkipsKeysThatNormalizeToPluginActorSpecifiers()
     {
         var (imports, exclusions, warnings) = Merge(
-            Plugin("consumer", workers: [Worker("main")], imports: [
+            Plugin("consumer", workers: [Worker("main")], imports:
+            [
                 Entry("@acme/widget/main", "jsr:@acme/widget@1/main"),
                 Entry("jsr:@acme/widget@2/main", "jsr:@acme/widget@2/main"),
             ]),
@@ -131,7 +133,7 @@ public sealed class PluginImportMergerTests
 
         Assert.Equal(2, imports.Count());
         Assert.Contains(imports, pair => pair.Key == "@std/path");
-        Assert.Contains(imports, pair => pair.Key == "@ui/lib" && pair.Value == "jsr:@ui/lib@1");
+        Assert.Contains(imports, pair => pair is { Key: "@ui/lib", Value: "jsr:@ui/lib@1" });
         Assert.Equal("c", Assert.Single(exclusions).PluginId);
     }
 
@@ -139,11 +141,13 @@ public sealed class PluginImportMergerTests
     public void DedupedKeyKeepsItsFirstOwnerWhenTheLaterPluginConflicts()
     {
         var (imports, exclusions, _) = Merge(
-            Plugin("a", imports: [
+            Plugin("a", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/path", "jsr:@std/path@^1"),
             ]),
-            Plugin("b", imports: [
+            Plugin("b", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/path", "jsr:@std/path@2"),
             ]));
@@ -151,7 +155,7 @@ public sealed class PluginImportMergerTests
         // b conflicts on @std/path and is excluded; the deduped @std/bytes entry
         // belongs to a and must survive b's exclusion untouched.
         Assert.Equal(2, imports.Count());
-        Assert.Contains(imports, pair => pair.Key == "@std/bytes" && pair.Value == "jsr:@std/bytes@1");
+        Assert.Contains(imports, pair => pair is { Key: "@std/bytes", Value: "jsr:@std/bytes@1" });
         Assert.Equal("b", Assert.Single(exclusions).PluginId);
     }
 
@@ -159,7 +163,8 @@ public sealed class PluginImportMergerTests
     public void ExcludedPluginCommitsNoEntries()
     {
         var (imports, exclusions, _) = Merge(
-            Plugin("a", imports: [
+            Plugin("a", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/other", "@std/bytes"),
             ]),

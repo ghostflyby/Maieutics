@@ -12,7 +12,7 @@ namespace Maieutics.Product.Tests;
 ///     the invoke path, and a dispose that races a plugin-set restart must join the restart
 ///     before returning so nothing lives or attaches behind it. The interleavings are driven
 ///     deterministically through the simulated-host seam
-///     (<see cref="PluginHostInvokeTests.CreateHarnessAsync"/> +
+///     (<see cref="PluginHostInvokeTests.CreateHarnessAsync(CancellationToken)"/> +
 ///     <see cref="PluginHostManager.HandleHostMessage"/> + <see cref="PluginHostManager.AttachHostAsync"/>)
 ///     with the fake deno executable, so no real deno host process runs; the dispose-restart
 ///     interleaving additionally arms the manager's real watcher and triggers it through the
@@ -171,17 +171,17 @@ public sealed class PluginLifecycleRaceTests
             {
                 var filler = Path.Combine(pluginsRoot, $"filler-{index:D2}");
                 Directory.CreateDirectory(filler);
-                File.WriteAllText(
+                await File.WriteAllTextAsync(
                     Path.Combine(filler, "maieutics.json"),
-                    """{ "capabilities": ["tools.invoke"] }""");
+                    """{ "capabilities": ["tools.invoke"] }""", deadline.Token);
             }
 
             var restarted = harness.Manager.RegistryChangesReplaced;
             var second = Path.Combine(pluginsRoot, "second-plugin");
             Directory.CreateDirectory(second);
-            File.WriteAllText(
+            await File.WriteAllTextAsync(
                 Path.Combine(second, "maieutics.json"),
-                """{ "capabilities": ["tools.invoke"] }""");
+                """{ "capabilities": ["tools.invoke"] }""", deadline.Token);
 
             // Wire the new directories into the root import map: the watched deno.json change
             // is the plugin-set seam. A bare maieutics.json drop-in is invisible to the set

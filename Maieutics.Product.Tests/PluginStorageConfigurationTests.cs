@@ -230,7 +230,7 @@ public sealed class PluginStorageConfigurationTests
             """;
         var config = JsonSerializer.Deserialize(json, PluginHostJsonContext.Default.PluginHostConfigFile);
         Assert.NotNull(config);
-        Assert.Single(config.Plugins);
-        Assert.Null(config.Plugins[0].Storage);
+        var item = Assert.Single(config.Plugins);
+        Assert.Null(item.Storage);
     }
 }

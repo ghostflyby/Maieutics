@@ -12,43 +12,59 @@ internal static class FrontendProtocol
 
 /// <summary>Identifies the executable's capabilities to a frontend.</summary>
 internal sealed record FrontendCapabilities(
-    [property: JsonPropertyName("protocolVersion")] int ProtocolVersion,
-    [property: JsonPropertyName("serverVersion")] string ServerVersion,
-    [property: JsonPropertyName("session")] FrontendSessionInfo Session,
-    [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
+    [property: JsonPropertyName("protocolVersion")]
+    int ProtocolVersion,
+    [property: JsonPropertyName("serverVersion")]
+    string ServerVersion,
+    [property: JsonPropertyName("session")]
+    FrontendSessionInfo Session,
+    [property: JsonPropertyName("workspaceRoot")]
+    string? WorkspaceRoot = null,
     [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null,
     [property: JsonPropertyName("ui")] FrontendUiCapability? Ui = null,
-    [property: JsonPropertyName("multiSession")] bool? MultiSession = null);
+    [property: JsonPropertyName("multiSession")]
+    bool? MultiSession = null);
 
 /// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
 internal sealed record FrontendCommCapability(
-    [property: JsonPropertyName("version")] int Version,
-    [property: JsonPropertyName("maxMessageBytes")] int MaxMessageBytes);
+    [property: JsonPropertyName("version")]
+    int Version,
+    [property: JsonPropertyName("maxMessageBytes")]
+    int MaxMessageBytes);
 
 /// <summary>Advertises the native view families (ADR 0038): the families whose models
 /// the build produces or relays; null when the comm plane is disabled.</summary>
 internal sealed record FrontendUiCapability(
-    [property: JsonPropertyName("version")] int Version,
-    [property: JsonPropertyName("families")] string[] Families);
+    [property: JsonPropertyName("version")]
+    int Version,
+    [property: JsonPropertyName("families")]
+    string[] Families);
 
 /// <summary>Describes the active session to a frontend.</summary>
 internal sealed record FrontendSessionInfo(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turns")] long Turns,
-    [property: JsonPropertyName("persistenceEnabled")] bool PersistenceEnabled,
+    [property: JsonPropertyName("persistenceEnabled")]
+    bool PersistenceEnabled,
     [property: JsonPropertyName("title")] string? Title = null);
 
 /// <summary>Describes one stored (persisted) session.</summary>
 internal sealed record FrontendStoredSession(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("turns")] long Turns,
-    [property: JsonPropertyName("createdAt")] DateTimeOffset CreatedAt,
-    [property: JsonPropertyName("lastActivityAt")] DateTimeOffset LastActivityAt,
+    [property: JsonPropertyName("createdAt")]
+    DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("lastActivityAt")]
+    DateTimeOffset LastActivityAt,
     [property: JsonPropertyName("title")] string? Title = null,
-    [property: JsonPropertyName("preview")] string? Preview = null,
-    [property: JsonPropertyName("workspaceRoot")] string? WorkspaceRoot = null,
-    [property: JsonPropertyName("parentSessionId")] string? ParentSessionId = null,
-    [property: JsonPropertyName("forkPointSeq")] int? ForkPointSeq = null);
+    [property: JsonPropertyName("preview")]
+    string? Preview = null,
+    [property: JsonPropertyName("workspaceRoot")]
+    string? WorkspaceRoot = null,
+    [property: JsonPropertyName("parentSessionId")]
+    string? ParentSessionId = null,
+    [property: JsonPropertyName("forkPointSeq")]
+    int? ForkPointSeq = null);
 
 /// <summary>A session rename body; an empty title clears.</summary>
 internal sealed record FrontendRenameRequest([property: JsonPropertyName("title")] string Title);
@@ -65,7 +81,8 @@ internal sealed record FrontendRenameResponse(
 internal sealed record FrontendForkRequest(
     [property: JsonPropertyName("runId")] string? RunId = null,
     [property: JsonPropertyName("seq")] int? Seq = null,
-    [property: JsonPropertyName("profileId")] string? ProfileId = null);
+    [property: JsonPropertyName("profileId")]
+    string? ProfileId = null);
 
 /// <summary>A fork answer carrying the new head's identity and stored title.</summary>
 internal sealed record FrontendForkResponse(
@@ -82,14 +99,16 @@ internal sealed record FrontendTurnAccepted([property: JsonPropertyName("runId")
 /// the published byte size. Re-ingesting identical bytes answers the same address.</summary>
 internal sealed record FrontendObjectUploaded(
     [property: JsonPropertyName("sha256")] string Sha256,
-    [property: JsonPropertyName("byteLength")] long ByteLength);
+    [property: JsonPropertyName("byteLength")]
+    long ByteLength);
 
 /// <summary>One queued turn item (ADR 0025). Queue frames carry ids only — clients map ids
 /// to cells locally; the GET snapshot additionally carries the text and enqueue time.</summary>
 internal sealed record FrontendQueueItem(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("text")] string? Text = null,
-    [property: JsonPropertyName("enqueuedAt")] DateTimeOffset? EnqueuedAt = null);
+    [property: JsonPropertyName("enqueuedAt")]
+    DateTimeOffset? EnqueuedAt = null);
 
 /// <summary>The queue item a worker is currently running, with the run id serving it.</summary>
 internal sealed record FrontendQueueRunningItem(
@@ -99,10 +118,13 @@ internal sealed record FrontendQueueRunningItem(
 /// <summary>A session's full queue state: at most one running item plus the pending FIFO
 /// in run order. Full-state and idempotent — a frame replaces the previous state entirely.</summary>
 internal sealed record FrontendQueueSnapshot(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("running")] FrontendQueueRunningItem? Running = null,
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("running")]
+    FrontendQueueRunningItem? Running = null,
     [property: JsonPropertyName("items")] IReadOnlyList<FrontendQueueItem>? Items = null,
-    [property: JsonPropertyName("capacity")] int Capacity = FrontendTurnQueue.Capacity);
+    [property: JsonPropertyName("capacity")]
+    int Capacity = FrontendTurnQueue.Capacity);
 
 /// <summary>A queue enqueue request body: 1..64 turn texts to run serially after the
 /// session's current work. Command cells are rejected.</summary>
@@ -119,7 +141,8 @@ internal sealed record FrontendQueueEnqueueResponse(
 /// <summary>One enqueued queue item: its opaque id and 1-based pending position.</summary>
 internal sealed record FrontendQueueEnqueuedItem(
     [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("position")] int Position);
+    [property: JsonPropertyName("position")]
+    int Position);
 
 /// <summary>A command execution body.</summary>
 internal sealed record FrontendCommandRequest([property: JsonPropertyName("text")] string Text);
@@ -127,8 +150,10 @@ internal sealed record FrontendCommandRequest([property: JsonPropertyName("text"
 /// <summary>A command execution answer. When the command switched the active session,
 /// <c>sessionId</c> carries the new active session so the frontend can re-pin.</summary>
 internal sealed record FrontendCommandResponse(
-    [property: JsonPropertyName("markdown")] string Markdown,
-    [property: JsonPropertyName("sessionId")] string? SessionId = null);
+    [property: JsonPropertyName("markdown")]
+    string Markdown,
+    [property: JsonPropertyName("sessionId")]
+    string? SessionId = null);
 
 /// <summary>A completion request body; the cursor is a UTF-16 code-unit offset.</summary>
 internal sealed record FrontendCompleteRequest(
@@ -137,25 +162,35 @@ internal sealed record FrontendCompleteRequest(
 
 /// <summary>A completion answer.</summary>
 internal sealed record FrontendCompleteResponse(
-    [property: JsonPropertyName("matches")] string[] Matches,
-    [property: JsonPropertyName("tokenStart")] int TokenStart,
-    [property: JsonPropertyName("tokenEnd")] int TokenEnd);
+    [property: JsonPropertyName("matches")]
+    string[] Matches,
+    [property: JsonPropertyName("tokenStart")]
+    int TokenStart,
+    [property: JsonPropertyName("tokenEnd")]
+    int TokenEnd);
 
 /// <summary>Token usage a provider reported for one run.</summary>
 internal sealed record FrontendUsage(
-    [property: JsonPropertyName("inputTokens")] long InputTokens,
-    [property: JsonPropertyName("outputTokens")] long OutputTokens,
-    [property: JsonPropertyName("totalTokens")] long? TotalTokens = null);
+    [property: JsonPropertyName("inputTokens")]
+    long InputTokens,
+    [property: JsonPropertyName("outputTokens")]
+    long OutputTokens,
+    [property: JsonPropertyName("totalTokens")]
+    long? TotalTokens = null);
 
 /// <summary>One selectable model profile (read-only listing for frontends).</summary>
 internal sealed record FrontendModelProfile(
     [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("provider")]
+    string Provider,
     [property: JsonPropertyName("model")] string Model,
-    [property: JsonPropertyName("selected")] bool Selected);
+    [property: JsonPropertyName("selected")]
+    bool Selected);
 
 /// <summary>A status answer.</summary>
-internal sealed record FrontendStatusResponse([property: JsonPropertyName("markdown")] string Markdown);
+internal sealed record FrontendStatusResponse(
+    [property: JsonPropertyName("markdown")]
+    string Markdown);
 
 /// <summary>What an <c>input.request</c> frame is asking for. An explicit discriminator lets
 /// the frontend pick the right surface instead of inferring the kind from which optional
@@ -166,13 +201,16 @@ internal sealed record FrontendStatusResponse([property: JsonPropertyName("markd
 internal enum FrontendInputKind
 {
     /// <summary>Plain REPL stdin.</summary>
-    [JsonStringEnumMemberName("input")] Input,
+    [JsonStringEnumMemberName("input")]
+    Input,
 
     /// <summary>An MCP server's structured elicitation (ADR 0029).</summary>
-    [JsonStringEnumMemberName("elicitation")] Elicitation,
+    [JsonStringEnumMemberName("elicitation")]
+    Elicitation,
 
     /// <summary>A tool-approval request raised by the Agent approval gate.</summary>
-    [JsonStringEnumMemberName("approval")] Approval
+    [JsonStringEnumMemberName("approval")]
+    Approval
 }
 
 /// <summary>An input request announcement (server to frontend). The optional schema and
@@ -180,11 +218,14 @@ internal enum FrontendInputKind
 /// <see cref="Tool" /> and <see cref="Reason" />, marks a tool-approval request. Older clients
 /// ignore unknown fields and still answer with an action.</summary>
 internal sealed record FrontendInputRequest(
-    [property: JsonPropertyName("requestId")] string RequestId,
+    [property: JsonPropertyName("requestId")]
+    string RequestId,
     [property: JsonPropertyName("prompt")] string Prompt,
-    [property: JsonPropertyName("password")] bool Password,
+    [property: JsonPropertyName("password")]
+    bool Password,
     [property: JsonPropertyName("schema")] JsonElement? Schema = null,
-    [property: JsonPropertyName("serverId")] string? ServerId = null,
+    [property: JsonPropertyName("serverId")]
+    string? ServerId = null,
     [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null,
     [property: JsonPropertyName("tool")] string? Tool = null,
     [property: JsonPropertyName("reason")] string? Reason = null);
@@ -205,12 +246,14 @@ internal sealed record FrontendIdeAnswer(
 /// <summary>The typed error side of an IDE request answer.</summary>
 internal sealed record FrontendIdeError(
     [property: JsonPropertyName("code")] string Code,
-    [property: JsonPropertyName("message")] string Message);
+    [property: JsonPropertyName("message")]
+    string Message);
 
 /// <summary>A typed protocol error body.</summary>
 internal sealed record FrontendError(
     [property: JsonPropertyName("code")] string Code,
-    [property: JsonPropertyName("message")] string Message);
+    [property: JsonPropertyName("message")]
+    string Message);
 
 /// <summary>One provider-neutral transcript content part.</summary>
 internal sealed record FrontendMessagePart(
@@ -227,21 +270,27 @@ internal sealed record FrontendMessage(
 
 /// <summary>The model identity that produced a transcript turn.</summary>
 internal sealed record FrontendModelIdentity(
-    [property: JsonPropertyName("profileId")] string ProfileId,
-    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("profileId")]
+    string ProfileId,
+    [property: JsonPropertyName("provider")]
+    string Provider,
     [property: JsonPropertyName("model")] string Model);
 
 /// <summary>One committed transcript turn.</summary>
 internal sealed record FrontendTranscriptTurn(
     [property: JsonPropertyName("runId")] string RunId,
-    [property: JsonPropertyName("truncated")] bool Truncated,
+    [property: JsonPropertyName("truncated")]
+    bool Truncated,
     [property: JsonPropertyName("model")] FrontendModelIdentity? Model,
-    [property: JsonPropertyName("messages")] IReadOnlyList<FrontendMessage> Messages);
+    [property: JsonPropertyName("messages")]
+    IReadOnlyList<FrontendMessage> Messages);
 
 /// <summary>The authoritative committed history of one session.</summary>
 internal sealed record FrontendTranscript(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("version")] long Version,
+    [property: JsonPropertyName("sessionId")]
+    string SessionId,
+    [property: JsonPropertyName("version")]
+    long Version,
     [property: JsonPropertyName("turns")] IReadOnlyList<FrontendTranscriptTurn> Turns);
 
 /// <summary>One tool progress content value (text or embedded JSON).</summary>
@@ -258,35 +307,50 @@ internal sealed record FrontendProgressContent(
 internal sealed record FrontendEventFrame(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("runId")] string? RunId = null,
-    [property: JsonPropertyName("sequence")] long? Sequence = null,
-    [property: JsonPropertyName("messageId")] string? MessageId = null,
+    [property: JsonPropertyName("sequence")]
+    long? Sequence = null,
+    [property: JsonPropertyName("messageId")]
+    string? MessageId = null,
     [property: JsonPropertyName("text")] string? Text = null,
     [property: JsonPropertyName("callId")] string? CallId = null,
     [property: JsonPropertyName("tool")] string? Tool = null,
-    [property: JsonPropertyName("arguments")] JsonElement? Arguments = null,
-    [property: JsonPropertyName("content")] FrontendProgressContent? Content = null,
+    [property: JsonPropertyName("arguments")]
+    JsonElement? Arguments = null,
+    [property: JsonPropertyName("content")]
+    FrontendProgressContent? Content = null,
     [property: JsonPropertyName("result")] JsonElement? Result = null,
-    [property: JsonPropertyName("displayId")] string? DisplayId = null,
+    [property: JsonPropertyName("displayId")]
+    string? DisplayId = null,
     [property: JsonPropertyName("commId")] string? CommId = null,
     [property: JsonPropertyName("data")] JsonElement? Data = null,
-    [property: JsonPropertyName("agentMessage")] FrontendMessage? AgentMessage = null,
-    [property: JsonPropertyName("truncated")] bool? Truncated = null,
+    [property: JsonPropertyName("agentMessage")]
+    FrontendMessage? AgentMessage = null,
+    [property: JsonPropertyName("truncated")]
+    bool? Truncated = null,
     [property: JsonPropertyName("code")] string? Code = null,
-    [property: JsonPropertyName("message")] string? Message = null,
-    [property: JsonPropertyName("requestId")] string? RequestId = null,
+    [property: JsonPropertyName("message")]
+    string? Message = null,
+    [property: JsonPropertyName("requestId")]
+    string? RequestId = null,
     [property: JsonPropertyName("prompt")] string? Prompt = null,
-    [property: JsonPropertyName("password")] bool? Password = null,
+    [property: JsonPropertyName("password")]
+    bool? Password = null,
     [property: JsonPropertyName("state")] string? State = null,
-    [property: JsonPropertyName("session")] FrontendSessionInfo? Session = null,
-    [property: JsonPropertyName("replayed")] bool? Replayed = null,
+    [property: JsonPropertyName("session")]
+    FrontendSessionInfo? Session = null,
+    [property: JsonPropertyName("replayed")]
+    bool? Replayed = null,
     [property: JsonPropertyName("model")] FrontendModelIdentity? Model = null,
     [property: JsonPropertyName("usage")] FrontendUsage? Usage = null,
     [property: JsonPropertyName("queue")] FrontendQueueSnapshot? Queue = null,
     [property: JsonPropertyName("schema")] JsonElement? Schema = null,
-    [property: JsonPropertyName("serverId")] string? ServerId = null,
+    [property: JsonPropertyName("serverId")]
+    string? ServerId = null,
     [property: JsonPropertyName("reason")] string? Reason = null,
-    [property: JsonPropertyName("approved")] bool? Approved = null,
-    [property: JsonPropertyName("alwaysAllow")] bool? AlwaysAllow = null,
+    [property: JsonPropertyName("approved")]
+    bool? Approved = null,
+    [property: JsonPropertyName("alwaysAllow")]
+    bool? AlwaysAllow = null,
     [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null);
 
 /// <summary>One active skill of the catalog, as served by <c>GET /v1/skills</c> for
@@ -294,36 +358,45 @@ internal sealed record FrontendEventFrame(
 /// and the skill-reference marker's name field.</summary>
 internal sealed record FrontendSkillInfo(
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("description")]
+    string Description,
     [property: JsonPropertyName("source")] string Source);
 
 /// <summary>The <c>GET /v1/skills</c> answer: active skills plus the diagnostics count of
 /// the latest merged catalog (details stay kernel-side logs/status).</summary>
 internal sealed record FrontendSkillList(
     [property: JsonPropertyName("skills")] FrontendSkillInfo[] Skills,
-    [property: JsonPropertyName("diagnostics")] int Diagnostics);
+    [property: JsonPropertyName("diagnostics")]
+    int Diagnostics);
 
 /// <summary>One MCP prompt of one live server, as served by <c>GET /v1/prompts</c>
 /// (ADR 0041): the reference grammar's referencability marking covers both identity
 /// segments; <c>referencable: false</c> prompts list but cannot be selected.</summary>
 internal sealed record FrontendPromptInfo(
-    [property: JsonPropertyName("serverId")] string ServerId,
+    [property: JsonPropertyName("serverId")]
+    string ServerId,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("title")] string? Title,
-    [property: JsonPropertyName("description")] string? Description,
-    [property: JsonPropertyName("arguments")] FrontendPromptArgument[] Arguments,
-    [property: JsonPropertyName("referencable")] bool Referencable);
+    [property: JsonPropertyName("description")]
+    string? Description,
+    [property: JsonPropertyName("arguments")]
+    FrontendPromptArgument[] Arguments,
+    [property: JsonPropertyName("referencable")]
+    bool Referencable);
 
 /// <summary>One declared prompt argument (name, description, required).</summary>
 internal sealed record FrontendPromptArgument(
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("description")] string? Description,
-    [property: JsonPropertyName("required")] bool Required);
+    [property: JsonPropertyName("description")]
+    string? Description,
+    [property: JsonPropertyName("required")]
+    bool Required);
 
 /// <summary>The <c>GET /v1/prompts</c> answer: prompts of every live server generation.</summary>
 internal sealed record FrontendPromptList(
-    [property: JsonPropertyName("prompts")] FrontendPromptInfo[] Prompts);
+    [property: JsonPropertyName("prompts")]
+    FrontendPromptInfo[] Prompts);
 
 /// <summary>Source-generated JSON binding for the frontend wire (NativeAOT path).</summary>
 [JsonSourceGenerationOptions(
@@ -383,16 +456,21 @@ internal sealed partial class FrontendJsonContext : JsonSerializerContext;
 internal sealed record FrontendPluginInfo(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("approvalState")] string ApprovalState,
+    [property: JsonPropertyName("approvalState")]
+    string ApprovalState,
     [property: JsonPropertyName("form")] FrontendUiFormState? Form = null,
-    [property: JsonPropertyName("formError")] string? FormError = null,
-    [property: JsonPropertyName("pageUrl")] string? PageUrl = null);
+    [property: JsonPropertyName("formError")]
+    string? FormError = null,
+    [property: JsonPropertyName("pageUrl")]
+    string? PageUrl = null);
 
 /// <summary>The plugins surface snapshot (ADR 0038 stage 4).</summary>
 internal sealed record FrontendPluginsResponse(
-    [property: JsonPropertyName("plugins")] IReadOnlyList<FrontendPluginInfo> Plugins);
+    [property: JsonPropertyName("plugins")]
+    IReadOnlyList<FrontendPluginInfo> Plugins);
 
 /// <summary>Accepts one published plugin form (ADR 0038 stage 4).</summary>
 internal sealed record FrontendPluginFormPublished(
-    [property: JsonPropertyName("pluginId")] string PluginId,
+    [property: JsonPropertyName("pluginId")]
+    string PluginId,
     [property: JsonPropertyName("commId")] string CommId);

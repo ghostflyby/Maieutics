@@ -133,10 +133,7 @@ internal sealed class WorkspaceBridgeCoverageException : Exception
     internal WorkspaceBridgeCoverageException(string path)
         : base($"The IDE frontend's workspace folders do not cover '{path}'; the operation is served locally.")
     {
-        Path = path;
     }
-
-    internal string Path { get; }
 }
 
 /// <summary>Call-site helpers shared by the workspace tools: the calling session for

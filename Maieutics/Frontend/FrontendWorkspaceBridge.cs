@@ -21,9 +21,9 @@ namespace Maieutics.Frontend;
 /// </summary>
 internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 {
-    private readonly FrontendIdeSockets sockets;
-    private readonly IdeRequestRegistry requests;
-    private readonly Workspace workspace;
+    private readonly FrontendIdeSockets _sockets;
+    private readonly IdeRequestRegistry _requests;
+    private readonly Workspace _workspace;
 
     /// <summary>The elected authority's coverage: the physical directory prefixes of
     /// the workspace folders it answered at election time (ADR 0042 decision 12's
@@ -32,15 +32,15 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
     /// the cache is capped by wholesale clearing. Staleness is safe in both
     /// directions: a narrow cache keeps newly opened folders local, and a wide one
     /// (folders closed since) meets the frontend's own fs_not_covered check.</summary>
-    private readonly ConcurrentDictionary<Guid, string[]> coverage = new();
+    private readonly ConcurrentDictionary<Guid, string[]> _coverage = new();
 
-    private volatile bool cohortPredates;
+    private volatile bool _cohortPredates;
 
     public FrontendWorkspaceBridge(FrontendIdeSockets sockets, IdeRequestRegistry requests, Workspace workspace)
     {
-        this.sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
-        this.requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this.workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
     }
 
     /// <summary>How long one bridge request waits for the frontend's answer before the
@@ -50,9 +50,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
     /// <inheritdoc />
     public WorkspaceBridgeChannel? Acquire(string? sessionId)
     {
-        if (cohortPredates) return null;
+        if (_cohortPredates) return null;
 
-        return sockets.TryGetAuthority(sessionId) is { } authority
+        return _sockets.TryGetAuthority(sessionId) is { } authority
             ? new Channel(this, authority)
             : null;
     }
@@ -63,14 +63,14 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
     private async Task EnsureCoveredAsync(IdeAnnouncerHandle authority, IReadOnlyList<string> segments, CancellationToken cancellationToken)
     {
         var roots = await GetCoverageAsync(authority, cancellationToken).ConfigureAwait(false);
-        var target = workspace.Capture().ToPhysicalPath(segments);
+        var target = _workspace.Capture().ToPhysicalPath(segments);
         if (!IsCovered(target, roots))
             throw new WorkspaceBridgeCoverageException(target);
     }
 
     private async Task<string[]> GetCoverageAsync(IdeAnnouncerHandle authority, CancellationToken cancellationToken)
     {
-        if (coverage.TryGetValue(authority.RegistrationId, out var known)) return known;
+        if (_coverage.TryGetValue(authority.RegistrationId, out var known)) return known;
 
         // The coverage set is the authority's own folder answer — the idefs root
         // listing ({folderId: null}), the same shape the folder registry serves.
@@ -80,9 +80,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         var answer = await SendAsync(authority, "maieutics/fs/list", parameters, cancellationToken)
             .ConfigureAwait(false);
         var roots = ParseCoverageRoots(answer);
-        if (coverage.Count > 64) coverage.Clear();
+        if (_coverage.Count > 64) _coverage.Clear();
 
-        coverage[authority.RegistrationId] = roots;
+        _coverage[authority.RegistrationId] = roots;
         return roots;
     }
 
@@ -144,13 +144,13 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         {
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
-                new FsLocalReadParams(PhysicalUri(owner.workspace, segments)),
+                new FsLocalReadParams(PhysicalUri(owner._workspace, segments)),
                 BridgeJsonContext.Default.FsLocalReadParams);
             var answer = await owner
                 .SendAsync(authority, "maieutics/fs/local/read", parameters, cancellationToken)
                 .ConfigureAwait(false);
             return ReadString(answer, "content") ??
-                throw new AgentToolException("ide_result_invalid", "The read answer carries no text content.");
+                   throw new AgentToolException("ide_result_invalid", "The read answer carries no text content.");
         }
 
         public override async ValueTask<WorkspaceBridgeListing> ListAsync(
@@ -160,7 +160,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         {
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
-                new FsLocalListParams(PhysicalUri(owner.workspace, segments), maximumEntries),
+                new FsLocalListParams(PhysicalUri(owner._workspace, segments), maximumEntries),
                 BridgeJsonContext.Default.FsLocalListParams);
             var answer = await owner
                 .SendAsync(authority, "maieutics/fs/local/list", parameters, cancellationToken)
@@ -184,8 +184,8 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                         ? kind.GetString()!
                         : "other",
                     entry.TryGetProperty("sizeBytes", out var size) &&
-                        size.ValueKind == JsonValueKind.Number &&
-                        size.TryGetInt64(out var sizeValue)
+                    size.ValueKind == JsonValueKind.Number &&
+                    size.TryGetInt64(out var sizeValue)
                         ? sizeValue
                         : null));
             }
@@ -205,7 +205,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalWriteParams(
-                    PhysicalUri(owner.workspace, segments),
+                    PhysicalUri(owner._workspace, segments),
                     content,
                     expectedContentHash,
                     createExclusive),
@@ -221,7 +221,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         {
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
-                new FsLocalDeleteParams(PhysicalUri(owner.workspace, segments)),
+                new FsLocalDeleteParams(PhysicalUri(owner._workspace, segments)),
                 BridgeJsonContext.Default.FsLocalDeleteParams);
             await owner
                 .SendAsync(authority, "maieutics/fs/local/delete", parameters, cancellationToken)
@@ -242,7 +242,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
             var parameters = JsonSerializer.SerializeToElement(
                 new FsLocalSearchParams(
-                    PhysicalUri(owner.workspace, segments),
+                    PhysicalUri(owner._workspace, segments),
                     query,
                     regex,
                     caseSensitive,
@@ -304,9 +304,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             if (segments.Count == 0) return;
 
             await owner.EnsureCoveredAsync(authority, segments, cancellationToken).ConfigureAwait(false);
-            var fileUri = new Uri(owner.workspace.Capture().ToPhysicalPath(segments)).AbsoluteUri;
+            var fileUri = new Uri(owner._workspace.Capture().ToPhysicalPath(segments)).AbsoluteUri;
             var buffer = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(buffer))
+            await using (var writer = new Utf8JsonWriter(buffer))
             {
                 writer.WriteStartObject();
                 writer.WriteStartArray("uris");
@@ -375,14 +375,14 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         CancellationToken cancellationToken,
         bool tolerateUnsupported = false)
     {
-        var registration = requests.Begin();
+        var registration = _requests.Begin();
         try
         {
             var envelope = JsonSerializer.SerializeToElement(
                 new IdeRequestEnvelope(
                     new IdeRequestPayload(registration.RequestId, method, parameters)),
                 IdeFunctionJsonContext.Default.IdeRequestEnvelope);
-            var sent = await sockets
+            var sent = await _sockets
                 .TrySendToAsync(
                     authority.RegistrationId,
                     new FrontendEventFrame("ide.request", Data: envelope.GetProperty("ideRequest").Clone()),
@@ -435,7 +435,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                     // The announcing frontend predates the local family; the coherent
                     // degradation is the pre-bridge behavior, process-wide, not a typed
                     // error on every read. Absorbed once; the next acquire returns null.
-                    cohortPredates = true;
+                    _cohortPredates = true;
                     throw new AgentToolException(
                         "workspace_bridge_inactive",
                         "The connected IDE frontend does not serve the workspace file system (it predates " +
@@ -446,11 +446,11 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             }
 
             return answer.Value ??
-                throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
+                   throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
         }
         finally
         {
-            requests.Abandon(registration.RequestId);
+            _requests.Abandon(registration.RequestId);
         }
     }
 
@@ -498,8 +498,10 @@ internal sealed record FsLocalListParams(string Uri, int MaximumEntries);
 internal sealed record FsLocalWriteParams(
     string Uri,
     string Content,
-    [property: JsonPropertyName("expectedHash")] string? ExpectedHash,
-    [property: JsonPropertyName("createExclusive")] bool CreateExclusive);
+    [property: JsonPropertyName("expectedHash")]
+    string? ExpectedHash,
+    [property: JsonPropertyName("createExclusive")]
+    bool CreateExclusive);
 
 internal sealed record FsLocalDeleteParams(string Uri);
 

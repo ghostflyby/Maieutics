@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -7,9 +8,12 @@ using System.Threading.Channels;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
 using Maieutics.DenoRepl;
+using Maieutics.Execution;
 using Maieutics.Mcp;
 using Maieutics.Permissions;
+using Maieutics.Plugins.Contributions;
 using Maieutics.Processes;
+using Maieutics.Skills;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,9 +21,6 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Plugins;
 
 internal sealed record PluginRegistration(string PluginId, string ExportName, string ExtensionPoint);
-
-/// <summary>Per-plugin lifecycle state reported by the host (backward compatible new field).</summary>
-internal sealed record PluginState(string PluginId, string ExportName, string Specifier, string State, string? Failure);
 
 internal sealed record PluginHostStatus(
     PluginHostState State,
@@ -44,7 +45,9 @@ internal enum PluginApprovalState
 
 /// <summary>The approval view of one discovered plugin: current classification, the
 /// requested versus approved declaration fingerprints, and both grant summaries so a
-/// renderer can show what changed since the last approval.</summary>
+/// renderer can show what changed since the last approval. The approved fingerprint is
+/// carried for that renderer even though the current list view renders only the state.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record PluginApprovalInfo(
     string PluginId,
     string Name,
@@ -54,6 +57,7 @@ internal sealed record PluginApprovalInfo(
     PluginPermissionGrants RequestedGrants,
     PluginPermissionGrants? ApprovedGrants,
     int WorkerCount);
+// ReSharper restore NotAccessedPositionalProperty.Global
 
 internal enum PluginHostState
 {
@@ -135,7 +139,7 @@ internal sealed class PluginHostManager(
     IMcpElicitationPresenter? elicitationPresenter = null,
     DenoPermissionBroker? broker = null,
     string? pluginApprovalsPath = null,
-    Skills.SkillCatalog? skillCatalog = null,
+    SkillCatalog? skillCatalog = null,
     VariableTable? manifestVariables = null,
     Func<string?>? workspaceRootAccessor = null)
     : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
@@ -150,7 +154,9 @@ internal sealed class PluginHostManager(
     {
         "ide_diagnostics", "ide_hover", "ide_navigate", "ide_document_symbols", "ide_workspace_symbols", "ide_request"
     };
+
     private const int EnvelopeVersion = 1;
+
     // 30s: the extension-point channel also covers on-demand worker starts
     // (ADR 0035) — a cold spawn's handshake rides the same budget.
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(30);
@@ -216,47 +222,48 @@ internal sealed class PluginHostManager(
     /// factory's startup timeout, which is the overall start budget).</summary>
     private static readonly TimeSpan ReplDeriveTimeout = TimeSpan.FromSeconds(15);
 
-    private readonly DenoReplOptions denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
-    private readonly List<PluginDescriptor> descriptors = [];
-    private PluginHttpGatewayPayload? httpGateway;
-    private readonly Lock gate = new();
-    private readonly Lock lifecycleGate = new();
+    private readonly DenoReplOptions _denoOptions = denoOptions ?? throw new ArgumentNullException(nameof(denoOptions));
+    private readonly List<PluginDescriptor> _descriptors = [];
+    private PluginHttpGatewayPayload? _httpGateway;
+    private readonly Lock _gate = new();
+    private readonly Lock _lifecycleGate = new();
 
     // Restartable lifecycle state: a plugin-set change tears the host process down and starts a
     // fresh one, so these are replaced per generation instead of being readonly-once.
-    private CancellationTokenSource lifetime = new();
-    private TaskCompletionSource readiness =
+    private CancellationTokenSource _lifetime = new();
+
+    private TaskCompletionSource _readiness =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>The in-flight plugin-set restart, coalescing watcher events that arrive while
     /// one restart is already running. Null when the manager is in its normal running state.</summary>
-    private Task? restart;
+    private Task? _restart;
 
     /// <summary>Set only by an EXTERNAL stop (DisposeAsync / StopAsync), never by the restart
     /// machinery's own teardown. A restart's lifecycle reset checks this under the same lock:
     /// when an external stop raced the restart, the reset stays stopped instead of
     /// resurrecting the manager with a fresh generation. (The restart's own
     /// EnsureStoppedAsync call must not set this — that would make every restart abort.)</summary>
-    private bool externallyStopped;
+    private bool _externallyStopped;
 
     /// <summary>Internal test observability: completed by the detach finally of the live host
     /// connection, in the same locked section that clears the attach slot. Replaced with a fresh
     /// source when a connection is accepted, so the property always reflects the current
     /// connection (see <see cref="HostConnectionReleased"/>).</summary>
-    private TaskCompletionSource hostConnectionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _hostConnectionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completed when a host connection is accepted, in
     /// the same locked section that installs the socket. Swapped for a fresh source at the
     /// accept and again when the live connection detaches, so the property always reflects the
     /// next accept (see <see cref="HostConnectionAttached"/>).</summary>
-    private TaskCompletionSource hostConnectionAttached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _hostConnectionAttached = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly ILogger<PluginHostManager> logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly ILogger<PluginHostManager> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-    private readonly ILoggerFactory loggerFactory =
+    private readonly ILoggerFactory _loggerFactory =
         loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
 
-    private readonly PluginHostModule modules = modules ?? throw new ArgumentNullException(nameof(modules));
+    private readonly PluginHostModule _modules = modules ?? throw new ArgumentNullException(nameof(modules));
 
     /// <summary>Completions for in-flight <c>host.invoke</c> extension point calls, keyed by
     /// correlation id. A <c>host.invokeResult</c> / <c>host.invokeError</c> response for the same
@@ -267,15 +274,15 @@ internal sealed class PluginHostManager(
     /// fires without the result payload. Unknown plugin ids report false.</summary>
     internal bool DeliversContent(string pluginId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return descriptors.Any(descriptor =>
+            return _descriptors.Any(descriptor =>
                 descriptor.Id == pluginId && descriptor.InspectionsContentReadAll &&
                 !IsApprovalBlockedLock(descriptor.Id));
         }
     }
 
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> pendingInvokes =
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ExtensionCallOutcome>> _pendingInvokes =
         new(StringComparer.Ordinal);
 
     /// <summary>Completions for in-flight <c>host.repl.derive</c> instructions, keyed by
@@ -288,12 +295,15 @@ internal sealed class PluginHostManager(
     /// ignored (a spontaneous host-derived REPL still registers its pid through
     /// <see cref="RegisterHostRepl"/>).</summary>
     private const int OutboundCapacity = 512;
-    private Channel<byte[]>? outbound;
-    private Task? outboundWriter;
-    private readonly List<Task> capabilityCalls = [];
-    private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
+
+    private Channel<byte[]>? _outbound;
+    private Task? _outboundWriter;
+    private readonly List<Task> _capabilityCalls = [];
+
+    private readonly Dictionary<string, IReadOnlyList<string>> _capabilityGrants =
         new(StringComparer.Ordinal);
-    private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> descriptorExtensions =
+
+    private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> _descriptorExtensions =
         new(StringComparer.Ordinal);
 
     /// <summary>Per-(kind, plugin) recorded declaration interpretations (the kind
@@ -301,12 +311,12 @@ internal sealed class PluginHostManager(
     /// a non-empty result is the kind's declarative registration face, refreshed with
     /// the descriptor at start and reload. Pure kernel-side data — the host process
     /// never sees it.</summary>
-    private readonly Dictionary<(string KindName, string PluginId), Contributions.ContributionDeclarationResult> recordedDeclarations =
+    private readonly Dictionary<(string KindName, string PluginId), ContributionDeclarationResult> _recordedDeclarations =
         new(DeclarationRecordKeyComparer.Ordinal);
 
     /// <summary>Dependency-topological plugin id order from the last discovery
     /// (ADR 0034): the chain order for MCP adjusters.</summary>
-    private IReadOnlyList<string> pluginOrder = [];
+    private IReadOnlyList<string> _pluginOrder = [];
 
     // —— Plugin contribution coordination (plugin-contribution framework A 期) ——
 
@@ -314,53 +324,53 @@ internal sealed class PluginHostManager(
     /// §4.1): per-kind delivery endpoints, the per-plugin single-flight drain, the
     /// kernel retry set, and the reload-epoch forced set. Created at start; per-host-
     /// generation state clears through <see cref="Contributions.ContributionCoordinator.Reset"/>.</summary>
-    private Contributions.ContributionCoordinator? contributions;
+    private ContributionCoordinator? _contributions;
 
     /// <summary>The MCP kind's RegistryWide delivery: it filters the frame snapshot to
-    /// McpDiscover and republishes through <see cref="dynamicMcpCoordinator"/>.</summary>
-    private Contributions.McpContributionDelivery? mcpDelivery;
+    /// McpDiscover and republishes through <see cref="_dynamicMcpCoordinator"/>.</summary>
+    private McpContributionDelivery? _mcpDelivery;
 
     /// <summary>The skills kind's PerPlugin delivery: the former reconcile pass, owning
     /// the contribution slot table that replaced the four skill dictionaries.</summary>
-    private Contributions.SkillsContributionDelivery? skillsDelivery;
+    private SkillsContributionDelivery? _skillsDelivery;
 
     /// <summary>The model-callable plugin tool surface: describes <c>Tool</c> exports and
     /// republishes immutable declarations for run-profile acquisition. Created per host
     /// generation (describe passes die with the host they address).</summary>
-    private PluginToolCoordinator? toolCoordinator;
+    private PluginToolCoordinator? _toolCoordinator;
 
     // —— Plugin declaration approval (ADR 0037) ——
 
     /// <summary>The persisted approval registry, loaded once from
     /// <c>pluginApprovalsPath</c> (derived from the data root when null) on first use.</summary>
-    private readonly string approvalsPath =
+    private readonly string _approvalsPath =
         pluginApprovalsPath ?? DeriveApprovalsPath(pluginDataRoot);
 
-    private PluginApprovalStore approvalStore = PluginApprovalStore.Empty();
-    private volatile bool approvalStoreLoaded;
+    private PluginApprovalStore _approvalStore = PluginApprovalStore.Empty();
+    private volatile bool _approvalStoreLoaded;
 
     /// <summary>Single-flight for approval reconciles (approve, revoke, and the approval
     /// branch of watcher reloads): each pass spans state mutation, frame construction,
     /// and frame delivery, so two passes can never interleave their sends and leave the
     /// host's worker set contradicting the kernel's approval state. Approval states are
     /// mutated only while this is held.</summary>
-    private readonly SemaphoreSlim reconcile = new(1, 1);
+    private readonly SemaphoreSlim _reconcile = new(1, 1);
 
     /// <summary>Current declaration fingerprint per plugin id, recomputed with the
     /// descriptor set at start and reload.</summary>
-    private readonly Dictionary<string, string> declarationFingerprints =
+    private readonly Dictionary<string, string> _declarationFingerprints =
         new(StringComparer.Ordinal);
 
     /// <summary>Current approval classification per plugin id. Pending and blocked entries
     /// are excluded from the host config, declaration recording, and extension invokes.</summary>
-    private readonly Dictionary<string, PluginApprovalState> approvalStates =
+    private readonly Dictionary<string, PluginApprovalState> _approvalStates =
         new(StringComparer.Ordinal);
 
     /// <summary>Internal test observability: completes when approval classifications were
     /// recomputed (start, watched reload, approve, revoke). A completed source is handed
     /// back once and a fresh one installed in the same gate section, so a reader that races
     /// the transition still observes that edge.</summary>
-    private TaskCompletionSource approvalsChanged =
+    private TaskCompletionSource _approvalsChanged =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Completes on the next approval-classification recomputation. Capture it
@@ -369,37 +379,36 @@ internal sealed class PluginHostManager(
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                var changed = approvalsChanged.Task;
+                var changed = _approvalsChanged.Task;
                 if (changed.IsCompleted)
-                    approvalsChanged = new TaskCompletionSource(
+                    _approvalsChanged = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                 return changed;
             }
         }
     }
 
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> pendingDerives =
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<ReplDeriveOutcome>> _pendingDerives =
         new(StringComparer.Ordinal);
 
-    private readonly List<PluginRegistration> registrations = [];
-    private readonly List<PluginRegistration> hostRegistrations = [];
-    private readonly List<PluginState> states = [];
+    private readonly List<PluginRegistration> _registrations = [];
+    private readonly List<PluginRegistration> _hostRegistrations = [];
 
     /// <summary>Pids of the REPL processes the attached plugin host derived, keyed by pid to the
     /// session id the host reported. Used to release the pid-scoped registrations (session identity
     /// + broker policy) when the host disconnects without reporting <c>host.repl.exited</c> (a
     /// crashed or killed host never drains its children's registrations; ADR 0020 follow-up).</summary>
-    private readonly ConcurrentDictionary<int, string> hostReplSessions = new();
+    private readonly ConcurrentDictionary<int, string> _hostReplSessions = new();
 
-    private FileSystemWatcher? pluginWatcher;
-    private CancellationTokenSource? watcherDebounce;
+    private FileSystemWatcher? _pluginWatcher;
+    private CancellationTokenSource? _watcherDebounce;
 
     /// <summary>Tracked debounce/reload tasks spawned by the plugin watcher, pruned the same way
-    /// as <see cref="capabilityCalls"/> so stop can observe them instead of leaving unobserved
+    /// as <see cref="_capabilityCalls"/> so stop can observe them instead of leaving unobserved
     /// task exceptions behind.</summary>
-    private readonly List<Task> watcherReloads = [];
+    private readonly List<Task> _watcherReloads = [];
 
     /// <summary>Internal test observability: completes when a debounced watcher reload has been
     /// applied — the same transition that finishes the reload task — so tests can await the
@@ -407,18 +416,18 @@ internal sealed class PluginHostManager(
     /// replaced on the next read, so the property is safe to await repeatedly (one await observes
     /// one applied reload). Capture it before the watched change and await it after. Await it
     /// under the caller's deadline.</summary>
-    private TaskCompletionSource reloadApplied = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _reloadApplied = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal Task ReloadApplied
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (reloadApplied.Task.IsCompleted)
-                    reloadApplied = new TaskCompletionSource(
+                if (_reloadApplied.Task.IsCompleted)
+                    _reloadApplied = new TaskCompletionSource(
                         TaskCreationOptions.RunContinuationsAsynchronously);
-                return reloadApplied.Task;
+                return _reloadApplied.Task;
             }
         }
     }
@@ -430,7 +439,7 @@ internal sealed class PluginHostManager(
     /// for virtual time: advancing a fake clock past <see cref="PluginReloadDebounce"/> once
     /// this completes is guaranteed to fire the wait, so tests never sleep out the debounce
     /// in real time.</summary>
-    private TaskCompletionSource watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _watcherDebounceRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: returns a task that completes when a watcher
     /// event's debounced wait has been registered with the time provider (see the field
@@ -442,11 +451,11 @@ internal sealed class PluginHostManager(
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                Task registered = watcherDebounceRegistered.Task;
+                Task registered = _watcherDebounceRegistered.Task;
                 if (registered.IsCompleted)
-                    watcherDebounceRegistered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _watcherDebounceRegistered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 return registered;
             }
         }
@@ -462,7 +471,10 @@ internal sealed class PluginHostManager(
     /// deadline.</summary>
     internal Task HostConnectionReleased
     {
-        get { lock (gate) return hostConnectionReleased.Task; }
+        get
+        {
+            lock (_gate) return _hostConnectionReleased.Task;
+        }
     }
 
     /// <summary>Internal test observability: completes when a live host connection is accepted —
@@ -474,7 +486,10 @@ internal sealed class PluginHostManager(
     /// deadline.</summary>
     internal Task HostConnectionAttached
     {
-        get { lock (gate) return hostConnectionAttached.Task; }
+        get
+        {
+            lock (_gate) return _hostConnectionAttached.Task;
+        }
     }
 
     /// <summary>
@@ -492,7 +507,7 @@ internal sealed class PluginHostManager(
     /// completed task is replaced on the next read. A waiter parked on the superseded
     /// channel's frames must re-capture on this signal — the replaced channel never
     /// produces another frame.</summary>
-    private TaskCompletionSource registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource _registryChangesReplaced = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes when the registry channel was replaced
     /// by a host restart (see the field above). A completed replacement is handed back once
@@ -504,23 +519,23 @@ internal sealed class PluginHostManager(
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                Task replaced = registryChangesReplaced.Task;
+                Task replaced = _registryChangesReplaced.Task;
                 if (replaced.IsCompleted)
-                    registryChangesReplaced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _registryChangesReplaced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 return replaced;
             }
         }
     }
 
-    private readonly ReplControlSessionRegistry sessionRegistry =
+    private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
 
-    private readonly DenoPermissionBroker? broker = broker;
+    private readonly DenoPermissionBroker? _broker = broker;
 
-    private readonly TimeProvider timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-    private string? configPath;
+    private readonly TimeProvider _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+    private string? _configPath;
 
     /// <summary>
     ///     Effective REPL policies keyed by session id, registered by the kernel before the host
@@ -532,7 +547,7 @@ internal sealed class PluginHostManager(
     ///     <see cref="EffectivePolicy.Default"/> explicitly with a warning — the fallback is a
     ///     deliberate choice, never a silent one.
     /// </summary>
-    private readonly ConcurrentDictionary<string, EffectivePolicy> replPolicies = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, EffectivePolicy> _replPolicies = new(StringComparer.Ordinal);
 
     /// <summary>The launch policy of each stdio MCP server child, keyed by server id: the
     /// declaring plugin's process-launch scope, captured when its servers are discovered so
@@ -540,15 +555,15 @@ internal sealed class PluginHostManager(
     /// Discovery always precedes generation creation for a definition, so the entry exists by
     /// launch time; a definition without one launches unrestricted, the same default the run
     /// gate applies everywhere.</summary>
-    private readonly ConcurrentDictionary<string, EffectivePolicy> mcpServerPolicies = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, EffectivePolicy> _mcpServerPolicies = new(StringComparer.Ordinal);
 
-    private PluginMcpCoordinator? dynamicMcpCoordinator;
-    private McpAdjustmentChain? adjustmentChain;
-    private PluginHostProcess? process;
-    private Task processExitObservation = Task.CompletedTask;
-    private IReadOnlySet<string> reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
-    private Task? starting;
-    private Task? stopping;
+    private PluginMcpCoordinator? _dynamicMcpCoordinator;
+    private McpAdjustmentChain? _adjustmentChain;
+    private PluginHostProcess? _process;
+    private Task _processExitObservation = Task.CompletedTask;
+    private IReadOnlySet<string> _reservedToolNames = new HashSet<string>(StringComparer.Ordinal);
+    private Task? _starting;
+    private Task? _stopping;
     private WebSocket? Socket { get; set; }
 
     private string HostId { get; } = $"host-{Guid.NewGuid():N}"[..12];
@@ -558,14 +573,14 @@ internal sealed class PluginHostManager(
         Task stop;
         Task? inFlightRestart;
         Task? inFlightStartup;
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            externallyStopped = true;
+            _externallyStopped = true;
             // A restart clears `restart` in the same locked transition that swaps in the
             // successor generation's startup, so past that point the in-flight work is the
             // startup task itself; capture both under one gate read.
-            inFlightRestart = restart;
-            inFlightStartup = starting;
+            inFlightRestart = _restart;
+            inFlightStartup = _starting;
             stop = EnsureStoppedAsync();
         }
 
@@ -578,10 +593,10 @@ internal sealed class PluginHostManager(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            ObjectDisposedException.ThrowIf(stopping is not null, this);
-            return starting ??= StartCoreAsync(cancellationToken);
+            ObjectDisposedException.ThrowIf(_stopping is not null, this);
+            return _starting ??= StartCoreAsync(cancellationToken);
         }
     }
 
@@ -590,13 +605,13 @@ internal sealed class PluginHostManager(
         Task stop;
         Task? inFlightRestart;
         Task? inFlightStartup;
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            externallyStopped = true;
+            _externallyStopped = true;
             // Same capture as DisposeAsync: the restart's swap moves the in-flight work from
             // `restart` to the successor generation's `starting`, so both are read together.
-            inFlightRestart = restart;
-            inFlightStartup = starting;
+            inFlightRestart = _restart;
+            inFlightStartup = _starting;
             stop = EnsureStoppedAsync();
         }
 
@@ -619,7 +634,7 @@ internal sealed class PluginHostManager(
 
     internal Task WaitUntilReadyAsync(CancellationToken cancellationToken)
     {
-        return readiness.Task.WaitAsync(cancellationToken);
+        return _readiness.Task.WaitAsync(cancellationToken);
     }
 
     /// <summary>Gets or sets the kernel capability executor. The composition root binds
@@ -641,9 +656,9 @@ internal sealed class PluginHostManager(
     /// <see cref="InvokeExtensionPointAsync" />. Null when the plugin registers none.</summary>
     internal string? FindUiEventExport(string pluginId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return hostRegistrations
+            return _hostRegistrations
                 .FirstOrDefault(registration =>
                     registration.PluginId == pluginId &&
                     registration.ExtensionPoint == ReplExtensionPointName.UiEvent)
@@ -671,19 +686,19 @@ internal sealed class PluginHostManager(
     internal IReadOnlyList<PluginSurfaceInfo> GetPluginSurfaces(string? gatewayHostname, int gatewayPort, string? gatewayToken)
     {
         PluginDescriptor[] snapshot;
-        PluginApprovalState[] states;
-        lock (gate)
+        PluginApprovalState[] surfaceStates;
+        lock (_gate)
         {
-            snapshot = [.. descriptors];
-            states = snapshot.Select(descriptor =>
-                approvalStates.GetValueOrDefault(descriptor.Id, PluginApprovalState.PendingApproval)).ToArray();
+            snapshot = [.. _descriptors];
+            surfaceStates = snapshot.Select(descriptor =>
+                _approvalStates.GetValueOrDefault(descriptor.Id, PluginApprovalState.PendingApproval)).ToArray();
         }
 
         var surfaces = new List<PluginSurfaceInfo>(snapshot.Length);
         for (var index = 0; index < snapshot.Length; index++)
         {
             var descriptor = snapshot[index];
-            var state = states[index];
+            var state = surfaceStates[index];
             string? pageUrl = null;
             if (state == PluginApprovalState.Approved &&
                 gatewayHostname is not null && gatewayToken is not null &&
@@ -707,17 +722,17 @@ internal sealed class PluginHostManager(
     /// when the connected host reported none. Token handling is the caller's duty.</summary>
     internal PluginHttpGatewayPayload? GetHttpGateway()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return httpGateway;
+            return _httpGateway;
         }
     }
 
     internal PluginUiFormDefinition? GetUiFormTemplate(string pluginId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)?.UiForm;
+            return _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)?.UiForm;
         }
     }
 
@@ -762,36 +777,36 @@ internal sealed class PluginHostManager(
         Task? startup;
         Task? shutdown;
         PluginHostProcess? hostProcess;
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            startup = starting;
-            shutdown = stopping;
-            hostProcess = process;
+            startup = _starting;
+            shutdown = _stopping;
+            hostProcess = _process;
         }
 
         int pluginCount;
         int registrationCount;
         bool controlConnected;
         int pendingApprovals;
-        lock (gate)
+        lock (_gate)
         {
-            pluginCount = descriptors.Count;
-            registrationCount = registrations.Count;
+            pluginCount = _descriptors.Count;
+            registrationCount = _registrations.Count;
             controlConnected = Socket?.State == WebSocketState.Open;
-            pendingApprovals = approvalStates.Values.Count(static state =>
+            pendingApprovals = _approvalStates.Values.Count(static state =>
                 state is PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency);
         }
 
         var hostProcessRequired = hostProcess is not null || pluginCount > 0;
         var state = startup switch
         {
-            _ when readiness.Task.IsFaulted => PluginHostState.Failed,
+            _ when _readiness.Task.IsFaulted => PluginHostState.Failed,
             { IsFaulted: true } => PluginHostState.Failed,
             { IsCanceled: true } => PluginHostState.Canceled,
             _ when shutdown is { IsCompleted: true } => PluginHostState.Stopped,
             _ when shutdown is not null => PluginHostState.Stopping,
             null => PluginHostState.NotStarted,
-            _ when !readiness.Task.IsCompletedSuccessfully => PluginHostState.Starting,
+            _ when !_readiness.Task.IsCompletedSuccessfully => PluginHostState.Starting,
             _ when hostProcess?.Completion.IsCompleted == true => PluginHostState.Exited,
             _ => PluginHostState.Ready
         };
@@ -830,11 +845,11 @@ internal sealed class PluginHostManager(
 
             try
             {
-                lock (lifecycleGate)
+                lock (_lifecycleGate)
                 {
-                    ObjectDisposedException.ThrowIf(stopping is not null, this);
+                    ObjectDisposedException.ThrowIf(_stopping is not null, this);
                     Start(plan, hostSlot);
-                    readiness.TrySetResult();
+                    _readiness.TrySetResult();
                 }
             }
             catch
@@ -845,13 +860,13 @@ internal sealed class PluginHostManager(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            readiness.TrySetCanceled(cancellationToken);
+            _readiness.TrySetCanceled(cancellationToken);
             await CleanupFailedStartupAsync().ConfigureAwait(false);
             throw;
         }
         catch (Exception exception)
         {
-            readiness.TrySetException(exception);
+            _readiness.TrySetException(exception);
             await CleanupFailedStartupAsync().ConfigureAwait(false);
             throw;
         }
@@ -865,16 +880,16 @@ internal sealed class PluginHostManager(
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Plugin host cleanup failed after startup did not complete.");
+            _logger.LogError(exception, "Plugin host cleanup failed after startup did not complete.");
         }
     }
 
     public void SetReservedToolNames(IReadOnlySet<string> names)
     {
         ArgumentNullException.ThrowIfNull(names);
-        lock (gate)
+        lock (_gate)
         {
-            reservedToolNames = names.ToHashSet(StringComparer.Ordinal);
+            _reservedToolNames = names.ToHashSet(StringComparer.Ordinal);
         }
     }
 
@@ -890,8 +905,8 @@ internal sealed class PluginHostManager(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(policy);
-        replPolicies[sessionId] = policy;
-        logger.LogDebug("Cached the effective REPL policy for session '{SessionId}'.", sessionId);
+        _replPolicies[sessionId] = policy;
+        _logger.LogDebug("Cached the effective REPL policy for session '{SessionId}'.", sessionId);
     }
 
     /// <summary>Removes a session's cached REPL policy, so a closed or restarted session's old
@@ -899,8 +914,8 @@ internal sealed class PluginHostManager(
     internal void UnregisterReplPolicy(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        if (replPolicies.TryRemove(sessionId, out _))
-            logger.LogDebug("Removed the cached REPL policy for session '{SessionId}'.", sessionId);
+        if (_replPolicies.TryRemove(sessionId, out _))
+            _logger.LogDebug("Removed the cached REPL policy for session '{SessionId}'.", sessionId);
     }
 
     void IReplPolicyRegistrar.RegisterReplPolicy(string sessionId, EffectivePolicy policy)
@@ -915,9 +930,9 @@ internal sealed class PluginHostManager(
 
     public IReadOnlyList<PluginRegistration> GetRegistrations(string extensionPoint)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return registrations
+            return _registrations
                 .Where(registration => registration.ExtensionPoint == extensionPoint)
                 .ToArray();
         }
@@ -943,7 +958,7 @@ internal sealed class PluginHostManager(
         var graph = PluginDependencyGraph.Validate(scanned);
         foreach (var exclusion in graph.Exclusions)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
                 exclusion.PluginId,
                 exclusion.Reason,
@@ -953,12 +968,12 @@ internal sealed class PluginHostManager(
         var importMerge = PluginImportMerger.Merge(graph.Enabled, PluginHostModule.ReservedImportKeys);
         foreach (var warning in importMerge.Warnings)
         {
-            logger.LogWarning("Plugin import merge: {Warning}.", warning);
+            _logger.LogWarning("Plugin import merge: {Warning}.", warning);
         }
 
         foreach (var exclusion in importMerge.Exclusions)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin '{PluginId}' is excluded: {Reason} — {Detail}.",
                 exclusion.PluginId,
                 exclusion.Reason,
@@ -970,7 +985,7 @@ internal sealed class PluginHostManager(
             .ToArray();
         // The enabled list preserves the dependency-topological wave order, which is
         // the responsibility-chain order for MCP adjusters (ADR 0034).
-        pluginOrder = enabled.Select(static plugin => plugin.Id).ToArray();
+        _pluginOrder = enabled.Select(static plugin => plugin.Id).ToArray();
         return new PluginStartupPlan(enabled, importMerge);
     }
 
@@ -983,68 +998,68 @@ internal sealed class PluginHostManager(
 
         // Publication stays under one lock: a concurrent GetStatus/PushAsync reader must
         // never observe a half-replaced registry.
-        lock (gate)
+        lock (_gate)
         {
-            descriptors.Clear();
-            descriptors.AddRange(plan.Enabled);
-            RecomputeApprovalStatesLock(descriptors);
-            capabilityGrants.Clear();
-            descriptorExtensions.Clear();
-            recordedDeclarations.Clear();
-            foreach (var descriptor in descriptors)
+            _descriptors.Clear();
+            _descriptors.AddRange(plan.Enabled);
+            RecomputeApprovalStatesLock(_descriptors);
+            _capabilityGrants.Clear();
+            _descriptorExtensions.Clear();
+            _recordedDeclarations.Clear();
+            foreach (var descriptor in _descriptors)
             {
                 // Approval gate (ADR 0037): an unapproved plugin stays discovered but
                 // completely inert — no declarations recorded, no grants, no workers.
                 if (IsApprovalBlockedLock(descriptor.Id))
                 {
-                    logger.LogWarning(
-                        "Plugin '{PluginId}' declarations are not approved; its workers, MCP servers, triggers, and capabilities stay inactive until approved (%plugin approve {PluginId}).",
+                    _logger.LogWarning(
+                        "Plugin '{PluginId}' declarations are not approved; its workers, MCP servers, triggers, and capabilities stay inactive until approved (%plugin approve {CommandTarget}).",
                         descriptor.Id,
                         descriptor.Id);
                     continue;
                 }
 
                 RecordDescriptorDeclarationsLock(descriptor);
-                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
+                _capabilityGrants[descriptor.Id] = descriptor.Capabilities;
             }
 
             // Manifest-declared entries seed the registry before any host payload:
             // a declarative-only plugin contributes without ever spawning a worker.
-            hostRegistrations.Clear();
-            registrations.Clear();
-            registrations.AddRange(DeclarativeRegistrationsLock());
+            _hostRegistrations.Clear();
+            _registrations.Clear();
+            _registrations.AddRange(DeclarativeRegistrationsLock());
             // The reload-epoch bookkeeping belongs to one host generation: a fresh
             // process restarts its epochs at zero, and its start seed reconciles
             // everything anyway, so no deferred force may survive the swap.
-            contributions?.Reset();
+            _contributions?.Reset();
         }
 
         // Outside the gate: Reset cancels any describe pass still awaiting the previous
         // host, and cancellation callbacks must not run while the manager gate is held.
         // Tool descriptors come from the workers this generation spawns, so a previous
         // generation's declarations cannot be served to a run.
-        toolCoordinator?.Reset();
+        _toolCoordinator?.Reset();
 
         // The root deno.json must exist before the host process starts: it carries the
         // process import map (host machinery plus the merged plugin entries) that the
         // host and every plugin worker resolve against.
-        modules.WriteRootConfig(plan.ImportMerge.Imports);
-        configPath = WriteConfigFile(descriptors);
-        process = PluginHostProcess.Start(
+        _modules.WriteRootConfig(plan.ImportMerge.Imports);
+        _configPath = WriteConfigFile(_descriptors);
+        _process = PluginHostProcess.Start(
             new PluginHostProcessOptions(
-                denoOptions.Executable,
-                modules.HostUrl,
+                _denoOptions.Executable,
+                _modules.HostUrl,
                 socketPath,
-                configPath,
+                _configPath,
                 HostId,
-                modules.SdkUrl,
-                modules.WorkerEntryUrl,
-                modules.ConfigFile,
-                broker),
-            logger,
+                _modules.SdkUrl,
+                _modules.WorkerEntryUrl,
+                _modules.ConfigFile,
+                _broker),
+            _logger,
             hostSlot);
-        sessionRegistry.RegisterPluginHost(process.ProcessId, HostId);
-        processExitObservation = ObserveExitAsync(process, configPath);
+        _sessionRegistry.RegisterPluginHost(_process.ProcessId, HostId);
+        _processExitObservation = ObserveExitAsync(_process, _configPath);
         StartDynamicMcpCoordinator();
         StartPluginWatcher();
         // The MCP coordinator missed Start()'s seed (it starts later), so publish the
@@ -1056,20 +1071,19 @@ internal sealed class PluginHostManager(
         // blocked plugins seed nothing.
         PluginRegistration[] initialSnapshot;
         string[] seedPlugins;
-        lock (gate)
+        lock (_gate)
         {
-            initialSnapshot = registrations.ToArray();
-            seedPlugins = descriptors
+            initialSnapshot = _registrations.ToArray();
+            seedPlugins = _descriptors
                 .Where(descriptor => !IsApprovalBlockedLock(descriptor.Id) &&
-                                     descriptor.Extensions.Any(
-                                         static entry => Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind)))
+                                     descriptor.Extensions.Any(static entry => SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind)))
                 .Select(static descriptor => descriptor.Id)
                 .ToArray();
         }
 
-        contributions?.Seed(new Contributions.ContributionFrameInput(
+        _contributions?.Seed(new ContributionFrameInput(
             initialSnapshot,
-            Contributions.ContributionFrameInput.NoForcedPlugins,
+            ContributionFrameInput.NoForcedPlugins,
             seedPlugins));
     }
 
@@ -1105,14 +1119,14 @@ internal sealed class PluginHostManager(
                   "entrypoints": {}
                 }
                 """);
-        logger.LogInformation(
+        _logger.LogInformation(
             "Created the plugin directory '{PluginsRoot}' with an empty deno project skeleton.",
             pluginsRoot);
     }
 
     private void StartDynamicMcpCoordinator()
     {
-        adjustmentChain = new McpAdjustmentChain(
+        _adjustmentChain = new McpAdjustmentChain(
             (pluginId, exportName, extensionPoint, request, cancellationToken) =>
                 InvokeExtensionPointAsync(
                     pluginId,
@@ -1120,15 +1134,15 @@ internal sealed class PluginHostManager(
                     extensionPoint,
                     request,
                     cancellationToken),
-            logger);
+            _logger);
         UpdateAdjustmentSnapshot();
         var coordinator = new PluginMcpCoordinator(
             DiscoverDynamicMcpAsync,
             CreateDynamicMcpGenerationAsync,
-            logger,
-            adjustmentChain);
+            _logger,
+            _adjustmentChain);
         coordinator.Start();
-        dynamicMcpCoordinator = coordinator;
+        _dynamicMcpCoordinator = coordinator;
     }
 
     /// <summary>Recomputes the MCP adjustment topology (ADR 0034): dependency-
@@ -1137,21 +1151,21 @@ internal sealed class PluginHostManager(
     /// and after declarative reloads.</summary>
     private void UpdateAdjustmentSnapshot()
     {
-        var chain = adjustmentChain;
+        var chain = _adjustmentChain;
         if (chain is null) return;
 
         McpAdjustmentSnapshot snapshot;
-        lock (gate)
+        lock (_gate)
         {
-            var dependencies = descriptors.ToDictionary(
+            var dependencies = _descriptors.ToDictionary(
                 static descriptor => descriptor.Id,
-                static descriptor => (IReadOnlyList<string>)descriptor.Dependencies);
-            var adjusters = registrations
+                static descriptor => descriptor.Dependencies);
+            var adjusters = _registrations
                 .Where(registration => registration.ExtensionPoint == ReplExtensionPointName.McpAdjust)
                 .Select(registration => new McpAdjusterRegistration(registration.PluginId, registration.ExportName))
                 .Distinct()
                 .ToList();
-            snapshot = new McpAdjustmentSnapshot(pluginOrder, dependencies, adjusters);
+            snapshot = new McpAdjustmentSnapshot(_pluginOrder, dependencies, adjusters);
         }
 
         chain.UpdateSnapshot(snapshot);
@@ -1176,19 +1190,19 @@ internal sealed class PluginHostManager(
         watcher.Deleted += OnPluginFileChanged;
         watcher.Renamed += OnPluginFileChanged;
         watcher.EnableRaisingEvents = true;
-        pluginWatcher = watcher;
-        logger.LogInformation("Watching '{PluginsRoot}' for plugin changes.", pluginsRoot);
+        _pluginWatcher = watcher;
+        _logger.LogInformation("Watching '{PluginsRoot}' for plugin changes.", pluginsRoot);
     }
 
     private void StopPluginWatcher()
     {
-        lock (gate)
+        lock (_gate)
         {
-            watcherDebounce?.Cancel();
-            watcherDebounce?.Dispose();
-            watcherDebounce = null;
-            pluginWatcher?.Dispose();
-            pluginWatcher = null;
+            _watcherDebounce?.Cancel();
+            _watcherDebounce?.Dispose();
+            _watcherDebounce = null;
+            _pluginWatcher?.Dispose();
+            _pluginWatcher = null;
         }
     }
 
@@ -1201,14 +1215,14 @@ internal sealed class PluginHostManager(
         // against (or observing) the new one.
         CancellationTokenSource debounce;
         CancellationTokenSource generation;
-        lock (gate)
+        lock (_gate)
         {
-            generation = lifetime;
+            generation = _lifetime;
             if (generation.IsCancellationRequested) return;
             try
             {
-                watcherDebounce?.Cancel();
-                watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(generation.Token);
+                _watcherDebounce?.Cancel();
+                _watcherDebounce = debounce = CancellationTokenSource.CreateLinkedTokenSource(generation.Token);
             }
             catch (ObjectDisposedException)
             {
@@ -1233,10 +1247,10 @@ internal sealed class PluginHostManager(
                 // and generation shutdown cancels the linked source. The registration is
                 // reported (WatcherDebounceRegistered) only after Task.Delay returned, so
                 // the wait's timer provably exists in the provider by then.
-                Task debounceWait = Task.Delay(PluginReloadDebounce, timeProvider, debounce.Token);
-                lock (gate)
+                Task debounceWait = Task.Delay(PluginReloadDebounce, _timeProvider, debounce.Token);
+                lock (_gate)
                 {
-                    watcherDebounceRegistered.TrySetResult();
+                    _watcherDebounceRegistered.TrySetResult();
                 }
 
                 try
@@ -1255,18 +1269,18 @@ internal sealed class PluginHostManager(
                 // removals cascade through the dependency graph's exclusion rules. Pure
                 // content changes leave the set unchanged and fall through to the in-process
                 // worker reload below.
-                if (LocalPluginSetDiffers(out _))
+                if (LocalPluginSetDiffers())
                 {
-                    logger.LogInformation(
+                    _logger.LogInformation(
                         "Watched change at '{Path}' changes the local plugin set; restarting the plugin host.",
                         args.FullPath);
                     // A set change settles the reload through the restart: the new host
                     // re-runs full discovery, so the applied signal completes here — a
                     // waiter watching this edit would otherwise park forever on a signal
                     // the restart path never completed.
-                    lock (gate)
+                    lock (_gate)
                     {
-                        reloadApplied.TrySetResult();
+                        _reloadApplied.TrySetResult();
                     }
 
                     _ = RestartForPluginSetChangeAsync();
@@ -1274,12 +1288,12 @@ internal sealed class PluginHostManager(
                 }
 
                 await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
-                logger.LogDebug(
+                _logger.LogDebug(
                     "Watched change at '{Path}' applied.",
                     args.FullPath);
-                lock (gate)
+                lock (_gate)
                 {
-                    reloadApplied.TrySetResult();
+                    _reloadApplied.TrySetResult();
                 }
             }
             catch (Exception exception)
@@ -1288,7 +1302,7 @@ internal sealed class PluginHostManager(
                 // mid-send, or a shutdown-during-reload must not crash the watcher; the next
                 // change (or the next startup) re-resolves. Unknown failures are observed here
                 // too instead of escaping as unobserved task exceptions.
-                logger.LogDebug(
+                _logger.LogDebug(
                     exception,
                     "Plugin reload for '{Path}' did not complete.",
                     args.FullPath);
@@ -1301,15 +1315,15 @@ internal sealed class PluginHostManager(
     /// failures, so a fault here is only observed, never rethrown).</summary>
     private void TrackWatcherReload(Task reload)
     {
-        lock (gate)
+        lock (_gate)
         {
-            watcherReloads.RemoveAll(tracked =>
+            _watcherReloads.RemoveAll(tracked =>
             {
                 if (!tracked.IsCompleted) return false;
                 if (tracked.IsFaulted) _ = tracked.Exception;
                 return true;
             });
-            watcherReloads.Add(reload);
+            _watcherReloads.Add(reload);
         }
     }
 
@@ -1318,17 +1332,17 @@ internal sealed class PluginHostManager(
     /// descriptors. The scan is file-only — no Deno toolchain resolution — so every debounced
     /// watcher event can afford it; registry-installed (jsr:/npm:) plugins are not part of this
     /// check and still require a manual host-process restart, consistent with the import-map
-    /// change they imply. The out parameter carries the fresh local roots for logging.</summary>
-    private bool LocalPluginSetDiffers(out IReadOnlyCollection<string> scannedRoots)
+    /// change they imply.</summary>
+    private bool LocalPluginSetDiffers()
     {
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        scannedRoots = ScanLocalPluginRoots();
+        var scannedRoots = ScanLocalPluginRoots();
         HashSet<string> current;
-        lock (gate)
+        lock (_gate)
         {
-            current = descriptors
+            current = _descriptors
                 .Where(descriptor => IsWithin(descriptor.RootDirectory, pluginsRoot, comparison))
                 .Select(descriptor => NormalizeRoot(descriptor.RootDirectory))
                 .ToHashSet(StringComparer.FromComparison(comparison));
@@ -1342,7 +1356,7 @@ internal sealed class PluginHostManager(
     /// descriptor set is root-contained by definition, so counting them would make the
     /// difference permanently true and escalate every watched change (pure content edits
     /// included) into a generation restart that re-detects itself.</summary>
-    private readonly HashSet<string> warnedOutOfRootImportTargets = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _warnedOutOfRootImportTargets = new(StringComparer.Ordinal);
 
     /// <summary>Scans the local plugin set without touching the Deno toolchain: the root
     /// project plus every local file-import target whose directory carries a loadable
@@ -1381,12 +1395,12 @@ internal sealed class PluginHostManager(
 
     private void WarnOutOfRootImportTargetOnce(string normalizedDirectory)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!warnedOutOfRootImportTargets.Add(normalizedDirectory)) return;
+            if (!_warnedOutOfRootImportTargets.Add(normalizedDirectory)) return;
         }
 
-        logger.LogWarning(
+        _logger.LogWarning(
             "The local import target '{Directory}' resolves outside the plugins root '{PluginsRoot}'; " +
             "it is excluded from the plugin set (its changes cannot trigger reloads or restarts). " +
             "Move the dependency at/under the plugins root to manage it as a plugin.",
@@ -1408,10 +1422,10 @@ internal sealed class PluginHostManager(
     /// fires a fresh event and re-evaluates.</summary>
     private Task RestartForPluginSetChangeAsync()
     {
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            if (stopping is not null) return Task.CompletedTask;
-            return restart ??= RestartCoreAsync();
+            if (_stopping is not null) return Task.CompletedTask;
+            return _restart ??= RestartCoreAsync();
         }
     }
 
@@ -1421,21 +1435,21 @@ internal sealed class PluginHostManager(
         try
         {
             Task stop;
-            lock (lifecycleGate)
+            lock (_lifecycleGate)
             {
                 stop = EnsureStoppedAsync();
             }
 
             await stop.ConfigureAwait(false);
             Task startupTask;
-            lock (lifecycleGate)
+            lock (_lifecycleGate)
             {
                 // A dispose that raced the restart wins: if a stop was requested while this
                 // task tore the old generation down, stay stopped instead of resetting the
                 // lifecycle and resurrecting a manager the caller just disposed.
-                if (externallyStopped)
+                if (_externallyStopped)
                 {
-                    restart = null;
+                    _restart = null;
                     return;
                 }
 
@@ -1445,29 +1459,29 @@ internal sealed class PluginHostManager(
                 // repopulated by Start(plan). The new startup task is assigned under the same
                 // lock, so GetStatus never observes the NotStarted blip between reset and
                 // start.
-                starting = null;
-                stopping = null;
-                restart = null;
-                readiness = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                lifetime = new CancellationTokenSource();
+                _starting = null;
+                _stopping = null;
+                _restart = null;
+                _readiness = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _lifetime = new CancellationTokenSource();
                 RegistryChanges = Channel.CreateBounded<PluginRegistration[]>(
                     new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
-                var startupToken = lifetime.Token;
-                logger.LogInformation("Starting a fresh plugin host generation with the recomputed plugin set.");
+                var startupToken = _lifetime.Token;
+                _logger.LogInformation("Starting a fresh plugin host generation with the recomputed plugin set.");
                 // Bound the new generation's discovery to its own lifetime: a dispose racing
                 // the restart cancels the scan instead of letting it complete against a stopped
                 // manager. StartCoreAsync yields immediately, so assigning under the lock is
                 // safe and closes the NotStarted observation window.
                 startupTask = StartCoreAsync(startupToken);
-                starting = startupTask;
+                _starting = startupTask;
             }
 
             // Reported after the swap, under the state gate so a reader's per-read swap cannot
             // strand the fresh source: a waiter parked on the superseded channel's frames
             // re-captures the live one (RegistryChangesReplaced).
-            lock (gate)
+            lock (_gate)
             {
-                registryChangesReplaced.TrySetResult();
+                _registryChangesReplaced.TrySetResult();
             }
 
             // Wait for the new generation to be ready before the re-check below: descriptors
@@ -1480,9 +1494,9 @@ internal sealed class PluginHostManager(
             // gap: if the set differs again — from a change in that window — the coalesced
             // restart machinery runs another generation. The diff is deterministic, so this
             // converges instead of looping.
-            if (LocalPluginSetDiffers(out _))
+            if (LocalPluginSetDiffers())
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "The local plugin set changed while the host was restarting; starting another generation.");
                 _ = RestartForPluginSetChangeAsync();
             }
@@ -1491,10 +1505,10 @@ internal sealed class PluginHostManager(
         {
             // A failed restart leaves the manager stopped: StartCoreAsync has already faulted
             // readiness and cleaned up. The next watched change re-evaluates and retries.
-            logger.LogError(exception, "The plugin host restart did not complete.");
-            lock (lifecycleGate)
+            _logger.LogError(exception, "The plugin host restart did not complete.");
+            lock (_lifecycleGate)
             {
-                restart = null;
+                _restart = null;
             }
         }
     }
@@ -1516,9 +1530,9 @@ internal sealed class PluginHostManager(
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var descriptor in descriptors)
+            foreach (var descriptor in _descriptors)
             {
                 if (!IsWithin(changedPath, descriptor.RootDirectory, comparison)) continue;
                 if (owner is null ||
@@ -1530,7 +1544,7 @@ internal sealed class PluginHostManager(
         }
 
         if (owner is null) return;
-        logger.LogDebug(
+        _logger.LogDebug(
             "Watched change at '{Path}' reloads plugin '{PluginId}'.",
             changedPath,
             owner.Id);
@@ -1548,7 +1562,7 @@ internal sealed class PluginHostManager(
             {
                 // The process import map is baked into the root deno.json at host
                 // start; an in-process worker reload cannot add or change entries.
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Plugin '{PluginId}' import map changed; the host process import map is fixed at startup. " +
                     "Restart the host process to apply it — the worker still reloads with the previous map.",
                     owner.Id);
@@ -1560,7 +1574,7 @@ internal sealed class PluginHostManager(
                 // reload — that would require a host-process restart. Keep the
                 // previous grants and surface the gap instead of silently
                 // reloading with stale permissions.
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Plugin '{PluginId}' now requires process isolation (run/ffi grants or isolation=process); " +
                     "an in-process reload cannot apply it. Restart the host process to pick up the change.",
                     owner.Id);
@@ -1574,27 +1588,27 @@ internal sealed class PluginHostManager(
                 // the still-stored record and reactivates through the upsert path. The
                 // whole pass runs under the reconcile serialization so a concurrent
                 // approve/revoke cannot interleave its frames with these.
-                await reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-                logger.LogDebug(
+                await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                _logger.LogDebug(
                     "Plugin '{PluginId}' reload holds the reconcile pass; approval blocked: {Blocked}.",
                     owner.Id,
                     IsApprovalBlocked(reloaded.Id));
                 try
                 {
                     HashSet<string> previouslyBlocked;
-                    lock (gate)
+                    lock (_gate)
                     {
                         previouslyBlocked = BlockedIdsLock();
                         ReplaceDescriptorLock(reloaded);
-                        RecomputeApprovalStatesLock(descriptors);
+                        RecomputeApprovalStatesLock(_descriptors);
                     }
 
                     if (IsApprovalBlocked(reloaded.Id))
                     {
                         if (!previouslyBlocked.Contains(reloaded.Id))
-                            logger.LogWarning(
+                            _logger.LogWarning(
                                 "Plugin '{PluginId}' declarations changed since approval; its approval is revoked " +
-                                "and the plugin stays inactive until re-approved (%plugin approve {PluginId}).",
+                                "and the plugin stays inactive until re-approved (%plugin approve {CommandTarget}).",
                                 reloaded.Id,
                                 reloaded.Id);
                         await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
@@ -1614,9 +1628,9 @@ internal sealed class PluginHostManager(
                         // frame that follows a reload would never re-run it. The mark
                         // precedes the snapshot pass because a blocked→active owner's
                         // upsert reload ships from inside it.
-                        lock (gate)
+                        lock (_gate)
                         {
-                            contributions?.MarkReloadForce(reloaded.Id);
+                            _contributions?.MarkReloadForce(reloaded.Id);
                         }
 
                         // Declarations and capability grants follow the re-read manifest
@@ -1640,14 +1654,14 @@ internal sealed class PluginHostManager(
                 }
                 finally
                 {
-                    reconcile.Release();
+                    _reconcile.Release();
                 }
             }
         }
 
         else
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin '{PluginId}' could not be re-read after a watched change; its previous declarations remain active ({Failure}).",
                 owner.Id,
                 loadFailure);
@@ -1665,9 +1679,9 @@ internal sealed class PluginHostManager(
                 // return over unchanged registration records; the mark defers the
                 // forced rediscovery to the post-reload frame (its epoch proves the
                 // worker was replaced), exactly like the ordinary reload path above.
-                lock (gate)
+                lock (_gate)
                 {
-                    contributions?.MarkReloadForce(owner.Id);
+                    _contributions?.MarkReloadForce(owner.Id);
                 }
 
                 foreach (var worker in owner.Workers)
@@ -1703,15 +1717,15 @@ internal sealed class PluginHostManager(
     {
         WebSocket? socket;
         CancellationToken lifetimeToken;
-        lock (gate)
+        lock (_gate)
         {
             socket = Socket;
-            lifetimeToken = lifetime.Token;
+            lifetimeToken = _lifetime.Token;
         }
 
         if (socket is not { State: WebSocketState.Open })
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin {Action} for '{PluginId}/{ExportName}' skipped: host not connected.",
                 action,
                 payload.PluginId,
@@ -1731,7 +1745,7 @@ internal sealed class PluginHostManager(
                 lifetimeToken).ConfigureAwait(false);
             if (!delivered)
             {
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Plugin {Action} request for '{PluginId}/{ExportName}' could not be delivered (the host connection is detached).",
                     action,
                     payload.PluginId,
@@ -1743,7 +1757,7 @@ internal sealed class PluginHostManager(
         {
             // A lifecycle frame racing the generation's shutdown dies with it; treat it
             // as undelivered rather than surfacing a raw cancellation out of the command.
-            logger.LogDebug(
+            _logger.LogDebug(
                 exception,
                 "Plugin {Action} for '{PluginId}/{ExportName}' was cut off by shutdown.",
                 action,
@@ -1752,7 +1766,7 @@ internal sealed class PluginHostManager(
             return false;
         }
 
-        logger.LogInformation(
+        _logger.LogInformation(
             "Plugin {Action} requested for '{PluginId}/{ExportName}'.",
             action,
             payload.PluginId,
@@ -1777,6 +1791,13 @@ internal sealed class PluginHostManager(
     /// leaving it running unobserved. A worker that ignores the abort keeps running — the
     /// host has no per-call termination (killing it would discard the plugin's other state),
     /// so the signal is the whole mechanism.</param>
+    /// <param name="pluginId">The plugin whose worker serves the extension point.</param>
+    /// <param name="exportName">The worker export that carries the extension point.</param>
+    /// <param name="extensionPoint">The extension point name to invoke.</param>
+    /// <param name="request">The JSON payload delivered to the handler; null when the
+    /// extension point takes no arguments.</param>
+    /// <param name="cancellationToken">Cancels the caller's wait for the outcome.</param>
+    /// <param name="timeout">Bounds the handler's run; null uses <see cref="InvokeTimeout"/>.</param>
     public async Task<ExtensionCallOutcome> InvokeExtensionPointAsync(
         string pluginId,
         string exportName,
@@ -1797,14 +1818,14 @@ internal sealed class PluginHostManager(
         var correlationId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<ExtensionCallOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        pendingInvokes[correlationId] = tcs;
+        _pendingInvokes[correlationId] = tcs;
         try
         {
             // Built inside the guard: a stop that disposed the generation's lifetime source
             // between the call's entry and this line is a host that is gone, reported as the
             // typed unavailable outcome below instead of an ObjectDisposedException escaping
             // the invoke path (AGENTS.md invariant 18).
-            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
             // The caller's budget is the handler's, so the wait adds the startup allowance on
             // top: a short declaration must not time out because the worker was cold.
             budget.CancelAfter(CallWaitBudget(timeout));
@@ -1826,7 +1847,7 @@ internal sealed class PluginHostManager(
                     $"The plugin host connection is not available ({extensionPoint}).");
             return await tcs.Task.WaitAsync(budget.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
             if (cancellableCallId is not null)
                 await RequestCallCancellationAsync(pluginId, exportName, cancellableCallId).ConfigureAwait(false);
@@ -1853,7 +1874,7 @@ internal sealed class PluginHostManager(
         }
         finally
         {
-            pendingInvokes.TryRemove(correlationId, out _);
+            _pendingInvokes.TryRemove(correlationId, out _);
         }
     }
 
@@ -1865,7 +1886,7 @@ internal sealed class PluginHostManager(
         try
         {
             if (Socket is not { State: WebSocketState.Open } socket) return;
-            using var budget = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             budget.CancelAfter(CallCancellationBudget);
             var payload = new HostInvokeCancelPayload(pluginId, exportName, callId);
             await PushAsync(
@@ -1879,11 +1900,11 @@ internal sealed class PluginHostManager(
         }
         catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
         {
-            logger.LogDebug(exception, "The cancel instruction for tool call '{CallId}' was not delivered.", callId);
+            _logger.LogDebug(exception, "The cancel instruction for tool call '{CallId}' was not delivered.", callId);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Propagating cancellation for tool call '{CallId}' failed.", callId);
+            _logger.LogWarning(exception, "Propagating cancellation for tool call '{CallId}' failed.", callId);
         }
     }
 
@@ -1892,20 +1913,20 @@ internal sealed class PluginHostManager(
     /// frame may describe replacements for the next run.</summary>
     public IReadOnlyList<AIFunction> SnapshotPluginTools()
     {
-        return toolCoordinator?.SnapshotTools() ?? [];
+        return _toolCoordinator?.SnapshotTools() ?? [];
     }
 
     /// <summary>Completes when no plugin tool describe pass is running or queued. Internal
     /// test observability: a registry frame's reconciliation is observable deterministically
     /// instead of by polling the tool list.</summary>
-    internal Task PluginToolsIdle => toolCoordinator?.FlightIdle ?? Task.CompletedTask;
+    internal Task PluginToolsIdle => _toolCoordinator?.FlightIdle ?? Task.CompletedTask;
 
     /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
     public async Task<IReadOnlyList<McpServerGeneration.McpServerLease>> AcquireDynamicMcpLeasesAsync(
         CancellationToken cancellationToken)
     {
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
-        return dynamicMcpCoordinator?.AcquireLeases() ?? [];
+        return _dynamicMcpCoordinator?.AcquireLeases() ?? [];
     }
 
     /// <summary>Status snapshot of the plugin-discovered MCP servers (ADR 0033): the
@@ -1914,7 +1935,7 @@ internal sealed class PluginHostManager(
     /// still appear (reconnecting state, empty tool list).</summary>
     public IReadOnlyList<MaieuticsMcpServerInfo> GetDynamicMcpServerInfos()
     {
-        return dynamicMcpCoordinator?.GetServerInfos() ?? [];
+        return _dynamicMcpCoordinator?.GetServerInfos() ?? [];
     }
 
     /// <summary>The plugin-discovered MCP server generations for resource access
@@ -1922,7 +1943,7 @@ internal sealed class PluginHostManager(
     /// reads with the typed unavailable error until the caller releases it.</summary>
     public IReadOnlyList<McpServerGeneration> SnapshotDynamicMcpGenerations()
     {
-        return dynamicMcpCoordinator?.SnapshotGenerations() ?? [];
+        return _dynamicMcpCoordinator?.SnapshotGenerations() ?? [];
     }
 
     /// <summary>
@@ -1951,7 +1972,7 @@ internal sealed class PluginHostManager(
         var key = DeriveKey(derive.SessionId, derive.Generation);
         var tcs = new TaskCompletionSource<ReplDeriveOutcome>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!pendingDerives.TryAdd(key, tcs))
+        if (!_pendingDerives.TryAdd(key, tcs))
             throw new InvalidOperationException(
                 $"A REPL derive is already in flight for session '{derive.SessionId}' generation {derive.Generation}.");
 
@@ -1970,7 +1991,7 @@ internal sealed class PluginHostManager(
             // between the call's entry and this line is a host that is gone, reported as the
             // typed failed outcome below instead of an ObjectDisposedException escaping the
             // derive path (AGENTS.md invariant 18).
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
             timeout.CancelAfter(ReplDeriveTimeout);
             await using var registration = timeout.Token.Register(
                 static state => (state as TaskCompletionSource<ReplDeriveOutcome>)?.TrySetCanceled(),
@@ -1995,13 +2016,13 @@ internal sealed class PluginHostManager(
         }
         finally
         {
-            pendingDerives.TryRemove(key, out _);
+            _pendingDerives.TryRemove(key, out _);
         }
     }
 
     private static string DeriveKey(string sessionId, int generation)
     {
-        return $"{sessionId}\u0000{generation.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        return $"{sessionId}\u0000{generation.ToString(CultureInfo.InvariantCulture)}";
     }
 
     /// <summary>Runs the receiving loop for a plugin host WebSocket attached by the control host.
@@ -2012,36 +2033,36 @@ internal sealed class PluginHostManager(
     {
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         bool refused;
-        lock (gate)
+        lock (_gate)
         {
             refused = Socket is not null;
             if (!refused)
             {
                 // The accept completes the attach signal and swaps a fresh source in the same
                 // locked section that installs the socket, so one await observes one accept.
-                hostConnectionAttached.TrySetResult();
-                hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _hostConnectionAttached.TrySetResult();
+                _hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 // A fresh release signal per accepted connection: tests capture it before
                 // detaching and await it instead of polling re-attach attempts.
-                hostConnectionReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _hostConnectionReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Socket = socket;
                 // A WebSocket permits one outstanding send: every C#→host frame is
                 // serialized through this bounded channel instead of concurrent direct
                 // sends, which would fault with "already one outstanding send" the
                 // moment a capability reply raced a hook request.
-                outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(OutboundCapacity)
+                _outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(OutboundCapacity)
                 {
                     SingleReader = true,
                     SingleWriter = false,
                     FullMode = BoundedChannelFullMode.Wait,
                 });
-                outboundWriter = WriteOutboundAsync(socket, outbound, cancellationToken);
+                _outboundWriter = WriteOutboundAsync(socket, _outbound, cancellationToken);
             }
         }
 
         if (refused)
         {
-            logger.LogWarning("Refused a second plugin host attach while one is already live.");
+            _logger.LogWarning("Refused a second plugin host attach while one is already live.");
             await RejectSecondAttachAsync(socket).ConfigureAwait(false);
             return;
         }
@@ -2054,14 +2075,14 @@ internal sealed class PluginHostManager(
             // after the restart's Start(plan) re-seeded the registry would merge the stale
             // plugin set into the new generation until the new host's own registry frame
             // arrives. Frames from a superseded generation are dropped instead.
-            var generationProcess = Volatile.Read(ref process);
+            var generationProcess = Volatile.Read(ref _process);
             while (socket.State == WebSocketState.Open)
             {
                 var text = await ReplControlMessageReader
                     .ReadAsync(socket, cancellationToken)
                     .ConfigureAwait(false);
                 if (text is null) break;
-                if (!ReferenceEquals(Volatile.Read(ref process), generationProcess)) break;
+                if (!ReferenceEquals(Volatile.Read(ref _process), generationProcess)) break;
 
                 HandleHostMessage(text);
             }
@@ -2069,7 +2090,7 @@ internal sealed class PluginHostManager(
         finally
         {
             Task? writer;
-            lock (gate)
+            lock (_gate)
             {
                 // Guarded by the same identity check as Socket: when a successor owns the
                 // connection, the old detach must not complete the successor's channel, clear
@@ -2081,16 +2102,16 @@ internal sealed class PluginHostManager(
                 else
                 {
                     Socket = null;
-                    outbound?.Writer.TryComplete();
-                    outbound = null;
-                    writer = outboundWriter;
-                    outboundWriter = null;
+                    _outbound?.Writer.TryComplete();
+                    _outbound = null;
+                    writer = _outboundWriter;
+                    _outboundWriter = null;
                     // Signaled after the slot is cleared, under the same lock, so an awaiter is
                     // guaranteed to observe the released slot.
-                    hostConnectionReleased.TrySetResult();
+                    _hostConnectionReleased.TrySetResult();
                     // A fresh attach signal per detached connection: awaits captured after the
                     // detach wait for the next accept instead of observing the retired one.
-                    hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _hostConnectionAttached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
             }
 
@@ -2148,7 +2169,7 @@ internal sealed class PluginHostManager(
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
-            lifetime.Token);
+            _lifetime.Token);
         try
         {
             await foreach (var payload in channel.Reader.ReadAllAsync(linked.Token).ConfigureAwait(false))
@@ -2174,23 +2195,23 @@ internal sealed class PluginHostManager(
 
     private Task EnsureStoppedAsync()
     {
-        lock (lifecycleGate)
+        lock (_lifecycleGate)
         {
-            return stopping ??= StopCoreAsync();
+            return _stopping ??= StopCoreAsync();
         }
     }
 
     private async Task StopCoreAsync()
     {
         await Task.Yield();
-        readiness.TrySetCanceled();
-        await lifetime.CancelAsync().ConfigureAwait(false);
+        _readiness.TrySetCanceled();
+        await _lifetime.CancelAsync().ConfigureAwait(false);
         FailPending("The plugin host is stopping.");
         Task[] draining;
-        lock (gate)
+        lock (_gate)
         {
-            draining = [.. capabilityCalls];
-            capabilityCalls.Clear();
+            draining = [.. _capabilityCalls];
+            _capabilityCalls.Clear();
         }
 
         if (draining.Length > 0)
@@ -2205,19 +2226,19 @@ internal sealed class PluginHostManager(
             catch (Exception exception) when (
                 exception is OperationCanceledException or AggregateException)
             {
-                logger.LogDebug(
+                _logger.LogDebug(
                     exception,
                     "{Count} capability call(s) were still running at host stop.",
                     draining.Length);
             }
         }
 
-        if (dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
+        if (_dynamicMcpCoordinator is { } coordinator) await coordinator.DisposeAsync().ConfigureAwait(false);
         PluginToolCoordinator? tools;
-        lock (gate)
+        lock (_gate)
         {
-            tools = toolCoordinator;
-            toolCoordinator = null;
+            tools = _toolCoordinator;
+            _toolCoordinator = null;
         }
 
         if (tools is not null) await tools.DisposeAsync().ConfigureAwait(false);
@@ -2226,10 +2247,10 @@ internal sealed class PluginHostManager(
         StopPluginWatcher();
 
         Task[] reloading;
-        lock (gate)
+        lock (_gate)
         {
-            reloading = [.. watcherReloads];
-            watcherReloads.Clear();
+            reloading = [.. _watcherReloads];
+            _watcherReloads.Clear();
         }
 
         if (reloading.Length > 0)
@@ -2244,29 +2265,29 @@ internal sealed class PluginHostManager(
             catch (Exception exception) when (
                 exception is OperationCanceledException or AggregateException)
             {
-                logger.LogDebug(
+                _logger.LogDebug(
                     exception,
                     "{Count} plugin watcher reload(s) were still running at host stop.",
                     reloading.Length);
             }
         }
 
-        if (process is not null)
+        if (_process is not null)
         {
-            await process.StopAsync().ConfigureAwait(false);
-            await processExitObservation.ConfigureAwait(false);
+            await _process.StopAsync().ConfigureAwait(false);
+            await _processExitObservation.ConfigureAwait(false);
         }
-        else if (configPath is not null)
+        else if (_configPath is not null)
             try
             {
-                File.Delete(configPath);
+                File.Delete(_configPath);
             }
             catch (IOException)
             {
                 // Best-effort temp cleanup must not mask shutdown.
             }
 
-        lifetime.Dispose();
+        _lifetime.Dispose();
     }
 
     /// <summary>Waits for the in-flight plugin-set restart to unwind, so an external stop
@@ -2301,7 +2322,7 @@ internal sealed class PluginHostManager(
             // The restart handles its own failures, and a joined startup already reported
             // its outcome through readiness; observing them here must not surface their
             // cancellation or fault as the stop's own failure.
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "The plugin host restart or startup was still unwinding when the host stopped.");
         }
@@ -2312,19 +2333,19 @@ internal sealed class PluginHostManager(
         try
         {
             await pluginProcess.Completion.ConfigureAwait(false);
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Plugin host exited with code {ExitCode} (pid {ProcessId}).",
                 pluginProcess.ExitCode ?? -1,
                 pluginProcess.ProcessId);
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Plugin host exit observation failed for pid {ProcessId}.",
+            _logger.LogError(exception, "Plugin host exit observation failed for pid {ProcessId}.",
                 pluginProcess.ProcessId);
         }
         finally
         {
-            sessionRegistry.UnregisterPluginHost(pluginProcess.ProcessId);
+            _sessionRegistry.UnregisterPluginHost(pluginProcess.ProcessId);
             try
             {
                 File.Delete(path);
@@ -2352,7 +2373,7 @@ internal sealed class PluginHostManager(
             if (seen.Add(descriptor.Id))
             {
                 result.Add(descriptor);
-                logger.LogInformation(
+                _logger.LogInformation(
                     "Discovered Maieutics plugin '{PluginName}' with {WorkerCount} worker entrypoint(s).",
                     descriptor.Name,
                     descriptor.Workers.Count);
@@ -2377,8 +2398,8 @@ internal sealed class PluginHostManager(
                 var jsrDescriptor = await PluginRegistryDiscovery.TryLoadJsrAsync(
                     import.Key,
                     import.Value,
-                    denoOptions.Executable,
-                    (url, token) => PluginRegistryDiscovery.DenoInfoLocalPathAsync(denoOptions.Executable, url, token),
+                    _denoOptions.Executable,
+                    (url, token) => PluginRegistryDiscovery.DenoInfoLocalPathAsync(_denoOptions.Executable, url, token),
                     diagnostics,
                     cancellationToken).ConfigureAwait(false);
                 if (jsrDescriptor is not null) AddDescriptor(jsrDescriptor);
@@ -2386,13 +2407,13 @@ internal sealed class PluginHostManager(
             else if (import.Value.StartsWith("npm:", StringComparison.Ordinal))
             {
                 var npmDescriptor = await PluginRegistryDiscovery.TryLoadNpmAsync(
-                    import.Key, import.Value, denoOptions.Executable, diagnostics, cancellationToken).ConfigureAwait(false);
+                    import.Key, import.Value, _denoOptions.Executable, diagnostics, cancellationToken).ConfigureAwait(false);
                 if (npmDescriptor is not null) AddDescriptor(npmDescriptor);
             }
         }
         foreach (var diagnostic in diagnostics)
         {
-            logger.LogWarning("{Diagnostic}.", diagnostic);
+            _logger.LogWarning("{Diagnostic}.", diagnostic);
         }
         return result;
     }
@@ -2422,7 +2443,7 @@ internal sealed class PluginHostManager(
         {
             if (File.Exists(Path.Combine(directory, "maieutics.json")) ||
                 File.Exists(Path.Combine(directory, "mcp.json")))
-                logger.LogWarning(
+                _logger.LogWarning(
                     "Plugin directory '{Directory}' failed to load and is skipped ({Failure}).",
                     directory,
                     error);
@@ -2446,14 +2467,14 @@ internal sealed class PluginHostManager(
     /// file is not watched, so a mid-run corruption cannot silently approve anything.</summary>
     private void EnsureApprovalStoreLoaded()
     {
-        if (approvalStoreLoaded) return;
-        lock (gate)
+        if (_approvalStoreLoaded) return;
+        lock (_gate)
         {
-            if (approvalStoreLoaded) return;
-            approvalStore = PluginApprovalStore.Load(approvalsPath, out var error);
+            if (_approvalStoreLoaded) return;
+            _approvalStore = PluginApprovalStore.Load(_approvalsPath, out var error);
             if (error is { } loadError)
-                logger.LogError("Plugin approvals are unavailable: {Error}.", loadError);
-            approvalStoreLoaded = true;
+                _logger.LogError("Plugin approvals are unavailable: {Error}.", loadError);
+            _approvalStoreLoaded = true;
         }
     }
 
@@ -2461,40 +2482,40 @@ internal sealed class PluginHostManager(
     /// effect (pending approval, or blocked by a pending transitive dependency).</summary>
     private bool IsApprovalBlocked(string pluginId)
     {
-        lock (gate)
+        lock (_gate)
         {
             return IsApprovalBlockedLock(pluginId);
         }
     }
 
-    /// <summary>Called under <see cref="gate" />. Internal for the contribution
+    /// <summary>Called under <see cref="_gate" />. Internal for the contribution
     /// adapters, which commit their slots under the same gate.</summary>
     internal bool IsApprovalBlockedLock(string pluginId)
     {
-        return approvalStates.GetValueOrDefault(pluginId) is
+        return _approvalStates.GetValueOrDefault(pluginId) is
             PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency;
     }
 
     /// <summary>The manager's state gate, shared with the contribution adapters of this
     /// assembly: they take the same lock the contribution dictionaries took before the
     /// framework extraction. Never held across an await.</summary>
-    internal Lock Gate => gate;
+    internal Lock Gate => _gate;
 
     /// <summary>Captures one skills reconcile pass's host-state input under
-    /// <see cref="gate" /> — the pass's only gate section before its awaits: the
+    /// <see cref="_gate" /> — the pass's only gate section before its awaits: the
     /// generation token, the descriptor (collapsed to null when the plugin is gone or
     /// approval-blocked), its declared Skills entries, its live Skills exports, and its
     /// held-slot state.</summary>
-    internal Contributions.SkillPassInput CaptureSkillPassInputLock(
+    internal SkillPassInput CaptureSkillPassInputLock(
         string pluginId,
         string skillsKindName,
         string skillsExtensionPointName)
     {
-        lock (gate)
+        lock (_gate)
         {
-            var invokeToken = lifetime.Token;
-            var descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
-            var holdsContribution = skillsDelivery is not null && skillsDelivery.HoldsFace(pluginId);
+            var invokeToken = _lifetime.Token;
+            var descriptor = _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
+            var holdsContribution = _skillsDelivery is not null && _skillsDelivery.HoldsFace(pluginId);
             IReadOnlyList<PluginExtensionEntry> entries;
             List<string> generatorExports;
             if (descriptor is not null && !IsApprovalBlockedLock(pluginId))
@@ -2502,7 +2523,7 @@ internal sealed class PluginHostManager(
                 entries = descriptor.Extensions
                     .Where(entry => entry.Kind == skillsKindName)
                     .ToArray();
-                generatorExports = registrations
+                generatorExports = _registrations
                     .Where(registration => registration.PluginId == pluginId &&
                                            registration.ExtensionPoint == skillsExtensionPointName)
                     .Select(static registration => registration.ExportName)
@@ -2516,7 +2537,7 @@ internal sealed class PluginHostManager(
                 generatorExports = [];
             }
 
-            return new Contributions.SkillPassInput(
+            return new SkillPassInput(
                 invokeToken,
                 descriptor,
                 entries,
@@ -2530,26 +2551,26 @@ internal sealed class PluginHostManager(
     /// <see cref="Start"/> so every event point can reach the engine.</summary>
     private void EnsureContributionEngine()
     {
-        if (contributions is not null) return;
-        var table = new Contributions.ContributionSlotTable(Contributions.SkillsContributionKind.ExtensionKind);
-        var engine = new Contributions.ContributionCoordinator(logger);
-        mcpDelivery = new Contributions.McpContributionDelivery(
-            Contributions.McpDiscoverContributionKind.ExtensionKind,
+        if (_contributions is not null) return;
+        var table = new ContributionSlotTable(SkillsContributionKind.ExtensionKind);
+        var engine = new ContributionCoordinator(_logger);
+        _mcpDelivery = new McpContributionDelivery(
+            McpDiscoverContributionKind.ExtensionKind,
             ReplExtensionPointName.McpDiscover,
-            () => dynamicMcpCoordinator,
-            logger);
-        skillsDelivery = new Contributions.SkillsContributionDelivery(
+            () => _dynamicMcpCoordinator,
+            _logger);
+        _skillsDelivery = new SkillsContributionDelivery(
             this,
-            Contributions.SkillsContributionKind.ExtensionKind,
+            SkillsContributionKind.ExtensionKind,
             ReplExtensionPointName.Skills,
             table,
             engine,
             skillCatalog,
             manifestVariables,
             workspaceRootAccessor,
-            logger);
-        engine.Attach([mcpDelivery, skillsDelivery]);
-        contributions = engine;
+            _logger);
+        engine.Attach([_mcpDelivery, _skillsDelivery]);
+        _contributions = engine;
     }
 
     /// <summary>Creates the plugin tool coordinator once per manager. It invokes through the
@@ -2558,8 +2579,8 @@ internal sealed class PluginHostManager(
     /// publishes.</summary>
     private void EnsureToolCoordinator()
     {
-        if (toolCoordinator is not null) return;
-        toolCoordinator = new PluginToolCoordinator(
+        if (_toolCoordinator is not null) return;
+        _toolCoordinator = new PluginToolCoordinator(
             (pluginId, exportName, extensionPoint, request, cancellationToken, timeout, callId) =>
                 InvokeExtensionPointAsync(
                     pluginId,
@@ -2571,17 +2592,17 @@ internal sealed class PluginHostManager(
                     callId),
             () =>
             {
-                lock (gate) return reservedToolNames;
+                lock (_gate) return _reservedToolNames;
             },
-            logger);
+            _logger);
     }
 
     /// <summary>The snapshot of blocked plugin ids, for transition detection. Called under
-    /// <see cref="gate" />.</summary>
+    /// <see cref="_gate" />.</summary>
     private HashSet<string> BlockedIdsLock()
     {
         var blocked = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (pluginId, state) in approvalStates)
+        foreach (var (pluginId, state) in _approvalStates)
         {
             if (state is PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency)
                 blocked.Add(pluginId);
@@ -2594,30 +2615,30 @@ internal sealed class PluginHostManager(
     /// descriptor set: exempt declarations pass, matching persisted fingerprints are
     /// approved, everything else is pending, and pending cascades to transitive dependents
     /// (their own code cannot honor its declarations without the dependency). Called under
-    /// <see cref="gate" /> after the descriptors or the approval store changed.</summary>
+    /// <see cref="_gate" /> after the descriptors or the approval store changed.</summary>
     private void RecomputeApprovalStatesLock(IReadOnlyList<PluginDescriptor> current)
     {
         // Every approval-bearing transition recomputes classifications under the gate, so
         // completing the signal here covers start, watched reloads, approvals, and revokes.
         // A completed source is handed back once and a fresh one installed: a waiter that
         // races the transition observes that edge instead of waiting for the next one.
-        var changed = approvalsChanged;
-        approvalsChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var changed = _approvalsChanged;
+        _approvalsChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         changed.TrySetResult();
 
-        declarationFingerprints.Clear();
-        approvalStates.Clear();
+        _declarationFingerprints.Clear();
+        _approvalStates.Clear();
         foreach (var descriptor in current)
         {
             var fingerprint = PluginDeclarationFingerprint.Compute(descriptor);
-            declarationFingerprints[descriptor.Id] = fingerprint;
+            _declarationFingerprints[descriptor.Id] = fingerprint;
             if (PluginDeclarationFingerprint.IsApprovalExempt(descriptor))
-                approvalStates[descriptor.Id] = PluginApprovalState.Exempt;
-            else if (approvalStore.TryGet(descriptor.Id, out var record) && record is { } approved &&
+                _approvalStates[descriptor.Id] = PluginApprovalState.Exempt;
+            else if (_approvalStore.TryGet(descriptor.Id, out var record) && record is { } approved &&
                      string.Equals(approved.Fingerprint, fingerprint, StringComparison.Ordinal))
-                approvalStates[descriptor.Id] = PluginApprovalState.Approved;
+                _approvalStates[descriptor.Id] = PluginApprovalState.Approved;
             else
-                approvalStates[descriptor.Id] = PluginApprovalState.PendingApproval;
+                _approvalStates[descriptor.Id] = PluginApprovalState.PendingApproval;
         }
 
         var grew = true;
@@ -2626,12 +2647,12 @@ internal sealed class PluginHostManager(
             grew = false;
             foreach (var descriptor in current)
             {
-                if (approvalStates.GetValueOrDefault(descriptor.Id) != PluginApprovalState.Approved) continue;
+                if (_approvalStates.GetValueOrDefault(descriptor.Id) != PluginApprovalState.Approved) continue;
                 if (descriptor.Dependencies.Any(dependency =>
-                        approvalStates.GetValueOrDefault(dependency) is
+                        _approvalStates.GetValueOrDefault(dependency) is
                             PluginApprovalState.PendingApproval or PluginApprovalState.BlockedByDependency))
                 {
-                    approvalStates[descriptor.Id] = PluginApprovalState.BlockedByDependency;
+                    _approvalStates[descriptor.Id] = PluginApprovalState.BlockedByDependency;
                     grew = true;
                 }
             }
@@ -2640,17 +2661,17 @@ internal sealed class PluginHostManager(
 
     /// <summary>Replaces one plugin's descriptor in the loaded set (a reload re-read it
     /// from disk). Keeps discovery order; an unseen id appends. Called under
-    /// <see cref="gate" />.</summary>
+    /// <see cref="_gate" />.</summary>
     private void ReplaceDescriptorLock(PluginDescriptor reloaded)
     {
-        for (var index = 0; index < descriptors.Count; index++)
+        for (var index = 0; index < _descriptors.Count; index++)
         {
-            if (!string.Equals(descriptors[index].Id, reloaded.Id, StringComparison.Ordinal)) continue;
-            descriptors[index] = reloaded;
+            if (!string.Equals(_descriptors[index].Id, reloaded.Id, StringComparison.Ordinal)) continue;
+            _descriptors[index] = reloaded;
             return;
         }
 
-        descriptors.Add(reloaded);
+        _descriptors.Add(reloaded);
     }
 
     /// <summary>Reconciles every approval-driven surface after the approval states
@@ -2659,11 +2680,11 @@ internal sealed class PluginHostManager(
     /// active set, republishes the MCP registry subset and the adjustment snapshot, ships
     /// an upsert reload to every plugin that just became active (its config joins the host
     /// worker set), and a stop to every plugin that just became blocked (its workers and
-    /// their dependents close without restart). Callers hold <see cref="reconcile" />: the
+    /// their dependents close without restart). Callers hold <see cref="_reconcile" />: the
     /// whole pass — state capture, frame construction, frame delivery — is single-flight,
     /// so two approvals/reloads can never interleave their sends and leave the host's
     /// worker set contradicting the kernel's approval state. Nothing here awaits under
-    /// <see cref="gate" />.</summary>
+    /// <see cref="_gate" />.</summary>
     private async Task ApplyApprovalSnapshotAsync(HashSet<string> previouslyBlocked)
     {
         var activations = new List<(string PluginId, PluginHostConfigPlugin Config, string[] Exports)>();
@@ -2671,22 +2692,22 @@ internal sealed class PluginHostManager(
         PluginRegistration[] registrySnapshot;
         List<string> transitioningSkillPlugins;
         HashSet<string> transitioningPlugins;
-        lock (gate)
+        lock (_gate)
         {
-            capabilityGrants.Clear();
-            descriptorExtensions.Clear();
-            recordedDeclarations.Clear();
-            foreach (var descriptor in descriptors)
+            _capabilityGrants.Clear();
+            _descriptorExtensions.Clear();
+            _recordedDeclarations.Clear();
+            foreach (var descriptor in _descriptors)
             {
                 if (IsApprovalBlockedLock(descriptor.Id)) continue;
                 RecordDescriptorDeclarationsLock(descriptor);
-                capabilityGrants[descriptor.Id] = descriptor.Capabilities;
+                _capabilityGrants[descriptor.Id] = descriptor.Capabilities;
             }
 
-            registrations.Clear();
-            registrations.AddRange(hostRegistrations
+            _registrations.Clear();
+            _registrations.AddRange(_hostRegistrations
                 .Where(registration => !IsApprovalBlockedLock(registration.PluginId)));
-            registrations.AddRange(DeclarativeRegistrationsLock());
+            _registrations.AddRange(DeclarativeRegistrationsLock());
 
             var blocked = BlockedIdsLock();
             transitioningPlugins = new HashSet<string>(StringComparer.Ordinal);
@@ -2705,17 +2726,17 @@ internal sealed class PluginHostManager(
             // transitioning plugin: the storage name-collision rule (same-named plugins
             // never silently share a data dir) must hold for post-boot approvals too.
             IReadOnlyList<PluginHostConfigPlugin> activeConfigs = [];
-            if (descriptors.Any(descriptor =>
+            if (_descriptors.Any(descriptor =>
                     descriptor.Workers.Count > 0 &&
                     !RequiresProcessIsolation(descriptor) &&
                     previouslyBlocked.Contains(descriptor.Id) &&
                     !blocked.Contains(descriptor.Id)))
             {
                 activeConfigs = BuildConfig(
-                    [.. descriptors.Where(descriptor => !blocked.Contains(descriptor.Id))]).Plugins;
+                    [.. _descriptors.Where(descriptor => !blocked.Contains(descriptor.Id))]).Plugins;
             }
 
-            foreach (var descriptor in descriptors)
+            foreach (var descriptor in _descriptors)
             {
                 if (descriptor.Workers.Count == 0 || RequiresProcessIsolation(descriptor)) continue;
                 var wasBlocked = previouslyBlocked.Contains(descriptor.Id);
@@ -2738,26 +2759,26 @@ internal sealed class PluginHostManager(
             // kinds republish frame-level, unconditionally — a revoked plugin's
             // registration leaves the snapshot and its coordinator-side contributions
             // drop with it); the skills targets stay face-filtered PerPlugin passes.
-            registrySnapshot = registrations.ToArray();
+            registrySnapshot = _registrations.ToArray();
         }
 
         // Approval transitions change which tool exports are routable: a revoked plugin's
         // definitions leave the snapshot and drop; a newly approved plugin's exports describe.
-        toolCoordinator?.OnRegistryFrame(registrySnapshot, transitioningPlugins);
+        _toolCoordinator?.OnRegistryFrame(registrySnapshot, transitioningPlugins);
 
-        if (contributions is { } engine)
+        if (_contributions is { } engine)
         {
-            engine.PublishRegistryWide(new Contributions.ContributionFrameInput(
+            engine.PublishRegistryWide(new ContributionFrameInput(
                 registrySnapshot,
-                Contributions.ContributionFrameInput.NoForcedPlugins,
+                ContributionFrameInput.NoForcedPlugins,
                 []));
         }
 
         UpdateAdjustmentSnapshot();
-        if (contributions is { } reconciliationEngine && skillsDelivery is not null)
+        if (_contributions is { } reconciliationEngine && _skillsDelivery is not null)
         {
             reconciliationEngine.ReconcilePlugins(
-                skillsDelivery.KindName,
+                _skillsDelivery.KindName,
                 transitioningSkillPlugins);
         }
 
@@ -2776,7 +2797,7 @@ internal sealed class PluginHostManager(
         // approval state. Declarative-only transitions recorded above need no host.
         if ((activations.Count > 0 || stops.Count > 0) && !allDelivered)
         {
-            logger.LogInformation(
+            _logger.LogInformation(
                 "A plugin approval transition could not ship to the host connection; restarting the plugin host generation.");
             _ = RestartForPluginSetChangeAsync();
         }
@@ -2785,7 +2806,7 @@ internal sealed class PluginHostManager(
     /// <summary>Persists an approval for one discovered plugin's current declarations and
     /// activates it — plus any dependents the approval unblocks — without restarting the
     /// host process: each activation ships the plugin's full config as an upsert
-    /// <c>plugin.reload</c>. The whole decision runs under <see cref="reconcile" />, so a
+    /// <c>plugin.reload</c>. The whole decision runs under <see cref="_reconcile" />, so a
     /// concurrent watcher reload cannot interleave (a descriptor replaced mid-approve is
     /// re-read and the message reflects the resulting state, never a stranded record
     /// reported as active).</summary>
@@ -2798,9 +2819,9 @@ internal sealed class PluginHostManager(
         cancellationToken.ThrowIfCancellationRequested();
         EnsureApprovalStoreLoaded();
         PluginDescriptor descriptor;
-        lock (gate)
+        lock (_gate)
         {
-            descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
+            descriptor = _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
                          ?? throw new InvalidOperationException($"No discovered plugin matches '{pluginId}'.");
         }
 
@@ -2813,48 +2834,48 @@ internal sealed class PluginHostManager(
                 "the in-process plugin host cannot run it.");
 
         PluginApprovalState finalState;
-        await reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (approvalStates.GetValueOrDefault(pluginId) == PluginApprovalState.Approved)
+                if (_approvalStates.GetValueOrDefault(pluginId) == PluginApprovalState.Approved)
                     return $"Plugin '{descriptor.Name}' declarations are already approved.";
             }
 
             // Re-read under the reconcile serialization: a watcher reload that replaced
             // the descriptor while this command ran must be what gets persisted.
-            lock (gate)
+            lock (_gate)
             {
-                descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) ?? descriptor;
+                descriptor = _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) ?? descriptor;
             }
 
             var fingerprint = PluginDeclarationFingerprint.Compute(descriptor);
-            approvalStore.Set(
+            _approvalStore.Set(
                 pluginId,
                 new PluginApprovalRecord(
                     fingerprint,
                     descriptor.Name,
-                    timeProvider.GetUtcNow(),
+                    _timeProvider.GetUtcNow(),
                     descriptor.Permissions));
 
             HashSet<string> previouslyBlocked;
-            lock (gate)
+            lock (_gate)
             {
                 previouslyBlocked = BlockedIdsLock();
-                RecomputeApprovalStatesLock(descriptors);
-                finalState = approvalStates.GetValueOrDefault(pluginId);
+                RecomputeApprovalStatesLock(_descriptors);
+                finalState = _approvalStates.GetValueOrDefault(pluginId);
             }
 
             await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
-            logger.LogInformation(
+            _logger.LogInformation(
                 "Plugin '{PluginId}' declarations approved (fingerprint {FingerprintPrefix}).",
                 pluginId,
                 fingerprint[..8]);
         }
         finally
         {
-            reconcile.Release();
+            _reconcile.Release();
         }
 
         return finalState switch
@@ -2878,11 +2899,11 @@ internal sealed class PluginHostManager(
         cancellationToken.ThrowIfCancellationRequested();
         EnsureApprovalStoreLoaded();
         PluginDescriptor descriptor;
-        lock (gate)
+        lock (_gate)
         {
-            descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
+            descriptor = _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId)
                          ?? throw new InvalidOperationException($"No discovered plugin matches '{pluginId}'.");
-            if (!approvalStore.TryGet(pluginId, out _))
+            if (!_approvalStore.TryGet(pluginId, out _))
             {
                 return IsApprovalBlockedLock(pluginId)
                     ? $"Plugin '{descriptor.Name}' is already unapproved (pending)."
@@ -2890,29 +2911,29 @@ internal sealed class PluginHostManager(
             }
         }
 
-        await reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _reconcile.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             HashSet<string> previouslyBlocked;
-            lock (gate)
+            lock (_gate)
             {
                 previouslyBlocked = BlockedIdsLock();
             }
 
-            approvalStore.Remove(pluginId);
-            lock (gate)
+            _approvalStore.Remove(pluginId);
+            lock (_gate)
             {
-                RecomputeApprovalStatesLock(descriptors);
+                RecomputeApprovalStatesLock(_descriptors);
             }
 
             await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
         }
         finally
         {
-            reconcile.Release();
+            _reconcile.Release();
         }
 
-        logger.LogInformation("Plugin '{PluginId}' approval revoked; workers stopped.", pluginId);
+        _logger.LogInformation("Plugin '{PluginId}' approval revoked; workers stopped.", pluginId);
         return $"Revoked '{descriptor.Name}' — workers stopped pending re-approval.";
     }
 
@@ -2922,14 +2943,14 @@ internal sealed class PluginHostManager(
     public IReadOnlyList<PluginApprovalInfo> ListPluginApprovals()
     {
         EnsureApprovalStoreLoaded();
-        lock (gate)
+        lock (_gate)
         {
-            var result = new List<PluginApprovalInfo>(descriptors.Count);
-            foreach (var descriptor in descriptors)
+            var result = new List<PluginApprovalInfo>(_descriptors.Count);
+            foreach (var descriptor in _descriptors)
             {
-                var state = approvalStates.GetValueOrDefault(descriptor.Id);
-                declarationFingerprints.TryGetValue(descriptor.Id, out var requested);
-                approvalStore.TryGet(descriptor.Id, out var record);
+                var state = _approvalStates.GetValueOrDefault(descriptor.Id);
+                _declarationFingerprints.TryGetValue(descriptor.Id, out var requested);
+                _approvalStore.TryGet(descriptor.Id, out var record);
                 result.Add(new PluginApprovalInfo(
                     descriptor.Id,
                     descriptor.Name,
@@ -2978,7 +2999,7 @@ internal sealed class PluginHostManager(
                 var dataDir = storage[identity];
                 if (dataDir is null)
                 {
-                    logger.LogError(
+                    _logger.LogError(
                         "Plugin '{PluginId}' storage directory collides with another plugin; " +
                         "it starts without plugin storage.",
                         descriptor.Id);
@@ -3098,15 +3119,15 @@ internal sealed class PluginHostManager(
             payload.Pid <= 0 ||
             string.IsNullOrWhiteSpace(payload.SessionId))
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Ignored a malformed host REPL spawned report (session '{SessionId}', pid {Pid}).",
                 payload?.SessionId,
                 payload?.Pid);
             return;
         }
 
-        if (replPolicies.TryGetValue(payload.SessionId, out var policy))
-            logger.LogDebug(
+        if (_replPolicies.TryGetValue(payload.SessionId, out var policy))
+            _logger.LogDebug(
                 "Host-derived REPL for session '{SessionId}' generation {Generation} registered with pid {Pid}.",
                 payload.SessionId,
                 payload.Generation,
@@ -3119,7 +3140,7 @@ internal sealed class PluginHostManager(
             // default — a deliberate, surfaced fallback, never a silent one. The kernel must
             // compute and pre-cache the policy before the host derives the REPL (ADR 0020).
             policy = EffectivePolicy.Default;
-            logger.LogWarning(
+            _logger.LogWarning(
                 "No effective REPL policy is cached for session '{SessionId}'; " +
                 "registered the host-derived REPL pid {Pid} with the default policy. " +
                 "The kernel must compute and pre-cache the REPL policy before the host derives it (ADR 0020).",
@@ -3127,10 +3148,10 @@ internal sealed class PluginHostManager(
                 payload.Pid);
         }
 
-        sessionRegistry.Register(payload.Pid, payload.SessionId);
-        broker?.RegisterPolicy(payload.Pid, policy);
-        hostReplSessions[payload.Pid] = payload.SessionId;
-        logger.LogInformation(
+        _sessionRegistry.Register(payload.Pid, payload.SessionId);
+        _broker?.RegisterPolicy(payload.Pid, policy);
+        _hostReplSessions[payload.Pid] = payload.SessionId;
+        _logger.LogInformation(
             "Plugin host reported a REPL process for session '{SessionId}' generation {Generation} with pid {Pid}.",
             payload.SessionId,
             payload.Generation,
@@ -3144,7 +3165,7 @@ internal sealed class PluginHostManager(
     /// generation.</summary>
     private void CompleteDeriveSpawned(HostReplSpawnedPayload payload)
     {
-        if (pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
+        if (_pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
             completion.TrySetResult(ReplDeriveOutcome.Spawned());
     }
 
@@ -3157,16 +3178,16 @@ internal sealed class PluginHostManager(
             string.IsNullOrWhiteSpace(payload.SessionId) ||
             string.IsNullOrWhiteSpace(payload.Message))
         {
-            logger.LogWarning("Ignored a malformed host REPL deriveFailed report.");
+            _logger.LogWarning("Ignored a malformed host REPL deriveFailed report.");
             return;
         }
 
-        logger.LogWarning(
+        _logger.LogWarning(
             "The plugin host could not derive a REPL for session '{SessionId}' generation {Generation}: {Message}",
             payload.SessionId,
             payload.Generation,
             payload.Message);
-        if (pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
+        if (_pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
             completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(payload.Message));
     }
 
@@ -3179,17 +3200,17 @@ internal sealed class PluginHostManager(
             payload.Pid <= 0 ||
             string.IsNullOrWhiteSpace(payload.SessionId))
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Ignored a malformed host REPL exited report (session '{SessionId}', pid {Pid}).",
                 payload?.SessionId,
                 payload?.Pid);
             return;
         }
 
-        hostReplSessions.TryRemove(payload.Pid, out _);
-        sessionRegistry.Unregister(payload.Pid);
-        broker?.UnregisterProcess(payload.Pid);
-        logger.LogDebug(
+        _hostReplSessions.TryRemove(payload.Pid, out _);
+        _sessionRegistry.Unregister(payload.Pid);
+        _broker?.UnregisterProcess(payload.Pid);
+        _logger.LogDebug(
             "Plugin host reported a REPL process exit for session '{SessionId}' generation {Generation} " +
             "with pid {Pid}{Failure}.",
             payload.SessionId,
@@ -3208,12 +3229,12 @@ internal sealed class PluginHostManager(
     /// reconnecting host re-registers the pid with the same cached policy.</summary>
     private void ReleaseHostReplRegistrations()
     {
-        foreach (var pid in hostReplSessions.Keys)
+        foreach (var pid in _hostReplSessions.Keys)
         {
-            if (!hostReplSessions.TryRemove(pid, out var sessionId)) continue;
-            sessionRegistry.Unregister(pid);
-            broker?.UnregisterProcess(pid);
-            logger.LogWarning(
+            if (!_hostReplSessions.TryRemove(pid, out var sessionId)) continue;
+            _sessionRegistry.Unregister(pid);
+            _broker?.UnregisterProcess(pid);
+            _logger.LogWarning(
                 "Released the host-derived REPL registration for session '{SessionId}' (pid {Pid}) " +
                 "after the plugin host disconnected without reporting its exit.",
                 sessionId,
@@ -3227,9 +3248,9 @@ internal sealed class PluginHostManager(
     /// continuation observes it instead of leaving an unobserved task exception.</summary>
     private void TrackCapabilityCall(Task call)
     {
-        lock (gate)
+        lock (_gate)
         {
-            capabilityCalls.RemoveAll(static tracked =>
+            _capabilityCalls.RemoveAll(static tracked =>
             {
                 if (!tracked.IsCompleted) return false;
                 if (tracked.IsFaulted)
@@ -3239,7 +3260,7 @@ internal sealed class PluginHostManager(
 
                 return true;
             });
-            capabilityCalls.Add(call);
+            _capabilityCalls.Add(call);
         }
     }
 
@@ -3250,7 +3271,7 @@ internal sealed class PluginHostManager(
     private async Task HandleCapabilityInvokeAsync(ReplEnvelope envelope)
     {
         WebSocket? socket;
-        lock (gate)
+        lock (_gate)
         {
             socket = Socket;
         }
@@ -3321,8 +3342,8 @@ internal sealed class PluginHostManager(
                     string.IsNullOrWhiteSpace(frame.CommId) ||
                     (frame.Kind != "open" && frame.Kind != "message" && frame.Kind != "close") ||
                     (frame.Kind == "open" &&
-                    (string.IsNullOrWhiteSpace(frame.TargetName) ||
-                     !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
+                     (string.IsNullOrWhiteSpace(frame.TargetName) ||
+                      !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
                 {
                     await PushCapabilityErrorAsync(
                         socket,
@@ -3375,16 +3396,15 @@ internal sealed class PluginHostManager(
                 return;
             }
 
-            if (Contributions.ContributionKindCatalog.ByPublishCapability(request.Capability) is { } publishKind &&
-                publishKind.KindName == Contributions.SkillsContributionKind.ExtensionKind)
+            if (ContributionKindCatalog.ByPublishCapability(request.Capability) is { KindName: SkillsContributionKind.ExtensionKind })
             {
                 // Plugin skill publication (ADR 0039 stage 3): the payload is the
                 // replacement set for the plugin's published part — the same entry shape
                 // and bounds a generator returns; an empty array clears it. The publish
                 // capability routes through the kind contract; a future publish-capable
                 // kind joins by declaring its own capability name.
-                if (Contributions.SkillsContributionDelivery.ParseGeneratedSkills(
-                        payload, Skills.SkillSource.PluginPublished) is not { } published)
+                if (SkillsContributionDelivery.ParseGeneratedSkills(
+                        payload, SkillSource.PluginPublished) is not { } published)
                 {
                     await PushCapabilityErrorAsync(
                         socket,
@@ -3395,7 +3415,7 @@ internal sealed class PluginHostManager(
                     return;
                 }
 
-                var publishedCount = skillsDelivery is { } delivery
+                var publishedCount = _skillsDelivery is { } delivery
                     ? delivery.Publish(request.PluginId, published)
                     : null;
                 if (publishedCount is null)
@@ -3504,7 +3524,7 @@ internal sealed class PluginHostManager(
         }
         catch (OperationCanceledException) when (budget.IsCancellationRequested)
         {
-            logger.LogWarning("Capability invoke '{CorrelationId}' exceeded its budget.", envelope.CorrelationId);
+            _logger.LogWarning("Capability invoke '{CorrelationId}' exceeded its budget.", envelope.CorrelationId);
             // The budget is spent, so the timeout reply rides the host lifetime only (still
             // bounded: StopCoreAsync drains tracked calls under one total budget).
             await PushCapabilityErrorAsync(
@@ -3512,11 +3532,11 @@ internal sealed class PluginHostManager(
                 envelope.CorrelationId,
                 "capability_timeout",
                 "The capability call did not settle within its budget.",
-                lifetime.Token).ConfigureAwait(false);
+                _lifetime.Token).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(
+            _logger.LogWarning(
                 exception,
                 "Capability invoke '{CorrelationId}' failed.", envelope.CorrelationId);
             await PushCapabilityErrorAsync(
@@ -3558,7 +3578,7 @@ internal sealed class PluginHostManager(
     {
         try
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
             // The enqueue rides the linked budget; the bounded writer owns the write.
             await PushAsync(socket, envelope, linked.Token).ConfigureAwait(false);
         }
@@ -3576,9 +3596,9 @@ internal sealed class PluginHostManager(
     /// real manifest scan).</summary>
     internal void SetCapabilityGrants(string pluginId, IReadOnlyList<string> capabilities)
     {
-        lock (gate)
+        lock (_gate)
         {
-            capabilityGrants[pluginId] = capabilities;
+            _capabilityGrants[pluginId] = capabilities;
         }
     }
 
@@ -3589,10 +3609,10 @@ internal sealed class PluginHostManager(
     /// and the grant clear.</summary>
     private bool IsCapabilityGranted(string pluginId, string capability)
     {
-        lock (gate)
+        lock (_gate)
         {
             return !IsApprovalBlockedLock(pluginId) &&
-                   capabilityGrants.TryGetValue(pluginId, out var grants) &&
+                   _capabilityGrants.TryGetValue(pluginId, out var grants) &&
                    grants.Contains(capability);
         }
     }
@@ -3600,7 +3620,7 @@ internal sealed class PluginHostManager(
     private void CompletePending(ReplEnvelope envelope)
     {
         if (envelope.CorrelationId is not { } correlationId ||
-            !pendingInvokes.TryRemove(correlationId, out var completion))
+            !_pendingInvokes.TryRemove(correlationId, out var completion))
             return;
 
         if (envelope.Type == ReplMessageType.HostInvokeResult)
@@ -3622,15 +3642,15 @@ internal sealed class PluginHostManager(
         // ADR 0038 stage 4: the host's HTTP gateway entrance rides every registry
         // snapshot; a frame without it clears any previous descriptor (the host
         // restarted without the gateway).
-        lock (gate)
+        lock (_gate)
         {
-            httpGateway = payload.HttpGateway;
+            _httpGateway = payload.HttpGateway;
         }
 
         PluginRegistration[] registrySnapshot;
         List<string> changedSkillPlugins;
         List<string> forcedByReload;
-        lock (gate)
+        lock (_gate)
         {
             // The differential skill-reconcile input: the Skills exports each plugin
             // held before the rebuild. Only plugins whose export set actually changed
@@ -3638,9 +3658,9 @@ internal sealed class PluginHostManager(
             // frame takes zero action and re-invokes no generator — unless the frame
             // completes a requested reload (the epoch mark) or retries a plugin whose
             // last reconcile left a failed generator.
-            var skillsPoint = skillsDelivery?.ExtensionPointName ?? ReplExtensionPointName.Skills;
-            var skillsBefore = Contributions.ContributionCoordinator.ExportSets(hostRegistrations, skillsPoint);
-            hostRegistrations.Clear();
+            var skillsPoint = _skillsDelivery?.ExtensionPointName ?? ReplExtensionPointName.Skills;
+            var skillsBefore = ContributionCoordinator.ExportSets(_hostRegistrations, skillsPoint);
+            _hostRegistrations.Clear();
             foreach (var plugin in payload.Plugins)
             {
                 // The approval gate must hold here too (ADR 0037): a host payload can
@@ -3658,7 +3678,7 @@ internal sealed class PluginHostManager(
                     var canonical = ReplExtensionPointName.Canonicalize(extensionPoint);
                     if (canonical is null)
                     {
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             "Plugin '{PluginId}' export '{ExportName}' registered unknown extension point '{Name}'; " +
                             "this kernel version never dispatches it.",
                             plugin.PluginId,
@@ -3667,40 +3687,36 @@ internal sealed class PluginHostManager(
                         continue;
                     }
 
-                    hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, canonical));
+                    _hostRegistrations.Add(new PluginRegistration(plugin.PluginId, plugin.ExportName, canonical));
                 }
             }
 
-            registrations.Clear();
-            registrations.AddRange(hostRegistrations);
+            _registrations.Clear();
+            _registrations.AddRange(_hostRegistrations);
 
             // Manifest-declared entries join the same registry: they are discovery
             // results the kernel computed from the manifest snapshot, so they ride the
             // same revision/generation pipeline without a worker.
             foreach (var registration in DeclarativeRegistrationsLock())
-                registrations.Add(registration);
+                _registrations.Add(registration);
 
-            states.Clear();
-            foreach (var state in payload.States ?? [])
-                states.Add(new PluginState(state.PluginId, state.ExportName, state.Specifier, state.State, state.Failure));
-
-            logger.LogInformation(
+            _logger.LogInformation(
                 "Plugin host registered {Count} extension point(s) across {PluginCount} plugin(s).",
-                registrations.Count,
+                _registrations.Count,
                 payload.Plugins.Count);
 
-            registrySnapshot = registrations.ToArray();
-            changedSkillPlugins = Contributions.ContributionCoordinator.DiffExportSets(
+            registrySnapshot = _registrations.ToArray();
+            changedSkillPlugins = ContributionCoordinator.DiffExportSets(
                 skillsBefore,
-                Contributions.ContributionCoordinator.ExportSets(hostRegistrations, skillsPoint));
-            forcedByReload = contributions?.DrainReloadForces(payload.ReloadEpochs) ?? [];
+                ContributionCoordinator.ExportSets(_hostRegistrations, skillsPoint));
+            forcedByReload = _contributions?.DrainReloadForces(payload.ReloadEpochs) ?? [];
             // A drained reload force schedules the plugin's skill reconcile even though
             // its export set is unchanged (the reloaded module text may return
             // different output); a plugin whose last reconcile left a failed generator
             // retries on the next frame (the MCP coordinator's "never-succeeded stays
             // new" discipline).
-            var retryPending = skillsDelivery is not null && contributions is not null
-                ? contributions.RetrySnapshot(skillsDelivery.KindName)
+            var retryPending = _skillsDelivery is not null && _contributions is not null
+                ? _contributions.RetrySnapshot(_skillsDelivery.KindName)
                 : [];
             foreach (var pluginId in forcedByReload.Concat(retryPending))
                 if (!changedSkillPlugins.Contains(pluginId))
@@ -3710,10 +3726,10 @@ internal sealed class PluginHostManager(
         RegistryChanges.Writer.TryWrite(registrySnapshot);
         // Plugin tools reconcile on every frame: the describe pass owns its own
         // single-flight drain, so this call never awaits the host and never holds the gate.
-        toolCoordinator?.OnRegistryFrame(
+        _toolCoordinator?.OnRegistryFrame(
             registrySnapshot,
             new HashSet<string>(forcedByReload, StringComparer.Ordinal));
-        if (contributions is { } engine)
+        if (_contributions is { } engine)
         {
             // The frame the host sends after completing a requested reload carries an
             // unchanged export set, so the plugins whose marks this frame drained re-run
@@ -3721,7 +3737,7 @@ internal sealed class PluginHostManager(
             // keep their pre-reload contributions forever. The RegistryWide kind
             // receives the full snapshot every frame (its registration-level diff stays
             // inside the consumer engine); the PerPlugin targets schedule their passes.
-            engine.OnRegistryFrame(new Contributions.ContributionFrameInput(
+            engine.OnRegistryFrame(new ContributionFrameInput(
                 registrySnapshot,
                 new HashSet<string>(forcedByReload, StringComparer.Ordinal),
                 changedSkillPlugins));
@@ -3731,17 +3747,17 @@ internal sealed class PluginHostManager(
     /// <summary>Whether a plugin currently has any skill surface to reconcile: declared
     /// Skills entries, a live Skills export, or a held contribution slot (the publish-only
     /// form — the held-slot clause reads the skills delivery's slot table). Called under
-    /// <see cref="gate"/>.</summary>
+    /// <see cref="_gate"/>.</summary>
     private bool HasSkillFaceLock(string pluginId)
     {
-        if (skillsDelivery is { } skills && skills.HoldsFace(pluginId)) return true;
-        if (registrations.Any(registration =>
+        if (_skillsDelivery is { } skills && skills.HoldsFace(pluginId)) return true;
+        if (_registrations.Any(registration =>
                 registration.PluginId == pluginId &&
                 registration.ExtensionPoint == ReplExtensionPointName.Skills))
             return true;
-        return descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) is { } descriptor &&
+        return _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId) is { } descriptor &&
                descriptor.Extensions.Any(static entry =>
-                   Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind));
+                   SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind));
     }
 
     /// <summary>A trigger fired on the host (ADR 0036): re-run the named plugin's MCP
@@ -3753,7 +3769,7 @@ internal sealed class PluginHostManager(
     {
         if (payload is null || string.IsNullOrWhiteSpace(payload.PluginId)) return;
         if (McpRegistrationsSnapshot().Length == 0 && skillCatalog is null) return;
-        logger.LogInformation(
+        _logger.LogInformation(
             "Plugin '{PluginId}' trigger '{Trigger}' fired; re-running its MCP discovery.",
             payload.PluginId,
             payload.Trigger);
@@ -3764,9 +3780,9 @@ internal sealed class PluginHostManager(
     /// registrations plus manifest-declared entries).</summary>
     private PluginRegistration[] McpRegistrationsSnapshot()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return registrations
+            return _registrations
                 .Where(static registration => registration.ExtensionPoint == ReplExtensionPointName.McpDiscover)
                 .ToArray();
         }
@@ -3781,24 +3797,24 @@ internal sealed class PluginHostManager(
     {
         PluginRegistration[] snapshot;
         bool hasMcpDiscover;
-        lock (gate)
+        lock (_gate)
         {
-            snapshot = registrations.ToArray();
-            hasMcpDiscover = mcpDelivery is { } delivery &&
-                             registrations.Any(registration =>
+            snapshot = _registrations.ToArray();
+            hasMcpDiscover = _mcpDelivery is { } delivery &&
+                             _registrations.Any(registration =>
                                  registration.ExtensionPoint == delivery.ExtensionPointName);
         }
 
-        if (hasMcpDiscover && contributions is { } engine)
+        if (hasMcpDiscover && _contributions is { } engine)
         {
-            engine.PublishRegistryWide(new Contributions.ContributionFrameInput(
+            engine.PublishRegistryWide(new ContributionFrameInput(
                 snapshot,
                 new HashSet<string>([pluginId], StringComparer.Ordinal),
                 []));
         }
 
-        if (contributions is { } reconciliation && skillsDelivery is not null)
-            reconciliation.ReconcilePlugins(skillsDelivery.KindName, [pluginId]);
+        if (_contributions is { } reconciliation && _skillsDelivery is not null)
+            reconciliation.ReconcilePlugins(_skillsDelivery.KindName, [pluginId]);
     }
 
     /// <summary>Clears every plugin contribution (manager disposal). The last catalog
@@ -3806,8 +3822,8 @@ internal sealed class PluginHostManager(
     /// and declarative roots are re-contributed by the next generation's start.</summary>
     private void ClearSkillContributions()
     {
-        if (skillCatalog is null || skillsDelivery is not { } skills) return;
-        lock (gate)
+        if (skillCatalog is null || _skillsDelivery is not { } skills) return;
+        lock (_gate)
         {
             foreach (var pluginId in skills.ClearAll())
                 skillCatalog.RemovePluginContribution(pluginId);
@@ -3818,13 +3834,14 @@ internal sealed class PluginHostManager(
     /// <c>McpDiscover</c> extensions section or an <c>mcp.json</c> data file, ADR 0033):
     /// produced contract-driven — every catalogued kind that declares a declarative
     /// registration form contributes its face check against the recorded snapshots.
-    /// Called under <see cref="gate" />.</summary>
+    /// Called under <see cref="_gate" />.</summary>
     private IEnumerable<PluginRegistration> DeclarativeRegistrationsLock()
     {
-        var candidates = descriptorExtensions.Keys
-            .Concat(recordedDeclarations.Keys.Select(static key => key.PluginId))
-            .Distinct(StringComparer.Ordinal);
-        foreach (var contract in Contributions.ContributionKindCatalog.Contracts)
+        var candidates = _descriptorExtensions.Keys
+            .Concat(_recordedDeclarations.Keys.Select(static key => key.PluginId))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        foreach (var contract in ContributionKindCatalog.Contracts)
         {
             if (!contract.HasDeclarativeRegistrations) continue;
             if (contract.ExtensionPointName is not { } extensionPoint)
@@ -3832,8 +3849,8 @@ internal sealed class PluginHostManager(
                     $"The contribution kind '{contract.KindName}' declares synthetic registrations without a wire extension point.");
             foreach (var pluginId in candidates)
             {
-                descriptorExtensions.TryGetValue(pluginId, out var entries);
-                recordedDeclarations.TryGetValue((contract.KindName, pluginId), out var recorded);
+                _descriptorExtensions.TryGetValue(pluginId, out var entries);
+                _recordedDeclarations.TryGetValue((contract.KindName, pluginId), out var recorded);
                 if (contract.HasDeclarativeRegistrationFace(entries, recorded))
                     yield return new PluginRegistration(pluginId, ManifestExportName, extensionPoint);
             }
@@ -3845,21 +3862,21 @@ internal sealed class PluginHostManager(
     /// face removes the entry, so section or file removals take effect.</summary>
     private void RecordDescriptorDeclarationsLock(PluginDescriptor descriptor)
     {
-        if (descriptor.Extensions.Count > 0) descriptorExtensions[descriptor.Id] = descriptor.Extensions;
-        else descriptorExtensions.Remove(descriptor.Id);
+        if (descriptor.Extensions.Count > 0) _descriptorExtensions[descriptor.Id] = descriptor.Extensions;
+        else _descriptorExtensions.Remove(descriptor.Id);
 
-        foreach (var contract in Contributions.ContributionKindCatalog.Contracts)
+        foreach (var contract in ContributionKindCatalog.Contracts)
         {
             if (!contract.HasDeclarativeRegistrations) continue;
             var recorded = contract.DeclarationsFromDescriptor(descriptor);
             if (recorded.Descriptors.Count > 0 || recorded.PluginLevelError is not null)
-                recordedDeclarations[(contract.KindName, descriptor.Id)] = recorded;
+                _recordedDeclarations[(contract.KindName, descriptor.Id)] = recorded;
             else
-                recordedDeclarations.Remove((contract.KindName, descriptor.Id));
+                _recordedDeclarations.Remove((contract.KindName, descriptor.Id));
         }
 
         foreach (var diagnostic in descriptor.ExtensionDiagnostics)
-            logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
+            _logger.LogWarning("Plugin '{PluginId}': {Diagnostic}.", descriptor.Id, diagnostic);
     }
 
     /// <summary>The effective policy of one plugin's process-launch scope: the plugin's
@@ -3870,10 +3887,10 @@ internal sealed class PluginHostManager(
     /// <c>env</c> (the child environment); the remaining kinds shape the worker's Deno shell,
     /// which the plugin host enforces. An absent grant leaves the kind unrestricted — the same
     /// default the run gate applies everywhere (ADR 0018 §7 decision 2). Callers hold
-    /// <see cref="gate"/>.</summary>
+    /// <see cref="_gate"/>.</summary>
     private EffectivePolicy? PluginScopePolicy(string pluginId)
     {
-        var descriptor = descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
+        var descriptor = _descriptors.FirstOrDefault(candidate => candidate.Id == pluginId);
         if (descriptor is null) return null;
 
         var run = descriptor.Permissions.Run;
@@ -3932,11 +3949,11 @@ internal sealed class PluginHostManager(
         foreach (var definition in definitions)
         {
             if (definition.Transport is not StdioMcpTransportDefinition) continue;
-            mcpServerPolicies[definition.Id] = scopePolicy;
+            _mcpServerPolicies[definition.Id] = scopePolicy;
         }
     }
 
-    private sealed class EmptyPluginScopeVariableSource : Execution.IPermissionVariableSource
+    private sealed class EmptyPluginScopeVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name) => null;
     }
@@ -3957,7 +3974,7 @@ internal sealed class PluginHostManager(
         // this discovery produces is judged against the declaring plugin's run grant and
         // carries the policy into its generation (rendered again at child spawn).
         EffectivePolicy? scopePolicy;
-        lock (gate)
+        lock (_gate)
         {
             scopePolicy = PluginScopePolicy(registration.PluginId);
         }
@@ -3979,7 +3996,7 @@ internal sealed class PluginHostManager(
         var definitions = new List<McpServerDefinition>();
         foreach (var item in array.EnumerateArray())
         {
-            if (!Contributions.McpDiscoverContributionKind.TryToDefinition(
+            if (!McpDiscoverContributionKind.TryToDefinition(
                     registration.PluginId,
                     item,
                     manifestVariables,
@@ -4009,11 +4026,11 @@ internal sealed class PluginHostManager(
         IReadOnlyList<PluginExtensionEntry> entries;
         IReadOnlyList<McpServerDefinition> fileServers;
         EffectivePolicy? scopePolicy;
-        lock (gate)
+        lock (_gate)
         {
-            var hasEntries = descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
-            var hasDeclaration = recordedDeclarations.TryGetValue(
-                (Contributions.McpDiscoverContributionKind.ExtensionKind, registration.PluginId),
+            var hasEntries = _descriptorExtensions.TryGetValue(registration.PluginId, out var recorded);
+            var hasDeclaration = _recordedDeclarations.TryGetValue(
+                (McpDiscoverContributionKind.ExtensionKind, registration.PluginId),
                 out var declaration);
             if (!hasEntries && !hasDeclaration)
                 return PluginMcpDiscoveryResult.Failed("unknown_manifest_plugin");
@@ -4022,7 +4039,7 @@ internal sealed class PluginHostManager(
             entries = recorded ?? [];
             fileServers = declaration is null
                 ? []
-                : Contributions.ContributionDescriptorUnwrap.McpServers(declaration.Descriptors);
+                : ContributionDescriptorUnwrap.McpServers(declaration.Descriptors);
             // The declaring plugin's launch policy is captured with the manifest snapshot it
             // authorizes (ADR 0037): its stdio servers are judged against it here and carry it
             // into their generations.
@@ -4032,8 +4049,8 @@ internal sealed class PluginHostManager(
         var definitions = new List<McpServerDefinition>();
         foreach (var entry in entries)
         {
-            if (!Contributions.McpDiscoverContributionKind.Instance.OwnsExtensionKind(entry.Kind)) continue;
-            if (!Contributions.McpDiscoverContributionKind.TryToDefinition(
+            if (!McpDiscoverContributionKind.Instance.OwnsExtensionKind(entry.Kind)) continue;
+            if (!McpDiscoverContributionKind.TryToDefinition(
                     registration.PluginId,
                     entry.Data,
                     manifestVariables,
@@ -4073,9 +4090,9 @@ internal sealed class PluginHostManager(
         CancellationToken cancellationToken)
     {
         IReadOnlySet<string> reservedNames;
-        lock (gate)
+        lock (_gate)
         {
-            reservedNames = reservedToolNames;
+            reservedNames = _reservedToolNames;
         }
 
         // The same capability wiring the kernel-level servers used (ADR 0029): roots are
@@ -4085,31 +4102,31 @@ internal sealed class PluginHostManager(
         // child's policy is the owning plugin's launch scope, captured at discovery (the
         // default transport factory renders it — run gate and child environment — before
         // the child is spawned).
-        mcpServerPolicies.TryGetValue(definition.Id, out var scopePolicy);
+        _mcpServerPolicies.TryGetValue(definition.Id, out var scopePolicy);
         return McpServerGeneration.CreateAsync(
             definition,
-            loggerFactory,
-            timeProvider,
+            _loggerFactory,
+            _timeProvider,
             cancellationToken,
             null,
             reservedNames,
             workspaceRootsSource,
             elicitationPresenter,
-            adjustmentChain,
+            _adjustmentChain,
             policy: scopePolicy);
     }
 
     private void FailPending(string message)
     {
-        foreach (var completion in pendingInvokes.Values)
+        foreach (var completion in _pendingInvokes.Values)
             completion.TrySetResult(ExtensionCallOutcome.Error("host_disconnected", message));
 
-        pendingInvokes.Clear();
+        _pendingInvokes.Clear();
 
-        foreach (var completion in pendingDerives.Values)
+        foreach (var completion in _pendingDerives.Values)
             completion.TrySetResult(ReplDeriveOutcome.DeriveFailed(message));
 
-        pendingDerives.Clear();
+        _pendingDerives.Clear();
     }
 
     /// <summary>Ordinal comparison for the recorded-declaration key (kind name, plugin
@@ -4175,12 +4192,12 @@ internal sealed class PluginHostManager(
     {
         var json = JsonSerializer.Serialize(envelope, ReplControlJsonContext.Default.ReplEnvelope);
         ChannelWriter<byte[]>? writer;
-        lock (gate)
+        lock (_gate)
         {
             // Same lock as the capture: the frame is enqueued only while the connection it
             // belongs to still owns the outbound slot. The replacement host must never receive
             // a frame that a call issued against the retired connection.
-            writer = ReferenceEquals(socket, Socket) ? outbound?.Writer : null;
+            writer = ReferenceEquals(socket, Socket) ? _outbound?.Writer : null;
         }
 
         if (writer is null)
@@ -4203,5 +4220,4 @@ internal sealed class PluginHostManager(
             return false;
         }
     }
-
 }

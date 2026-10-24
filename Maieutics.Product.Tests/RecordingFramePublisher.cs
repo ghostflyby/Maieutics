@@ -10,15 +10,15 @@ namespace Maieutics.Product.Tests;
 /// for a form announcement; a signal makes both paths deterministic.</summary>
 internal sealed class RecordingFramePublisher(bool publishable = true) : IFrontendSessionFramePublisher
 {
-    private readonly Lock gate = new();
-    private readonly List<(AgentSessionId SessionId, string Type, JsonElement Data)> published = [];
-    private TaskCompletionSource publishedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Lock _gate = new();
+    private readonly List<(AgentSessionId SessionId, string Type, JsonElement Data)> _published = [];
+    private TaskCompletionSource _publishedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal IReadOnlyList<(AgentSessionId SessionId, string Type, JsonElement Data)> Published
     {
         get
         {
-            lock (gate) return [.. published];
+            lock (_gate) return [.. _published];
         }
     }
 
@@ -26,11 +26,11 @@ internal sealed class RecordingFramePublisher(bool publishable = true) : IFronte
     {
         if (!publishable) return false;
         TaskCompletionSource changed;
-        lock (gate)
+        lock (_gate)
         {
-            published.Add((sessionId, type, data.Clone()));
-            changed = publishedChanged;
-            publishedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _published.Add((sessionId, type, data.Clone()));
+            changed = _publishedChanged;
+            _publishedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         changed.TrySetResult();
@@ -45,10 +45,10 @@ internal sealed class RecordingFramePublisher(bool publishable = true) : IFronte
         while (true)
         {
             Task changed;
-            lock (gate)
+            lock (_gate)
             {
-                if (published.Count >= count) return;
-                changed = publishedChanged.Task;
+                if (_published.Count >= count) return;
+                changed = _publishedChanged.Task;
             }
 
             await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -57,9 +57,9 @@ internal sealed class RecordingFramePublisher(bool publishable = true) : IFronte
 
     internal (AgentSessionId SessionId, string Type, JsonElement Data) Single(string type)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return published.Single(frame => frame.Type == type);
+            return _published.Single(frame => frame.Type == type);
         }
     }
 }

@@ -95,18 +95,18 @@ internal sealed class CustomResourceProviderOptions
 /// endpoint is the trust and network boundary, exactly like an MCP `http` server.</summary>
 internal sealed class HttpBridgeResourceProvider : IResourceProvider
 {
-    private readonly HttpClient client;
-    private readonly Uri endpoint;
-    private readonly TimeSpan timeout;
+    private readonly HttpClient _client;
+    private readonly Uri _endpoint;
+    private readonly TimeSpan _timeout;
 
     internal HttpBridgeResourceProvider(
         HttpClient client,
         CustomResourceProviderOptions options)
     {
         options.Validate();
-        this.client = client ?? throw new ArgumentNullException(nameof(client));
-        endpoint = new Uri(options.Endpoint!);
-        timeout = TimeSpan.FromSeconds(options.TimeoutSeconds ?? 15);
+        this._client = client ?? throw new ArgumentNullException(nameof(client));
+        _endpoint = new Uri(options.Endpoint!);
+        _timeout = TimeSpan.FromSeconds(options.TimeoutSeconds ?? 15);
         Id = $"custom:{options.Name}";
         Claims = [new ResourceClaim(options.Scheme)];
     }
@@ -125,18 +125,18 @@ internal sealed class HttpBridgeResourceProvider : IResourceProvider
         ArgumentException.ThrowIfNullOrWhiteSpace(uri);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var builder = new UriBuilder(endpoint);
+        var builder = new UriBuilder(_endpoint);
         var encoded = $"uri={Uri.EscapeDataString(uri)}";
         builder.Query = string.IsNullOrEmpty(builder.Query)
             ? encoded
             : $"{builder.Query[1..]}&{encoded}";
 
         using var timeoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCancellation.CancelAfter(timeout);
+        timeoutCancellation.CancelAfter(_timeout);
         HttpResponseMessage response;
         try
         {
-            response = await client
+            response = await _client
                 .GetAsync(builder.Uri, HttpCompletionOption.ResponseHeadersRead, timeoutCancellation.Token)
                 .ConfigureAwait(false);
         }

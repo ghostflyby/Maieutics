@@ -23,9 +23,7 @@ public sealed class McpServerGenerationTests
         var restricted = BuildPolicy(
             (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe-server"] }));
 
-        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted);
-
-        var assertion26 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        var assertion26 = Assert.ThrowsAny<ArgumentException>(() => McpServerGeneration.EnsureCommandAllowed("/usr/bin/evil-server", restricted));
         Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion26.Message);
     }
 
@@ -52,9 +50,7 @@ public sealed class McpServerGenerationTests
         var restricted = BuildPolicy(
             (PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin/safe"] }));
 
-        var check = () => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted);
-
-        var assertion27 = Assert.ThrowsAny<ArgumentException>(() => check.Invoke());
+        var assertion27 = Assert.ThrowsAny<ArgumentException>(() => McpServerGeneration.EnsureCommandAllowed("/usr/bin/safe-evil", restricted));
         Assert.Matches("(?is)^.*not\\ permitted\\ by\\ the\\ effective\\ policy.*$", assertion27.Message);
     }
 
@@ -90,16 +86,14 @@ public sealed class McpServerGenerationTests
 
     private sealed class FakeToolSurfaceAdjuster(Func<JsonElement, JsonElement?> handler) : IMcpToolSurfaceAdjuster
     {
-        private readonly Lock gate = new();
-        private int invocations;
-        private TaskCompletionSource invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        internal int Invocations => invocations;
+        private readonly Lock _gate = new();
+        private int _invocations;
+        private TaskCompletionSource _invoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         /// <summary>Waits until the adjuster has completed at least <paramref name="count"/>
         /// invocations. Signal-driven: each completed invocation (the handler has run and its
-        /// result is known) completes a fresh source, so the wait needs no polling of
-        /// <see cref="Invocations"/>.</summary>
+        /// result is known) completes a fresh source, so the wait needs no polling
+        /// counter.</summary>
         internal async Task WaitForInvocationsAsync(int count, CancellationToken cancellationToken)
         {
             while (true)
@@ -107,35 +101,35 @@ public sealed class McpServerGenerationTests
                 cancellationToken.ThrowIfCancellationRequested();
 
                 Task signal;
-                lock (gate)
+                lock (_gate)
                 {
-                    if (invocations >= count) return;
+                    if (_invocations >= count) return;
 
-                    signal = invoked.Task;
+                    signal = _invoked.Task;
                 }
 
                 await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 
-        public async Task<JsonElement?> AdjustToolsAsync(
+        public Task<JsonElement?> AdjustToolsAsync(
             string serverId,
             JsonElement listing,
             CancellationToken cancellationToken)
         {
             TaskCompletionSource completed;
-            lock (gate)
+            lock (_gate)
             {
-                invocations++;
-                completed = invoked;
-                invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _invocations++;
+                completed = _invoked;
+                _invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
             var result = handler(listing);
             // Completed only after the handler ran, so an awaiter observes the invocation's
             // outcome, not merely its start.
             completed.TrySetResult();
-            return result;
+            return Task.FromResult(result);
         }
     }
 
@@ -166,7 +160,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         var tool = Assert.Single(lease.Tools);
         Assert.Equal("echo_safe", tool.Name);
         Assert.Equal("Safe echo", tool.Description);
@@ -203,7 +197,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Empty(lease.Tools);
         Assert.Empty(generation.GetInfo().Tools);
         var retirement = generation.Retire();
@@ -233,7 +227,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal(["echo", "echo_alias"], lease.Tools.Select(static function => function.Name));
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hi\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
@@ -259,6 +253,9 @@ public sealed class McpServerGenerationTests
         await using var serverFactory = new StreamServerFactory();
         var definition = CreateStdioDefinition();
         var fail = false;
+        // The test flips `fail` between phases and the fake reads it live by design; the
+        // adjuster callbacks run only while the toggle writes are quiesced.
+        // ReSharper disable once AccessToModifiedClosure
         var adjuster = new FakeToolSurfaceAdjuster(_ =>
         {
             if (fail) return null;
@@ -273,7 +270,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var firstLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                         ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
@@ -288,7 +285,7 @@ public sealed class McpServerGenerationTests
         await adjuster.WaitForInvocationsAsync(2, deadline.Token);
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var refreshedLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                             ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Empty(refreshedLease.Tools);
         var retirement = generation.Retire();
         await refreshedLease.DisposeAsync();
@@ -305,8 +302,10 @@ public sealed class McpServerGenerationTests
         var fail = false;
         JsonElement? lastGood = null;
         // The real chain's sticky semantics, embedded in the fake: a failing backend
-        // keeps the last adjusted listing active.
-        var adjuster = new FakeToolSurfaceAdjuster(listing =>
+        // keeps the last adjusted listing active. The test flips `fail` between phases
+        // and the fake reads it live by design; phase boundaries quiesce the writes.
+        // ReSharper disable once AccessToModifiedClosure
+        var adjuster = new FakeToolSurfaceAdjuster(_ =>
         {
             if (fail) return lastGood;
             lastGood = ParseJson("""[{"aliasOf":"echo","name":"echo_safe"}]""");
@@ -321,7 +320,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var firstLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                         ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
@@ -333,7 +332,7 @@ public sealed class McpServerGenerationTests
         await adjuster.WaitForInvocationsAsync(2, deadline.Token);
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var stickyLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                          ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(stickyLease.Tools).Name);
         var retirement = generation.Retire();
         await stickyLease.DisposeAsync();
@@ -429,7 +428,7 @@ public sealed class McpServerGenerationTests
         clock.Advance(McpServerGeneration.InitialReconnectDelay);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+                    ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
         Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         Assert.Equal(MaieuticsMcpServerState.Connected, generation.GetInfo().State);
         var retirement = generation.Retire();
@@ -475,7 +474,7 @@ public sealed class McpServerGenerationTests
         clock.Advance(doubled);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+                    ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
         Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         var retirement = generation.Retire();
         await lease.DisposeAsync();
@@ -634,10 +633,10 @@ public sealed class McpServerGenerationTests
         Assert.Equal(McpServerTransportKind.Http, httpDefinition.Kind);
 
         Assert.ThrowsAny<JsonException>(() =>
-            {
-                using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
-                return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
-            });
+        {
+            using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
+            return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
+        });
     }
 
     private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false, bool elicitationEnabled = false)
@@ -825,11 +824,11 @@ public sealed class McpServerGenerationTests
     private sealed class StreamServerFactory(bool reportProgress = false, bool requestRoots = false, bool elicit = false)
         : IAsyncDisposable
     {
-        private CancellationTokenSource lifetime = new();
+        private CancellationTokenSource _lifetime = new();
 
         // The client-facing pipe ends are kept per connection: disposing the server does not
         // close them, and completing them is what makes the connected client observe a drop.
-        private readonly List<(McpServer Server, Task Completion, PipeWriter ClientSend, PipeWriter ServerSend)> servers = [];
+        private readonly List<(McpServer Server, Task Completion, PipeWriter ClientSend, PipeWriter ServerSend)> _servers = [];
 
         /// <summary>Makes the next transport creation fail, exercising the supervisor's
         /// reconnect backoff without a real server fault.</summary>
@@ -841,15 +840,15 @@ public sealed class McpServerGenerationTests
         /// succeed.</summary>
         internal async Task DisconnectClientsAsync()
         {
-            CancellationTokenSource previous = lifetime;
-            lifetime = new CancellationTokenSource();
+            CancellationTokenSource previous = _lifetime;
+            _lifetime = new CancellationTokenSource();
             await previous.CancelAsync().ConfigureAwait(false);
             previous.Dispose();
 
             // Sequential with the supervisor's reconnect attempts in these tests: a
             // replacement transport is created only after this returns.
-            var disconnected = servers.ToArray();
-            servers.Clear();
+            var disconnected = _servers.ToArray();
+            _servers.Clear();
             foreach (var (server, _, clientSend, serverSend) in disconnected)
             {
                 // ClientSend EOF fails the client's next outbound write; ServerSend EOF ends
@@ -872,19 +871,19 @@ public sealed class McpServerGenerationTests
 
         public async ValueTask DisposeAsync()
         {
-            await lifetime.CancelAsync();
-            foreach (var (server, _, _, _) in servers) await server.DisposeAsync();
+            await _lifetime.CancelAsync();
+            foreach (var (server, _, _, _) in _servers) await server.DisposeAsync();
 
-            foreach (var (_, completion, _, _) in servers)
+            foreach (var (_, completion, _, _) in _servers)
                 try
                 {
                     await completion;
                 }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
                 {
                 }
 
-            lifetime.Dispose();
+            _lifetime.Dispose();
         }
 
         internal ValueTask<IClientTransport> CreateTransportAsync(
@@ -927,18 +926,18 @@ public sealed class McpServerGenerationTests
                             Description = "Echoes one value.",
                             UseStructuredContent = true
                         })
-                : elicit
-                    ? McpServerTool.Create(
-                        (Func<string, McpServer, CancellationToken, Task<EchoResult>>)ElicitingEcho,
-                        new McpServerToolCreateOptions
-                        {
-                            Name = "echo",
-                            Description = "Echoes one value.",
-                            UseStructuredContent = true
-                        })
-                    : McpServerTool.Create(
-                        AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
-                        new McpServerToolCreateOptions { UseStructuredContent = true });
+                    : elicit
+                        ? McpServerTool.Create(
+                            (Func<string, McpServer, CancellationToken, Task<EchoResult>>)ElicitingEcho,
+                            new McpServerToolCreateOptions
+                            {
+                                Name = "echo",
+                                Description = "Echoes one value.",
+                                UseStructuredContent = true
+                            })
+                        : McpServerTool.Create(
+                            AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
+                            new McpServerToolCreateOptions { UseStructuredContent = true });
             var server = McpServer.Create(
                 serverTransport,
                 new McpServerOptions
@@ -947,7 +946,7 @@ public sealed class McpServerGenerationTests
                     ToolCollection = [tool]
                 },
                 loggerFactory);
-            servers.Add((server, server.RunAsync(lifetime.Token), clientToServer.Writer, serverToClient.Writer));
+            _servers.Add((server, server.RunAsync(_lifetime.Token), clientToServer.Writer, serverToClient.Writer));
             IClientTransport clientTransport = new StreamClientTransport(
                 clientToServer.Writer.AsStream(),
                 serverToClient.Reader.AsStream(),
@@ -1014,5 +1013,8 @@ public sealed class McpServerGenerationTests
         }
     }
 
+    // The value is the tool's structured result; the assertions read the serialized JSON
+    // the client receives, so the property is carried for the tool's wire shape.
+    // ReSharper disable once NotAccessedPositionalProperty.Local
     private sealed record EchoResult(string Value);
 }

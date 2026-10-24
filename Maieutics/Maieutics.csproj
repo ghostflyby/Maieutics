@@ -1,79 +1,79 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <OutputType>Exe</OutputType>
-        <AssemblyName>maieutics</AssemblyName>
-        <Nullable>enable</Nullable>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <InvariantGlobalization>true</InvariantGlobalization>
-        <PublishAot>true</PublishAot>
-        <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT,
-             runtime dlopen resolves the OS library; load-extension APIs are absent from the
-             Apple build but Microsoft.Data.Sqlite never calls them), 'Bundled' ships
-             e_sqlite3 as a side-by-side native file. Platform defaults: macOS/Windows =
-             System (both OSes ship a usable sqlite3); Linux = Bundled (distributions vary).
-             Override with -p:SqliteProviderMode=Bundled|System. -->
-        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">System</SqliteProviderMode>
-        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
-        <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
-        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLITE_PROVIDER_SQLITE3</DefineConstants>
-        <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLITE_PROVIDER_WINSQLITE3</DefineConstants>
-        <DefineConstants Condition="'$(SqliteProviderMode)' == 'Bundled'">$(DefineConstants);SQLite_PROVIDER_BUNDLED</DefineConstants>
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-        <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
-    </PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>maieutics</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot>true</PublishAot>
+    <!-- SQLite provider mode: 'System' P/Invokes the OS sqlite3 (true single-file AOT,
+         runtime dlopen resolves the OS library; load-extension APIs are absent from the
+         Apple build but Microsoft.Data.Sqlite never calls them), 'Bundled' ships
+         e_sqlite3 as a side-by-side native file. Platform defaults: macOS/Windows =
+         System (both OSes ship a usable sqlite3); Linux = Bundled (distributions vary).
+         Override with -p:SqliteProviderMode=Bundled|System. -->
+    <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">System</SqliteProviderMode>
+    <SqliteProviderMode Condition="'$(SqliteProviderMode)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">System</SqliteProviderMode>
+    <SqliteProviderMode Condition="'$(SqliteProviderMode)' == ''">Bundled</SqliteProviderMode>
+    <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))">$(DefineConstants);SQLITE_PROVIDER_SQLITE3</DefineConstants>
+    <DefineConstants Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);SQLITE_PROVIDER_WINSQLITE3</DefineConstants>
+    <DefineConstants Condition="'$(SqliteProviderMode)' == 'Bundled'">$(DefineConstants);SQLite_PROVIDER_BUNDLED</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+  </PropertyGroup>
 
-    <ItemGroup>
-        <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj" />
-    </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Maieutics.Agent\Maieutics.Agent.csproj"/>
+  </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Include="Ghostflyby.Pty" Version="1.0.0" />
-        <!-- Core variant: no default SQLite engine dependency. The engine comes from the
-             SqliteProviderMode-selected SQLitePCLRaw provider below (see the mode notes at
-             the top of this file). -->
-        <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.13" />
-        <!-- Direct reference overrides the vulnerable 2.1.11 transitive (GHSA-2m69-gcr7-jv3q). -->
-        <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5" />
-        <PackageReference Include="SQLitePCLRaw.provider.sqlite3"
-                          Version="3.0.5"
-                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))" />
-        <PackageReference Include="SQLitePCLRaw.provider.winsqlite3"
-                          Version="3.0.5"
-                          Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))" />
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
-                          Version="3.0.5"
-                          Condition="'$(SqliteProviderMode)' == 'Bundled'" />
-        <PackageReference Include="Microsoft.Extensions.AI" Version="10.11.0" />
-        <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
-        <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0" />
-        <PackageReference Include="XTerm.NET" Version="3.0.0" />
-    </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Ghostflyby.Pty" Version="1.0.0"/>
+    <!-- Core variant: no default SQLite engine dependency. The engine comes from the
+         SqliteProviderMode-selected SQLitePCLRaw provider below (see the mode notes at
+         the top of this file). -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.13"/>
+    <!-- Direct reference overrides the vulnerable 2.1.11 transitive (GHSA-2m69-gcr7-jv3q). -->
+    <PackageReference Include="SQLitePCLRaw.core" Version="3.0.5"/>
+    <PackageReference Include="SQLitePCLRaw.provider.sqlite3"
+                      Version="3.0.5"
+                      Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('OSX'))"/>
+    <PackageReference Include="SQLitePCLRaw.provider.winsqlite3"
+                      Version="3.0.5"
+                      Condition="'$(SqliteProviderMode)' == 'System' and $([MSBuild]::IsOSPlatform('Windows'))"/>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                      Version="3.0.5"
+                      Condition="'$(SqliteProviderMode)' == 'Bundled'"/>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.11.0"/>
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0"/>
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.3.0"/>
+    <PackageReference Include="XTerm.NET" Version="3.0.0"/>
+  </ItemGroup>
 
-    <ItemGroup>
-        <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+  </ItemGroup>
 
 
-    <!-- The kernel materializes these Deno packages from embedded resources at
-         runtime (PluginHostModule / DenoReplModule): every runtime .ts file of the
-         six packages is embedded by glob, so adding a module can never be missed:
-         the LogicalName is the package-relative path the materializers reverse
-         (RecursiveDir covers only subdirectories, so each batch prepends its
-         package name). Tests run in the deno workspace itself; the VS Code
-         extension and research scripts ship through their own flows. -->
-    <ItemGroup>
-        <DenoRuntimeModule Include="..\deno\maieutics-repl-client\**\*.ts" Package="maieutics-repl-client" Exclude="..\deno\maieutics-repl-client\**\*_test.ts" />
-        <DenoRuntimeModule Include="..\deno\maieutics-deno-repl\**\*.ts" Package="maieutics-deno-repl" Exclude="..\deno\maieutics-deno-repl\**\*_test.ts" />
-        <DenoRuntimeModule Include="..\deno\maieutics-plugin-sdk\**\*.ts" Package="maieutics-plugin-sdk" Exclude="..\deno\maieutics-plugin-sdk\**\*_test.ts" />
-        <DenoRuntimeModule Include="..\deno\maieutics-plugin-host\**\*.ts" Package="maieutics-plugin-host" Exclude="..\deno\maieutics-plugin-host\**\*_test.ts" />
-        <DenoRuntimeModule Include="..\deno\maieutics-runtime\**\*.ts" Package="maieutics-runtime" Exclude="..\deno\maieutics-runtime\**\*_test.ts;..\deno\maieutics-runtime\test_fixtures\**" />
-        <DenoRuntimeModule Include="..\deno\shared\**\*.ts" Package="shared" Exclude="..\deno\shared\**\*_test.ts" />
-        <EmbeddedResource Include="@(DenoRuntimeModule)" LogicalName="Deno/%(Package)/%(RecursiveDir)%(Filename)%(Extension)" />
-        <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Deno/maieutics-deno-repl/deno.json" />
-        <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Deno/maieutics-deno-repl/deno.lock" />
-        <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Deno/maieutics-plugin-sdk/deno.json" />
-    </ItemGroup>
+  <!-- The kernel materializes these Deno packages from embedded resources at
+       runtime (PluginHostModule / DenoReplModule): every runtime .ts file of the
+       six packages is embedded by glob, so adding a module can never be missed:
+       the LogicalName is the package-relative path the materializers reverse
+       (RecursiveDir covers only subdirectories, so each batch prepends its
+       package name). Tests run in the deno workspace itself; the VS Code
+       extension and research scripts ship through their own flows. -->
+  <ItemGroup>
+    <DenoRuntimeModule Include="..\deno\maieutics-repl-client\**\*.ts" Package="maieutics-repl-client" Exclude="..\deno\maieutics-repl-client\**\*_test.ts"/>
+    <DenoRuntimeModule Include="..\deno\maieutics-deno-repl\**\*.ts" Package="maieutics-deno-repl" Exclude="..\deno\maieutics-deno-repl\**\*_test.ts"/>
+    <DenoRuntimeModule Include="..\deno\maieutics-plugin-sdk\**\*.ts" Package="maieutics-plugin-sdk" Exclude="..\deno\maieutics-plugin-sdk\**\*_test.ts"/>
+    <DenoRuntimeModule Include="..\deno\maieutics-plugin-host\**\*.ts" Package="maieutics-plugin-host" Exclude="..\deno\maieutics-plugin-host\**\*_test.ts"/>
+    <DenoRuntimeModule Include="..\deno\maieutics-runtime\**\*.ts" Package="maieutics-runtime" Exclude="..\deno\maieutics-runtime\**\*_test.ts;..\deno\maieutics-runtime\test_fixtures\**"/>
+    <DenoRuntimeModule Include="..\deno\shared\**\*.ts" Package="shared" Exclude="..\deno\shared\**\*_test.ts"/>
+    <EmbeddedResource Include="@(DenoRuntimeModule)" LogicalName="Deno/%(Package)/%(RecursiveDir)%(Filename)%(Extension)"/>
+    <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Deno/maieutics-deno-repl/deno.json"/>
+    <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Deno/maieutics-deno-repl/deno.lock"/>
+    <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Deno/maieutics-plugin-sdk/deno.json"/>
+  </ItemGroup>
 
 </Project>

@@ -12,15 +12,15 @@ namespace Maieutics.Agent;
 /// <summary>Runs a provider-neutral Agent conversation over Microsoft.Extensions.AI.</summary>
 public sealed class AgentSession : IAgentSession
 {
-    private readonly ImmutableArray<AIFunction> fixedTools;
-    private readonly IAgentRunProfileProvider profileProvider;
-    private readonly IAgentTranscriptStore? transcriptStore;
-    private readonly IAgentObjectStore? objectStore;
-    private readonly AgentSubagentHost subagentHost;
-    private readonly Lock transcriptGate = new();
-    private AgentTranscriptState canonicalState;
-    private int runInProgress;
-    private AgentRun? activeRun;
+    private readonly ImmutableArray<AIFunction> _fixedTools;
+    private readonly IAgentRunProfileProvider _profileProvider;
+    private readonly IAgentTranscriptStore? _transcriptStore;
+    private readonly IAgentObjectStore? _objectStore;
+    private readonly AgentSubagentHost _subagentHost;
+    private readonly Lock _transcriptGate = new();
+    private AgentTranscriptState _canonicalState;
+    private int _runInProgress;
+    private AgentRun? _activeRun;
 
     /// <summary>Initializes an Agent session.</summary>
     public AgentSession(
@@ -63,14 +63,14 @@ public sealed class AgentSession : IAgentSession
         IAgentObjectStore? objectStore = null,
         AgentSessionId? sessionId = null)
     {
-        this.profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this.transcriptStore = transcriptStore;
-        this.objectStore = objectStore;
-        fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
+        this._profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        this._transcriptStore = transcriptStore;
+        this._objectStore = objectStore;
+        _fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
         Id = sessionId ?? AgentSessionId.Create();
-        canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
-        subagentHost = new AgentSubagentHost(Id, profileProvider, objectStore);
+        _canonicalState = AgentTranscriptCodec.CreateInitialState(Id);
+        _subagentHost = new AgentSubagentHost(Id, profileProvider, objectStore);
     }
 
     /// <summary>Creates a session whose canonical history is restored from a stored transcript.</summary>
@@ -78,6 +78,8 @@ public sealed class AgentSession : IAgentSession
     /// <param name="transcriptStore">The store the session was persisted in; new turns are appended to it.</param>
     /// <param name="sessionId">The stored session identity to restore.</param>
     /// <param name="tools">The immutable set of tools available to the session.</param>
+    /// <param name="objectStore">The optional object store the restored session binds for blob
+    /// content and object views; null when object persistence is unavailable.</param>
     /// <returns>A session whose committed history contains every stored turn of the session.</returns>
     /// <exception cref="AgentSessionNotFoundException">The store holds no session with this identity.</exception>
     /// <exception cref="AgentContentCompatibilityException">A stored turn cannot be represented canonically.</exception>
@@ -161,9 +163,9 @@ public sealed class AgentSession : IAgentSession
     /// <summary>Installs a restored canonical state; called once by <see cref="Resume" /> before the session is visible.</summary>
     private void InitializeRestoredState(AgentTranscriptState restoredState)
     {
-        lock (transcriptGate)
+        lock (_transcriptGate)
         {
-            canonicalState = restoredState;
+            _canonicalState = restoredState;
         }
     }
 
@@ -171,11 +173,11 @@ public sealed class AgentSession : IAgentSession
     public AgentSessionId Id { get; }
 
     /// <inheritdoc />
-    public bool IsRunInProgress => Volatile.Read(ref runInProgress) != 0;
+    public bool IsRunInProgress => Volatile.Read(ref _runInProgress) != 0;
 
     /// <summary>Gets the session's subagent owner. It holds no state between runs: children
     /// are tracked per parent run and terminated when the parent run terminates.</summary>
-    internal AgentSubagentHost SubagentHost => subagentHost;
+    internal AgentSubagentHost SubagentHost => _subagentHost;
 
     /// <inheritdoc />
     public async Task<IAgentRun> StartTurnAsync(
@@ -185,18 +187,18 @@ public sealed class AgentSession : IAgentSession
         ArgumentNullException.ThrowIfNull(turn);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (Interlocked.CompareExchange(ref runInProgress, 1, 0) != 0) throw new AgentTurnInProgressException();
+        if (Interlocked.CompareExchange(ref _runInProgress, 1, 0) != 0) throw new AgentTurnInProgressException();
 
         IAgentRunProfileLease? profileLease = null;
         try
         {
-            profileLease = await profileProvider.AcquireAsync(cancellationToken).ConfigureAwait(false) ??
+            profileLease = await _profileProvider.AcquireAsync(cancellationToken).ConfigureAwait(false) ??
                            throw new InvalidOperationException("The Agent run profile provider returned a null lease.");
             cancellationToken.ThrowIfCancellationRequested();
             var profile = profileLease.Profile ??
                           throw new InvalidOperationException("The Agent run profile lease returned a null profile.");
             profile.Options.Validate();
-            var tools = CreateToolRegistry(profile.Tools.Concat(fixedTools));
+            var tools = CreateToolRegistry(profile.Tools.Concat(_fixedTools));
             ValidateInput(turn, profile.Options);
 
             var userMessage = AgentTranscriptCodec.DetachPrivateMessage(
@@ -209,13 +211,13 @@ public sealed class AgentSession : IAgentSession
                 profile,
                 tools,
                 profile.Options.EventBufferCapacity);
-            Volatile.Write(ref activeRun, run);
+            Volatile.Write(ref _activeRun, run);
             run.Start();
             return run;
         }
         catch
         {
-            Volatile.Write(ref runInProgress, 0);
+            Volatile.Write(ref _runInProgress, 0);
             if (profileLease is not null) await profileLease.DisposeAsync().ConfigureAwait(false);
 
             throw;
@@ -226,9 +228,9 @@ public sealed class AgentSession : IAgentSession
     public AgentTranscript GetTranscriptSnapshot()
     {
         AgentTranscriptState snapshot;
-        lock (transcriptGate)
+        lock (_transcriptGate)
         {
-            snapshot = canonicalState;
+            snapshot = _canonicalState;
         }
 
         return AgentTranscriptCodec.CreatePublicTranscript(snapshot);
@@ -240,7 +242,7 @@ public sealed class AgentSession : IAgentSession
         var options = profile.Options;
         ValidateModelCapabilities(profile, run.Tools.Count);
         var recordingClient = new RecordingChatClient(profile.ChatClient);
-        var toolState = new RunToolState(this, run, recordingClient, options, objectStore);
+        var toolState = new RunToolState(this, run, recordingClient, options, _objectStore);
         recordingClient.SetUpdateObserver(toolState.ObserveProviderUpdateAsync);
         using var functionClient = new FunctionInvokingChatClient(recordingClient)
         {
@@ -326,17 +328,17 @@ public sealed class AgentSession : IAgentSession
     {
         var detachedTurn = AgentTranscriptCodec.DetachPrivateTurn(runId, modelIdentity, turnMessages, truncated);
         AgentTranscriptState committed;
-        lock (transcriptGate)
+        lock (_transcriptGate)
         {
             // The durable store commits before the in-memory state changes, so a store failure
             // rolls the turn back instead of leaving memory ahead of persisted history.
-            if (transcriptStore is not null)
-                transcriptStore.AppendTurn(
+            if (_transcriptStore is not null)
+                _transcriptStore.AppendTurn(
                     Id,
                     new AgentTranscriptTurn(runId, detachedTurn.Messages, modelIdentity, truncated),
                     AgentTranscriptCodec.CollectObjectReferences(detachedTurn.Messages));
 
-            var builder = canonicalState.Turns.ToBuilder();
+            var builder = _canonicalState.Turns.ToBuilder();
             builder.Add(detachedTurn);
 
             while (builder.Count > options.MaxRetainedTurns ||
@@ -345,9 +347,9 @@ public sealed class AgentSession : IAgentSession
 
             committed = new AgentTranscriptState(
                 Id,
-                checked(canonicalState.Version + 1),
+                checked(_canonicalState.Version + 1),
                 builder.ToImmutable());
-            canonicalState = committed;
+            _canonicalState = committed;
         }
 
         return AgentTranscriptCodec.CreatePublicTranscript(committed);
@@ -377,9 +379,9 @@ public sealed class AgentSession : IAgentSession
     private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
     {
         AgentTranscriptState snapshot;
-        lock (transcriptGate)
+        lock (_transcriptGate)
         {
-            snapshot = canonicalState;
+            snapshot = _canonicalState;
         }
 
         // Committed turns are immutable and cache their detached serialization, so replay
@@ -518,8 +520,8 @@ public sealed class AgentSession : IAgentSession
 
     private void ReleaseRun()
     {
-        Volatile.Write(ref activeRun, null);
-        Volatile.Write(ref runInProgress, 0);
+        Volatile.Write(ref _activeRun, null);
+        Volatile.Write(ref _runInProgress, 0);
     }
 
     /// <summary>Exposes a spawner bound to the session's in-flight run, or null when no run
@@ -529,8 +531,8 @@ public sealed class AgentSession : IAgentSession
     /// per-turn budget — instead of a detached one.</summary>
     internal IAgentSubagentSpawner? TryCreateActiveRunSpawner()
     {
-        if (Volatile.Read(ref activeRun) is not { } run) return null;
-        return subagentHost.CreateSpawner(run.Id, run.Tools, run.Profile.Options);
+        if (Volatile.Read(ref _activeRun) is not { } run) return null;
+        return _subagentHost.CreateSpawner(run.Id, run.Tools, run.Profile.Options);
     }
 
     private sealed class FixedAgentRunProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
@@ -559,15 +561,15 @@ public sealed class AgentSession : IAgentSession
         AgentSessionOptions options,
         IAgentObjectStore? objectStore)
     {
-        private readonly Dictionary<string, ToolInvocationRecord> calls = new(StringComparer.Ordinal);
-        private readonly List<ChatMessage> intermediateMessages = [];
-        private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> messageIds = [];
-        private readonly HashSet<int> publishedIterations = [];
-        private int responseCharacters;
-        private int toolCallCount;
-        private long usageInputTokens;
-        private long usageOutputTokens;
-        private long usageTotalTokens;
+        private readonly Dictionary<string, ToolInvocationRecord> _calls = new(StringComparer.Ordinal);
+        private readonly List<ChatMessage> _intermediateMessages = [];
+        private readonly Dictionary<(int Iteration, string MessageId), AgentMessageId> _messageIds = [];
+        private readonly HashSet<int> _publishedIterations = [];
+        private int _responseCharacters;
+        private int _toolCallCount;
+        private long _usageInputTokens;
+        private long _usageOutputTokens;
+        private long _usageTotalTokens;
 
         /// <summary>Accumulates the provider-reported token usage. Usage chunks carry no
         /// text, so this must run before the text fast-path in the update observer.</summary>
@@ -575,22 +577,22 @@ public sealed class AgentSession : IAgentSession
         {
             foreach (var usage in update.Contents.OfType<UsageContent>())
             {
-                usageInputTokens += usage.Details.InputTokenCount ?? 0;
-                usageOutputTokens += usage.Details.OutputTokenCount ?? 0;
-                usageTotalTokens += usage.Details.TotalTokenCount ?? 0;
+                _usageInputTokens += usage.Details.InputTokenCount ?? 0;
+                _usageOutputTokens += usage.Details.OutputTokenCount ?? 0;
+                _usageTotalTokens += usage.Details.TotalTokenCount ?? 0;
             }
         }
 
         /// <summary>The run's summed token usage, or <see langword="null" /> when the
         /// provider reported none.</summary>
         internal UsageDetails? BuildUsage() =>
-            usageInputTokens == 0 && usageOutputTokens == 0 && usageTotalTokens == 0
+            _usageInputTokens == 0 && _usageOutputTokens == 0 && _usageTotalTokens == 0
                 ? null
                 : new UsageDetails
                 {
-                    InputTokenCount = usageInputTokens,
-                    OutputTokenCount = usageOutputTokens,
-                    TotalTokenCount = usageTotalTokens
+                    InputTokenCount = _usageInputTokens,
+                    OutputTokenCount = _usageOutputTokens,
+                    TotalTokenCount = _usageTotalTokens
                 };
 
         internal async ValueTask<object?> InvokeAsync(
@@ -614,7 +616,7 @@ public sealed class AgentSession : IAgentSession
                     $"The model supplied malformed arguments for tool '{function.Name}'.",
                     callContent.Exception);
 
-            if (!calls.TryGetValue(callContent.CallId, out var record) ||
+            if (!_calls.TryGetValue(callContent.CallId, out var record) ||
                 !ReferenceEquals(record.Function, function))
                 throw new AgentToolArgumentsException(
                     "The function invoker could not correlate the requested Agent tool.");
@@ -724,7 +726,7 @@ public sealed class AgentSession : IAgentSession
                     "application/json");
             }
 
-            intermediateMessages.Add(new ChatMessage(
+            _intermediateMessages.Add(new ChatMessage(
                 ChatRole.Tool,
                 [
                     new FunctionResultContent(record.ProviderCallId, envelope)
@@ -796,7 +798,7 @@ public sealed class AgentSession : IAgentSession
 
             // Report "remembered" only when something actually remembers it: a host that
             // configured no memory must not tell the UI the tool is allowed for the session.
-            var remembered = decision.Approved && decision.AlwaysAllow && approval.Memory is not null;
+            var remembered = decision is { Approved: true, AlwaysAllow: true } && approval.Memory is not null;
             if (remembered)
                 approval.Memory?.AllowAlways(owner.Id, function.Name, classification);
 
@@ -829,7 +831,7 @@ public sealed class AgentSession : IAgentSession
             var envelope = ToolJson.CreateFailureEnvelope(
                 "tool_denied",
                 BoundDenialReason(reason));
-            intermediateMessages.Add(new ChatMessage(
+            _intermediateMessages.Add(new ChatMessage(
                 ChatRole.Tool,
                 [new FunctionResultContent(record.ProviderCallId, envelope)]));
             await run.WriteEventAsync(
@@ -882,8 +884,8 @@ public sealed class AgentSession : IAgentSession
             var text = update.Text;
             if (string.IsNullOrEmpty(text)) return;
 
-            responseCharacters = checked(responseCharacters + text.Length);
-            if (responseCharacters > options.MaxResponseCharacters)
+            _responseCharacters = checked(_responseCharacters + text.Length);
+            if (_responseCharacters > options.MaxResponseCharacters)
                 throw new AgentResponseLimitExceededException(options.MaxResponseCharacters);
 
             await run.WriteEventAsync(
@@ -909,7 +911,7 @@ public sealed class AgentSession : IAgentSession
             List<ChatMessage> messages =
             [
                 run.UserMessage,
-                .. intermediateMessages
+                .. _intermediateMessages
             ];
             if (messages[^1].Role != ChatRole.Assistant)
                 throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
@@ -929,7 +931,7 @@ public sealed class AgentSession : IAgentSession
 
         private async Task PublishIterationMessagesAsync(int iteration, CancellationToken cancellationToken)
         {
-            if (!publishedIterations.Add(iteration)) return;
+            if (!_publishedIterations.Add(iteration)) return;
 
             var recorded = recordingClient.GetIteration(iteration);
             if (recorded.ResponseMessages
@@ -945,7 +947,7 @@ public sealed class AgentSession : IAgentSession
                         $"The model provider returned an unsupported '{responseMessage.Role}' response message.");
 
                 var assistant = responseMessage.Clone();
-                intermediateMessages.Add(assistant);
+                _intermediateMessages.Add(assistant);
                 var messageId = GetMessageId(iteration, responseMessage.MessageId);
                 await run.WriteEventAsync(
                     sequence => new AgentMessageCompleted(
@@ -960,10 +962,10 @@ public sealed class AgentSession : IAgentSession
         private AgentMessageId GetMessageId(int iteration, string? providerMessageId)
         {
             var key = (iteration, providerMessageId ?? string.Empty);
-            if (messageIds.TryGetValue(key, out var existing)) return existing;
+            if (_messageIds.TryGetValue(key, out var existing)) return existing;
 
             var created = AgentMessageId.Create();
-            messageIds.Add(key, created);
+            _messageIds.Add(key, created);
             return created;
         }
 
@@ -974,7 +976,7 @@ public sealed class AgentSession : IAgentSession
                          .SelectMany(static message => message.Contents)
                          .OfType<FunctionCallContent>())
             {
-                if (calls.ContainsKey(call.CallId)) continue;
+                if (_calls.ContainsKey(call.CallId)) continue;
 
                 if (!run.Tools.TryGetValue(call.Name, out var function))
                     throw new AgentToolArgumentsException(
@@ -985,7 +987,7 @@ public sealed class AgentSession : IAgentSession
                         $"The model supplied malformed arguments for tool '{call.Name}'.",
                         call.Exception);
 
-                if (Interlocked.Increment(ref toolCallCount) > options.MaxToolCallsPerTurn)
+                if (Interlocked.Increment(ref _toolCallCount) > options.MaxToolCallsPerTurn)
                     throw new AgentToolLimitExceededException(
                         nameof(AgentSessionOptions.MaxToolCallsPerTurn),
                         options.MaxToolCallsPerTurn);
@@ -996,7 +998,7 @@ public sealed class AgentSession : IAgentSession
                         nameof(AgentSessionOptions.MaxToolArgumentsBytes),
                         options.MaxToolArgumentsBytes);
 
-                calls.Add(call.CallId, new ToolInvocationRecord(
+                _calls.Add(call.CallId, new ToolInvocationRecord(
                     AgentToolCallId.Create(),
                     call.CallId,
                     function,
@@ -1022,17 +1024,17 @@ public sealed class AgentSession : IAgentSession
 
     private sealed class RecordingChatClient(IChatClient innerClient) : IChatClient
     {
-        private readonly Lock gate = new();
-        private readonly List<RecordedIteration> iterations = [];
-        private int iterationCount;
-        private Func<int, ChatResponseUpdate, CancellationToken, ValueTask>? updateObserver;
+        private readonly Lock _gate = new();
+        private readonly List<RecordedIteration> _iterations = [];
+        private int _iterationCount;
+        private Func<int, ChatResponseUpdate, CancellationToken, ValueTask>? _updateObserver;
 
         public async Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-            var iteration = Interlocked.Increment(ref iterationCount);
+            var iteration = Interlocked.Increment(ref _iterationCount);
             var request = messages.Select(static message => message.Clone()).ToArray();
             var response = await innerClient
                 .GetResponseAsync(request, options, cancellationToken)
@@ -1048,7 +1050,7 @@ public sealed class AgentSession : IAgentSession
             CancellationToken cancellationToken = default)
         {
             return RecordStreamingAsync(
-                Interlocked.Increment(ref iterationCount),
+                Interlocked.Increment(ref _iterationCount),
                 messages.Select(static message => message.Clone()).ToArray(),
                 options,
                 cancellationToken);
@@ -1067,27 +1069,27 @@ public sealed class AgentSession : IAgentSession
             Func<int, ChatResponseUpdate, CancellationToken, ValueTask> observer)
         {
             ArgumentNullException.ThrowIfNull(observer);
-            if (Interlocked.CompareExchange(ref updateObserver, observer, null) is not null)
+            if (Interlocked.CompareExchange(ref _updateObserver, observer, null) is not null)
                 throw new InvalidOperationException("A recording update observer is already configured.");
         }
 
         internal IReadOnlyList<RecordedIteration> GetIterations()
         {
-            lock (gate)
+            lock (_gate)
             {
-                return iterations.ToArray();
+                return _iterations.ToArray();
             }
         }
 
         internal RecordedIteration GetIteration(int iteration)
         {
-            lock (gate)
+            lock (_gate)
             {
-                if (iteration < 1 || iteration > iterations.Count)
+                if (iteration < 1 || iteration > _iterations.Count)
                     throw new AgentUnsupportedResponseException(
                         $"Agent tool invocation referenced unavailable model iteration {iteration}.");
 
-                return iterations[iteration - 1];
+                return _iterations[iteration - 1];
             }
         }
 
@@ -1104,7 +1106,7 @@ public sealed class AgentSession : IAgentSession
             {
                 ValidateConversationId(update.ConversationId);
                 updates.Add(update.Clone());
-                var observer = updateObserver;
+                var observer = _updateObserver;
                 if (observer is not null) await observer(iteration, update, cancellationToken).ConfigureAwait(false);
 
                 yield return update;
@@ -1128,21 +1130,24 @@ public sealed class AgentSession : IAgentSession
             var iterationRecord = new RecordedIteration(
                 requestMessages.Select(static message => message.Clone()).ToArray(),
                 responseMessages.Select(static message => message.Clone()).ToArray());
-            lock (gate)
+            lock (_gate)
             {
                 // The recorded iteration number is the index the function loop uses for tool
                 // correlation (iterations[iteration - 1]), so recording must stay dense and in
                 // call order. A stream that was started but never enumerated to completion would
                 // otherwise shift every later index silently; fail loudly instead.
-                if (iteration != iterations.Count + 1)
+                if (iteration != _iterations.Count + 1)
                     throw new AgentUnsupportedResponseException(
                         $"The model provider recorded model iteration {iteration} out of order " +
-                        $"after {iterations.Count} completed iterations.");
+                        $"after {_iterations.Count} completed iterations.");
 
-                iterations.Add(iterationRecord);
+                _iterations.Add(iterationRecord);
             }
         }
 
+        // Both sides of every iteration are retained whole: the transcript assertions read
+        // the responses, and the requests are kept for the recording's debugging fidelity.
+        // ReSharper disable once NotAccessedPositionalProperty.Local
         internal sealed record RecordedIteration(
             IReadOnlyList<ChatMessage> RequestMessages,
             IReadOnlyList<ChatMessage> ResponseMessages);
@@ -1163,12 +1168,12 @@ public sealed class AgentSession : IAgentSession
         ImmutableDictionary<string, AIFunction> tools,
         int eventBufferCapacity) : IAgentRun
     {
-        private readonly CancellationTokenSource cancellation = new();
+        private readonly CancellationTokenSource _cancellation = new();
 
-        private readonly TaskCompletionSource<AgentRunResult> completion =
+        private readonly TaskCompletionSource<AgentRunResult> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        private readonly Channel<AgentEvent> events = Channel.CreateBounded<AgentEvent>(new BoundedChannelOptions(
+        private readonly Channel<AgentEvent> _events = Channel.CreateBounded<AgentEvent>(new BoundedChannelOptions(
             eventBufferCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -1176,11 +1181,11 @@ public sealed class AgentSession : IAgentSession
             SingleWriter = false
         });
 
-        private Task backgroundTask = Task.CompletedTask;
-        private int disposed;
-        private int enumerationStarted;
-        private long sequence;
-        private int started;
+        private Task _backgroundTask = Task.CompletedTask;
+        private int _disposed;
+        private int _enumerationStarted;
+        private long _sequence;
+        private int _started;
 
         // Serializes every event write: sequence allocation and enqueue happen as one atomic
         // step, so concurrent producers (a tool reporting progress from several threads) cannot
@@ -1189,7 +1194,7 @@ public sealed class AgentSession : IAgentSession
         // It is deliberately not disposed: it never exposes a wait handle, and a stray tool
         // reporter that races disposal must observe the typed run-completed failure rather than
         // ObjectDisposedException.
-        private readonly SemaphoreSlim writeGate = new(1, 1);
+        private readonly SemaphoreSlim _writeGate = new(1, 1);
 
         internal ChatMessage UserMessage { get; } = userMessage;
 
@@ -1203,47 +1208,47 @@ public sealed class AgentSession : IAgentSession
 
         public IAsyncEnumerable<AgentEvent> Events => ReadEventsAsync();
 
-        public Task<AgentRunResult> Completion => completion.Task;
+        public Task<AgentRunResult> Completion => _completion.Task;
 
         public async Task CancelAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                await cancellation.CancelAsync();
+                await _cancellation.CancelAsync();
             }
             catch (ObjectDisposedException)
             {
             }
 
-            await backgroundTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _backgroundTask.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-                await backgroundTask.ConfigureAwait(false);
+                await _backgroundTask.ConfigureAwait(false);
                 return;
             }
 
-            await cancellation.CancelAsync();
-            await backgroundTask.ConfigureAwait(false);
-            cancellation.Dispose();
+            await _cancellation.CancelAsync();
+            await _backgroundTask.ConfigureAwait(false);
+            _cancellation.Dispose();
         }
 
         internal void Start()
         {
-            if (Interlocked.Exchange(ref started, 1) != 0)
+            if (Interlocked.Exchange(ref _started, 1) != 0)
                 throw new InvalidOperationException("The Agent run has already started.");
 
-            backgroundTask = Task.Run(ExecuteAsync);
+            _backgroundTask = Task.Run(ExecuteAsync);
         }
 
         // Sequence numbers are allocated inside the write gate; keeping this private keeps
         // allocation and enqueue atomic by construction.
         private long NextSequence()
         {
-            return Interlocked.Increment(ref sequence);
+            return Interlocked.Increment(ref _sequence);
         }
 
         /// <summary>Allocates the event's run-local sequence number and enqueues it as one
@@ -1252,13 +1257,13 @@ public sealed class AgentSession : IAgentSession
         /// surface as <see cref="AgentRunCompletedException" /> rather than ChannelClosedException.</summary>
         internal async ValueTask WriteEventAsync(Func<long, AgentEvent> createEvent, CancellationToken cancellationToken)
         {
-            await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var agentEvent = createEvent(NextSequence());
                 try
                 {
-                    await events.Writer.WriteAsync(agentEvent, cancellationToken).ConfigureAwait(false);
+                    await _events.Writer.WriteAsync(agentEvent, cancellationToken).ConfigureAwait(false);
                 }
                 catch (ChannelClosedException exception)
                 {
@@ -1267,7 +1272,7 @@ public sealed class AgentSession : IAgentSession
             }
             finally
             {
-                writeGate.Release();
+                _writeGate.Release();
             }
         }
 
@@ -1279,9 +1284,9 @@ public sealed class AgentSession : IAgentSession
             var canceled = false;
             try
             {
-                prepared = await owner.ExecuteRunAsync(this, cancellation.Token).ConfigureAwait(false);
+                prepared = await owner.ExecuteRunAsync(this, _cancellation.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
             {
                 canceled = true;
             }
@@ -1304,7 +1309,7 @@ public sealed class AgentSession : IAgentSession
                     failure = exception;
                 }
 
-                events.Writer.TryComplete();
+                _events.Writer.TryComplete();
                 try
                 {
                     await profileLease.DisposeAsync().ConfigureAwait(false);
@@ -1335,21 +1340,21 @@ public sealed class AgentSession : IAgentSession
             }
 
             if (failure is not null)
-                completion.TrySetException(failure);
+                _completion.TrySetException(failure);
             else if (canceled)
-                completion.TrySetCanceled(cancellation.Token);
+                _completion.TrySetCanceled(_cancellation.Token);
             else
-                completion.TrySetResult(result ?? throw new InvalidOperationException(
+                _completion.TrySetResult(result ?? throw new InvalidOperationException(
                     "The Agent run completed without a result."));
         }
 
         private async IAsyncEnumerable<AgentEvent> ReadEventsAsync(
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Exchange(ref enumerationStarted, 1) != 0)
+            if (Interlocked.Exchange(ref _enumerationStarted, 1) != 0)
                 throw new InvalidOperationException("Agent run events support only one consumer.");
 
-            await foreach (var agentEvent in events.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (var agentEvent in _events.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 yield return agentEvent;
         }
     }

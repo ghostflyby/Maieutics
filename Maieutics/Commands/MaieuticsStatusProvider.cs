@@ -4,6 +4,7 @@ using Maieutics.DenoRepl;
 using Maieutics.Execution;
 using Maieutics.Mcp;
 using Maieutics.Plugins;
+using Maieutics.Skills;
 
 namespace Maieutics.Commands;
 
@@ -14,37 +15,37 @@ internal sealed class MaieuticsStatusProvider(
     PluginHostManager pluginHosts,
     IMaieuticsMcpController mcpController,
     DenoReplRegistry replRegistry,
-    Skills.SkillCatalog skillCatalog)
+    SkillCatalog skillCatalog)
 {
-    private readonly IMaieuticsMcpController mcpController =
+    private readonly IMaieuticsMcpController _mcpController =
         mcpController ?? throw new ArgumentNullException(nameof(mcpController));
 
-    private readonly PluginHostManager pluginHosts =
+    private readonly PluginHostManager _pluginHosts =
         pluginHosts ?? throw new ArgumentNullException(nameof(pluginHosts));
 
-    private readonly DenoReplRegistry replRegistry =
+    private readonly DenoReplRegistry _replRegistry =
         replRegistry ?? throw new ArgumentNullException(nameof(replRegistry));
 
-    private readonly IMaieuticsRuntimeConfiguration runtimeConfiguration =
+    private readonly IMaieuticsRuntimeConfiguration _runtimeConfiguration =
         runtimeConfiguration ?? throw new ArgumentNullException(nameof(runtimeConfiguration));
 
-    private readonly IAgentSession session = session ?? throw new ArgumentNullException(nameof(session));
+    private readonly IAgentSession _session = session ?? throw new ArgumentNullException(nameof(session));
 
-    private readonly Workspace workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+    private readonly Workspace _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
 
     internal MaieuticsStatusSnapshot Capture()
     {
         var skills = skillCatalog.Current;
         return new MaieuticsStatusSnapshot(
-            runtimeConfiguration.GetStatus(),
-            workspace.Capture(),
-            pluginHosts.GetStatus(),
-            mcpController.GetMcpServers(),
-            replRegistry.List(session.Id),
+            _runtimeConfiguration.GetStatus(),
+            _workspace.Capture(),
+            _pluginHosts.GetStatus(),
+            _mcpController.GetMcpServers(),
+            _replRegistry.List(_session.Id),
             new SkillCatalogStatus(
                 skills.Skills.Length,
-                skills.Count(Skills.SkillSource.Workspace),
-                skills.Count(Skills.SkillSource.User),
+                skills.Count(SkillSource.Workspace),
+                skills.Count(SkillSource.User),
                 skills.Diagnostics.Length));
     }
 }

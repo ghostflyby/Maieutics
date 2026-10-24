@@ -11,11 +11,11 @@ internal sealed class DenoReplFunctions
     private static readonly JsonSerializerOptions SerializerOptions =
         DenoReplJsonSerializerContext.Default.Options;
 
-    private readonly DenoReplRegistry registry;
+    private readonly DenoReplRegistry _registry;
 
     public DenoReplFunctions(DenoReplRegistry registry)
     {
-        this.registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
         Functions =
         [
             CreateFunction(
@@ -73,7 +73,7 @@ internal sealed class DenoReplFunctions
         if (string.IsNullOrWhiteSpace(code))
             throw new AgentToolException("repl_invalid_arguments", "code is required and cannot be empty.");
 
-        return await registry.ExecuteAsync(
+        return await _registry.ExecuteAsync(
             AgentToolContext.GetRequired(arguments),
             code,
             sessionId,
@@ -85,7 +85,7 @@ internal sealed class DenoReplFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        return await registry.CreateAsync(
+        return await _registry.CreateAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             cancellationToken).ConfigureAwait(false);
     }
@@ -96,7 +96,7 @@ internal sealed class DenoReplFunctions
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(registry.List(AgentToolContext.GetRequired(arguments).SessionId));
+        return ValueTask.FromResult(_registry.List(AgentToolContext.GetRequired(arguments).SessionId));
     }
 
     [Description("Restarts a Deno REPL and clears its runtime state.")]
@@ -106,7 +106,7 @@ internal sealed class DenoReplFunctions
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-        return await registry.RestartAsync(
+        return await _registry.RestartAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -119,7 +119,7 @@ internal sealed class DenoReplFunctions
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-        return await registry.CloseAsync(
+        return await _registry.CloseAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             sessionId,
             cancellationToken).ConfigureAwait(false);

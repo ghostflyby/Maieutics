@@ -12,8 +12,8 @@ namespace Maieutics.Frontend;
 /// </summary>
 internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentationRouter
 {
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentSessionId, RunState> runs = [];
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentSessionId, RunState> _runs = [];
 
     public async ValueTask<IDenoReplPresentationSink> WaitForCallAsync(
         AgentSessionId sessionId,
@@ -21,9 +21,9 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
         CancellationToken cancellationToken)
     {
         Task<IDenoReplPresentationSink> task;
-        lock (gate)
+        lock (_gate)
         {
-            if (!runs.TryGetValue(sessionId, out var state)) throw PresentationUnavailable();
+            if (!_runs.TryGetValue(sessionId, out var state)) throw PresentationUnavailable();
 
             if (state.OpenedCalls.Contains(callId)) return state.Sink;
 
@@ -46,9 +46,9 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
     internal bool TryCompleteInput(string requestId, string value)
     {
         FrontendDenoReplPresentationSink[] sinks;
-        lock (gate)
+        lock (_gate)
         {
-            sinks = runs.Values.Select(state => state.Sink).ToArray();
+            sinks = _runs.Values.Select(state => state.Sink).ToArray();
         }
 
         foreach (var sink in sinks)
@@ -62,9 +62,9 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
     internal FrontendPresentationScope Attach(AgentSessionId sessionId, IFrontendPresentationTarget target)
     {
         var state = new RunState(new FrontendDenoReplPresentationSink(target));
-        lock (gate)
+        lock (_gate)
         {
-            if (!runs.TryAdd(sessionId, state))
+            if (!_runs.TryAdd(sessionId, state))
                 throw new InvalidOperationException(
                     "A frontend presentation sink is already attached to this Agent session.");
         }
@@ -76,9 +76,9 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
     {
         TaskCompletionSource<IDenoReplPresentationSink>? waiter;
         IDenoReplPresentationSink? sink;
-        lock (gate)
+        lock (_gate)
         {
-            if (!runs.TryGetValue(sessionId, out var state)) return;
+            if (!_runs.TryGetValue(sessionId, out var state)) return;
 
             state.OpenedCalls.Add(callId);
             state.Waiters.Remove(callId, out waiter);
@@ -91,11 +91,11 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
     private async ValueTask DetachAsync(AgentSessionId sessionId, RunState expected)
     {
         TaskCompletionSource<IDenoReplPresentationSink>[] waiters;
-        lock (gate)
+        lock (_gate)
         {
-            if (!runs.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, expected)) return;
+            if (!_runs.TryGetValue(sessionId, out var current) || !ReferenceEquals(current, expected)) return;
 
-            runs.Remove(sessionId);
+            _runs.Remove(sessionId);
             waiters = current.Waiters.Values.ToArray();
             current.Waiters.Clear();
             current.OpenedCalls.Clear();
@@ -127,13 +127,13 @@ internal sealed class FrontendDenoReplPresentationRouter : IDenoReplPresentation
         AgentSessionId sessionId,
         RunState state) : IAsyncDisposable
     {
-        private int disposeState;
+        private int _disposeState;
 
         internal IDenoReplPresentationSink Sink => state.Sink;
 
         public ValueTask DisposeAsync()
         {
-            return Interlocked.Exchange(ref disposeState, 1) == 0
+            return Interlocked.Exchange(ref _disposeState, 1) == 0
                 ? owner.DetachAsync(sessionId, state)
                 : ValueTask.CompletedTask;
         }
@@ -149,18 +149,19 @@ internal interface IFrontendPresentationTarget
 /// <summary>Writes REPL presentation calls into the owning run's event stream.</summary>
 internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarget target) : IDenoReplPresentationSink
 {
-    private readonly SemaphoreSlim gate = new(1, 1);
-    private readonly Dictionary<string, TaskCompletionSource<string>> pendingInputs =
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    private readonly Dictionary<string, TaskCompletionSource<string>> _pendingInputs =
         new(StringComparer.Ordinal);
 
     // Input answers arrive on the session-less /v1/agent/inputs/{requestId} route, so ids
     // must be unique across every live sink (multi-active sessions can each hold a pending
     // REPL stdin prompt); a per-sink unique prefix keeps the route unambiguous.
-    private readonly string inputPrefix = $"input-{Guid.NewGuid():N}";
-    private int inputSequence;
-    private int active = 1;
+    private readonly string _inputPrefix = $"input-{Guid.NewGuid():N}";
+    private int _inputSequence;
+    private int _active = 1;
 
-    internal bool IsActive => Volatile.Read(ref active) != 0;
+    internal bool IsActive => Volatile.Read(ref _active) != 0;
 
     public ValueTask DisplayAsync(
         ReplDisplayBundle data,
@@ -230,11 +231,18 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     {
         string requestId;
         var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (gate)
+        // The gate is the sink's one semaphore: every guarded section is synchronous, so the
+        // acquire/release pairs below exclude the async publishers without monitor semantics.
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
             if (!IsActive) throw CreateInactive();
-            requestId = $"{inputPrefix}-{++inputSequence}";
-            pendingInputs[requestId] = completion;
+            requestId = $"{_inputPrefix}-{++_inputSequence}";
+            _pendingInputs[requestId] = completion;
+        }
+        finally
+        {
+            _gate.Release();
         }
 
         target.PublishPresentation(
@@ -251,9 +259,14 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         }
         finally
         {
-            lock (gate)
+            await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
             {
-                pendingInputs.Remove(requestId);
+                _pendingInputs.Remove(requestId);
+            }
+            finally
+            {
+                _gate.Release();
             }
         }
     }
@@ -262,10 +275,15 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
     public bool TryCompleteInput(string requestId, string value)
     {
         TaskCompletionSource<string>? completion;
-        lock (gate)
+        _gate.Wait();
+        try
         {
-            pendingInputs.TryGetValue(requestId, out completion);
-            pendingInputs.Remove(requestId);
+            _pendingInputs.TryGetValue(requestId, out completion);
+            _pendingInputs.Remove(requestId);
+        }
+        finally
+        {
+            _gate.Release();
         }
 
         return completion is not null && completion.TrySetResult(value);
@@ -278,20 +296,25 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
 
     internal async ValueTask DeactivateAsync()
     {
-        if (Interlocked.Exchange(ref active, 0) == 0) return;
+        if (Interlocked.Exchange(ref _active, 0) == 0) return;
 
         List<TaskCompletionSource<string>> pending;
-        lock (gate)
+        await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            pending = pendingInputs.Values.ToList();
-            pendingInputs.Clear();
+            pending = _pendingInputs.Values.ToList();
+            _pendingInputs.Clear();
+        }
+        finally
+        {
+            _gate.Release();
         }
 
         var cancelled = new OperationCanceledException("The frontend presentation sink is no longer active.");
         foreach (var completion in pending) completion.TrySetException(cancelled);
 
-        await gate.WaitAsync().ConfigureAwait(false);
-        gate.Release();
+        await _gate.WaitAsync().ConfigureAwait(false);
+        _gate.Release();
     }
 
     private async ValueTask PublishAsync(
@@ -300,7 +323,7 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         ReplDisplayBundle data,
         CancellationToken cancellationToken)
     {
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (!IsActive) throw new OperationCanceledException("The frontend presentation sink is no longer active.");
@@ -315,7 +338,7 @@ internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarg
         }
         finally
         {
-            gate.Release();
+            _gate.Release();
         }
     }
 

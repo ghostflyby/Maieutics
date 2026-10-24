@@ -58,14 +58,14 @@ public sealed class DenoModuleGraphWarmerTests
 
     private sealed class CollectingLogger : ILogger<DenoModuleGraphWarmer>
     {
-        private readonly Lock gate = new();
-        private readonly List<string> lines = [];
+        private readonly Lock _gate = new();
+        private readonly List<string> _lines = [];
 
         public IReadOnlyList<string> Lines
         {
             get
             {
-                lock (gate) return [.. lines];
+                lock (_gate) return [.. _lines];
             }
         }
 
@@ -81,7 +81,7 @@ public sealed class DenoModuleGraphWarmerTests
             Func<TState, Exception?, string> formatter)
         {
             var line = formatter(state, exception);
-            lock (gate) lines.Add($"{logLevel}: {line}");
+            lock (_gate) _lines.Add($"{logLevel}: {line}");
         }
     }
 }

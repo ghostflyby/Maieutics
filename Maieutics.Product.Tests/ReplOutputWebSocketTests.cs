@@ -1,12 +1,11 @@
 using System.Buffers.Binary;
 using System.Net.WebSockets;
 using System.Text;
-using System.Threading.Channels;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Microsoft.AspNetCore.Http;
-
 using TestBinarySocket = Maieutics.Testing.TestWebSocket;
+
 namespace Maieutics.Product.Tests;
 
 public sealed class ReplOutputWebSocketTests
@@ -403,5 +402,4 @@ public sealed class ReplOutputWebSocketTests
             return result;
         }
     }
-
 }

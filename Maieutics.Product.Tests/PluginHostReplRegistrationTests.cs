@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.WebSockets;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -7,8 +6,8 @@ using Maieutics.DenoRepl;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
-
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
+
 namespace Maieutics.Product.Tests;
 
 /// <summary>
@@ -364,16 +363,16 @@ public sealed class PluginHostReplRegistrationTests
     {
         var scriptPath = Path.Combine(root, $"probe-{Guid.NewGuid():N}.ts");
         var targetPath = Path.Combine(root, "target.txt");
-        File.WriteAllText(targetPath, "payload");
+        await File.WriteAllTextAsync(targetPath, "payload", cancellationToken);
         var escapedTarget = targetPath.Replace("\\", "\\\\");
-        File.WriteAllText(
+        await File.WriteAllTextAsync(
             scriptPath,
             "try { await Deno.readTextFile(\"" + escapedTarget + "\"); console.log(\"read OK\"); }\n" +
             "catch (e) { console.log(\"read denied:\", String(e).split(\"\\n\")[0]); }\n" +
             "try { console.log(\"HOME visible:\", Deno.env.get(\"HOME\")); }\n" +
             "catch (e) { console.log(\"HOME denied:\", String(e).split(\"\\n\")[0]); }\n" +
             "try { console.log(\"PATH visible:\", Deno.env.get(\"PATH\")); }\n" +
-            "catch (e) { console.log(\"PATH denied:\", String(e).split(\"\\n\")[0]); }\n");
+            "catch (e) { console.log(\"PATH denied:\", String(e).split(\"\\n\")[0]); }\n", cancellationToken);
         var startInfo = new ProcessStartInfo
         {
             FileName = "deno",
@@ -393,8 +392,6 @@ public sealed class PluginHostReplRegistrationTests
     {
         return child.ReadToEndAsync(cancellationToken);
     }
-
-    /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
 
     private sealed class FakeVariableSource : Execution.IPermissionVariableSource
     {

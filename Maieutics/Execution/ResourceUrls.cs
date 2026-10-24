@@ -133,15 +133,15 @@ internal sealed class ResourceRegistry
             ["file"] = null
         };
 
-    private readonly IReadOnlyList<IResourceProvider> providers;
+    private readonly IReadOnlyList<IResourceProvider> _providers;
 
     public ResourceRegistry(IEnumerable<IResourceProvider> providers)
     {
         ArgumentNullException.ThrowIfNull(providers);
-        this.providers = providers.ToArray();
+        this._providers = providers.ToArray();
     }
 
-    internal IReadOnlyList<IResourceProvider> Providers => providers;
+    internal IReadOnlyList<IResourceProvider> Providers => _providers;
 
     /// <summary>Parses an absolute resource URI. Query and fragment are rejected so
     /// the full URI stays one opaque resource identifier for the owning provider.</summary>
@@ -167,7 +167,7 @@ internal sealed class ResourceRegistry
         var state = ComputeState();
         IResourceProvider? winner = null;
         var winnerSpecificity = -1;
-        foreach (var (provider, index) in providers.Select((value, index) => (value, index)))
+        foreach (var (provider, index) in _providers.Select((value, index) => (value, index)))
         {
             foreach (var claim in provider.Claims)
             {
@@ -202,9 +202,9 @@ internal sealed class ResourceRegistry
     {
         var disabled = new HashSet<(int, ResourceClaim)>();
         var conflicts = ImmutableArray.CreateBuilder<ResourceConflict>();
-        for (var index = 0; index < providers.Count; index++)
+        for (var index = 0; index < _providers.Count; index++)
         {
-            var provider = providers[index];
+            var provider = _providers[index];
             foreach (var claim in provider.Claims)
             {
                 if (ReservedSchemeOwners.TryGetValue(claim.Scheme, out var ownerClass) &&
@@ -221,9 +221,9 @@ internal sealed class ResourceRegistry
             }
         }
 
-        for (var index = 0; index < providers.Count; index++)
+        for (var index = 0; index < _providers.Count; index++)
         {
-            var provider = providers[index];
+            var provider = _providers[index];
             for (var claimIndex = 0; claimIndex < provider.Claims.Count; claimIndex++)
             {
                 var claim = provider.Claims[claimIndex];
@@ -231,9 +231,9 @@ internal sealed class ResourceRegistry
 
                 for (var previous = 0; previous < index && !disabled.Contains((index, claim)); previous++)
                 {
-                    if (providers[previous].Class != provider.Class) continue;
+                    if (_providers[previous].Class != provider.Class) continue;
 
-                    var shadow = providers[previous].Claims.FirstOrDefault(claim.EqualsClaim);
+                    var shadow = _providers[previous].Claims.FirstOrDefault(claim.EqualsClaim);
                     if (shadow is null || disabled.Contains((previous, shadow))) continue;
 
                     disabled.Add((index, claim));
@@ -242,7 +242,7 @@ internal sealed class ResourceRegistry
                         claim.Scheme,
                         claim.Authority,
                         "duplicate_claim",
-                        providers[previous].Id));
+                        _providers[previous].Id));
                 }
             }
         }

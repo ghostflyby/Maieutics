@@ -40,7 +40,7 @@ internal static class ReplCommCodec
         var buffers = message.Buffers;
 
         var total = 1 + 2 + commId.Length + 2 + targetName.Length + 4 + data.Length +
-            4 + metadata.Length + 2;
+                    4 + metadata.Length + 2;
         foreach (var buffer in buffers)
             total += 4 + buffer.Length;
 

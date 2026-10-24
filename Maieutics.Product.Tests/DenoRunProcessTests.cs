@@ -199,11 +199,9 @@ public sealed class DenoRunProcessTests
                     {
                         using var pidWatcher = new FileSystemWatcher(
                             Path.GetDirectoryName(pidFilePath) ?? ".",
-                            Path.GetFileName(pidFilePath))
-                        {
-                            EnableRaisingEvents = true,
-                            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
-                        };
+                            Path.GetFileName(pidFilePath));
+                        pidWatcher.EnableRaisingEvents = true;
+                        pidWatcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
                         var pidArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         pidWatcher.Created += (_, _) => pidArrived.TrySetResult();
                         pidWatcher.Changed += (_, _) => pidArrived.TrySetResult();

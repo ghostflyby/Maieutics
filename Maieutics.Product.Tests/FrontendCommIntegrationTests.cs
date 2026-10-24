@@ -216,7 +216,10 @@ public sealed class FrontendCommIntegrationTests
         using var comms = await ConnectCommsAsync(harness, sessionId, deadline.Token);
         await ReceiveHelloAsync(comms, deadline.Token);
 
-        using var child = await CommChildSocketStub.ConnectAsync(harness.ControlAddress, sessionId, deadline.Token);
+        // The mid-test Dispose is the point of the test (the abrupt close detaches the
+        // REPL session), so the child socket is owned explicitly instead of a using scope
+        // that would auto-dispose behind the manual close.
+        var child = await CommChildSocketStub.ConnectAsync(harness.ControlAddress, sessionId, deadline.Token);
         await CommChildSocketStub.ExpectReadyAsync(child, deadline.Token);
         await CommChildSocketStub.SendAsync(child, Open("w9", "tw9", null), deadline.Token);
         var (_, opened) = await ReceiveCommAsync(comms, deadline.Token);
@@ -327,16 +330,14 @@ public sealed class FrontendCommIntegrationTests
         CancellationToken ct)
     {
         var buffer = new byte[64 * 1024];
-        string text;
-        WebSocketMessageType type;
         while (true)
         {
             var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
             if (result.MessageType == WebSocketMessageType.Close)
                 throw new InvalidOperationException(
                     $"The comms socket closed: {socket.CloseStatus} {socket.CloseStatusDescription}");
-            text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            type = result.MessageType;
+            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            var type = result.MessageType;
             if (result.EndOfMessage) return (text, type);
         }
     }
@@ -347,7 +348,7 @@ public sealed class FrontendCommIntegrationTests
     {
         var payload = new byte[2 * 1024 * 1024];
         var offset = 0;
-        WebSocketMessageType type = WebSocketMessageType.Binary;
+        WebSocketMessageType type;
         while (true)
         {
             var result = await socket.ReceiveAsync(new ArraySegment<byte>(payload, offset, payload.Length - offset), ct);

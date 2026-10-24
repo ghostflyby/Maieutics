@@ -29,14 +29,14 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
 
     private sealed record Registration(string SessionId, long Sequence, Func<FrontendEventFrame, CancellationToken, Task> SendAsync, SemaphoreSlim SendGate);
 
-    private readonly ConcurrentDictionary<Guid, Registration> registrations = new();
+    private readonly ConcurrentDictionary<Guid, Registration> _registrations = new();
 
-    private readonly ConcurrentDictionary<string, int> counts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, int> _counts = new(StringComparer.Ordinal);
 
-    private long sequence;
+    private long _sequence;
 
-    private readonly Lock lapseGates = new();
-    private readonly Dictionary<string, TaskCompletionSource> lapseSignals = new(StringComparer.Ordinal);
+    private readonly Lock _lapseGates = new();
+    private readonly Dictionary<string, TaskCompletionSource> _lapseSignals = new(StringComparer.Ordinal);
 
     /// <summary>Internal test observability: completes when the session's last announcing
     /// socket withdraws — the same removal that takes the session out of the gate, so an
@@ -46,7 +46,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     /// and await it after.</summary>
     internal Task Lapsed(string sessionId)
     {
-        lock (lapseGates)
+        lock (_lapseGates)
         {
             return GetLapseSignalLocked(sessionId).Task;
         }
@@ -54,36 +54,36 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
 
     private TaskCompletionSource GetLapseSignalLocked(string sessionId)
     {
-        if (!lapseSignals.TryGetValue(sessionId, out var signal))
+        if (!_lapseSignals.TryGetValue(sessionId, out var signal))
         {
             signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            lapseSignals[sessionId] = signal;
+            _lapseSignals[sessionId] = signal;
         }
 
         return signal;
     }
 
     /// <inheritdoc />
-    public bool HasIdeFrontend => !counts.IsEmpty;
+    public bool HasIdeFrontend => !_counts.IsEmpty;
 
     /// <inheritdoc />
     public bool IsIdeFrontendConnected(string sessionId)
     {
-        return counts.TryGetValue(sessionId, out var count) && count > 0;
+        return _counts.TryGetValue(sessionId, out var count) && count > 0;
     }
 
     /// <summary>Registers one announcing socket (refcounted per session: a session
     /// may hold several sockets). Returns the registration id to withdraw with.</summary>
     public Guid Announce(string sessionId, Func<FrontendEventFrame, CancellationToken, Task> sendAsync)
     {
-        counts.AddOrUpdate(sessionId, 1, static (_, count) => count + 1);
+        _counts.AddOrUpdate(sessionId, 1, static (_, count) => count + 1);
         var id = Guid.NewGuid();
-        registrations[id] = new Registration(sessionId, Interlocked.Increment(ref sequence), sendAsync, new SemaphoreSlim(1, 1));
-        lock (lapseGates)
+        _registrations[id] = new Registration(sessionId, Interlocked.Increment(ref _sequence), sendAsync, new SemaphoreSlim(1, 1));
+        lock (_lapseGates)
         {
             // A completed lapse signal belongs to the previous cycle; re-arming here keeps
             // Lapsed(sessionId) meaningful across announce/withdraw rounds.
-            lapseSignals[sessionId] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _lapseSignals[sessionId] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         return id;
@@ -94,7 +94,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     /// the next-earliest live announcement takes over at the next acquire.</summary>
     public void Withdraw(string sessionId, Guid registrationId)
     {
-        if (registrations.TryRemove(registrationId, out _))
+        if (_registrations.TryRemove(registrationId, out _))
         {
             WithdrawCount(sessionId);
         }
@@ -104,16 +104,16 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     {
         while (true)
         {
-            if (!counts.TryGetValue(sessionId, out var count)) return;
+            if (!_counts.TryGetValue(sessionId, out var count)) return;
 
             if (count <= 1)
             {
-                if (((ICollection<KeyValuePair<string, int>>)counts).Remove(
+                if (((ICollection<KeyValuePair<string, int>>)_counts).Remove(
                         new KeyValuePair<string, int>(sessionId, count)))
                 {
                     if (count > 0)
                     {
-                        lock (lapseGates)
+                        lock (_lapseGates)
                         {
                             GetLapseSignalLocked(sessionId).TrySetResult();
                         }
@@ -122,7 +122,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
                     return;
                 }
             }
-            else if (counts.TryUpdate(sessionId, count - 1, count))
+            else if (_counts.TryUpdate(sessionId, count - 1, count))
             {
                 return;
             }
@@ -137,7 +137,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     {
         Registration? best = null;
         var bestId = Guid.Empty;
-        foreach (var (id, registration) in registrations)
+        foreach (var (id, registration) in _registrations)
         {
             if (sessionId is not null &&
                 !string.Equals(registration.SessionId, sessionId, StringComparison.Ordinal))
@@ -160,7 +160,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     public async Task<bool> TrySendToAnnouncingAsync(FrontendEventFrame frame, CancellationToken cancellationToken)
     {
         var sent = false;
-        foreach (var (id, registration) in registrations)
+        foreach (var (id, registration) in _registrations)
         {
             try
             {
@@ -176,7 +176,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
                 }
             }
             catch (Exception exception) when (exception is OperationCanceledException or
-                InvalidOperationException or IOException)
+                                                  InvalidOperationException or IOException)
             {
                 // The socket died mid-hand-off; its own drain loop withdraws the
                 // registration. One dead announcer must not block the others.
@@ -193,7 +193,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
     /// instead of silently re-asking a different announcer.</summary>
     public async Task<bool> TrySendToAsync(Guid registrationId, FrontendEventFrame frame, CancellationToken cancellationToken)
     {
-        if (!registrations.TryGetValue(registrationId, out var registration)) return false;
+        if (!_registrations.TryGetValue(registrationId, out var registration)) return false;
 
         try
         {
@@ -218,8 +218,11 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
 
 /// <summary>The elected authority's handle for one bridge acquire: enough to push
 /// an <c>ide.request</c> frame to that announcer's socket and nothing more — the
-/// registration itself stays private to the sockets registry.</summary>
+/// registration itself stays private to the sockets registry. The send capability is
+/// part of the handle's contract; current callers route through the registration.</summary>
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record IdeAnnouncerHandle(
     string SessionId,
     Guid RegistrationId,
     Func<FrontendEventFrame, CancellationToken, Task> SendAsync);
+// ReSharper restore NotAccessedPositionalProperty.Global

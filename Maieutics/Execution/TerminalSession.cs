@@ -1,8 +1,12 @@
 using System.Text;
-using Microsoft.Extensions.Logging;
 using Maieutics.Agent;
 using Maieutics.Permissions;
 using Maieutics.Processes;
+using Microsoft.Extensions.Logging;
+using XTerm;
+using XTerm.Buffer;
+using XTerm.Common;
+using XTerm.Events;
 
 namespace Maieutics.Execution;
 
@@ -12,47 +16,47 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// <summary>The maximum characters of row text kept on each side of the cursor for the content window.</summary>
     private const int CursorContextWindow = 6;
 
-    private readonly TaskCompletionSource disposalCompletion =
+    private readonly TaskCompletionSource _disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly SemaphoreSlim executionGate = new(1, 1);
-    private readonly ITerminalProcessFactory factory;
-    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
-    private readonly CancellationTokenSource lifetime = new();
-    private readonly ILogger<TerminalSession> logger;
-    private readonly TerminalOptions options;
-    private readonly string workingDirectory;
-    private readonly TerminalSessionKind kind;
-    private readonly string executable;
-    private readonly IReadOnlyList<string> launchArguments;
-    private readonly EffectivePolicy policy;
-    private readonly Lock signalGate = new();
-    private readonly Lock stateGate = new();
-    private readonly Lock terminalGate = new();
-    private readonly XTerm.Terminal terminal;
-    private readonly TerminalKeyEncoder keyEncoder;
-    private readonly TaskCompletionSource exitCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly UTF8Encoding utf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
-    private bool cursorBlink;
-    private XTerm.Common.CursorStyle cursorStyle = XTerm.Common.CursorStyle.Block;
-    private int disposeState;
-    private int? exitCode;
-    private string[]? lastRowTexts;
-    private TaskCompletionSource screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private long screenVersion;
-    private ITerminalProcess? process;
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    private readonly ITerminalProcessFactory _factory;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly ILogger<TerminalSession> _logger;
+    private readonly TerminalOptions _options;
+    private readonly string _workingDirectory;
+    private readonly TerminalSessionKind _kind;
+    private readonly string _executable;
+    private readonly IReadOnlyList<string> _launchArguments;
+    private readonly EffectivePolicy _policy;
+    private readonly Lock _signalGate = new();
+    private readonly Lock _stateGate = new();
+    private readonly Lock _terminalGate = new();
+    private readonly Terminal _terminal;
+    private readonly TerminalKeyEncoder _keyEncoder;
+    private readonly TaskCompletionSource _exitCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly UTF8Encoding _utf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+    private bool _cursorBlink;
+    private CursorStyle _cursorStyle = CursorStyle.Block;
+    private int _disposeState;
+    private int? _exitCode;
+    private string[]? _lastRowTexts;
+    private TaskCompletionSource _screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _screenVersion;
+    private ITerminalProcess? _process;
 
     /// <summary>Ensures the child's exit is observed exactly once even though it can arrive
     /// through two paths: the reaper's <c>Exited</c> event and the post-spawn catch-up that
     /// replays an exit which fired before the handler was attached.</summary>
-    private int exitObserved;
-    private Task? pump;
-    private CancellationTokenSource? pumpLifetime;
-    private TerminalSessionState state = TerminalSessionState.Created;
-    private TaskCompletionSource stateChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _exitObserved;
+
+    private Task? _pump;
+    private CancellationTokenSource? _pumpLifetime;
+    private TerminalSessionState _state = TerminalSessionState.Created;
+    private TaskCompletionSource _stateChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal TerminalSession(
-        AgentSessionId ownerSessionId,
         string sessionId,
         bool isDefault,
         string workingDirectory,
@@ -64,18 +68,17 @@ internal sealed class TerminalSession : IAsyncDisposable
         ITerminalProcessFactory factory,
         ILogger<TerminalSession> logger)
     {
-        OwnerSessionId = ownerSessionId;
         SessionId = sessionId;
         IsDefault = isDefault;
-        this.workingDirectory = workingDirectory;
-        this.kind = kind;
-        this.executable = executable;
-        this.launchArguments = launchArguments;
-        this.policy = policy;
-        this.options = options;
-        this.factory = factory;
-        this.logger = logger;
-        terminal = new XTerm.Terminal(new XTerm.Options.TerminalOptions
+        this._workingDirectory = workingDirectory;
+        this._kind = kind;
+        this._executable = executable;
+        this._launchArguments = launchArguments;
+        this._policy = policy;
+        this._options = options;
+        this._factory = factory;
+        this._logger = logger;
+        _terminal = new Terminal(new XTerm.Options.TerminalOptions
         {
             Cols = options.Columns,
             Rows = options.Rows,
@@ -83,35 +86,33 @@ internal sealed class TerminalSession : IAsyncDisposable
         });
         // The emulator has no cursor-style getter; it only raises CursorStyleChanged (DECSCUSR). The pump
         // raises it inside terminalGate while applying output, so the handlers need no further locking.
-        terminal.CursorStyleChanged += OnCursorStyleChanged;
-        keyEncoder = new TerminalKeyEncoder(terminal);
+        _terminal.CursorStyleChanged += OnCursorStyleChanged;
+        _keyEncoder = new TerminalKeyEncoder(_terminal);
     }
 
     private void OnCursorStyleChanged(
         object? sender,
-        XTerm.Events.TerminalEvents.CursorStyleChangedEventArgs args)
+        TerminalEvents.CursorStyleChangedEventArgs args)
     {
-        cursorStyle = args.Style;
-        cursorBlink = args.Blink;
+        _cursorStyle = args.Style;
+        _cursorBlink = args.Blink;
     }
-
-    internal AgentSessionId OwnerSessionId { get; }
 
     internal string SessionId { get; }
 
     internal bool IsDefault { get; }
 
-    internal TerminalSessionKind Kind => kind;
+    internal TerminalSessionKind Kind => _kind;
 
     /// <summary>The number of terminal screen writes the pump has applied; tests wait on it to observe
     /// emitted output without consuming frame state.</summary>
-    internal long ScreenVersion => Volatile.Read(ref screenVersion);
+    internal long ScreenVersion => Volatile.Read(ref _screenVersion);
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0)
         {
-            await disposalCompletion.Task.ConfigureAwait(false);
+            await _disposalCompletion.Task.ConfigureAwait(false);
             return;
         }
 
@@ -126,34 +127,34 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
-            lifetime.Dispose();
-            lifecycleGate.Dispose();
-            executionGate.Dispose();
+            _lifetime.Dispose();
+            _lifecycleGate.Dispose();
+            _executionGate.Dispose();
         }
 
         if (failure is null)
-            disposalCompletion.TrySetResult();
+            _disposalCompletion.TrySetResult();
         else
-            disposalCompletion.TrySetException(failure);
+            _disposalCompletion.TrySetException(failure);
 
-        await disposalCompletion.Task.ConfigureAwait(false);
+        await _disposalCompletion.Task.ConfigureAwait(false);
     }
 
     internal TerminalInfo GetSnapshot()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
             return new TerminalInfo(
                 SessionId,
                 GetWireStateLocked(),
-                ToWireKind(kind),
-                exitCode);
+                ToWireKind(_kind),
+                _exitCode);
         }
     }
 
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -176,7 +177,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             try
             {
                 EnsureExecutableAllowed();
-                var environment = ProcessEnvironment.Capture(policy);
+                var environment = ProcessEnvironment.Capture(_policy);
                 // The spawn itself is a synchronous fork/exec; the start budget bounds how long
                 // StartAsync (and with it the lifecycle gate) can stall on a pathological PTY
                 // allocation. Exited is attached inside the task — before the awaiting caller
@@ -185,14 +186,14 @@ internal sealed class TerminalSession : IAsyncDisposable
                 var spawnTask = Task.Factory.StartNew(
                     () =>
                     {
-                        var spawned = factory.Start(
-                            executable,
-                            launchArguments,
-                            workingDirectory,
+                        var spawned = _factory.Start(
+                            _executable,
+                            _launchArguments,
+                            _workingDirectory,
                             environment,
-                            options.Columns,
-                            options.Rows);
-                        spawned.GracefulExitTimeout = options.GracefulExitTimeout;
+                            _options.Columns,
+                            _options.Rows);
+                        spawned.GracefulExitTimeout = _options.GracefulExitTimeout;
                         spawned.Exited += OnProcessExited;
                         return spawned;
                     },
@@ -203,7 +204,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                 try
                 {
                     started = await spawnTask
-                        .WaitAsync(options.StartupTimeout, cancellationToken)
+                        .WaitAsync(_options.StartupTimeout, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (TimeoutException)
@@ -212,7 +213,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                     throw new AgentToolException(
                         "terminal_start_failed",
                         $"The terminal session '{SessionId}' exceeded its " +
-                        $"{options.StartupTimeout.TotalSeconds:0.###}s start budget.");
+                        $"{_options.StartupTimeout.TotalSeconds:0.###}s start budget.");
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -222,22 +223,22 @@ internal sealed class TerminalSession : IAsyncDisposable
                     throw;
                 }
 
-                lock (terminalGate)
+                lock (_terminalGate)
                 {
-                    terminal.Reset();
-                    terminal.Resize(options.Columns, options.Rows);
-                    screenVersion = 0;
-                    cursorStyle = XTerm.Common.CursorStyle.Block;
-                    cursorBlink = false;
+                    _terminal.Reset();
+                    _terminal.Resize(_options.Columns, _options.Rows);
+                    _screenVersion = 0;
+                    _cursorStyle = CursorStyle.Block;
+                    _cursorBlink = false;
                 }
 
-                Volatile.Write(ref process, started);
+                Volatile.Write(ref _process, started);
                 // The reaper may have raised Exited before the in-task handler attach; the
                 // published exit fields are the durable record, so replay that observation once.
                 if (started.ExitCode is not null || started.TerminationSignal is not null)
                     OnProcessExited(started);
 
-                lastRowTexts = null;
+                _lastRowTexts = null;
                 StartPump(started);
                 // The child may have exited while the spawn awaited: a one-shot is then already
                 // completed and a persistent session already faulted; only a live child turns idle.
@@ -256,7 +257,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             catch (Exception exception)
             {
                 SetState(TerminalSessionState.Faulted);
-                logger.LogWarning(exception, "Could not start terminal session {SessionId}.", SessionId);
+                _logger.LogWarning(exception, "Could not start terminal session {SessionId}.", SessionId);
                 throw new AgentToolException(
                     "terminal_start_failed",
                     $"The terminal session '{SessionId}' could not be started: {GetSafeMessage(exception)}");
@@ -264,7 +265,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
-            lifecycleGate.Release();
+            _lifecycleGate.Release();
         }
     }
 
@@ -280,7 +281,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            logger.LogDebug(
+            _logger.LogDebug(
                 exception,
                 "The terminal spawn for {SessionId} failed after its start budget had already elapsed.",
                 SessionId);
@@ -297,13 +298,13 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(batch);
         await StartAsync(cancellationToken).ConfigureAwait(false);
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
             if (GetState() == TerminalSessionState.Faulted) throw CreateFaultedException();
 
-            var current = process ?? throw CreateFaultedException();
+            var current = _process ?? throw CreateFaultedException();
             SetState(TerminalSessionState.Busy);
             var executedLines = 0;
             int? failedLine = null;
@@ -320,7 +321,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                         // internal timeout and blocks for capacity.
                         using var write = CancellationTokenSource.CreateLinkedTokenSource(
                             cancellationToken,
-                            lifetime.Token);
+                            _lifetime.Token);
                         await current.BaseStream.WriteAsync(bytes, write.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
@@ -330,7 +331,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                     catch (Exception exception) when (IsInputFailure(exception))
                     {
                         failedLine = operation.Line;
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             exception,
                             "Terminal session {SessionId} rejected input on line {Line}.",
                             SessionId,
@@ -344,12 +345,12 @@ internal sealed class TerminalSession : IAsyncDisposable
             finally
             {
                 // Only busy executions return to idle; a fault observed mid-execution stays faulted.
-                lock (stateGate)
+                lock (_stateGate)
                 {
-                    if (state == TerminalSessionState.Busy)
+                    if (_state == TerminalSessionState.Busy)
                     {
-                        state = TerminalSessionState.Idle;
-                        stateChanged.TrySetResult();
+                        _state = TerminalSessionState.Idle;
+                        _stateChanged.TrySetResult();
                     }
                 }
             }
@@ -364,7 +365,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
@@ -375,7 +376,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(text);
         await StartAsync(cancellationToken).ConfigureAwait(false);
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -386,14 +387,14 @@ internal sealed class TerminalSession : IAsyncDisposable
                     "terminal_invalid_paste",
                     "Pasted text cannot contain an escape byte or control characters other than tab and newlines.");
 
-            var current = process ?? throw CreateFaultedException();
+            var current = _process ?? throw CreateFaultedException();
             SetState(TerminalSessionState.Busy);
-            var bracketed = false;
+            bool bracketed;
             try
             {
-                lock (terminalGate)
+                lock (_terminalGate)
                 {
-                    bracketed = terminal.BracketedPasteMode;
+                    bracketed = _terminal.BracketedPasteMode;
                 }
 
                 var payload = bracketed ? "\x1b[200~" + text + "\x1b[201~" : text;
@@ -402,18 +403,18 @@ internal sealed class TerminalSession : IAsyncDisposable
                 // draining its input queue cannot hold executionGate forever and block close/dispose.
                 using var write = CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken,
-                    lifetime.Token);
+                    _lifetime.Token);
                 await current.BaseStream.WriteAsync(bytes, write.Token).ConfigureAwait(false);
             }
             finally
             {
                 // Only busy executions return to idle; a fault observed mid-execution stays faulted.
-                lock (stateGate)
+                lock (_stateGate)
                 {
-                    if (state == TerminalSessionState.Busy)
+                    if (_state == TerminalSessionState.Busy)
                     {
-                        state = TerminalSessionState.Idle;
-                        stateChanged.TrySetResult();
+                        _state = TerminalSessionState.Idle;
+                        _stateChanged.TrySetResult();
                     }
                 }
             }
@@ -427,7 +428,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
@@ -436,10 +437,10 @@ internal sealed class TerminalSession : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(snapshotRequest);
         ThrowIfDisposed();
         var frame = CaptureFrame(snapshotRequest);
-        lock (stateGate)
+        lock (_stateGate)
         {
             return new TerminalSnapshotResult(
-                exitCode,
+                _exitCode,
                 frame);
         }
     }
@@ -453,7 +454,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         await StartAsync(cancellationToken).ConfigureAwait(false);
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -464,7 +465,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             // Exited signal instead.
             try
             {
-                await exitCompletion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                await _exitCompletion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
@@ -479,9 +480,9 @@ internal sealed class TerminalSession : IAsyncDisposable
             // The child is reaped; let the pump drain the remaining output before capturing the final frame.
             await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
             int? completedExitCode;
-            lock (stateGate)
+            lock (_stateGate)
             {
-                completedExitCode = exitCode;
+                completedExitCode = _exitCode;
             }
 
             return new TerminalRunResult(
@@ -494,7 +495,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // The caller (or the run) cancelled: terminate the child before surfacing so no orphan is left.
-            var current = process;
+            var current = _process;
             if (current is not null)
                 try
                 {
@@ -502,7 +503,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                 }
                 catch (Exception exception)
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         exception,
                         "Could not terminate cancelled one-shot terminal session {SessionId}.",
                         SessionId);
@@ -512,7 +513,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
@@ -521,7 +522,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// the completion signal behind the task plane's wait contract (ADR 0030 decision 5).</summary>
     internal Task WaitExitedAsync(CancellationToken cancellationToken)
     {
-        return exitCompletion.Task.WaitAsync(cancellationToken);
+        return _exitCompletion.Task.WaitAsync(cancellationToken);
     }
 
     /// <summary>Waits until the output pump has applied at least <paramref name="minimum"/>
@@ -536,11 +537,11 @@ internal sealed class TerminalSession : IAsyncDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             Task signal;
-            lock (signalGate)
+            lock (_signalGate)
             {
-                if (Volatile.Read(ref screenVersion) >= minimum) return;
+                if (Volatile.Read(ref _screenVersion) >= minimum) return;
 
-                signal = screenChanged.Task;
+                signal = _screenChanged.Task;
             }
 
             await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -562,19 +563,19 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private async Task CloseAsync(CancellationToken cancellationToken)
     {
-        await lifetime.CancelAsync();
-        await executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _lifetime.CancelAsync();
+        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 if (GetState() == TerminalSessionState.Closed) return;
 
                 SetState(TerminalSessionState.Closing);
                 await StopPumpAsync().ConfigureAwait(false);
-                var current = process;
-                process = null;
+                var current = _process;
+                _process = null;
                 if (current is not null)
                     try
                     {
@@ -583,7 +584,7 @@ internal sealed class TerminalSession : IAsyncDisposable
                     }
                     catch (Exception exception)
                     {
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             exception,
                             "Could not dispose terminal session {SessionId} cleanly.",
                             SessionId);
@@ -593,19 +594,19 @@ internal sealed class TerminalSession : IAsyncDisposable
                 // must settle the one-shot's exit signal itself: a waiter armed on the session's exit
                 // (the task plane's wait, ADR 0030 decision 5) has to observe the close instead of
                 // blocking to its own timeout, and an already-terminal session's signal is untouched.
-                if (kind == TerminalSessionKind.OneShot)
-                    exitCompletion.TrySetResult();
+                if (_kind == TerminalSessionKind.OneShot)
+                    _exitCompletion.TrySetResult();
 
                 SetState(TerminalSessionState.Closed);
             }
             finally
             {
-                lifecycleGate.Release();
+                _lifecycleGate.Release();
             }
         }
         finally
         {
-            executionGate.Release();
+            _executionGate.Release();
         }
     }
 
@@ -620,63 +621,63 @@ internal sealed class TerminalSession : IAsyncDisposable
         // Exits are ignored for any process the session did not adopt (a spawn that lost its
         // start budget races and is disposed unowned), and observed exactly once across the
         // event path and the post-spawn catch-up replay.
-        if (!ReferenceEquals(exited, Volatile.Read(ref process))) return;
-        if (Interlocked.Exchange(ref exitObserved, 1) != 0) return;
+        if (!ReferenceEquals(exited, Volatile.Read(ref _process))) return;
+        if (Interlocked.Exchange(ref _exitObserved, 1) != 0) return;
 
-        lock (stateGate)
+        lock (_stateGate)
         {
             // The state guard suppresses the state transition only, never the exit signal below:
             // a close in flight owns the terminal state, but an exit observed while it is in
             // flight is still a real child exit, and a waiter armed on the one-shot's task
             // resource must not be left to its own timeout (ADR 0030 decision 5).
-            if (state is TerminalSessionState.Closing or TerminalSessionState.Closed)
+            if (_state is TerminalSessionState.Closing or TerminalSessionState.Closed)
             {
-                if (kind == TerminalSessionKind.OneShot)
-                    exitCompletion.TrySetResult();
+                if (_kind == TerminalSessionKind.OneShot)
+                    _exitCompletion.TrySetResult();
 
                 return;
             }
 
-            if (kind == TerminalSessionKind.OneShot)
+            if (_kind == TerminalSessionKind.OneShot)
             {
-                if (state != TerminalSessionState.Completed)
+                if (_state != TerminalSessionState.Completed)
                 {
-                    state = TerminalSessionState.Completed;
-                    exitCode = exited.ExitCode;
+                    _state = TerminalSessionState.Completed;
+                    _exitCode = exited.ExitCode;
                 }
             }
             else
             {
-                state = TerminalSessionState.Faulted;
+                _state = TerminalSessionState.Faulted;
             }
 
-            stateChanged.TrySetResult();
+            _stateChanged.TrySetResult();
         }
 
         if (exited.TerminationSignal is { } signal)
-            logger.LogWarning(
+            _logger.LogWarning(
                 "Terminal session {SessionId} child was terminated by signal {Signal}.",
                 SessionId,
                 signal);
 
-        if (kind == TerminalSessionKind.OneShot)
-            exitCompletion.TrySetResult();
+        if (_kind == TerminalSessionKind.OneShot)
+            _exitCompletion.TrySetResult();
 
         NotifyScreenChanged();
-        if (kind == TerminalSessionKind.Persistent)
-            logger.LogWarning("Terminal session {SessionId} child exited unexpectedly.", SessionId);
+        if (_kind == TerminalSessionKind.Persistent)
+            _logger.LogWarning("Terminal session {SessionId} child exited unexpectedly.", SessionId);
     }
 
     private byte[] EncodeOperationLocked(TerminalInputOperation operation)
     {
         // Key encoding reads terminal mode flags (application cursor keys, keypad) that the pump writes
         // under terminalGate; encode under the same lock so the byte sequence always reflects one screen state.
-        lock (terminalGate)
+        lock (_terminalGate)
         {
             return operation switch
             {
                 TerminalTextOperation text => Encoding.UTF8.GetBytes(text.Text),
-                TerminalKeysOperation keys => keyEncoder.Encode(keys.Keys),
+                TerminalKeysOperation keys => _keyEncoder.Encode(keys.Keys),
                 _ => throw new ArgumentOutOfRangeException(nameof(operation), operation, null)
             };
         }
@@ -684,8 +685,8 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private void StartPump(ITerminalProcess started)
     {
-        pumpLifetime = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        pump = PumpAsync(started, pumpLifetime.Token);
+        _pumpLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _pump = PumpAsync(started, _pumpLifetime.Token);
     }
 
     private async Task PumpAsync(ITerminalProcess started, CancellationToken cancellationToken)
@@ -694,31 +695,31 @@ internal sealed class TerminalSession : IAsyncDisposable
         {
             var buffer = new byte[8_192];
             var chars = new char[8_192];
-            var decoder = utf8.GetDecoder();
+            var decoder = _utf8.GetDecoder();
             while (true)
             {
                 var count = await started.BaseStream.ReadAsync(buffer.AsMemory(), cancellationToken)
                     .ConfigureAwait(false);
                 if (count == 0) break;
 
-                lock (terminalGate)
+                lock (_terminalGate)
                 {
                     var charCount = decoder.GetChars(buffer, 0, count, chars, 0);
-                    terminal.Write(new string(chars, 0, charCount));
-                    screenVersion++;
+                    _terminal.Write(new string(chars, 0, charCount));
+                    _screenVersion++;
                 }
 
                 NotifyScreenChanged();
             }
 
-            if (Volatile.Read(ref disposeState) == 0 &&
+            if (Volatile.Read(ref _disposeState) == 0 &&
                 GetState() is not (TerminalSessionState.Closing or TerminalSessionState.Closed))
             {
-                if (kind == TerminalSessionKind.Persistent)
+                if (_kind == TerminalSessionKind.Persistent)
                 {
                     // The pty stream ended without a graceful close: the child is gone.
                     MarkFaulted();
-                    logger.LogWarning("Terminal session {SessionId} output ended unexpectedly.", SessionId);
+                    _logger.LogWarning("Terminal session {SessionId} output ended unexpectedly.", SessionId);
                 }
 
                 // For a one-shot session the Exited handler already recorded the completion.
@@ -730,16 +731,16 @@ internal sealed class TerminalSession : IAsyncDisposable
         catch (Exception exception)
         {
             MarkFaulted();
-            logger.LogWarning(exception, "Terminal session {SessionId} output pump failed.", SessionId);
+            _logger.LogWarning(exception, "Terminal session {SessionId} output pump failed.", SessionId);
         }
     }
 
     private async Task<bool> WaitForSettleAsync(CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + options.SettleTimeout;
+        var deadline = DateTime.UtcNow + _options.SettleTimeout;
         while (true)
         {
-            var version = Volatile.Read(ref screenVersion);
+            var version = Volatile.Read(ref _screenVersion);
             var remaining = deadline - DateTime.UtcNow;
             if (remaining <= TimeSpan.Zero) return false;
 
@@ -750,7 +751,7 @@ internal sealed class TerminalSession : IAsyncDisposable
             catch (TimeoutException)
             {
                 // The screen may have changed in the instant the wait timed out; re-check before settling.
-                if (Volatile.Read(ref screenVersion) == version) return true;
+                if (Volatile.Read(ref _screenVersion) == version) return true;
             }
         }
     }
@@ -758,9 +759,9 @@ internal sealed class TerminalSession : IAsyncDisposable
     private Task WaitForScreenChangeAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         Task signal;
-        lock (signalGate)
+        lock (_signalGate)
         {
-            signal = screenChanged.Task;
+            signal = _screenChanged.Task;
         }
 
         return signal.WaitAsync(timeout, cancellationToken);
@@ -768,24 +769,24 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private void NotifyScreenChanged()
     {
-        lock (signalGate)
+        lock (_signalGate)
         {
-            screenChanged.TrySetResult();
-            screenChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _screenChanged.TrySetResult();
+            _screenChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
     }
 
     private TerminalFrame CaptureFrame(TerminalSnapshotRequest request)
     {
-        var maximumCharacters = request.MaxCharacters ?? options.MaxSnapshotCharacters;
-        lock (terminalGate)
+        var maximumCharacters = request.MaxCharacters ?? _options.MaxSnapshotCharacters;
+        lock (_terminalGate)
         {
-            var buffer = terminal.Buffer;
-            var columns = terminal.Cols;
-            var rows = terminal.Rows;
-            var baseline = lastRowTexts ?? new string[rows];
-            var full = request.Full is true || lastRowTexts is null;
-            var cursorVisible = buffer.Y >= buffer.YDisp && terminal.CursorVisible;
+            var buffer = _terminal.Buffer;
+            var columns = _terminal.Cols;
+            var rows = _terminal.Rows;
+            var baseline = _lastRowTexts ?? new string[rows];
+            var full = request.Full is true || _lastRowTexts is null;
+            var cursorVisible = buffer.Y >= buffer.YDisp && _terminal.CursorVisible;
             var cursorRow = cursorVisible ? buffer.Y - buffer.YDisp : (int?)null;
             var rowsChanged = new List<TerminalScreenRow>();
             var characterCount = 0;
@@ -824,15 +825,15 @@ internal sealed class TerminalSession : IAsyncDisposable
                     rowsChanged.Add(new TerminalScreenRow(row, text));
             }
 
-            lastRowTexts = currentRows;
+            _lastRowTexts = currentRows;
 
-            var version = Volatile.Read(ref screenVersion);
+            var version = Volatile.Read(ref _screenVersion);
             return new TerminalFrame(
                 version,
                 columns,
                 rows,
                 CaptureCursorLocked(buffer),
-                terminal.IsAlternateBufferActive,
+                _terminal.IsAlternateBufferActive,
                 rowsChanged,
                 full,
                 truncated,
@@ -840,21 +841,21 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
     }
 
-    private TerminalCursor CaptureCursorLocked(XTerm.Buffer.TerminalBuffer buffer)
+    private TerminalCursor CaptureCursorLocked(TerminalBuffer buffer)
     {
-        if (buffer.Y < buffer.YDisp || !terminal.CursorVisible)
-            return new TerminalCursor(0, 0, false, ToCursorStyleName(cursorStyle), cursorBlink, "", "", false);
+        if (buffer.Y < buffer.YDisp || !_terminal.CursorVisible)
+            return new TerminalCursor(0, 0, false, ToCursorStyleName(_cursorStyle), _cursorBlink, "", "", false);
 
         var row = buffer.Y - buffer.YDisp;
         var (left, right, unambiguous) = BuildCursorWindowLocked(buffer, row, buffer.X);
-        return new TerminalCursor(row, buffer.X, true, ToCursorStyleName(cursorStyle), cursorBlink, left, right, unambiguous);
+        return new TerminalCursor(row, buffer.X, true, ToCursorStyleName(_cursorStyle), _cursorBlink, left, right, unambiguous);
     }
 
     /// <summary>Builds the minimal left/right content window that uniquely locates the cursor gap within its row.
     /// Left and right grow together by total budget so the returned window is the shortest unambiguous reference;
     /// a row too repetitive to disambiguate falls back to the maximum windows with <c>Unambiguous=false</c>.</summary>
     private (string Left, string Right, bool Unambiguous) BuildCursorWindowLocked(
-        XTerm.Buffer.TerminalBuffer buffer,
+        TerminalBuffer buffer,
         int row,
         int column)
     {
@@ -893,7 +894,7 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     /// <summary>Reads <paramref name="count"/> cells starting at <paramref name="start"/>, keeping wide-character
     /// continuations (empty content cells) as part of the window.</summary>
-    private static string ReadCells(XTerm.Buffer.BufferLine line, int start, int count)
+    private static string ReadCells(BufferLine line, int start, int count)
     {
         var builder = new StringBuilder();
         for (var index = start; index < start + count; index++)
@@ -924,12 +925,12 @@ internal sealed class TerminalSession : IAsyncDisposable
         return count;
     }
 
-    private static string ToCursorStyleName(XTerm.Common.CursorStyle style)
+    private static string ToCursorStyleName(CursorStyle style)
     {
         return style switch
         {
-            XTerm.Common.CursorStyle.Bar => "bar",
-            XTerm.Common.CursorStyle.Underline => "underline",
+            CursorStyle.Bar => "bar",
+            CursorStyle.Underline => "underline",
             _ => "block"
         };
     }
@@ -943,10 +944,10 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private async Task StopPumpAsync()
     {
-        var cancellation = pumpLifetime;
-        var loop = pump;
-        pumpLifetime = null;
-        pump = null;
+        var cancellation = _pumpLifetime;
+        var loop = _pump;
+        _pumpLifetime = null;
+        _pump = null;
         if (cancellation is null) return;
 
         await cancellation.CancelAsync();
@@ -965,9 +966,9 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private TerminalSessionState GetState()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            return state;
+            return _state;
         }
     }
 
@@ -980,11 +981,11 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         get
         {
-            lock (stateGate)
+            lock (_stateGate)
             {
-                var changed = stateChanged.Task;
+                var changed = _stateChanged.Task;
                 if (changed.IsCompleted)
-                    stateChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _stateChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 return changed;
             }
         }
@@ -992,10 +993,10 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private void SetState(TerminalSessionState value)
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            state = value;
-            stateChanged.TrySetResult();
+            _state = value;
+            _stateChanged.TrySetResult();
         }
     }
 
@@ -1004,21 +1005,21 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// that completed, or a persistent child that faulted, during startup).</summary>
     private void SetStateIdleIfStarting()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            if (state != TerminalSessionState.Starting) return;
-            state = TerminalSessionState.Idle;
-            stateChanged.TrySetResult();
+            if (_state != TerminalSessionState.Starting) return;
+            _state = TerminalSessionState.Idle;
+            _stateChanged.TrySetResult();
         }
     }
 
     private void MarkFaulted()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
-            if (state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
-            state = TerminalSessionState.Faulted;
-            stateChanged.TrySetResult();
+            if (_state is TerminalSessionState.Closing or TerminalSessionState.Closed) return;
+            _state = TerminalSessionState.Faulted;
+            _stateChanged.TrySetResult();
         }
     }
 
@@ -1037,17 +1038,17 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// alike.</summary>
     private void EnsureExecutableAllowed()
     {
-        if (RunGrant.Allows(policy, executable))
+        if (RunGrant.Allows(_policy, _executable))
             return;
 
         throw new AgentToolException(
             "terminal_start_failed",
-            $"The executable '{executable}' is not permitted by the effective policy.");
+            $"The executable '{_executable}' is not permitted by the effective policy.");
     }
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 
     private static bool IsInputFailure(Exception exception)
@@ -1076,7 +1077,7 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     private string GetWireState()
     {
-        lock (stateGate)
+        lock (_stateGate)
         {
             return GetWireStateLocked();
         }
@@ -1086,10 +1087,10 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// alive (the internal idle state is an implementation detail); completed and terminal states pass through.</summary>
     private string GetWireStateLocked()
     {
-        if (kind == TerminalSessionKind.OneShot && state == TerminalSessionState.Idle)
+        if (_kind == TerminalSessionKind.OneShot && _state == TerminalSessionState.Idle)
             return "running";
 
-        return ToWireState(state);
+        return ToWireState(_state);
     }
 
     private static string ToWireState(TerminalSessionState value)

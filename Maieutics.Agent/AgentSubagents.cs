@@ -104,7 +104,10 @@ public sealed record AgentSubagentSpec
     public IReadOnlyList<string>? Tools { get; init; }
 
     /// <summary>Gets the wall-clock budget of the child run, overriding
-    /// <see cref="AgentSubagentOptions.MaxChildTurnDuration" /> when set.</summary>
+    /// <see cref="AgentSubagentOptions.MaxChildTurnDuration" /> when set. Optional per-child
+    /// override: orchestration surfaces set it when one child needs a different budget from
+    /// the session default; leaving it unset inherits the session option.</summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global
     public TimeSpan? MaxTurnDuration { get; init; }
 }
 
@@ -294,21 +297,21 @@ internal sealed class AgentSubagentHost(
     IAgentRunProfileProvider profileProvider,
     IAgentObjectStore? objectStore)
 {
-    private readonly IAgentRunProfileProvider profileProvider = profileProvider;
+    private readonly IAgentRunProfileProvider _profileProvider = profileProvider;
 
-    private readonly IAgentObjectStore? objectStore = objectStore;
+    private readonly IAgentObjectStore? _objectStore = objectStore;
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentRunId, List<ChildRecord>> childrenByParent = [];
-    private readonly List<ChildRecord> detached = [];
-    private int detachedReserved;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentRunId, List<ChildRecord>> _childrenByParent = [];
+    private readonly List<ChildRecord> _detached = [];
+    private int _detachedReserved;
 
     /// <summary>Starts a detached (session-scoped) child run for an orchestration surface
     /// outside any agent run — the control channel's model-orchestration endpoints. A detached
     /// child has no parent run: nothing joins it at a turn boundary, its lifetime is the
-    /// process or an explicit cancel, and <see cref="MaxDetachedChildren"/> bounds how many it
-    /// hosts. It is otherwise a complete child run — own profile lease, event sequence, and
-    /// tool registry — addressable through the same registry and task plane.</summary>
+    /// process or an explicit cancel, and <see cref="AgentSubagentOptions.MaxDetachedChildren"/>
+    /// bounds how many it hosts. It is otherwise a complete child run — own profile lease, event
+    /// sequence, and tool registry — addressable through the same registry and task plane.</summary>
     /// <param name="spec">The composed child run description.</param>
     /// <param name="baseOptions">
     ///     The session-level options the child derives from: the subagent configuration
@@ -321,6 +324,9 @@ internal sealed class AgentSubagentHost(
     /// </param>
     /// <param name="cancellationToken">Cancels starting; the child's lifetime is session-scoped
     /// and independent afterwards.</param>
+    /// <param name="onChildSessionCreated">Optional callback invoked with the child's session id
+    /// once the child session exists, letting the orchestration surface link it without waiting
+    /// for the child's first turn.</param>
     /// <exception cref="AgentSubagentBudgetExceededException">The session hosts its detached
     /// cap of children.</exception>
     public async ValueTask<IAgentSubagentHandle> StartDetachedChildAsync(
@@ -337,21 +343,21 @@ internal sealed class AgentSubagentHost(
                 nameof(spec), duration, "The subagent turn duration cannot be negative.");
 
         var subagents = baseOptions.Subagents ??
-            throw new InvalidOperationException("Subagents are not configured for this session's runs.");
+                        throw new InvalidOperationException("Subagents are not configured for this session's runs.");
 
         // Detached spawns arrive on concurrent control-channel requests, so the cap must be
         // reserved atomically before the await and rolled back if the spawn fails.
-        var reservation = Interlocked.Increment(ref detachedReserved);
+        var reservation = Interlocked.Increment(ref _detachedReserved);
         if (reservation > subagents.MaxDetachedChildren)
         {
-            Interlocked.Decrement(ref detachedReserved);
+            Interlocked.Decrement(ref _detachedReserved);
             throw new AgentSubagentBudgetExceededException(
                 nameof(AgentSubagentOptions.MaxDetachedChildren), subagents.MaxDetachedChildren);
         }
 
         var eventSink = subagents.EventSink ??
-            throw new InvalidOperationException(
-                "Subagents with a positive depth require an event sink.");
+                        throw new InvalidOperationException(
+                            "Subagents with a positive depth require an event sink.");
         var linkedCts = new CancellationTokenSource();
         AgentSession childSession;
         IAgentRun childRun;
@@ -365,8 +371,8 @@ internal sealed class AgentSubagentHost(
             };
             childSession = new AgentSession(
                 new OptionsOverrideProfileProvider(
-                    profileProvider, childOptions, ResolveTools(spec.Tools, availableTools)),
-                objectStore: objectStore);
+                    _profileProvider, childOptions, ResolveTools(spec.Tools, availableTools)),
+                objectStore: _objectStore);
             onChildSessionCreated?.Invoke(childSession.Id);
             childRun = await childSession
                 .StartTurnAsync(AgentTurn.FromText(spec.Input), linkedCts.Token)
@@ -379,9 +385,9 @@ internal sealed class AgentSubagentHost(
         }
 
         var record = new ChildRecord(childSession.Id, childRun, linkedCts);
-        lock (gate)
+        lock (_gate)
         {
-            detached.Add(record);
+            _detached.Add(record);
         }
 
         record.Start(eventSink);
@@ -401,7 +407,7 @@ internal sealed class AgentSubagentHost(
                 nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
         var record = FindDetached(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         try
         {
             return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -420,7 +426,7 @@ internal sealed class AgentSubagentHost(
         CancellationToken cancellationToken = default)
     {
         var record = FindDetached(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         if (!record.Completion.IsCompleted)
             await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
         return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -441,7 +447,7 @@ internal sealed class AgentSubagentHost(
                 nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
         var record = FindChild(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         try
         {
             return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -460,7 +466,7 @@ internal sealed class AgentSubagentHost(
         CancellationToken cancellationToken = default)
     {
         var record = FindChild(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         if (!record.Completion.IsCompleted)
             await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
         return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -468,9 +474,9 @@ internal sealed class AgentSubagentHost(
 
     private ChildRecord? FindDetached(AgentRunId childRunId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return detached.FirstOrDefault(record => record.RunId == childRunId);
+            return _detached.FirstOrDefault(record => record.RunId == childRunId);
         }
     }
 
@@ -511,9 +517,9 @@ internal sealed class AgentSubagentHost(
     /// run has no such child.</summary>
     public ChildRecord? FindChild(AgentRunId parentRunId, AgentRunId childRunId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return childrenByParent.TryGetValue(parentRunId, out var children)
+            return _childrenByParent.TryGetValue(parentRunId, out var children)
                 ? children.FirstOrDefault(record => record.RunId == childRunId)
                 : null;
         }
@@ -524,11 +530,11 @@ internal sealed class AgentSubagentHost(
     /// of the task plane, whose URIs carry the session and the child run but no parent run.</summary>
     public ChildRecord? FindChild(AgentRunId childRunId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            return childrenByParent.Values
+            return _childrenByParent.Values
                 .SelectMany(static children => children)
-                .Concat(detached)
+                .Concat(_detached)
                 .FirstOrDefault(record => record.RunId == childRunId);
         }
     }
@@ -538,14 +544,14 @@ internal sealed class AgentSubagentHost(
     /// see records whose terminal state may already have settled.</summary>
     public IReadOnlyList<ChildRecord> ListChildren()
     {
-        lock (gate)
+        lock (_gate)
         {
             return
             [
-                .. childrenByParent.Values
+                .. _childrenByParent.Values
                     .SelectMany(static children => children),
 
-                .. detached,
+                .. _detached,
             ];
         }
     }
@@ -556,9 +562,9 @@ internal sealed class AgentSubagentHost(
     public async ValueTask TerminateChildrenAsync(AgentRunId parentRunId)
     {
         ChildRecord[] records;
-        lock (gate)
+        lock (_gate)
         {
-            if (!childrenByParent.Remove(parentRunId, out var pending))
+            if (!_childrenByParent.Remove(parentRunId, out var pending))
                 return;
             records = [.. pending];
         }
@@ -621,23 +627,23 @@ internal sealed class AgentSubagentHost(
                     nameof(spec), duration, "The subagent turn duration cannot be negative.");
 
             var subagents = parentOptions.Subagents ??
-                throw new InvalidOperationException(
-                    "Subagents are not configured for this session's runs.");
+                            throw new InvalidOperationException(
+                                "Subagents are not configured for this session's runs.");
 
             List<ChildRecord> children;
-            lock (host.gate)
+            lock (host._gate)
             {
-                children = host.childrenByParent.TryGetValue(parentRunId, out var existing)
+                children = host._childrenByParent.TryGetValue(parentRunId, out var existing)
                     ? existing
-                    : host.childrenByParent[parentRunId] = [];
+                    : host._childrenByParent[parentRunId] = [];
                 if (children.Count >= subagents.MaxChildrenPerTurn)
                     throw new AgentSubagentBudgetExceededException(
                         nameof(AgentSubagentOptions.MaxChildrenPerTurn), subagents.MaxChildrenPerTurn);
             }
 
             var eventSink = subagents.EventSink ??
-                throw new InvalidOperationException(
-                    "Subagents with a positive depth require an event sink.");
+                            throw new InvalidOperationException(
+                                "Subagents with a positive depth require an event sink.");
             var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             AgentSession childSession;
             IAgentRun childRun;
@@ -651,8 +657,8 @@ internal sealed class AgentSubagentHost(
                 };
                 childSession = new AgentSession(
                     new OptionsOverrideProfileProvider(
-                        host.profileProvider, childOptions, ResolveTools(spec.Tools)),
-                    objectStore: host.objectStore);
+                        host._profileProvider, childOptions, ResolveTools(spec.Tools)),
+                    objectStore: host._objectStore);
                 onChildSessionCreated?.Invoke(childSession.Id);
                 childRun = await childSession
                     .StartTurnAsync(AgentTurn.FromText(spec.Input), linkedCts.Token)
@@ -665,7 +671,7 @@ internal sealed class AgentSubagentHost(
             }
 
             var record = new ChildRecord(childSession.Id, childRun, linkedCts);
-            lock (host.gate)
+            lock (host._gate)
             {
                 children.Add(record);
             }
@@ -684,7 +690,7 @@ internal sealed class AgentSubagentHost(
                     nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
             var record = host.FindChild(parentRunId, childRunId) ??
-                throw new AgentSubagentNotFoundException(childRunId);
+                         throw new AgentSubagentNotFoundException(childRunId);
             try
             {
                 return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -700,7 +706,7 @@ internal sealed class AgentSubagentHost(
             CancellationToken cancellationToken = default)
         {
             var record = host.FindChild(parentRunId, childRunId) ??
-                throw new AgentSubagentNotFoundException(childRunId);
+                         throw new AgentSubagentNotFoundException(childRunId);
             if (!record.Completion.IsCompleted)
                 await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
             return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -731,7 +737,7 @@ internal sealed class AgentSubagentHost(
         IAgentRun run,
         CancellationTokenSource linkedCts) : IAgentSubagentHandle
     {
-        private readonly TaskCompletionSource<AgentSubagentResult> completionSource =
+        private readonly TaskCompletionSource<AgentSubagentResult> _completionSource =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public AgentSessionId SessionId { get; } = childSessionId;
@@ -742,15 +748,15 @@ internal sealed class AgentSubagentHost(
 
         public CancellationTokenSource LinkedCts { get; } = linkedCts;
 
-        public Task<AgentSubagentResult> Completion => completionSource.Task;
-
-        public Task MapperTask { get; private set; } = Task.CompletedTask;
+        public Task<AgentSubagentResult> Completion => _completionSource.Task;
 
         public Task PumpTask { get; private set; } = Task.CompletedTask;
 
         public void Start(IAgentSubagentEventSink sink)
         {
-            MapperTask = MapCompletionAsync();
+            // The mapper settles the child's completion mapping internally (its outcome is
+            // the completion source); no external observation point observes the task itself.
+            _ = MapCompletionAsync();
             PumpTask = PumpEventsAsync(sink);
         }
 
@@ -780,7 +786,7 @@ internal sealed class AgentSubagentHost(
                     SessionId, RunId, AgentSubagentStatus.Failed, null, false, null, exception);
             }
 
-            completionSource.TrySetResult(result);
+            _completionSource.TrySetResult(result);
         }
 
         private async Task PumpEventsAsync(IAgentSubagentEventSink sink)

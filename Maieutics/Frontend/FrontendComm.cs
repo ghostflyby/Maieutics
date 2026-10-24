@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Maieutics.DenoRepl;
@@ -23,15 +24,15 @@ internal sealed class FrontendCommStream
 
     internal const int SubscriberQueueCapacity = 1024;
 
-    private readonly Lock gate = new();
-    private readonly List<CommRecord> replay = [];
-    private readonly List<Subscriber> subscribers = [];
-    private readonly Dictionary<string, string> liveCommTargets = new(StringComparer.Ordinal);
-    private readonly Queue<string> liveCommOrder = [];
-    private long replayBytes;
-    private long nextSequence;
-    private bool truncated;
-    private TaskCompletionSource liveSetChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Lock _gate = new();
+    private readonly List<CommRecord> _replay = [];
+    private readonly List<Subscriber> _subscribers = [];
+    private readonly Dictionary<string, string> _liveCommTargets = new(StringComparer.Ordinal);
+    private readonly Queue<string> _liveCommOrder = [];
+    private long _replayBytes;
+    private long _nextSequence;
+    private bool _truncated;
+    private TaskCompletionSource _liveSetChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Internal test observability: completes on the next live-set mutation
     /// (open or forget). The completed source is swapped for a fresh one under the same
@@ -41,17 +42,17 @@ internal sealed class FrontendCommStream
     {
         get
         {
-            lock (gate)
+            lock (_gate)
             {
-                return liveSetChanged.Task;
+                return _liveSetChanged.Task;
             }
         }
     }
 
     private void NotifyLiveSetChangedLocked()
     {
-        liveSetChanged.TrySetResult();
-        liveSetChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _liveSetChanged.TrySetResult();
+        _liveSetChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>One replayed downlink frame with its session-local sequence and the
@@ -63,57 +64,57 @@ internal sealed class FrontendCommStream
     internal void Publish(ReplCommMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        lock (gate)
+        lock (_gate)
         {
             switch (message.Kind)
             {
                 case ReplCommKind.Open:
-                    if (!liveCommTargets.ContainsKey(message.CommId))
+                    if (!_liveCommTargets.ContainsKey(message.CommId))
                     {
-                        liveCommTargets[message.CommId] = message.TargetName ?? message.CommId;
-                        liveCommOrder.Enqueue(message.CommId);
+                        _liveCommTargets[message.CommId] = message.TargetName ?? message.CommId;
+                        _liveCommOrder.Enqueue(message.CommId);
                         NotifyLiveSetChangedLocked();
                     }
 
                     break;
                 case ReplCommKind.Close:
-                    if (liveCommTargets.ContainsKey(message.CommId)) NotifyLiveSetChangedLocked();
+                    if (_liveCommTargets.ContainsKey(message.CommId)) NotifyLiveSetChangedLocked();
                     ForgetComm(message.CommId);
                     break;
             }
 
-            nextSequence++;
+            _nextSequence++;
             var record = new CommRecord(
-                nextSequence,
+                _nextSequence,
                 message,
                 ReplCommCodec.Encode(message).LongLength);
-            replay.Add(record);
-            replayBytes += record.PayloadBytes;
-            while (replay.Count > ReplayRetentionFrames || replayBytes > ReplayRetentionBytes)
+            _replay.Add(record);
+            _replayBytes += record.PayloadBytes;
+            while (_replay.Count > ReplayRetentionFrames || _replayBytes > ReplayRetentionBytes)
             {
-                var oldest = replay[0];
-                replayBytes -= oldest.PayloadBytes;
-                replay.RemoveAt(0);
+                var oldest = _replay[0];
+                _replayBytes -= oldest.PayloadBytes;
+                _replay.RemoveAt(0);
                 // Once history is evicted, a resuming client can no longer rebuild full
                 // state from replay alone; the sticky flag surfaces that in the hello.
-                truncated = true;
+                _truncated = true;
             }
 
-            foreach (var subscriber in subscribers)
+            foreach (var subscriber in _subscribers)
                 if (!subscriber.Channel.Writer.TryWrite(record))
                     subscriber.Faulted = true;
         }
 
         // Overflowing subscribers are completed with the marker outside the write lock,
         // mirroring the run stream: backpressure disconnects instead of dropping frames.
-        lock (gate)
+        lock (_gate)
         {
-            for (var index = subscribers.Count - 1; index >= 0; index--)
-                if (subscribers[index].Faulted)
+            for (var index = _subscribers.Count - 1; index >= 0; index--)
+                if (_subscribers[index].Faulted)
                 {
-                    subscribers[index].Channel.Writer.TryComplete(
+                    _subscribers[index].Channel.Writer.TryComplete(
                         new FrontendCommBackpressureException("The comms subscriber queue overflowed."));
-                    subscribers.RemoveAt(index);
+                    _subscribers.RemoveAt(index);
                 }
         }
     }
@@ -122,9 +123,9 @@ internal sealed class FrontendCommStream
     /// authoritative downlink close is idempotent with this.</summary>
     internal void CloseComm(string commId)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (liveCommTargets.ContainsKey(commId)) NotifyLiveSetChangedLocked();
+            if (_liveCommTargets.ContainsKey(commId)) NotifyLiveSetChangedLocked();
             ForgetComm(commId);
         }
     }
@@ -139,33 +140,33 @@ internal sealed class FrontendCommStream
         long sinceSequence)
     {
         var channel = Channel.CreateBounded<CommRecord>(SubscriberQueueCapacity);
-        lock (gate)
+        lock (_gate)
         {
-            subscribers.Add(new Subscriber(channel));
+            _subscribers.Add(new Subscriber(channel));
             var initial = sinceSequence <= 0
-                ? replay.ToArray()
-                : replay.Where(record => record.Sequence > sinceSequence).ToArray();
+                ? _replay.ToArray()
+                : _replay.Where(record => record.Sequence > sinceSequence).ToArray();
             // A gap is real when the client is ahead of anything ever published, when
             // retention emptied the buffer, or when rotation removed exactly the frames the
             // client still needs. It must resync widget state instead of rendering silence.
             var hadGap = sinceSequence > 0 &&
-                (replay.Count == 0 ||
-                 sinceSequence >= nextSequence ||
-                 replay[0].Sequence > sinceSequence + 1);
-            return (initial, channel, truncated || hadGap);
+                         (_replay.Count == 0 ||
+                          sinceSequence >= _nextSequence ||
+                          _replay[0].Sequence > sinceSequence + 1);
+            return (initial, channel, _truncated || hadGap);
         }
     }
 
     /// <summary>Removes a subscriber when its WebSocket closes.</summary>
     internal void Unsubscribe(Channel<CommRecord> channel)
     {
-        lock (gate)
+        lock (_gate)
         {
-            for (var index = subscribers.Count - 1; index >= 0; index--)
-                if (ReferenceEquals(subscribers[index].Channel, channel))
+            for (var index = _subscribers.Count - 1; index >= 0; index--)
+                if (ReferenceEquals(_subscribers[index].Channel, channel))
                 {
-                    subscribers[index].Channel.Writer.TryComplete();
-                    subscribers.RemoveAt(index);
+                    _subscribers[index].Channel.Writer.TryComplete();
+                    _subscribers.RemoveAt(index);
                 }
         }
     }
@@ -173,21 +174,21 @@ internal sealed class FrontendCommStream
     /// <summary>Snapshot of currently open comms for the hello frame.</summary>
     internal IReadOnlyList<FrontendCommDescriptor> SnapshotLive()
     {
-        lock (gate)
+        lock (_gate)
         {
-            return liveCommOrder
-                .Select(id => new FrontendCommDescriptor(id, liveCommTargets[id]))
+            return _liveCommOrder
+                .Select(id => new FrontendCommDescriptor(id, _liveCommTargets[id]))
                 .ToArray();
         }
     }
 
     private void ForgetComm(string commId)
     {
-        if (!liveCommTargets.Remove(commId)) return;
+        if (!_liveCommTargets.Remove(commId)) return;
 
-        var remaining = liveCommOrder.Where(id => id != commId).ToArray();
-        liveCommOrder.Clear();
-        foreach (var id in remaining) liveCommOrder.Enqueue(id);
+        var remaining = _liveCommOrder.Where(id => id != commId).ToArray();
+        _liveCommOrder.Clear();
+        foreach (var id in remaining) _liveCommOrder.Enqueue(id);
     }
 
     private sealed class Subscriber(Channel<CommRecord> channel)
@@ -211,13 +212,16 @@ internal sealed class FrontendCommStream
 /// <summary>One currently open comm as announced in the hello frame.</summary>
 internal sealed record FrontendCommDescriptor(
     [property: JsonPropertyName("commId")] string CommId,
-    [property: JsonPropertyName("targetName")] string? TargetName);
+    [property: JsonPropertyName("targetName")]
+    string? TargetName);
 
 /// <summary>The comms WebSocket hello: live identities plus replay status.</summary>
 internal sealed record FrontendCommHello(
     [property: JsonPropertyName("live")] IReadOnlyList<FrontendCommDescriptor> Live,
-    [property: JsonPropertyName("replayed")] bool Replayed,
-    [property: JsonPropertyName("truncated")] bool Truncated);
+    [property: JsonPropertyName("replayed")]
+    bool Replayed,
+    [property: JsonPropertyName("truncated")]
+    bool Truncated);
 
 /// <summary>
 ///     Receives uplink frames for kernel-owned comms (ADR 0038 stage 2): the
@@ -244,15 +248,15 @@ internal sealed class FrontendCommRouter
 
     private const int RetainedSessionPlanes = 4;
 
-    private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask> pushToChild;
-    private readonly Lock gate = new();
-    private readonly Dictionary<string, FrontendCommStream> planes = new(StringComparer.Ordinal);
-    private readonly Queue<string> planeOrder = [];
-    private readonly Dictionary<(string SessionId, string CommId), IFrontendKernelCommOwner> kernelOwners = new();
+    private readonly Func<string, ReplCommMessage, CancellationToken, ValueTask> _pushToChild;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, FrontendCommStream> _planes = new(StringComparer.Ordinal);
+    private readonly Queue<string> _planeOrder = [];
+    private readonly Dictionary<(string SessionId, string CommId), IFrontendKernelCommOwner> _kernelOwners = new();
 
     public FrontendCommRouter(Func<string, ReplCommMessage, CancellationToken, ValueTask> pushToChild)
     {
-        this.pushToChild = pushToChild ?? throw new ArgumentNullException(nameof(pushToChild));
+        this._pushToChild = pushToChild ?? throw new ArgumentNullException(nameof(pushToChild));
     }
 
     /// <summary>Downlink: a REPL comm frame arrived for a session. Widget state belongs to
@@ -278,11 +282,11 @@ internal sealed class FrontendCommRouter
         // The owner is registered before the open is published: a frontend that
         // learned the comm id from the live open must never win a race that
         // misroutes its first uplink frame to the child instead of the owner.
-        lock (gate)
+        lock (_gate)
         {
             var key = (sessionId, message.CommId);
-            if (message.Kind == ReplCommKind.Open && owner is not null) kernelOwners[key] = owner;
-            if (message.Kind == ReplCommKind.Close) kernelOwners.Remove(key);
+            if (message.Kind == ReplCommKind.Open && owner is not null) _kernelOwners[key] = owner;
+            if (message.Kind == ReplCommKind.Close) _kernelOwners.Remove(key);
         }
 
         PlaneFor(sessionId).Publish(message);
@@ -313,9 +317,9 @@ internal sealed class FrontendCommRouter
                 $"No open comm matches '{message.CommId}'.");
 
         IFrontendKernelCommOwner? owner;
-        lock (gate)
+        lock (_gate)
         {
-            kernelOwners.TryGetValue((sessionId, message.CommId), out owner);
+            _kernelOwners.TryGetValue((sessionId, message.CommId), out owner);
         }
 
         if (owner is not null)
@@ -323,9 +327,9 @@ internal sealed class FrontendCommRouter
             await owner.OnUplinkAsync(message, cancellationToken).ConfigureAwait(false);
             if (message.Kind == ReplCommKind.Close)
             {
-                lock (gate)
+                lock (_gate)
                 {
-                    kernelOwners.Remove((sessionId, message.CommId));
+                    _kernelOwners.Remove((sessionId, message.CommId));
                 }
 
                 plane.CloseComm(message.CommId);
@@ -336,7 +340,7 @@ internal sealed class FrontendCommRouter
 
         try
         {
-            await pushToChild(sessionId, message, cancellationToken).ConfigureAwait(false);
+            await _pushToChild(sessionId, message, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException exception)
         {
@@ -361,22 +365,22 @@ internal sealed class FrontendCommRouter
     internal FrontendCommStream PlaneFor(string sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        lock (gate)
+        lock (_gate)
         {
-            if (planes.TryGetValue(sessionId, out var existing)) return existing;
+            if (_planes.TryGetValue(sessionId, out var existing)) return existing;
 
             var plane = new FrontendCommStream();
-            planes[sessionId] = plane;
-            planeOrder.Enqueue(sessionId);
-            while (planeOrder.Count > RetainedSessionPlanes)
+            _planes[sessionId] = plane;
+            _planeOrder.Enqueue(sessionId);
+            while (_planeOrder.Count > RetainedSessionPlanes)
             {
-                var oldest = planeOrder.Dequeue();
+                var oldest = _planeOrder.Dequeue();
                 if (!string.Equals(oldest, sessionId, StringComparison.Ordinal))
                 {
-                    planes.Remove(oldest);
-                    foreach (var key in kernelOwners.Keys.Where(key => key.SessionId == oldest).ToArray())
+                    _planes.Remove(oldest);
+                    foreach (var key in _kernelOwners.Keys.Where(key => key.SessionId == oldest).ToArray())
                     {
-                        kernelOwners.Remove(key);
+                        _kernelOwners.Remove(key);
                     }
                 }
             }
@@ -399,7 +403,7 @@ internal static class FrontendCommEnvelope
     {
         var frame = ReplCommCodec.Encode(message);
         var payload = new byte[SequenceBytes + frame.Length];
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(payload, (ulong)sequence);
+        BinaryPrimitives.WriteUInt64BigEndian(payload, (ulong)sequence);
         frame.CopyTo(payload, SequenceBytes);
         return payload;
     }
@@ -409,7 +413,7 @@ internal static class FrontendCommEnvelope
         if (payload.Length < SequenceBytes)
             throw new InvalidDataException("The comm frame is missing its envelope sequence.");
 
-        var sequence = (long)System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(payload);
+        var sequence = (long)BinaryPrimitives.ReadUInt64BigEndian(payload);
         return (sequence, ReplCommCodec.Decode(payload[SequenceBytes..]));
     }
 }

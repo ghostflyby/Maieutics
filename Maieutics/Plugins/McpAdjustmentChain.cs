@@ -37,31 +37,25 @@ internal sealed record McpAdjustmentSnapshot(
 /// adjusted exposes nothing), so a broken adjuster never resurrects removed
 /// surface.
 /// </summary>
-internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
+internal sealed class McpAdjustmentChain(
+    Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke,
+    ILogger logger) : IMcpToolSurfaceAdjuster
 {
-    private readonly Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke;
-    private readonly ILogger logger;
-    private readonly Lock gate = new();
-    private readonly Dictionary<string, IReadOnlySet<string>> lastGoodDrops = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, JsonElement> lastGoodListings = new(StringComparer.Ordinal);
-    private McpAdjustmentSnapshot snapshot = new([], ImmutableDictionary<string, IReadOnlyList<string>>.Empty, []);
-
-    public McpAdjustmentChain(
-        Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> invoke,
-        ILogger logger)
-    {
-        this.invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
-        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
+    private readonly Func<string, string, string, JsonElement?, CancellationToken, Task<ExtensionCallOutcome>> _invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
+    private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, IReadOnlySet<string>> _lastGoodDrops = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JsonElement> _lastGoodListings = new(StringComparer.Ordinal);
+    private McpAdjustmentSnapshot _currentSnapshot = new([], ImmutableDictionary<string, IReadOnlyList<string>>.Empty, []);
 
     /// <summary>Replaces the adjustment topology. Called on startup, on every host
     /// registry payload, and after declarative reloads.</summary>
     public void UpdateSnapshot(McpAdjustmentSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        lock (gate)
+        lock (_gate)
         {
-            this.snapshot = snapshot;
+            _currentSnapshot = snapshot;
         }
     }
 
@@ -69,7 +63,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
     /// dependency-topological order). Exposed for change detection.</summary>
     public IReadOnlyList<McpAdjusterRegistration> ChainFor(string serverId)
     {
-        var snapshot = Volatile.Read(ref this.snapshot);
+        var snapshot = Volatile.Read(ref _currentSnapshot);
         var owner = OwnerOf(serverId);
         var chain = new List<McpAdjusterRegistration>();
         foreach (var adjuster in snapshot.Adjusters)
@@ -98,7 +92,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
         IReadOnlyList<(string OwnerPluginId, string ServerId, McpTransportDefinition Transport)> view,
         CancellationToken cancellationToken)
     {
-        var snapshot = Volatile.Read(ref this.snapshot);
+        var snapshot = Volatile.Read(ref _currentSnapshot);
         var dropped = ImmutableHashSet<string>.Empty;
         foreach (var adjuster in OrderedAdjusters(snapshot))
         {
@@ -108,7 +102,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
             if (inScope.Count == 0) continue;
 
             var request = BuildCompositionRequest(inScope);
-            var outcome = await invoke(
+            var outcome = await _invoke(
                 adjuster.PluginId,
                 adjuster.ExportName,
                 ReplExtensionPointName.McpAdjust,
@@ -120,9 +114,9 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
                 drops = parsed;
             if (drops is null)
             {
-                if (lastGoodDrops.TryGetValue(key, out var sticky))
+                if (_lastGoodDrops.TryGetValue(key, out var sticky))
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "MCP adjuster '{Plugin}/{Export}' failed; its previous composition result stays active.",
                         adjuster.PluginId,
                         adjuster.ExportName);
@@ -130,16 +124,16 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
                     continue;
                 }
 
-                logger.LogWarning(
+                _logger.LogWarning(
                     "MCP adjuster '{Plugin}/{Export}' failed without a previous result; its scope passes through unadjusted.",
                     adjuster.PluginId,
                     adjuster.ExportName);
                 continue;
             }
 
-            lock (gate)
+            lock (_gate)
             {
-                lastGoodDrops[key] = drops;
+                _lastGoodDrops[key] = drops;
             }
 
             dropped = dropped.Union(drops);
@@ -164,7 +158,7 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
         foreach (var adjuster in chain)
         {
             var request = BuildToolsRequest(serverId, current);
-            var outcome = await invoke(
+            var outcome = await _invoke(
                 adjuster.PluginId,
                 adjuster.ExportName,
                 ReplExtensionPointName.McpAdjust,
@@ -172,15 +166,15 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
                 cancellationToken).ConfigureAwait(false);
             if (outcome.IsError || outcome.Value is not { ValueKind: JsonValueKind.Array } adjusted)
             {
-                if (lastGoodListings.TryGetValue(serverId, out var sticky))
+                if (_lastGoodListings.TryGetValue(serverId, out var sticky))
                 {
-                    logger.LogWarning(
+                    _logger.LogWarning(
                         "MCP adjuster chain failed for server '{ServerId}'; the last adjusted listing stays active.",
                         serverId);
                     return sticky;
                 }
 
-                logger.LogWarning(
+                _logger.LogWarning(
                     "MCP adjuster chain failed for server '{ServerId}' without a previous result; its tools are not exposed.",
                     serverId);
                 return null;
@@ -189,9 +183,9 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
             current = ValidateListing(adjusted, current, serverId);
         }
 
-        lock (gate)
+        lock (_gate)
         {
-            lastGoodListings[serverId] = current;
+            _lastGoodListings[serverId] = current;
         }
 
         return current;
@@ -350,14 +344,14 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
             foreach (var tool in adjusted.EnumerateArray())
             {
                 var aliasOf = tool.ValueKind == JsonValueKind.Object &&
-                    tool.TryGetProperty("aliasOf", out var value) &&
-                    value.ValueKind == JsonValueKind.String
-                        ? value.GetString()
-                        : null;
+                              tool.TryGetProperty("aliasOf", out var value) &&
+                              value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
                 if (aliasOf is null || !known.Contains(aliasOf))
                 {
                     if (aliasOf is not null && warned.Add(aliasOf))
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             "MCP adjuster for server '{ServerId}' returned tool '{Tool}' with no input identity; it is dropped.",
                             serverId,
                             aliasOf);

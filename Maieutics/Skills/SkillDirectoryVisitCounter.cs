@@ -6,11 +6,11 @@ namespace Maieutics.Skills;
 /// a full-tree walk by one per directory of the tree.</summary>
 internal sealed class SkillDirectoryVisitCounter
 {
-    private long count;
+    private long _count;
 
     /// <summary>Total directories probed so far. Thread-safe: separate root pumps may be
     /// walking concurrently against one catalog-owned counter.</summary>
-    internal long Count => Interlocked.Read(ref count);
+    internal long Count => Interlocked.Read(ref _count);
 
-    internal void Increment() => Interlocked.Increment(ref count);
+    internal void Increment() => Interlocked.Increment(ref _count);
 }

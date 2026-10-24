@@ -21,23 +21,23 @@ internal sealed class AgentSubagentFunctions
     private static readonly JsonSerializerOptions SerializerOptions =
         SubagentFunctionJsonContext.Default.Options;
 
-    private readonly TaskResourceProvider taskResources;
-    private readonly PermissionOverrideRegistry? permissionOverrides;
+    private readonly TaskResourceProvider _taskResources;
+    private readonly PermissionOverrideRegistry? _permissionOverrides;
 
     /// <summary>The approval gate's parent link, resolved lazily. The registry is the frontend
     /// presenter, which depends (through the session service) on the run-profile provider that
     /// consumes this very tool list — resolving it in the constructor would close a DI cycle.
     /// Per-spawn resolution is long after composition has settled.</summary>
-    private readonly Func<IAgentChildScopeRegistry?>? childScopes;
+    private readonly Func<IAgentChildScopeRegistry?>? _childScopes;
 
     public AgentSubagentFunctions(
         TaskResourceProvider taskResources,
         PermissionOverrideRegistry? permissionOverrides = null,
         Func<IAgentChildScopeRegistry?>? childScopes = null)
     {
-        this.taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
-        this.permissionOverrides = permissionOverrides;
-        this.childScopes = childScopes;
+        this._taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
+        this._permissionOverrides = permissionOverrides;
+        this._childScopes = childScopes;
         Functions =
         [
             CreateFunction(
@@ -87,18 +87,18 @@ internal sealed class AgentSubagentFunctions
         try
         {
             handle = await spawner.StartChildAsync(
-                new AgentSubagentSpec
-                {
-                    Instructions = instructions,
-                    Input = input,
-                    Tools = tools
-                },
-                cancellationToken,
-                onChildSessionCreated: childSessionId =>
-                {
-                    permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
-                    childScopes?.Invoke()?.RegisterChildScope(childSessionId, context.SessionId);
-                })
+                    new AgentSubagentSpec
+                    {
+                        Instructions = instructions,
+                        Input = input,
+                        Tools = tools
+                    },
+                    cancellationToken,
+                    onChildSessionCreated: childSessionId =>
+                    {
+                        _permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
+                        _childScopes?.Invoke()?.RegisterChildScope(childSessionId, context.SessionId);
+                    })
                 .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)
@@ -156,7 +156,7 @@ internal sealed class AgentSubagentFunctions
 
         try
         {
-            var snapshot = await taskResources.WaitTaskAsync(uri, timeout, cancellationToken).ConfigureAwait(false);
+            var snapshot = await _taskResources.WaitTaskAsync(uri, timeout, cancellationToken).ConfigureAwait(false);
             return Serialize(ToValue(snapshot));
         }
         catch (ResourceException exception)
@@ -175,7 +175,7 @@ internal sealed class AgentSubagentFunctions
         var context = AgentToolContext.GetRequired(arguments);
         try
         {
-            var snapshot = await taskResources
+            var snapshot = await _taskResources
                 .CancelTaskAsync(uri, context.SessionId, cancellationToken)
                 .ConfigureAwait(false);
             return Serialize(ToValue(snapshot));

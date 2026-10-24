@@ -1,5 +1,4 @@
 using System.IO.Pipes;
-using System.Reflection;
 using Maieutics.DenoExecution;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -15,8 +14,6 @@ namespace Maieutics.Product.Tests;
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class DenoPermissionBrokerDisposalTests
 {
-    private const string PipeListenerFieldName = "pipeListener";
-
     private const int PipeListenerInstanceLimit = 8; // The broker's pending-connection limit.
 
     /// <summary>Disposing the broker must release the named-pipe listener it holds. On Windows the
@@ -31,8 +28,31 @@ public sealed class DenoPermissionBrokerDisposalTests
         // timeout directly instead.
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
 
-        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
-        var listener = InstallPipeListener(broker);
+        // The test owns the broker's disposal explicitly: releasing it mid-test is the
+        // behavior under test, so there is no using scope to auto-dispose behind it. The
+        // finally re-disposes idempotently if an assertion fails first.
+        var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        NamedPipeServerStream? listener;
+        if (broker._pipeListener is { } existing)
+        {
+            listener = existing;
+        }
+        else
+        {
+            var installed = new NamedPipeServerStream(
+                $"mc-broker-disp-{Guid.NewGuid():N}"[..24],
+                PipeDirection.InOut,
+                PipeListenerInstanceLimit,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+            broker._pipeListener = installed;
+            listener = installed;
+        }
+
+        // Unix binds the pipe name as "{TempPath}/CoreFxPipe_{name}" and macOS caps domain socket
+        // paths at 104 characters, so the synthetic name stays short — the broker truncates its
+        // socket name in CreateSocketPath for the same reason; the truncated Guid suffix keeps
+        // concurrent runs collision-free.
         try
         {
             // Baseline for the probe below. TransmissionMode is the probe member because its only
@@ -58,9 +78,11 @@ public sealed class DenoPermissionBrokerDisposalTests
         finally
         {
             // The pre-fix behaviour this test pins leaks the listener; the test still owns its
-            // probe and must not leave the pipe behind either. Disposal is idempotent, so this is
-            // a no-op when the broker released it.
+            // probe and must not leave the pipe behind either. Disposal is idempotent, so this
+            // is a no-op when the broker released it — and it releases the broker itself when
+            // an assertion above failed before the test reached its own DisposeAsync.
             await listener.DisposeAsync();
+            await broker.DisposeAsync();
         }
     }
 
@@ -78,41 +100,12 @@ public sealed class DenoPermissionBrokerDisposalTests
             Assert.Skip("The unix branch binds a socket path; Windows covers its pipe listener directly.");
         }
 
-        await using var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
+        // Disposal is the test's subject, so the broker is owned explicitly instead of a
+        // using scope that would auto-dispose behind the manual release.
+        var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
         var socketPath = broker.Address;
         Assert.True(File.Exists(socketPath));
         await broker.DisposeAsync();
         Assert.False(File.Exists(socketPath));
-    }
-
-    /// <summary>Returns the broker's live named-pipe listener. On Windows the broker created one;
-    /// on unix the listener field is null by construction, so an equivalent listener (same
-    /// direction, instance limit, transmission mode, and async mode as the broker's own) is
-    /// installed to stand in for it.</summary>
-    private static NamedPipeServerStream InstallPipeListener(DenoPermissionBroker broker)
-    {
-        if (typeof(DenoPermissionBroker).GetField(PipeListenerFieldName, BindingFlags.Instance | BindingFlags.NonPublic)
-            is not { } field)
-        {
-            throw new InvalidOperationException($"DenoPermissionBroker has no {PipeListenerFieldName} field.");
-        }
-
-        if (field.GetValue(broker) is NamedPipeServerStream existing)
-        {
-            return existing;
-        }
-
-        // Unix binds the pipe name as "{TempPath}/CoreFxPipe_{name}" and macOS caps domain socket
-        // paths at 104 characters, so the synthetic name stays short — the broker truncates its
-        // socket name in CreateSocketPath for the same reason; the truncated Guid suffix keeps
-        // concurrent runs collision-free.
-        var installed = new NamedPipeServerStream(
-            $"mc-broker-disp-{Guid.NewGuid():N}"[..24],
-            PipeDirection.InOut,
-            PipeListenerInstanceLimit,
-            PipeTransmissionMode.Byte,
-            PipeOptions.Asynchronous);
-        field.SetValue(broker, installed);
-        return installed;
     }
 }

@@ -15,28 +15,28 @@ internal sealed class DenoReplRegistry(
 {
     private const string DefaultSessionId = "default";
 
-    private readonly TaskCompletionSource disposalCompletion =
+    private readonly TaskCompletionSource _disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private readonly Lock gate = new();
-    private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> sessions = [];
-    private readonly IReplDisplayObjectStore? displayObjectStore = displayObjectStore;
-    private int disposeState;
+    private readonly Lock _gate = new();
+    private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> _sessions = [];
+    private readonly IReplDisplayObjectStore? _displayObjectStore = displayObjectStore;
+    private int _disposeState;
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.CompareExchange(ref disposeState, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _disposeState, 1, 0) != 0)
         {
-            await disposalCompletion.Task.ConfigureAwait(false);
+            await _disposalCompletion.Task.ConfigureAwait(false);
             return;
         }
 
         Exception? failure = null;
         DenoReplSession[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
-            snapshot = sessions.Values.SelectMany(static value => value.Values).ToArray();
-            sessions.Clear();
+            snapshot = _sessions.Values.SelectMany(static value => value.Values).ToArray();
+            _sessions.Clear();
         }
 
         try
@@ -50,11 +50,11 @@ internal sealed class DenoReplRegistry(
         }
 
         if (failure is null)
-            disposalCompletion.TrySetResult();
+            _disposalCompletion.TrySetResult();
         else
-            disposalCompletion.TrySetException(failure);
+            _disposalCompletion.TrySetException(failure);
 
-        await disposalCompletion.Task.ConfigureAwait(false);
+        await _disposalCompletion.Task.ConfigureAwait(false);
     }
 
     internal async Task<DenoReplSessionResult> CreateAsync(
@@ -95,9 +95,9 @@ internal sealed class DenoReplRegistry(
     internal AgentSessionId? TryGetOwnerSessionId(string replSessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(replSessionId);
-        lock (gate)
+        lock (_gate)
         {
-            foreach (var (owner, byId) in sessions)
+            foreach (var (owner, byId) in _sessions)
                 if (byId.ContainsKey(replSessionId))
                     return owner;
         }
@@ -108,10 +108,10 @@ internal sealed class DenoReplRegistry(
     internal DenoReplListResult List(AgentSessionId ownerSessionId)
     {
         DenoReplSession[] snapshot;
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned)) return new DenoReplListResult([]);
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned)) return new DenoReplListResult([]);
             snapshot = owned.Values.ToArray();
         }
 
@@ -165,10 +165,10 @@ internal sealed class DenoReplRegistry(
     private DenoReplSession GetOrReserveDefault(AgentSessionId ownerSessionId, string? sessionId)
     {
         var resolvedSessionId = ResolveSessionId(sessionId);
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(resolvedSessionId, out var existing))
                 return existing;
 
@@ -181,13 +181,13 @@ internal sealed class DenoReplRegistry(
 
     private DenoReplSession Reserve(AgentSessionId ownerSessionId, string sessionId, bool isDefault)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (!sessions.TryGetValue(ownerSessionId, out var owned))
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned))
             {
                 owned = new Dictionary<string, DenoReplSession>(StringComparer.Ordinal);
-                sessions.Add(ownerSessionId, owned);
+                _sessions.Add(ownerSessionId, owned);
             }
 
             if (owned.TryGetValue(sessionId, out var existing)) return existing;
@@ -206,7 +206,7 @@ internal sealed class DenoReplRegistry(
                 factory,
                 presentationRouter,
                 logger,
-                displayObjectStore);
+                _displayObjectStore);
             owned.Add(sessionId, created);
             return created;
         }
@@ -214,10 +214,10 @@ internal sealed class DenoReplRegistry(
 
     private DenoReplSession GetExisting(AgentSessionId ownerSessionId, string sessionId)
     {
-        lock (gate)
+        lock (_gate)
         {
             ThrowIfDisposed();
-            if (sessions.TryGetValue(ownerSessionId, out var owned) &&
+            if (_sessions.TryGetValue(ownerSessionId, out var owned) &&
                 owned.TryGetValue(sessionId, out var session))
                 return session;
         }
@@ -230,15 +230,15 @@ internal sealed class DenoReplRegistry(
         string sessionId,
         DenoReplSession expected)
     {
-        lock (gate)
+        lock (_gate)
         {
-            if (!sessions.TryGetValue(ownerSessionId, out var owned) ||
+            if (!_sessions.TryGetValue(ownerSessionId, out var owned) ||
                 !owned.TryGetValue(sessionId, out var current) ||
                 !ReferenceEquals(current, expected))
                 return;
 
             owned.Remove(sessionId);
-            if (owned.Count == 0) sessions.Remove(ownerSessionId);
+            if (owned.Count == 0) _sessions.Remove(ownerSessionId);
         }
     }
 
@@ -261,6 +261,6 @@ internal sealed class DenoReplRegistry(
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposeState) != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
     }
 }

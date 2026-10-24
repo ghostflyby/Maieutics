@@ -93,14 +93,14 @@ internal sealed record SubagentTaskUsage(int? InputTokens, int? OutputTokens, in
 /// waited on and cancelled through the uniform control contract (ADR 0030 decision 5). The
 /// owning subsystems keep their richer typed tools alongside; the plane's control surface is
 /// deliberately narrow.</summary>
-internal sealed class TaskResourceProvider : IResourceProvider, IResourceCatalogProvider
+internal sealed class TaskResourceProvider : IResourceCatalogProvider
 {
     internal const string Scheme = "task";
 
     private const string MimeType = "application/json";
 
-    private readonly IReadOnlyDictionary<string, ITaskResourceSource> sourcesByAuthority;
-    private readonly IReadOnlyList<ResourceClaim> claims;
+    private readonly IReadOnlyDictionary<string, ITaskResourceSource> _sourcesByAuthority;
+    private readonly IReadOnlyList<ResourceClaim> _claims;
 
     public TaskResourceProvider(IEnumerable<ITaskResourceSource> sources)
     {
@@ -109,18 +109,18 @@ internal sealed class TaskResourceProvider : IResourceProvider, IResourceCatalog
         if (materialized.Length == 0)
             throw new ArgumentException("At least one task resource source is required.", nameof(sources));
 
-        sourcesByAuthority = materialized.ToDictionary(
+        _sourcesByAuthority = materialized.ToDictionary(
             static source => source.Authority,
             static source => source,
             StringComparer.OrdinalIgnoreCase);
-        claims = [.. materialized.Select(source => new ResourceClaim(Scheme, source.Authority))];
+        _claims = [.. materialized.Select(source => new ResourceClaim(Scheme, source.Authority))];
     }
 
     public string Id => "task";
 
     public ResourceProviderClass Class => ResourceProviderClass.BuiltIn;
 
-    public IReadOnlyList<ResourceClaim> Claims => claims;
+    public IReadOnlyList<ResourceClaim> Claims => _claims;
 
     public async ValueTask<ResourceReadResult> ReadAsync(
         string uri,
@@ -193,7 +193,7 @@ internal sealed class TaskResourceProvider : IResourceProvider, IResourceCatalog
     public ValueTask<ImmutableArray<ResourceCatalogEntry>> ListAsync(CancellationToken cancellationToken)
     {
         var entries = ImmutableArray.CreateBuilder<ResourceCatalogEntry>();
-        foreach (var source in sourcesByAuthority.Values)
+        foreach (var source in _sourcesByAuthority.Values)
         {
             cancellationToken.ThrowIfCancellationRequested();
             entries.AddRange(source.ListTasks(cancellationToken));
@@ -211,7 +211,7 @@ internal sealed class TaskResourceProvider : IResourceProvider, IResourceCatalog
 
     private ITaskResourceSource ResolveSource(Uri parsed)
     {
-        if (!sourcesByAuthority.TryGetValue(parsed.Host, out var source))
+        if (!_sourcesByAuthority.TryGetValue(parsed.Host, out var source))
             throw new ResourceException(
                 "resource_not_found",
                 $"No task source owns the authority '{parsed.Host}'.");
@@ -361,15 +361,15 @@ internal sealed class AgentTaskResourceSource : ITaskResourceSource
 
     private const int ReportPreviewCharacters = 2_000;
 
-    private readonly Func<AgentSessionId, AgentSession?> resolveSession;
-    private readonly Func<IReadOnlyList<AgentSessionId>> listLiveSessions;
+    private readonly Func<AgentSessionId, AgentSession?> _resolveSession;
+    private readonly Func<IReadOnlyList<AgentSessionId>> _listLiveSessions;
 
     public AgentTaskResourceSource(
         Func<AgentSessionId, AgentSession?> resolveSession,
         Func<IReadOnlyList<AgentSessionId>> listLiveSessions)
     {
-        this.resolveSession = resolveSession ?? throw new ArgumentNullException(nameof(resolveSession));
-        this.listLiveSessions = listLiveSessions ?? throw new ArgumentNullException(nameof(listLiveSessions));
+        this._resolveSession = resolveSession ?? throw new ArgumentNullException(nameof(resolveSession));
+        this._listLiveSessions = listLiveSessions ?? throw new ArgumentNullException(nameof(listLiveSessions));
     }
 
     public string Authority => AgentAuthority;
@@ -378,9 +378,9 @@ internal sealed class AgentTaskResourceSource : ITaskResourceSource
     {
         cancellationToken.ThrowIfCancellationRequested();
         var entries = ImmutableArray.CreateBuilder<ResourceCatalogEntry>();
-        foreach (var sessionId in listLiveSessions())
+        foreach (var sessionId in _listLiveSessions())
         {
-            var session = resolveSession(sessionId);
+            var session = _resolveSession(sessionId);
             if (session is null)
                 continue;
 
@@ -442,7 +442,7 @@ internal sealed class AgentTaskResourceSource : ITaskResourceSource
 
     private AgentSubagentHost.ChildRecord? FindRecord((AgentSessionId sessionId, AgentRunId runId) target)
     {
-        var session = resolveSession(target.sessionId);
+        var session = _resolveSession(target.sessionId);
         return session?.SubagentHost.FindChild(target.runId);
     }
 

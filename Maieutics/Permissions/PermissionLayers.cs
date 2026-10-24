@@ -31,7 +31,7 @@ internal static class PermissionLayerStore
             {
                 ArgumentNullException.ThrowIfNull(rules);
                 var current = merged.TryGetValue(kind, out var existing) ? existing : PermissionKindRules.Empty;
-                merged[kind] = Overlay(current, rules, variables);
+                merged[kind] = Overlay(kind, current, rules, variables);
             }
         }
 
@@ -39,6 +39,7 @@ internal static class PermissionLayerStore
     }
 
     private static PermissionKindRules Overlay(
+        PermissionKind kind,
         PermissionKindRules current,
         PermissionKindRules next,
         VariableTable variables)
@@ -67,17 +68,26 @@ internal static class PermissionLayerStore
                     "permission_pattern_empty",
                     $"The permission pattern '{pattern}' expands to an empty value; " +
                     "an empty pattern would match everything and is rejected.");
-            if (expanded == "*")
-                throw new PermissionException(
-                    "permission_pattern_invalid",
-                    $"The permission pattern '{pattern}' expands to '*'; allow-all and deny-all " +
-                    "are expressed by their dedicated flags, never as a list entry.");
-            if (expanded.Contains(','))
-                throw new PermissionException(
-                    "permission_pattern_invalid",
-                    $"The permission pattern '{pattern}' expands to a value containing a comma; " +
-                    "Deno renders a kind's list as one comma-separated flag, so such a pattern " +
-                    "cannot be expressed and is rejected.");
+            // The flag-grammar rejections (a stray '*', a comma inside a pattern) exist only
+            // because the renderer joins a Deno kind's list into one comma-separated flag. The
+            // kernel-internal instructions domain never renders, and its derived deny overlay
+            // carries real workspace file names — a file literally named '*' or 'a,b' must not
+            // fail the build.
+            if (PermissionKinds.IsDenoKind(kind))
+            {
+                if (expanded == "*")
+                    throw new PermissionException(
+                        "permission_pattern_invalid",
+                        $"The permission pattern '{pattern}' expands to '*'; allow-all and deny-all " +
+                        "are expressed by their dedicated flags, never as a list entry.");
+                if (expanded.Contains(','))
+                    throw new PermissionException(
+                        "permission_pattern_invalid",
+                        $"The permission pattern '{pattern}' expands to a value containing a comma; " +
+                        "Deno renders a kind's list as one comma-separated flag, so such a pattern " +
+                        "cannot be expressed and is rejected.");
+            }
+
             return expanded;
         }
     }

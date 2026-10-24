@@ -448,6 +448,20 @@ internal sealed class MaieuticsCommandExecutor(
                     $"'{arguments[3]}' is not a permission kind " +
                     "(read, write, net, env, run, ffi, sys, import, instructions).");
 
+            // Path-kind patterns must anchor: every gate judges absolute physical paths, so a
+            // relative pattern would compose into a silently dead rule (run/net/env keep bare
+            // values — command names, hosts, variable names).
+            if (PermissionKinds.IsFilePathKind(kind))
+                foreach (var pattern in arguments[4..])
+                {
+                    if (Path.IsPathRooted(pattern) || pattern.StartsWith("${", StringComparison.Ordinal))
+                        continue;
+                    throw new MaieuticsCommandException(
+                        MaieuticsCommandException.CommandError,
+                        $"The {arguments[3]} pattern '{pattern}' is relative; path patterns must be " +
+                        "absolute or use a ${env.*}/${var.*} token (for example ${var.workspace}/docs).");
+                }
+
             var current = permissionOverrides.TryGet(addressed) ?? PermissionLayer.Empty;
             var delta = new PermissionLayer
             {

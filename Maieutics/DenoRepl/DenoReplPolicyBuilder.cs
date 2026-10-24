@@ -110,61 +110,73 @@ internal static class DenoReplPolicyBuilder
 
         if (denied.Count == 0) return composed;
 
-        var overlay = new PermissionLayer
+        // Hand-merged, not store-composed: the entries are kernel-generated absolute file
+        // names from the user's workspace, and a surface literally named 'a,b' or '*' must be
+        // denyable — the store's flag-grammar rejections exist for user-authored patterns the
+        // renderer would join into one comma-separated flag, which these never become (the
+        // broker matches each request against discrete list entries; the spawn shell's
+        // RenderKind drops a kind that carries any deny).
+        var write = composed.For(PermissionKind.Write);
+        var kinds = new Dictionary<PermissionKind, PermissionKindRules>(composed.Kinds);
+        kinds[PermissionKind.Write] = new PermissionKindRules
         {
-            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
-            {
-                [PermissionKind.Write] = new() { Deny = denied }
-            }
+            AllowAll = write.AllowAll,
+            DenyAll = write.DenyAll,
+            Allow = write.Allow,
+            Deny = [.. write.Deny, .. denied]
         };
-        return PermissionLayerStore.Build(
-            [
-                new PermissionLayer { Kinds = composed.Kinds },
-                overlay
-            ],
-            VariableTable.Expanded);
+        return new EffectivePolicy(kinds, composed.Variables);
     }
 
     /// <summary>Yields the physical paths of the instruction surfaces that exist under the
-    /// working directory: every file beneath <c>.agents/</c> and every <c>AGENTS.md</c> at any
-    /// depth. The walk is bounded (a surface set beyond the cap is the documented residual) and
-    /// never crosses reparse points.</summary>
+    /// working directory: every file beneath a <c>.agents</c> directory and every
+    /// <c>AGENTS.md</c> at any depth. The walk is bounded (a surface set beyond the cap is the
+    /// documented residual), never descends through reparse points (an aliased subtree stays
+    /// residual), tolerates unreadable or vanished subtrees as residual, and yields link-named
+    /// surfaces themselves — denying the path is the point, following the link is not. Writing
+    /// through a link created <em>after</em> acquisition under a different name is the remaining
+    /// documented residual; the kernel-tool gates refuse symlink traversal outright.</summary>
     private static IEnumerable<string> EnumerateInstructionSurfaces(string workingDirectory)
     {
         const int maximumEntries = 10_000;
         var visited = 0;
-        var pending = new Stack<string>([workingDirectory]);
+        var pending = new Stack<(string Path, bool UnderAgents)>();
+        pending.Push((Path.GetFullPath(workingDirectory), UnderAgents: false));
         while (pending.Count > 0)
         {
-            var directory = pending.Pop();
-            foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+            var (directory, underAgents) = pending.Pop();
+            IEnumerable<FileSystemInfo> entries;
+            try
+            {
+                entries = new DirectoryInfo(directory).EnumerateFileSystemInfos();
+            }
+            catch (Exception exception) when (
+                exception is UnauthorizedAccessException or DirectoryNotFoundException)
+            {
+                // One inaccessible subtree must not fail the REPL start (or silently degrade the
+                // host-derived policy): the un-walked part stays in the documented residual.
+                continue;
+            }
+
+            foreach (var entry in entries)
             {
                 if (++visited > maximumEntries) yield break;
-                var attributes = entry.Attributes;
-                if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
 
+                var attributes = entry.Attributes;
                 if ((attributes & FileAttributes.Directory) != 0)
                 {
                     if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase)) continue;
-                    pending.Push(entry.FullName);
+                    var childUnderAgents = underAgents || entry.Name.Equals(".agents", StringComparison.Ordinal);
+                    // Never descend through a reparse point.
+                    if ((attributes & FileAttributes.ReparsePoint) == 0 && entry.LinkTarget is null)
+                        pending.Push((entry.FullName, childUnderAgents));
                     continue;
                 }
 
-                if (entry.Name.Equals("AGENTS.md", StringComparison.OrdinalIgnoreCase) ||
-                    IsUnderAgentsDirectory(entry.FullName, workingDirectory))
+                if (entry.Name.Equals("AGENTS.md", StringComparison.OrdinalIgnoreCase) || underAgents)
                     yield return entry.FullName;
             }
         }
-    }
-
-    private static bool IsUnderAgentsDirectory(string fullPath, string workingDirectory)
-    {
-        var root = Path.GetFullPath(workingDirectory);
-        var relative = Path.GetRelativePath(root, fullPath);
-        return relative.StartsWith(".agents", StringComparison.Ordinal) &&
-               (relative.Length == ".agents".Length ||
-                relative[".agents".Length] == Path.DirectorySeparatorChar ||
-                relative[".agents".Length] == Path.AltDirectorySeparatorChar);
     }
 
     internal static InvalidOperationException CreateMissingModuleGraphException()

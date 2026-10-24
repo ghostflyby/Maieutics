@@ -103,11 +103,15 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
 
         var denied = await executor.ExecuteAsync("%permissions deny run /usr/bin/curl", session, TestContext.Current.CancellationToken);
         Assert.Contains("run", denied.Markdown, StringComparison.Ordinal);
-        var run = registry.TryGet(session)?.Kinds.TryGetValue(PermissionKind.Run, out var rules) ?? false
-            ? rules
-            : null;
-        Assert.NotNull(run);
-        Assert.Contains("/usr/bin/curl", run!.Deny);
+        if (registry.TryGet(session) is { } stored &&
+            stored.Kinds.TryGetValue(PermissionKind.Run, out var rules))
+        {
+            Assert.Contains("/usr/bin/curl", rules.Deny);
+        }
+        else
+        {
+            Assert.Fail("the deny command stored a session override");
+        }
 
         var current = await executor.ExecuteAsync("%permissions current", session, TestContext.Current.CancellationToken);
         Assert.Contains("/usr/bin/curl", current.Markdown, StringComparison.Ordinal);
@@ -156,6 +160,128 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
             session,
             TestContext.Current.CancellationToken);
         Assert.Null(await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", session)));
+    }
+
+    [Fact]
+    public void CommaAndStarNamedInstructionSurfacesDoNotBreakTheOverlayAndAreDenied()
+    {
+        // Workspace file names are untrusted: a surface literally named 'a,b' or '*' must still
+        // be denyable — the derived overlay hand-merges kernel-generated paths past the store's
+        // flag-grammar rejections (which exist for user-authored, renderer-joined patterns).
+        var root = _workspace.Path;
+        Directory.CreateDirectory(Path.Combine(root, ".agents", "skills", "csv,export"));
+        var commaPath = Path.Combine(root, ".agents", "skills", "csv,export", "SKILL.md");
+        File.WriteAllText(commaPath, "x\n");
+        var starPath = Path.Combine(root, ".agents", "star*");
+        File.WriteAllText(starPath, "x\n");
+
+        var withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(Policy(PermissionKindRules.Empty), root);
+
+        Assert.False(DenoPermissionResolver.Resolve(withOverlay, "write", commaPath).IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(withOverlay, "write", starPath).IsAllowed);
+    }
+
+    [Fact]
+    public void AUserAuthoredInstructionsPatternMayCarryAComma()
+    {
+        // The instructions domain never renders as a Deno flag, so its user-authored patterns
+        // keep their commas; a comma-named instruction file stays expressible in configuration.
+        var build = () => PermissionLayerStore.Build(
+            [new PermissionLayer
+            {
+                Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+                {
+                    [PermissionKind.Instructions] = new() { Allow = [Path.Combine(_workspace.Path, "a,b.md")] }
+                }
+            }],
+            new VariableTable(new NullVariableSource()));
+
+        Assert.Null(Record.Exception(build.Invoke));
+    }
+
+    [Fact]
+    public void ALinkNamedAGENTSMDIsStillDeniedByTheOverlay()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("Creating a symlink needs a privilege on Windows.");
+
+        // Replacing AGENTS.md with a link must not slide the surface out of the deny set: the
+        // walk yields link-named surfaces (denying the path is the point) even though it never
+        // descends through links.
+        var root = _workspace.Path;
+        var agentsPath = Path.Combine(root, "AGENTS.md");
+        File.WriteAllText(Path.Combine(root, "real.md"), "x\n");
+        File.CreateSymbolicLink(agentsPath, Path.Combine(root, "real.md"));
+
+        var withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(Policy(PermissionKindRules.Empty), root);
+
+        Assert.False(DenoPermissionResolver.Resolve(withOverlay, "write", agentsPath).IsAllowed);
+    }
+
+    [Fact]
+    public void AnUnreadableSubtreeStaysResidualInsteadOfFailingTheOverlay()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The mode-based unreadable directory is a Unix stand-in.");
+
+        var root = _workspace.Path;
+        var locked = Path.Combine(root, "locked");
+        Directory.CreateDirectory(locked);
+        File.WriteAllText(Path.Combine(locked, "AGENTS.md"), "x\n");
+        var original = File.GetUnixFileMode(locked);
+        File.SetUnixFileMode(locked, System.IO.UnixFileMode.None);
+        try
+        {
+            var withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(
+                Policy(PermissionKindRules.Empty),
+                root);
+
+            // The locked subtree is residual; the rest of the workspace still composes.
+            Assert.NotNull(withOverlay);
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, original);
+        }
+    }
+
+    [Fact]
+    public async Task InstructionAllowsMatchPercentEncodedWorkspaceUris()
+    {
+        // The workspace URI percent-encodes its segments; the gate judges the decoded physical
+        // address like every other gate, so an allow written with the real path matches.
+        var root = _workspace.Path;
+        var skillDir = Path.Combine(root, ".agents", "my skills");
+        Directory.CreateDirectory(skillDir);
+        var acquirer = new PermissionPolicyAcquirer(
+            () => new FixedLayerSource(new PermissionLayer
+            {
+                Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+                {
+                    [PermissionKind.Instructions] = new() { Allow = [Path.Combine(skillDir, "SKILL.md")] }
+                }
+            }),
+            new NullVariableSource());
+        var edit = new WorkspaceEditFunctions(CreateWorkspace(), acquirer: acquirer);
+
+        var failure = await Record.ExceptionAsync(() =>
+            InvokeWrite(edit, "workspace://local/.agents/my%20skills/SKILL.md"));
+
+        Assert.Null(failure);
+    }
+
+    [Fact]
+    public async Task PermissionsCommandsRejectRelativePathPatternsLoudly()
+    {
+        var registry = new PermissionOverrideRegistry();
+        var acquirer = new PermissionPolicyAcquirer(() => new RegistryLayerSource(registry), new NullVariableSource());
+        var executor = new MaieuticsCommandExecutor(
+            null, null, CreateWorkspace(), null, null, null, registry, acquirer);
+        var session = AgentSessionId.Create();
+
+        var failure = await Assert.ThrowsAnyAsync<MaieuticsCommandException>(() =>
+            executor.ExecuteAsync("%permissions deny read src", session, TestContext.Current.CancellationToken));
+
+        Assert.Contains("relative", failure.Message, StringComparison.Ordinal);
+        Assert.Null(registry.TryGet(session));
     }
 
     // ---------- snapshot inheritance ----------
@@ -257,6 +383,15 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         public PermissionLayer? AppDefaults => null;
 
         public PermissionLayer? WorkspaceProfile => profile;
+
+        public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => null;
+    }
+
+    private sealed class FixedLayerSource(PermissionLayer appDefaults) : IPermissionLayerSource
+    {
+        public PermissionLayer? AppDefaults => appDefaults;
+
+        public PermissionLayer? WorkspaceProfile => null;
 
         public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => null;
     }

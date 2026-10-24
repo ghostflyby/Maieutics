@@ -104,6 +104,55 @@ public sealed class DenoReplRegistryTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task ClosingOneReplKeepsTheOwnersCachedPolicyWhileSiblingsRemain()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-owner-policy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var workspace = Workspace.Create(root, root);
+        var ownerCache = new ReplOwnerPolicyCache();
+        await using var registry = new DenoReplRegistry(
+            workspace,
+            new DenoReplOptions { MaxSessionsPerAgent = 2 },
+            new DenoReplSessionTests.ControlledFactory(),
+            new UnusedPresentationRouter(),
+            NullLogger<DenoReplSession>.Instance,
+            ownerPolicyCache: ownerCache);
+        var owner = AgentSessionId.Create();
+
+        try
+        {
+            var first = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+            var second = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
+            var policy = Maieutics.Permissions.PermissionLayerStore.Build(
+                [],
+                new Maieutics.Permissions.VariableTable(new NullVariableSource()));
+            ownerCache.Cache(owner.Value.ToString("N"), policy);
+
+            // Closing one of the owner's REPLs must not drop the owner-keyed snapshot: the
+            // surviving sibling's bridged calls still judge against it, not the wider
+            // model-tool baseline.
+            await registry.CloseAsync(owner, second.SessionId, TestContext.Current.CancellationToken);
+            Assert.NotNull(ownerCache.TryGet(owner.Value.ToString("N")));
+
+            await registry.CloseAsync(owner, first.SessionId, TestContext.Current.CancellationToken);
+            Assert.Null(ownerCache.TryGet(owner.Value.ToString("N")));
+        }
+        finally
+        {
+            await TempArea.DeleteAsync(root, CancellationToken.None);
+        }
+    }
+
+    private sealed class NullVariableSource : Maieutics.Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task FailedStartupRemainsFaultedUntilExplicitRestartCreatesGenerationTwo()
     {
         var root = Path.Combine(Path.GetTempPath(), $"maieutics-repl-fault-{Guid.NewGuid():N}");

@@ -68,7 +68,9 @@ public sealed class WorkspacePermissionSurfaceTests : IDisposable
             .Select(static match => match.GetProperty("uri").GetString())
             .ToList();
         Assert.Contains("workspace://local/keep.txt", uris);
-        Assert.DoesNotContain(uris, uri => uri!.Contains("secret", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            uris,
+            static uri => uri is not null && uri.Contains("secret", StringComparison.Ordinal));
         Assert.True(result.GetProperty("skippedByFilter").GetInt32() >= 1);
     }
 

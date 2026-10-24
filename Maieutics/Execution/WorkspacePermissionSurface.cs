@@ -96,20 +96,24 @@ internal static class WorkspacePermissionSurface
     {
         ArgumentNullException.ThrowIfNull(workspace);
         if (acquirer is null) return;
-        if (InstructionSurface.IsInstructionSurface(relativePath) is false) return;
+        // The workspace URI carries percent-encoded segments; every other gate judges the
+        // decoded physical address, so the instruction gate decodes before classifying and
+        // physicalizing — an allow written with the real path must match a URI that encoded it.
+        var decoded = Uri.UnescapeDataString(relativePath);
+        if (InstructionSurface.IsInstructionSurface(decoded) is false) return;
         if (sessionId is null)
-            throw InstructionForbidden(relativePath);
+            throw InstructionForbidden(decoded);
 
         var rules = acquirer.Acquire(PermissionLayer.Empty, sessionId).For(PermissionKind.Instructions);
-        var physical = PhysicalInstructionPath(workspace, relativePath);
+        var physical = PhysicalInstructionPath(workspace, decoded);
         if (rules.DenyAll ||
             rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, physical)))
-            throw InstructionForbidden(relativePath);
+            throw InstructionForbidden(decoded);
         if (rules.AllowAll ||
             rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, physical)))
             return;
 
-        throw InstructionForbidden(relativePath);
+        throw InstructionForbidden(decoded);
     }
 
     /// <summary>The physical address of one instruction surface: the workspace root joined with

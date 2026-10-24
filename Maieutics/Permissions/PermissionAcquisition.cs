@@ -74,8 +74,10 @@ internal sealed class PermissionOverrideRegistry
 
     /// <summary>Bound for captured child-snapshot override slots. Nothing releases a reaped
     /// child's slot (the Agent runtime exposes no completion callback), so the FIFO evicts the
-    /// oldest snapshots: a reaped child's run has ended and never acquires again, and no surface
-    /// sets a child's override directly, so the evicted entry can only be a spent snapshot.</summary>
+    /// oldest snapshots. The bound assumes reaped runs have ended and never acquire again —
+    /// beyond 1024 concurrent un-reaped children the oldest captured snapshot may drop, which
+    /// can widen that child's policy; no surface sets a child's override directly, so an evicted
+    /// entry can only be a spent or captured snapshot, never a user-authored one.</summary>
     private const int ChildSnapshotCapacity = 1024;
 
     private readonly Lock _gate = new();

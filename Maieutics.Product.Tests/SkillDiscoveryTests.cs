@@ -324,7 +324,7 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
         File.Delete(Path.Combine(rootFullName, "alpha", "SKILL.md"));
 
         Assert.Null(SkillDirectoryDiscovery.RediscoverSkillDirectory(
-                Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace));
+            Path.Combine(rootFullName, "alpha"), rootFullName, SkillSource.Workspace));
     }
 
     private static void WriteSkillTo(string directory, string name, string description)

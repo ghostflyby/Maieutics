@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -108,8 +107,10 @@ internal static partial class PluginToolProtocol
         string pluginId,
         string exportName,
         JsonElement? value,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PluginToolDefinition? definition,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)]
+        out PluginToolDefinition? definition,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
+        out string? error)
     {
         definition = null;
         if (value is not { ValueKind: JsonValueKind.Object } payload)
@@ -196,8 +197,10 @@ internal static partial class PluginToolProtocol
     private static bool TryReadAnnotations(
         string name,
         JsonElement payload,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out PluginToolAnnotations? annotations,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)]
+        out PluginToolAnnotations? annotations,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
+        out string? error)
     {
         annotations = PluginToolAnnotations.Default;
         error = null;
@@ -255,7 +258,8 @@ internal static partial class PluginToolProtocol
         string member,
         bool fallback,
         out bool value,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] out string? error)
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)]
+        out string? error)
     {
         value = fallback;
         error = null;
@@ -331,6 +335,7 @@ internal static partial class PluginToolProtocol
 /// <summary>Bridges one plugin tool into the Agent's <see cref="AIFunction"/> registry. The
 /// function is an immutable snapshot of the definition; calls route to the export by identity,
 /// so a plugin reload that keeps the export simply serves the new implementation.</summary>
+// ReSharper disable once InconsistentNaming
 internal sealed class PluginToolAIFunction(
     PluginToolDefinition definition,
     Func<string, string, string, JsonElement?, CancellationToken, TimeSpan?, string?, Task<ExtensionCallOutcome>> invoke)
@@ -448,8 +453,10 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
     private readonly Func<IReadOnlySet<string>> reservedToolNames;
     private readonly ILogger logger;
     private readonly Lock gate = new();
+
     private readonly Dictionary<(string PluginId, string ExportName), PluginToolDefinition> definitions =
         new(new KeyComparer());
+
     private readonly HashSet<(string PluginId, string ExportName)> pending = new(new KeyComparer());
     private readonly HashSet<(string PluginId, string ExportName)> retryPending = new(new KeyComparer());
     private readonly CancellationTokenSource lifetime = new();

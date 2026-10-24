@@ -1,6 +1,6 @@
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentTranscriptStoreTests
@@ -141,5 +141,4 @@ public sealed class AgentTranscriptStoreTests
             throw new NotSupportedException();
         }
     }
-
 }

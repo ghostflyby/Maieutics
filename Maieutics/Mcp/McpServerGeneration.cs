@@ -138,6 +138,7 @@ internal sealed class McpServerGeneration
     /// doubles it up to <see cref="MaximumReconnectDelay"/>. Internal so tests advancing a
     /// fake time provider step past exactly this wait.</summary>
     internal static readonly TimeSpan InitialReconnectDelay = TimeSpan.FromSeconds(1);
+
     private static readonly TimeSpan MaximumReconnectDelay = TimeSpan.FromSeconds(30);
 
     private readonly McpServerDefinition definition;

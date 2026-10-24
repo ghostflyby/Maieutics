@@ -46,6 +46,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// through two paths: the reaper's <c>Exited</c> event and the post-spawn catch-up that
     /// replays an exit which fired before the handler was attached.</summary>
     private int exitObserved;
+
     private Task? pump;
     private CancellationTokenSource? pumpLifetime;
     private TerminalSessionState state = TerminalSessionState.Created;

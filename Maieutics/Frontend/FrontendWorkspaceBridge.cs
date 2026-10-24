@@ -150,7 +150,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                 .SendAsync(authority, "maieutics/fs/local/read", parameters, cancellationToken)
                 .ConfigureAwait(false);
             return ReadString(answer, "content") ??
-                throw new AgentToolException("ide_result_invalid", "The read answer carries no text content.");
+                   throw new AgentToolException("ide_result_invalid", "The read answer carries no text content.");
         }
 
         public override async ValueTask<WorkspaceBridgeListing> ListAsync(
@@ -184,8 +184,8 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                         ? kind.GetString()!
                         : "other",
                     entry.TryGetProperty("sizeBytes", out var size) &&
-                        size.ValueKind == JsonValueKind.Number &&
-                        size.TryGetInt64(out var sizeValue)
+                    size.ValueKind == JsonValueKind.Number &&
+                    size.TryGetInt64(out var sizeValue)
                         ? sizeValue
                         : null));
             }
@@ -446,7 +446,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             }
 
             return answer.Value ??
-                throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
+                   throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
         }
         finally
         {
@@ -498,8 +498,10 @@ internal sealed record FsLocalListParams(string Uri, int MaximumEntries);
 internal sealed record FsLocalWriteParams(
     string Uri,
     string Content,
-    [property: JsonPropertyName("expectedHash")] string? ExpectedHash,
-    [property: JsonPropertyName("createExclusive")] bool CreateExclusive);
+    [property: JsonPropertyName("expectedHash")]
+    string? ExpectedHash,
+    [property: JsonPropertyName("createExclusive")]
+    bool CreateExclusive);
 
 internal sealed record FsLocalDeleteParams(string Uri);
 

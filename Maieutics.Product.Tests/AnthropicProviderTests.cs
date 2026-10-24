@@ -31,8 +31,8 @@ public sealed class AnthropicProviderTests
         Assert.Equal("claude-test", request.Body.GetProperty("model").GetString());
         Assert.True(request.Body.GetProperty("stream").GetBoolean());
         Assert.Equal("Hello from Claude", string.Concat(updates.SelectMany(static update => update.Contents)
-                .OfType<TextContent>()
-                .Select(static content => content.Text)));
+            .OfType<TextContent>()
+            .Select(static content => content.Text)));
     }
 
     [Fact(Timeout = 15_000)]

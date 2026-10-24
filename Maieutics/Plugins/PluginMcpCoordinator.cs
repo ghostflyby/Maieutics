@@ -72,11 +72,13 @@ internal sealed class PluginMcpCoordinator(
 
     /// <summary>The shared empty forced set for plain differential publishes.</summary>
     private static readonly IReadOnlySet<string> NoForcedPlugins = new HashSet<string>(StringComparer.Ordinal);
+
     private IReadOnlyDictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>> contributions =
         new Dictionary<PluginRegistration, IReadOnlyList<McpServerDefinition>>();
 
     private Task? disposal;
     private int disposeState;
+
     private IReadOnlyDictionary<string, McpServerGeneration> generations =
         new Dictionary<string, McpServerGeneration>(StringComparer.Ordinal);
 

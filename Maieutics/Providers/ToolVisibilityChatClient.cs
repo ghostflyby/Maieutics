@@ -30,7 +30,8 @@ internal sealed class ToolVisibilityChatClient : IChatClient
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+        CancellationToken cancellationToken = default)
     {
         await foreach (var update in inner
                            .GetStreamingResponseAsync(messages, HideTools(options), cancellationToken)

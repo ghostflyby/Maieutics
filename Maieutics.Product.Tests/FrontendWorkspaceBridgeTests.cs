@@ -52,12 +52,12 @@ public sealed class FrontendWorkspaceBridgeTests
     {
         var sockets = new FrontendIdeSockets();
         var received = new List<string>();
-        var first = sockets.Announce("session-a", (frame, _) =>
+        var first = sockets.Announce("session-a", (_, _) =>
         {
             received.Add("first");
             return Task.CompletedTask;
         });
-        sockets.Announce("session-a", (frame, _) =>
+        sockets.Announce("session-a", (_, _) =>
         {
             received.Add("second");
             return Task.CompletedTask;
@@ -547,7 +547,7 @@ public sealed class FrontendWorkspaceBridgeTests
                 var method = payload.GetProperty("method").GetString()!;
                 var parameters = payload.GetProperty("params");
                 var physicalUri = parameters.TryGetProperty("uri", out var uriElement) &&
-                    uriElement.ValueKind == JsonValueKind.String
+                                  uriElement.ValueKind == JsonValueKind.String
                     ? uriElement.GetString()!
                     : string.Empty;
                 LastRequest = (method, physicalUri, parameters.Clone());
@@ -614,7 +614,7 @@ public sealed class FrontendWorkspaceBridgeTests
                 "maieutics/dirty" => Dirty(parameters),
                 // The folder registry's root answer: this window opens its coverage root.
                 "maieutics/fs/list" when !parameters.TryGetProperty("folderId", out var folderId) ||
-                    folderId.ValueKind == JsonValueKind.Null => IdeRequestAnswer.FromValue(
+                                         folderId.ValueKind == JsonValueKind.Null => IdeRequestAnswer.FromValue(
                     JsonDocument.Parse(
                         JsonSerializer.Serialize(new
                         {
@@ -631,7 +631,7 @@ public sealed class FrontendWorkspaceBridgeTests
             var path = Path.GetFullPath(PathOf(parameters));
             var prefix = Path.TrimEndingDirectorySeparator(CoverageRoot);
             return path.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
-                string.Equals(path, prefix, StringComparison.Ordinal)
+                   string.Equals(path, prefix, StringComparison.Ordinal)
                 ? serve(path)
                 : IdeRequestAnswer.FromError("fs_not_covered", "fs_not_covered: (target stripped)");
         }
@@ -687,7 +687,7 @@ public sealed class FrontendWorkspaceBridgeTests
                     }))
                     .ToList();
                 var maximum = parameters.TryGetProperty("maximumEntries", out var bound) &&
-                    bound.ValueKind == JsonValueKind.Number
+                              bound.ValueKind == JsonValueKind.Number
                     ? bound.GetInt32()
                     : 10_000;
                 var page = entries.Take(maximum)
@@ -713,11 +713,11 @@ public sealed class FrontendWorkspaceBridgeTests
             {
                 var content = parameters.GetProperty("content").GetString()!;
                 var expectedHash = parameters.TryGetProperty("expectedHash", out var hash) &&
-                    hash.ValueKind == JsonValueKind.String
+                                   hash.ValueKind == JsonValueKind.String
                     ? hash.GetString()
                     : null;
                 var createExclusive = parameters.TryGetProperty("createExclusive", out var exclusive) &&
-                    exclusive.ValueKind == JsonValueKind.True;
+                                      exclusive.ValueKind == JsonValueKind.True;
 
                 string? current = null;
                 var exists = File.Exists(path);

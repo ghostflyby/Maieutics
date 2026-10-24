@@ -3,8 +3,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
-
 using System.Text;
+
 namespace Maieutics.Product.Tests;
 
 public sealed class ReplEvalWebSocketTests
@@ -284,5 +284,4 @@ public sealed class ReplEvalWebSocketTests
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
-
 }

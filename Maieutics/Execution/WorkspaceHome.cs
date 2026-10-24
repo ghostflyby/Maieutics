@@ -88,6 +88,7 @@ internal sealed class WorkspaceHome
 
     private readonly WorkspaceLinkRegistry registry;
     private readonly Lock healthGate = new();
+
     private readonly Dictionary<string, WorkspaceLinkHealth> healthByName =
         new(StringComparer.OrdinalIgnoreCase);
 

@@ -149,9 +149,9 @@ internal sealed class FrontendCommStream
             // retention emptied the buffer, or when rotation removed exactly the frames the
             // client still needs. It must resync widget state instead of rendering silence.
             var hadGap = sinceSequence > 0 &&
-                (replay.Count == 0 ||
-                 sinceSequence >= nextSequence ||
-                 replay[0].Sequence > sinceSequence + 1);
+                         (replay.Count == 0 ||
+                          sinceSequence >= nextSequence ||
+                          replay[0].Sequence > sinceSequence + 1);
             return (initial, channel, truncated || hadGap);
         }
     }
@@ -211,13 +211,16 @@ internal sealed class FrontendCommStream
 /// <summary>One currently open comm as announced in the hello frame.</summary>
 internal sealed record FrontendCommDescriptor(
     [property: JsonPropertyName("commId")] string CommId,
-    [property: JsonPropertyName("targetName")] string? TargetName);
+    [property: JsonPropertyName("targetName")]
+    string? TargetName);
 
 /// <summary>The comms WebSocket hello: live identities plus replay status.</summary>
 internal sealed record FrontendCommHello(
     [property: JsonPropertyName("live")] IReadOnlyList<FrontendCommDescriptor> Live,
-    [property: JsonPropertyName("replayed")] bool Replayed,
-    [property: JsonPropertyName("truncated")] bool Truncated);
+    [property: JsonPropertyName("replayed")]
+    bool Replayed,
+    [property: JsonPropertyName("truncated")]
+    bool Truncated);
 
 /// <summary>
 ///     Receives uplink frames for kernel-owned comms (ADR 0038 stage 2): the

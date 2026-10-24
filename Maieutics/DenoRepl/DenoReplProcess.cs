@@ -77,19 +77,19 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
             await InstallModuleGraphAsync(options, cancellationToken).ConfigureAwait(false);
             policy = await DenoReplPolicyBuilder.BuildAsync(
-                    options.Executable,
-                    options.ModuleDirectory,
-                    options.WorkingDirectory,
-                    options.ConfigFile,
-                    options.LockFile,
-                    options.IpcAddress,
-                    options.WindowsPipeName,
-                    acquirer,
-                    ownerSessionId,
-                    logger,
-                    cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
+                             options.Executable,
+                             options.ModuleDirectory,
+                             options.WorkingDirectory,
+                             options.ConfigFile,
+                             options.LockFile,
+                             options.IpcAddress,
+                             options.WindowsPipeName,
+                             acquirer,
+                             ownerSessionId,
+                             logger,
+                             cancellationToken)
+                         .ConfigureAwait(false)
+                     ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
         }
 
         var startInfo = new ProcessStartInfo
@@ -239,8 +239,8 @@ internal static class DenoReplEnvironment
                              ?? throw new InvalidOperationException("SystemRoot is not configured.");
             environment["SystemRoot"] = systemRoot;
             environment[PipeName] = windowsPipeName
-                ?? throw new InvalidOperationException(
-                    "The Windows named-pipe bootstrap is required for the REPL child environment.");
+                                    ?? throw new InvalidOperationException(
+                                        "The Windows named-pipe bootstrap is required for the REPL child environment.");
         }
 
         return environment;

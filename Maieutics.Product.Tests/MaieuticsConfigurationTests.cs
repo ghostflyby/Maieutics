@@ -15,8 +15,7 @@ namespace Maieutics.Product.Tests;
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class MaieuticsConfigurationTests
 {
-
-/// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
+    /// <summary>Deletes a temporary directory, retrying with an asynchronous backoff: on
     /// Windows a config-file watcher or an exiting MCP stdio child can hold a file for a
     /// short while after the test body completes. The lock holder has no completion
     /// signal, so the retry waits by delay — asynchronously, never blocking a pool
@@ -369,9 +368,12 @@ public sealed class MaieuticsConfigurationTests
                 if (model == "model-alpha") cancellation.Cancel();
             };
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await runtime
-                .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
-                .AsTask(); });
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await runtime
+                    .SelectModelProfileAsync("@vendor/model-alpha", cancellation.Token)
+                    .AsTask();
+            });
 
             Assert.False(runtime.GetModelProfileSelection().HasSessionOverride);
         }
@@ -1102,7 +1104,7 @@ public sealed class MaieuticsConfigurationTests
             }
 
             Assert.ThrowsAny<ArgumentOutOfRangeException>(() =>
-                    new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate());
+                new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.FromSeconds(-1) }.Validate());
             new MaieuticsAgentOptions { MaxTurnDuration = TimeSpan.Zero }.Validate();
         }
         finally
@@ -1150,8 +1152,8 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
             Assert.Equal(2, runtime.Version);
             Assert.True(((Func<MaieuticsConfigurationReloadInfo, bool>)(reload => reload.Attempt == runtime.CompletedReloadAttempt &&
-                reload.Outcome == MaieuticsConfigurationReloadOutcome.Applied &&
-                reload.ActiveVersion == 2))(runtime.GetStatus().LastReload));
+                                                                                  reload.Outcome == MaieuticsConfigurationReloadOutcome.Applied &&
+                                                                                  reload.ActiveVersion == 2))(runtime.GetStatus().LastReload));
             await using (var lease = await runtime.AcquireAsync(deadline.Token))
             {
                 Assert.Equal(1_200, lease.Profile.Options.MaxHistoryBytes);
@@ -1290,7 +1292,6 @@ public sealed class MaieuticsConfigurationTests
             Assert.Equal(acceptedVersion, runtime.Version);
             Assert.Equal(MaieuticsConfigurationReloadOutcome.Rejected, runtime.GetStatus().LastReload.Outcome);
             Assert.Equal("three", (await AcquireClientAsync(runtime)).Model);
-
         }
         finally
         {
@@ -2009,20 +2010,20 @@ public sealed class MaieuticsConfigurationTests
     ];
 
     private static string CreateSourceOnlyConfiguration(
-                JsonArray endpoints,
+        JsonArray endpoints,
         params NamedSource[] sources)
     {
         return CreateSourceOnlyConfigurationCore(endpoints, sources);
     }
 
     private static string CreateSourceOnlyConfiguration(
-                params NamedSource[] sources)
+        params NamedSource[] sources)
     {
         return CreateSourceOnlyConfigurationCore(null, sources);
     }
 
     private static string CreateSourceOnlyConfigurationCore(
-                JsonArray? endpoints,
+        JsonArray? endpoints,
         NamedSource[] sources)
     {
         var sourceNodes = new JsonObject();

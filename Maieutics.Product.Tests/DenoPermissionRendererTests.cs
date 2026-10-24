@@ -21,7 +21,8 @@ public sealed class DenoPermissionRendererTests
             (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost:8080", "api.example.com"] }),
             (PermissionKind.Env, new PermissionKindRules { Allow = ["HOME", "PATH"] }));
 
-        Assert.Equal(["--allow-read=/kernel,/ws", "--allow-net=localhost:8080,api.example.com", "--allow-env=HOME,PATH",
+        Assert.Equal([
+            "--allow-read=/kernel,/ws", "--allow-net=localhost:8080,api.example.com", "--allow-env=HOME,PATH",
         ], DenoPermissionRenderer.Render(policy));
     }
 
@@ -74,7 +75,8 @@ public sealed class DenoPermissionRendererTests
             (PermissionKind.Sys, new PermissionKindRules { Allow = ["hostname", "loadavg"] }),
             (PermissionKind.Import, new PermissionKindRules { Allow = ["npm:", "https://deno.land/"] }));
 
-        Assert.Equal(["--allow-net=unix:/tmp/maieutics.sock", "--allow-sys=hostname,loadavg", "--allow-import=npm:,https://deno.land/",
+        Assert.Equal([
+            "--allow-net=unix:/tmp/maieutics.sock", "--allow-sys=hostname,loadavg", "--allow-import=npm:,https://deno.land/",
         ], DenoPermissionRenderer.Render(policy));
     }
 

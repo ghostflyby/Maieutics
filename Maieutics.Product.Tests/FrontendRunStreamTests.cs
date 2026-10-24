@@ -292,7 +292,7 @@ public sealed class FrontendRunStreamTests
             var (initial, channel) = stream.Subscribe(sinceSequence: 5);
             snapshot = initial;
             var settled = initial.Count >= 1 + FrontendRunStream.ReplayRetention &&
-                initial[1].Sequence == oldestRetainedDelta;
+                          initial[1].Sequence == oldestRetainedDelta;
             stream.Unsubscribe(channel);
             if (settled) break;
 
@@ -518,8 +518,10 @@ public sealed class FrontendRunStreamTests
     private sealed class ScriptedRun : IAgentRun
     {
         private readonly Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events;
+
         private readonly TaskCompletionSource<AgentRunResult> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int cancelCount;
         private int disposeCount;

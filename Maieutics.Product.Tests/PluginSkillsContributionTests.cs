@@ -1,7 +1,5 @@
 using System.Net.WebSockets;
 using System.Text.Json;
-using System.Threading.Channels;
-using Maieutics;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Execution;
@@ -1386,6 +1384,7 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
     {
         public string? GetVariable(string name) => null;
     }
+
     /// <summary>The host socket for the Skills contribution flow: the shared test
     /// socket's capture machinery plus the Skills-specific invoke counting, bounded
     /// readers, and reply helpers.</summary>

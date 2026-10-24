@@ -7,8 +7,12 @@ namespace Maieutics.Execution;
 /// <summary>Owns the terminal sessions of every Agent session. Sessions survive across turns and die with
 /// their Agent session or the process. Each session captures the effective policy of its owning Agent
 /// session at reserve time (ADR 0018 §7); the policy never changes mid-operation.</summary>
-internal sealed class TerminalRegistry(Workspace workspace, TerminalOptions options,
-    ITerminalProcessFactory factory, ILogger<TerminalSession> logger, PermissionPolicyAcquirer acquirer) : IAsyncDisposable
+internal sealed class TerminalRegistry(
+    Workspace workspace,
+    TerminalOptions options,
+    ITerminalProcessFactory factory,
+    ILogger<TerminalSession> logger,
+    PermissionPolicyAcquirer acquirer) : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
 

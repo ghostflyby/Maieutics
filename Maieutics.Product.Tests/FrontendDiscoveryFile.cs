@@ -61,7 +61,7 @@ internal static class FrontendDiscoveryFile
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested &&
-                                                  !cancellationToken.IsCancellationRequested)
+                                                 !cancellationToken.IsCancellationRequested)
         {
             throw new InvalidOperationException(
                 $"The frontend discovery file '{path}' was not readable within {budget.TotalSeconds:0.#}s.",

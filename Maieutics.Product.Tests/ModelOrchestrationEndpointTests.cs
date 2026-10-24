@@ -327,6 +327,4 @@ public sealed class ModelOrchestrationEndpointTests
             await Application.DisposeAsync().ConfigureAwait(false);
         }
     }
-
-
 }

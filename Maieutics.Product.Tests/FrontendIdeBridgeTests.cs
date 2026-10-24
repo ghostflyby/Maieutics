@@ -710,8 +710,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 }
 
                 var answer = "[{\"title\":\"Fix\",\"kind\":\"quickfix\",\"edit\":{\"changes\":{\"" +
-                    aPhysical + "\": [{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"newText\":\"y\"}]}}}]" +
-                    "";
+                             aPhysical + "\": [{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"newText\":\"y\"}]}}}]" +
+                             "";
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
             },
             cancellationToken);
@@ -750,7 +750,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
 
                 Assert.Equal("renamed", parameters.GetProperty("newName").GetString());
                 var answer = "{\"changes\":{\"" + aPhysical +
-                    "\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"newText\":\"renamed\"}]}}";
+                             "\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"newText\":\"renamed\"}]}}";
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
             },
             cancellationToken);
@@ -1057,7 +1057,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             debugSockets,
             Workspace.Create(workspace.Path, workspace.Path));
         var start = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_start");
-        debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+        debugSockets.Announce("probe", (_, _) => Task.CompletedTask);
 
         var invocation = await InvokeWithAnswerAsync(
             start,
@@ -1088,7 +1088,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             debugSockets,
             Workspace.Create(workspace.Path, workspace.Path));
         var state = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_state");
-        debugSockets.Announce("probe", (frame, _) => Task.CompletedTask);
+        debugSockets.Announce("probe", (_, _) => Task.CompletedTask);
         var control = debugFunctions.Functions.Single(static function => function.Name == "ide_debug_control");
 
         var invocation = await InvokeWithAnswerAsync(
@@ -1190,7 +1190,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                 }
 
                 seen.Add(described ?? type ?? "?");
-                if (type == "run.failed") {
+                if (type == "run.failed")
+                {
                     output.WriteLine("run.failed frame: " + frame.GetRawText());
                 }
             }
@@ -1272,11 +1273,6 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
     }
 
     // ---------- endpoint + announcement (harness) ----------
-
-
-
-
-
 
 
     [Fact(Timeout = 120_000)]
@@ -1404,10 +1400,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken,
             provider,
             hanging: false,
-        transformConfiguration: body => body.Replace(
-            "\"Maieutics\": {",
-            "\"Maieutics\": {\n    \"Workspace\": { \"Root\": " +
-            JsonSerializer.Serialize(workspace.Path) + " },"));
+            transformConfiguration: body => body.Replace(
+                "\"Maieutics\": {",
+                "\"Maieutics\": {\n    \"Workspace\": { \"Root\": " +
+                JsonSerializer.Serialize(workspace.Path) + " },"));
 
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);
@@ -1486,10 +1482,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             cancellationToken,
             provider,
             hanging: false,
-        transformConfiguration: body => body.Replace(
-            "\"Maieutics\": {",
-            "\"Maieutics\": {\n    \"Workspace\": { \"Root\": " +
-            JsonSerializer.Serialize(workspace.Path) + " },"));
+            transformConfiguration: body => body.Replace(
+                "\"Maieutics\": {",
+                "\"Maieutics\": {\n    \"Workspace\": { \"Root\": " +
+                JsonSerializer.Serialize(workspace.Path) + " },"));
 
         var sessionId = await harness.GetSessionIdAsync(cancellationToken);
         await using var events = await harness.OpenEventsAsync(sessionId, cancellationToken, announceIde: true);

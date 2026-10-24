@@ -181,7 +181,7 @@ public sealed class FrontendProcessSmokeTests
         startInfo.Environment.Remove("MAIEUTICS_OPENAI_API");
 
         var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("The Maieutics process could not be started.");
+                      ?? throw new InvalidOperationException("The Maieutics process could not be started.");
         Console.WriteLine($"[smoke] host pid {process.Id} discovery {discoveryPath}");
         var stderrTail = TailStream(process, redirectError: true);
         // Stdout must be drained even though the protocol lives on the discovery file:

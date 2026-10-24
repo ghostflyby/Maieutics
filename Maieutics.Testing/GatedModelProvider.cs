@@ -288,8 +288,8 @@ public sealed class GatedModelProvider : IAsyncDisposable
     public string DescribeState()
     {
         return $"connections={Volatile.Read(ref connectionsOpened)} "
-            + $"parkedTotal={Volatile.Read(ref parkedCount)} parkedNow={ParkedRequests} "
-            + $"released={(mode == ProviderGateMode.Hanging ? globalRelease.Task.IsCompleted.ToString() : "n/a")}";
+               + $"parkedTotal={Volatile.Read(ref parkedCount)} parkedNow={ParkedRequests} "
+               + $"released={(mode == ProviderGateMode.Hanging ? globalRelease.Task.IsCompleted.ToString() : "n/a")}";
     }
 
     /// <summary>Stops the listener, releases every parked request, and observes all
@@ -449,7 +449,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
         }
         catch (Exception exception) when
             (exception is OperationCanceledException or EndOfStreamException or SocketException or IOException
-                or ObjectDisposedException or InvalidDataException or JsonException)
+                 or ObjectDisposedException or InvalidDataException or JsonException)
         {
         }
         finally

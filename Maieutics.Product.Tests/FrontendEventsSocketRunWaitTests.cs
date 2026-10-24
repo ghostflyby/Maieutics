@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
@@ -102,7 +101,6 @@ public sealed class FrontendEventsSocketRunWaitTests
     }
 
 
-
     private static async Task<string[]> EnqueueAsync(
         Harness harness,
         string sessionId,
@@ -115,9 +113,12 @@ public sealed class FrontendEventsSocketRunWaitTests
             cancellationToken).ConfigureAwait(false);
         Assert.Equal(System.Net.HttpStatusCode.Accepted, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken).ConfigureAwait(false);
-        return [.. body.GetProperty("items").EnumerateArray()
-            .Select(item => item.GetProperty("id").GetString()!)
-            .ToArray()];
+        return
+        [
+            .. body.GetProperty("items").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!)
+                .ToArray()
+        ];
     }
 
     /// <summary>Waits for the queue to report drained and returns the runId of the last

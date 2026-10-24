@@ -731,6 +731,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private sealed class SessionRunHub
     {
         private readonly Lock gate = new();
+
         private readonly Channel<FrontendRunStream> announcements =
             Channel.CreateBounded<FrontendRunStream>(new BoundedChannelOptions(8)
             {
@@ -738,6 +739,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
                 SingleWriter = false,
                 FullMode = BoundedChannelFullMode.DropOldest
             });
+
         private FrontendRunStream? latest;
 
         public FrontendRunStream? Latest

@@ -35,8 +35,11 @@ internal static class SkillDirectoryDiscovery
 
         // Deterministic in-root order: the same-name winner is the first entry in ordinal
         // body-path order, independent of filesystem enumeration order.
-        return [.. EnumerateSubtree(root, root, source)
-            .OrderBy(static descriptor => descriptor.BodyPath, StringComparer.Ordinal)];
+        return
+        [
+            .. EnumerateSubtree(root, root, source)
+                .OrderBy(static descriptor => descriptor.BodyPath, StringComparer.Ordinal)
+        ];
     }
 
     /// <summary>Lazily streams the skills of one region subtree of a declared root: every

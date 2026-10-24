@@ -49,6 +49,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// <summary>One queue state per session identifier: two spellings of one session's id
     /// must never own two queues. See <see cref="ParseSessionId" />.</summary>
     private readonly Dictionary<AgentSessionId, SessionQueue> sessions = new();
+
     private readonly CancellationTokenSource lifetime = new();
     private readonly TaskCompletionSource disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int disposeState;

@@ -73,7 +73,8 @@ public sealed class AgentTranscriptCodecTests
         Assert.Equal("provider-message", privateAssistant.MessageId);
         Assert.Null(privateAssistant.RawRepresentation);
         Assert.True((privateAssistant.AdditionalProperties ?? throw new InvalidOperationException("the assertion subject is null")).ContainsKey("provider_message"));
-        Assert.Equal([typeof(TextContent), typeof(TextReasoningContent), typeof(FunctionCallContent), typeof(FunctionResultContent), typeof(UsageContent), typeof(DataContent),
+        Assert.Equal([
+            typeof(TextContent), typeof(TextReasoningContent), typeof(FunctionCallContent), typeof(FunctionResultContent), typeof(UsageContent), typeof(DataContent),
         ], privateAssistant.Contents.Select(static content => content.GetType()));
         var privateReasoning = privateAssistant.Contents.OfType<TextReasoningContent>().Single();
         Assert.Equal("private reasoning", privateReasoning.Text);
@@ -122,12 +123,12 @@ public sealed class AgentTranscriptCodecTests
     public void CustomContentProducesTypedCompatibilityFailure()
     {
         var failure = Assert.ThrowsAny<AgentContentCompatibilityException>(() => AgentTranscriptCodec.DetachPrivateTurn(
-                AgentRunId.Create(),
-                null,
-                [
-                    new ChatMessage(ChatRole.User, "question"),
-                    new ChatMessage(ChatRole.Assistant, [new TextContent("answer"), new CustomContent()])
-                ]));
+            AgentRunId.Create(),
+            null,
+            [
+                new ChatMessage(ChatRole.User, "question"),
+                new ChatMessage(ChatRole.Assistant, [new TextContent("answer"), new CustomContent()])
+            ]));
 
         Assert.Contains(nameof(CustomContent), failure.ContentType);
         Assert.IsAssignableFrom<Exception>(failure.InnerException);

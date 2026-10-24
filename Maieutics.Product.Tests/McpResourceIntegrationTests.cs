@@ -183,7 +183,7 @@ public sealed class McpResourceIntegrationTests
                     ],
                     Handlers = new McpServerHandlers
                     {
-                        ListResourcesHandler = (request, ct) => ValueTask.FromResult(
+                        ListResourcesHandler = (_, _) => ValueTask.FromResult(
                             new ListResourcesResult
                             {
                                 Resources =
@@ -196,7 +196,7 @@ public sealed class McpResourceIntegrationTests
                                     }
                                 ]
                             }),
-                        ListResourceTemplatesHandler = (request, ct) =>
+                        ListResourceTemplatesHandler = (_, _) =>
                             ValueTask.FromResult(
                                 new ListResourceTemplatesResult
                                 {
@@ -210,7 +210,7 @@ public sealed class McpResourceIntegrationTests
                                         }
                                     ]
                                 }),
-                        ReadResourceHandler = (request, ct) => ValueTask.FromResult(
+                        ReadResourceHandler = (request, _) => ValueTask.FromResult(
                             new ReadResourceResult
                             {
                                 Contents =

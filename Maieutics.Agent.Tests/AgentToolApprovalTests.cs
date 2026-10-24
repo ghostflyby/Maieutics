@@ -1,8 +1,7 @@
 using System.Text.Json;
-using Maieutics.Agent;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 /// <summary>
@@ -178,8 +177,7 @@ public sealed class AgentToolApprovalTests
         await entered.Task.WaitAsync(deadline.Token);
 
         await run.CancelAsync(deadline.Token);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => run.Completion.WaitAsync(deadline.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion.WaitAsync(deadline.Token));
 
         Assert.False(invoked, "a cancelled turn must not execute the pending tool");
     }
@@ -493,5 +491,4 @@ public sealed class AgentToolApprovalTests
             return body(request, cancellationToken);
         }
     }
-
 }

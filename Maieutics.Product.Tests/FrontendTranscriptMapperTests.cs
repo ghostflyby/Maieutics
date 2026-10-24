@@ -154,10 +154,12 @@ public sealed class FrontendTranscriptMapperTests
         // an unserializable call argument set degrades to an empty object.
         var message = new ChatMessage(
             ChatRole.Assistant,
-            [new FunctionCallContent(
-                "call-4",
-                "workspace_read",
-                new Dictionary<string, object?> { ["callback"] = (Func<int>)(() => 42) })]);
+            [
+                new FunctionCallContent(
+                    "call-4",
+                    "workspace_read",
+                    new Dictionary<string, object?> { ["callback"] = (Func<int>)(() => 42) })
+            ]);
 
         var part = Assert.Single(FrontendTranscriptMapper.ToMessage(message).Parts);
 

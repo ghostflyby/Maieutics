@@ -2,8 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 /// <summary>Tool results exceeding the inline envelope limit are stored whole in the object

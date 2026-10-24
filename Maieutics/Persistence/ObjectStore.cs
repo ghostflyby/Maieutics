@@ -54,8 +54,8 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
             long size;
             using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
             using (var target = new FileStream(
-                tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20,
-                FileOptions.SequentialScan))
+                       tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20,
+                       FileOptions.SequentialScan))
             {
                 var buffer = new byte[1 << 20];
                 size = 0;

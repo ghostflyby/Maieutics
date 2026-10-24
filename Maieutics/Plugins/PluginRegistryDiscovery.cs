@@ -179,8 +179,8 @@ internal static class PluginRegistryDiscovery
             // Identity fallback for npm packages without deno.json: package.json
             // (the sibling identity file) carries the canonical package name.
             var name = packageManifest?.Name
-                ?? ReadPackageJsonName(packageDir)
-                ?? key;
+                       ?? ReadPackageJsonName(packageDir)
+                       ?? key;
             var permissions = PluginManifest.ReadPermissions(packageManifest?.Permissions?.Default);
             var workers = new List<PluginWorkerDescriptor>();
             foreach (var (entrypoint, entryScript) in EnumerateRegistryEntrypoints(pluginManifest.Entrypoints))

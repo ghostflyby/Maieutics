@@ -142,7 +142,7 @@ public sealed class WorkspaceApplyPatchTests
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("no sentinels")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** Add File: a.txt\n+one\n")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse(
-                "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n")).Code);
+            "*** Begin Patch\n*** Update File: a.txt\nplain text\n*** End Patch\n")).Code);
         Assert.Equal("workspace_patch_invalid", Assert.ThrowsAny<WorkspaceException>(() => ApplyPatchParser.Parse("*** Begin Patch\n*** End Patch\n")).Code);
     }
 

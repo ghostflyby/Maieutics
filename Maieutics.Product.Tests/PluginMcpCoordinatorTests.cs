@@ -329,7 +329,7 @@ public sealed class PluginMcpCoordinatorTests
         var compositionCalls = 0;
         var toolCalls = 0;
         var chain = new McpAdjustmentChain(
-            (adjusterPluginId, _, _, request, _) =>
+            (_, _, _, request, _) =>
             {
                 var body = request ?? default;
                 var reason = body.ValueKind == JsonValueKind.Object && body.TryGetProperty("reason", out var value)

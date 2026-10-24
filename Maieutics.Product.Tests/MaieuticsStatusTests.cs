@@ -20,13 +20,15 @@ public sealed class MaieuticsStatusTests
                     "profile",
                     "profile",
                     false,
-                    [new MaieuticsModelProfileInfo(
-                        "profile",
-                        "source",
-                        "Provider",
-                        "model",
-                        true,
-                        true)]),
+                    [
+                        new MaieuticsModelProfileInfo(
+                            "profile",
+                            "source",
+                            "Provider",
+                            "model",
+                            true,
+                            true)
+                    ]),
                 new MaieuticsConfigurationReloadInfo(
                     9,
                     MaieuticsConfigurationReloadOutcome.Rejected,
@@ -34,12 +36,14 @@ public sealed class MaieuticsStatusTests
                 []),
             new WorkspaceSnapshot("/secret/workspace", 3, null),
             new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
-            [new MaieuticsMcpServerInfo(
-                "server",
-                "Http",
-                MaieuticsMcpServerState.Reconnecting,
-                TimeSpan.FromSeconds(2),
-                [new MaieuticsMcpToolInfo("remote", "exposed", true)])],
+            [
+                new MaieuticsMcpServerInfo(
+                    "server",
+                    "Http",
+                    MaieuticsMcpServerState.Reconnecting,
+                    TimeSpan.FromSeconds(2),
+                    [new MaieuticsMcpToolInfo("remote", "exposed", true)])
+            ],
             new DenoReplListResult([
                 new DenoReplSessionResult("default", 4, "busy", "/secret/repl", true)
             ]));
@@ -69,14 +73,16 @@ public sealed class MaieuticsStatusTests
                     9,
                     MaieuticsConfigurationReloadOutcome.Applied,
                     7),
-                [new MaieuticsCapabilityInfo(
-                    "source",
-                    "model",
-                    true,
-                    true,
-                    AgentModelCapabilities.StreamingText,
-                    ["Shell", "WebSearch"],
-                    ["FileSearch", "WebSearch"])]),
+                [
+                    new MaieuticsCapabilityInfo(
+                        "source",
+                        "model",
+                        true,
+                        true,
+                        AgentModelCapabilities.StreamingText,
+                        ["Shell", "WebSearch"],
+                        ["FileSearch", "WebSearch"])
+                ]),
             new WorkspaceSnapshot("/secret/workspace", 3, null),
             new PluginHostStatus(PluginHostState.Exited, 2, 4, true, false),
             [],

@@ -78,7 +78,7 @@ public sealed class FrontendTurnQueueIntegrationTests
 
         provider.ReleaseNext();
         Assert.True(second.Task.IsCompleted, "the second release must reach the request that is still parked instead of "
-            + "completing an already-released entry again");
+                                             + "completing an already-released entry again");
         Assert.Equal(0, provider.ParkedRequests);
 
         provider.ReleaseAll();
@@ -852,7 +852,7 @@ public sealed class FrontendTurnQueueIntegrationTests
     {
         // `running` is optional on the wire: absent OR null both mean no running item.
         var running = queue.TryGetProperty("running", out var state) &&
-            state.ValueKind == JsonValueKind.Object
+                      state.ValueKind == JsonValueKind.Object
             ? state.GetProperty("itemId").GetString()
             : null;
         var items = ItemIds(queue);

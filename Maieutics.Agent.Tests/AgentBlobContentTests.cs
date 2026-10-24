@@ -2,8 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 /// <summary>The content triage point: small UTF-8 text stays inline; binary and oversized
@@ -111,8 +111,11 @@ public sealed class AgentBlobContentTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         await cancellation.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await AgentContentTriage.IngestAsync(
-                store, source, "text/plain", cancellationToken: cancellation.Token); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await AgentContentTriage.IngestAsync(
+                store, source, "text/plain", cancellationToken: cancellation.Token);
+        });
 
         Assert.Empty(store.CapturedBytes);
         Assert.Equal(0, source.TotalBytesRead);

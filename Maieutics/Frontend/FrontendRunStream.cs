@@ -53,6 +53,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         replayAppended.TrySetResult();
         replayAppended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     private IAsyncDisposable? presentationScope;
     private long oldestSequence;
     private long latestSequence;

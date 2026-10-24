@@ -241,7 +241,8 @@ internal sealed class IdeFunctions
 
     [Description("Returns the language service's hover information at one position.")]
     private async ValueTask<JsonElement> HoverAsync(
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
         [Description("Selector: {\"line\": 42, \"column\": 7} coordinates, {\"anchor\": [lines], \"occurrence?\"} (1-based, must be unique), or {\"patch\": \"…\"} (V4A or git diff; its context lines locate the position).")]
         JsonElement select,
         AIFunctionArguments arguments,
@@ -261,7 +262,8 @@ internal sealed class IdeFunctions
     private async ValueTask<JsonElement> NavigateAsync(
         [Description("One of: definition, type_definition, declaration, implementation, references, highlights.")]
         string kind,
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
         [Description("Selector: {\"line\": 42, \"column\": 7} coordinates, {\"anchor\": [lines], \"occurrence?\"} (1-based, must be unique), or {\"patch\": \"…\"} (V4A or git diff; its context lines locate the position).")]
         JsonElement select,
         AIFunctionArguments arguments,
@@ -296,7 +298,8 @@ internal sealed class IdeFunctions
 
     [Description("Returns the language service's symbol outline of one document.")]
     private async ValueTask<JsonElement> DocumentSymbolsAsync(
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -350,10 +353,12 @@ internal sealed class IdeFunctions
 
     [Description("Renames a symbol; returns the workspace edit as data without writing.")]
     private async ValueTask<JsonElement> RenameAsync(
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
         [Description("Selector: coordinates {\"line\": 42, \"column\": 7} or an anchor block (1-based).")]
         JsonElement select,
-        [Description("The symbol's new name.")] string newName,
+        [Description("The symbol's new name.")]
+        string newName,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -371,7 +376,8 @@ internal sealed class IdeFunctions
 
     [Description("Returns the code actions at one position as data without applying anything.")]
     private async ValueTask<JsonElement> CodeActionsAsync(
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
         [Description("Selector: coordinates {\"line\": 42, \"column\": 7} or an anchor block (1-based).")]
         JsonElement select,
         AIFunctionArguments arguments,
@@ -394,9 +400,12 @@ internal sealed class IdeFunctions
     [Description("Formats one document through the language service and writes the result back.")]
     private async ValueTask<JsonElement> FormatDocumentAsync(
         AIFunctionArguments arguments,
-        [Description("A workspace://local file URI, as returned by other tools.")] string uri,
-        [Description("Spaces per tab for the formatting options. Defaults to 4.")] int? tabSize = null,
-        [Description("Indent with spaces rather than tabs. Defaults to true.")] bool? insertSpaces = null,
+        [Description("A workspace://local file URI, as returned by other tools.")]
+        string uri,
+        [Description("Spaces per tab for the formatting options. Defaults to 4.")]
+        int? tabSize = null,
+        [Description("Indent with spaces rather than tabs. Defaults to true.")]
+        bool? insertSpaces = null,
         CancellationToken cancellationToken = default)
     {
         var announce = ResolveAnnouncer(arguments);
@@ -652,7 +661,6 @@ internal sealed class IdeFunctions
     /// replayable <c>ide.request</c> payload — ADR 0042 decision 1) and awaits its answer
     /// through the registry, bounded by the request timeout and the caller's cancellation.</summary>
     // ---------- stage E: virtual file systems (decision 11) ----------
-
     private const string IdeFsUriPrefix = "idefs:///";
 
     /// <summary>Validates one `idefs:///<folderId>/<segments…>` URI and splits it.
@@ -736,9 +744,12 @@ internal sealed class IdeFunctions
     /// call, nextStartLine when more lines remain.</summary>
     private async ValueTask<JsonElement> FsReadAsync(
         AIFunctionArguments arguments,
-        [Description("An idefs:// file URI, as returned by ide_fs_list.")] string uri,
-        [Description("First line of the window (1-based). Defaults to 1.")] int? startLine = null,
-        [Description("Lines to return (default 200, max 1000).")] int? maxLines = null,
+        [Description("An idefs:// file URI, as returned by ide_fs_list.")]
+        string uri,
+        [Description("First line of the window (1-based). Defaults to 1.")]
+        int? startLine = null,
+        [Description("Lines to return (default 200, max 1000).")]
+        int? maxLines = null,
         CancellationToken cancellationToken = default)
     {
         var announce = ResolveAnnouncer(arguments);
@@ -780,14 +791,22 @@ internal sealed class IdeFunctions
     /// idefs:// domain with 1-based positions.</summary>
     private async ValueTask<JsonElement> FsSearchAsync(
         AIFunctionArguments arguments,
-        [Description("An idefs:// file or folder URI, as returned by ide_fs_list.")] string uri,
-        [Description("The non-empty literal or regular-expression query.")] string query,
-        [Description("Whether query is a regular expression. Defaults to false.")] bool? regex = null,
-        [Description("Whether matching is case-sensitive. Defaults to true.")] bool? caseSensitive = null,
-        [Description("The maximum number of matches to return, from 1 through 200.")] int? maxResults = null,
-        [Description("Globs a file's relative path must match (rg style: **, *, ?; a pattern without a slash matches the file name at any depth). At most 16.")] string[]? include = null,
-        [Description("Globs a file's relative path must not match. At most 16.")] string[]? exclude = null,
-        [Description("Whether the frontend's fast search respects VCS ignore files. Defaults to true; only the frontend's fast search implements this.")] bool? respectIgnore = null,
+        [Description("An idefs:// file or folder URI, as returned by ide_fs_list.")]
+        string uri,
+        [Description("The non-empty literal or regular-expression query.")]
+        string query,
+        [Description("Whether query is a regular expression. Defaults to false.")]
+        bool? regex = null,
+        [Description("Whether matching is case-sensitive. Defaults to true.")]
+        bool? caseSensitive = null,
+        [Description("The maximum number of matches to return, from 1 through 200.")]
+        int? maxResults = null,
+        [Description("Globs a file's relative path must match (rg style: **, *, ?; a pattern without a slash matches the file name at any depth). At most 16.")]
+        string[]? include = null,
+        [Description("Globs a file's relative path must not match. At most 16.")]
+        string[]? exclude = null,
+        [Description("Whether the frontend's fast search respects VCS ignore files. Defaults to true; only the frontend's fast search implements this.")]
+        bool? respectIgnore = null,
         CancellationToken cancellationToken = default)
     {
         var announce = ResolveAnnouncer(arguments);
@@ -938,7 +957,7 @@ internal sealed class IdeFunctions
                 throw new AgentToolException(code, answer.ErrorMessage ?? "The IDE request failed.");
 
             return answer.Value
-                ?? throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
+                   ?? throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
         }
         finally
         {
@@ -1442,7 +1461,8 @@ internal sealed class IdeFunctions
 /// the run's event stream: sequenced and replayable with the run's own events, answered at
 /// <c>POST /v1/agent/ide/{requestId}</c> (ADR 0042 decision 1).</summary>
 internal sealed record IdeRequestPayload(
-    [property: JsonPropertyName("requestId")] string RequestId,
+    [property: JsonPropertyName("requestId")]
+    string RequestId,
     [property: JsonPropertyName("method")] string Method,
     [property: JsonPropertyName("params")] JsonElement? Params);
 
@@ -1451,44 +1471,61 @@ internal sealed record IdeRequestPayload(
 /// host's <c>extractIdeRequest</c> reads. The wrapper, not the bare payload, is the
 /// published contract.</summary>
 internal sealed record IdeRequestEnvelope(
-    [property: JsonPropertyName("ideRequest")] IdeRequestPayload IdeRequest);
+    [property: JsonPropertyName("ideRequest")]
+    IdeRequestPayload IdeRequest);
 
 /// <summary>The maieutics/fs/list payload: a null FolderId is the root call
 /// (folders themselves); otherwise the folder-relative segments to enumerate
 /// with an optional keyset cursor.</summary>
 internal sealed record IdeFsListParams(
-    [property: JsonPropertyName("folderId")] string? FolderId,
-    [property: JsonPropertyName("segments")] string[] Segments,
+    [property: JsonPropertyName("folderId")]
+    string? FolderId,
+    [property: JsonPropertyName("segments")]
+    string[] Segments,
     [property: JsonPropertyName("cursor")] string? Cursor);
 
 /// <summary>The maieutics/fs/read payload: folder-relative path plus the
 /// read_text-style 1-based window.</summary>
 internal sealed record IdeFsReadParams(
-    [property: JsonPropertyName("folderId")] string FolderId,
-    [property: JsonPropertyName("segments")] string[] Segments,
-    [property: JsonPropertyName("startLine")] int? StartLine,
-    [property: JsonPropertyName("maxLines")] int? MaxLines);
+    [property: JsonPropertyName("folderId")]
+    string FolderId,
+    [property: JsonPropertyName("segments")]
+    string[] Segments,
+    [property: JsonPropertyName("startLine")]
+    int? StartLine,
+    [property: JsonPropertyName("maxLines")]
+    int? MaxLines);
 
 /// <summary>One virtual-file read answer: the requested window and the
 /// next 1-based line when more lines remain.</summary>
 internal sealed record IdeFsReadValue(
     [property: JsonPropertyName("uri")] string Uri,
-    [property: JsonPropertyName("content")] string Content,
-    [property: JsonPropertyName("nextStartLine")] int? NextStartLine,
-    [property: JsonPropertyName("totalLines")] int TotalLines);
+    [property: JsonPropertyName("content")]
+    string Content,
+    [property: JsonPropertyName("nextStartLine")]
+    int? NextStartLine,
+    [property: JsonPropertyName("totalLines")]
+    int TotalLines);
 
 /// <summary>The maieutics/fs/search payload: folder-relative root plus the
 /// search_text-shaped literal/regex query under the shared bounded contract.</summary>
 internal sealed record IdeFsSearchParams(
-    [property: JsonPropertyName("folderId")] string FolderId,
-    [property: JsonPropertyName("segments")] string[] Segments,
+    [property: JsonPropertyName("folderId")]
+    string FolderId,
+    [property: JsonPropertyName("segments")]
+    string[] Segments,
     [property: JsonPropertyName("query")] string Query,
     [property: JsonPropertyName("regex")] bool Regex,
-    [property: JsonPropertyName("caseSensitive")] bool CaseSensitive,
-    [property: JsonPropertyName("maximumMatches")] int MaximumMatches,
-    [property: JsonPropertyName("include")] string[]? Include,
-    [property: JsonPropertyName("exclude")] string[]? Exclude,
-    [property: JsonPropertyName("respectIgnore")] bool RespectIgnore);
+    [property: JsonPropertyName("caseSensitive")]
+    bool CaseSensitive,
+    [property: JsonPropertyName("maximumMatches")]
+    int MaximumMatches,
+    [property: JsonPropertyName("include")]
+    string[]? Include,
+    [property: JsonPropertyName("exclude")]
+    string[]? Exclude,
+    [property: JsonPropertyName("respectIgnore")]
+    bool RespectIgnore);
 
 /// <summary>One virtual search match: the idefs:// URI of the matching file with
 /// the 1-based line/column and bounded preview.</summary>
@@ -1496,15 +1533,19 @@ internal sealed record IdeFsSearchMatchValue(
     [property: JsonPropertyName("uri")] string Uri,
     [property: JsonPropertyName("line")] int Line,
     [property: JsonPropertyName("column")] int Column,
-    [property: JsonPropertyName("preview")] string Preview);
+    [property: JsonPropertyName("preview")]
+    string Preview);
 
 /// <summary>One virtual search answer: the requested root, the bounded matches,
 /// the truncation marker, and the scanned-bytes count the frontend reports.</summary>
 internal sealed record IdeFsSearchValue(
     [property: JsonPropertyName("uri")] string Uri,
-    [property: JsonPropertyName("matches")] ImmutableArray<JsonElement> Matches,
-    [property: JsonPropertyName("truncated")] bool Truncated,
-    [property: JsonPropertyName("scannedBytes")] long ScannedBytes);
+    [property: JsonPropertyName("matches")]
+    ImmutableArray<JsonElement> Matches,
+    [property: JsonPropertyName("truncated")]
+    bool Truncated,
+    [property: JsonPropertyName("scannedBytes")]
+    long ScannedBytes);
 
 /// <summary>Workspace-wide diagnostics aggregate (ADR 0042 decision 8): severity totals,
 /// the top files, and the analysis-state marker that keeps "nothing reported" from being
@@ -1513,31 +1554,40 @@ internal sealed record WorkspaceDiagnosticsValue(
     [property: JsonPropertyName("scope")] string Scope,
     [property: JsonPropertyName("totals")] DiagnosticsTotals Totals,
     [property: JsonPropertyName("files")] IReadOnlyList<DiagnosticsFileCount> Files,
-    [property: JsonPropertyName("totalFiles")] int TotalFiles,
-    [property: JsonPropertyName("unmappedFiles")] int UnmappedFiles,
-    [property: JsonPropertyName("analyzedDocuments")] int AnalyzedDocuments,
+    [property: JsonPropertyName("totalFiles")]
+    int TotalFiles,
+    [property: JsonPropertyName("unmappedFiles")]
+    int UnmappedFiles,
+    [property: JsonPropertyName("analyzedDocuments")]
+    int AnalyzedDocuments,
     [property: JsonPropertyName("note")] string? Note = null);
 
 /// <summary>One document's diagnostics drill-down.</summary>
 internal sealed record DocumentDiagnosticsValue(
     [property: JsonPropertyName("scope")] string Scope,
     [property: JsonPropertyName("uri")] string Uri,
-    [property: JsonPropertyName("diagnostics")] IReadOnlyList<JsonElement> Diagnostics,
-    [property: JsonPropertyName("analyzedDocuments")] int AnalyzedDocuments);
+    [property: JsonPropertyName("diagnostics")]
+    IReadOnlyList<JsonElement> Diagnostics,
+    [property: JsonPropertyName("analyzedDocuments")]
+    int AnalyzedDocuments);
 
 /// <summary>Severity counts for one file in the aggregate view.</summary>
 internal sealed record DiagnosticsFileCount(
     [property: JsonPropertyName("uri")] string Uri,
     [property: JsonPropertyName("error")] int Error,
-    [property: JsonPropertyName("warning")] int Warning,
-    [property: JsonPropertyName("information")] int Information,
+    [property: JsonPropertyName("warning")]
+    int Warning,
+    [property: JsonPropertyName("information")]
+    int Information,
     [property: JsonPropertyName("hint")] int Hint);
 
 /// <summary>Workspace severity totals.</summary>
 internal sealed record DiagnosticsTotals(
     [property: JsonPropertyName("error")] int Error,
-    [property: JsonPropertyName("warning")] int Warning,
-    [property: JsonPropertyName("information")] int Information,
+    [property: JsonPropertyName("warning")]
+    int Warning,
+    [property: JsonPropertyName("information")]
+    int Information,
     [property: JsonPropertyName("hint")] int Hint);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -1576,7 +1626,11 @@ internal sealed partial class IdeFunctionJsonContext : JsonSerializerContext;
 /// changed, what failed, and what is still pending (ADR 0042 decision 6).</summary>
 internal sealed record IdeApplyEditsValue(
     [property: JsonPropertyName("status")] string Status,
-    [property: JsonPropertyName("applied")] IReadOnlyList<WriteTextResult> Applied,
-    [property: JsonPropertyName("failedUri")] string? FailedUri = null,
-    [property: JsonPropertyName("failedError")] string? FailedError = null,
-    [property: JsonPropertyName("pending")] IReadOnlyList<string>? Pending = null);
+    [property: JsonPropertyName("applied")]
+    IReadOnlyList<WriteTextResult> Applied,
+    [property: JsonPropertyName("failedUri")]
+    string? FailedUri = null,
+    [property: JsonPropertyName("failedError")]
+    string? FailedError = null,
+    [property: JsonPropertyName("pending")]
+    IReadOnlyList<string>? Pending = null);

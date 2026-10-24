@@ -337,7 +337,7 @@ internal sealed class AgentSubagentHost(
                 nameof(spec), duration, "The subagent turn duration cannot be negative.");
 
         var subagents = baseOptions.Subagents ??
-            throw new InvalidOperationException("Subagents are not configured for this session's runs.");
+                        throw new InvalidOperationException("Subagents are not configured for this session's runs.");
 
         // Detached spawns arrive on concurrent control-channel requests, so the cap must be
         // reserved atomically before the await and rolled back if the spawn fails.
@@ -350,8 +350,8 @@ internal sealed class AgentSubagentHost(
         }
 
         var eventSink = subagents.EventSink ??
-            throw new InvalidOperationException(
-                "Subagents with a positive depth require an event sink.");
+                        throw new InvalidOperationException(
+                            "Subagents with a positive depth require an event sink.");
         var linkedCts = new CancellationTokenSource();
         AgentSession childSession;
         IAgentRun childRun;
@@ -401,7 +401,7 @@ internal sealed class AgentSubagentHost(
                 nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
         var record = FindDetached(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         try
         {
             return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -420,7 +420,7 @@ internal sealed class AgentSubagentHost(
         CancellationToken cancellationToken = default)
     {
         var record = FindDetached(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         if (!record.Completion.IsCompleted)
             await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
         return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -441,7 +441,7 @@ internal sealed class AgentSubagentHost(
                 nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
         var record = FindChild(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         try
         {
             return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -460,7 +460,7 @@ internal sealed class AgentSubagentHost(
         CancellationToken cancellationToken = default)
     {
         var record = FindChild(childRunId) ??
-            throw new AgentSubagentNotFoundException(childRunId);
+                     throw new AgentSubagentNotFoundException(childRunId);
         if (!record.Completion.IsCompleted)
             await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
         return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -621,8 +621,8 @@ internal sealed class AgentSubagentHost(
                     nameof(spec), duration, "The subagent turn duration cannot be negative.");
 
             var subagents = parentOptions.Subagents ??
-                throw new InvalidOperationException(
-                    "Subagents are not configured for this session's runs.");
+                            throw new InvalidOperationException(
+                                "Subagents are not configured for this session's runs.");
 
             List<ChildRecord> children;
             lock (host.gate)
@@ -636,8 +636,8 @@ internal sealed class AgentSubagentHost(
             }
 
             var eventSink = subagents.EventSink ??
-                throw new InvalidOperationException(
-                    "Subagents with a positive depth require an event sink.");
+                            throw new InvalidOperationException(
+                                "Subagents with a positive depth require an event sink.");
             var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             AgentSession childSession;
             IAgentRun childRun;
@@ -684,7 +684,7 @@ internal sealed class AgentSubagentHost(
                     nameof(timeout), timeout, "The subagent wait timeout must be positive or infinite.");
 
             var record = host.FindChild(parentRunId, childRunId) ??
-                throw new AgentSubagentNotFoundException(childRunId);
+                         throw new AgentSubagentNotFoundException(childRunId);
             try
             {
                 return await record.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
@@ -700,7 +700,7 @@ internal sealed class AgentSubagentHost(
             CancellationToken cancellationToken = default)
         {
             var record = host.FindChild(parentRunId, childRunId) ??
-                throw new AgentSubagentNotFoundException(childRunId);
+                         throw new AgentSubagentNotFoundException(childRunId);
             if (!record.Completion.IsCompleted)
                 await record.Run.CancelAsync(cancellationToken).ConfigureAwait(false);
             return await record.Completion.WaitAsync(cancellationToken).ConfigureAwait(false);

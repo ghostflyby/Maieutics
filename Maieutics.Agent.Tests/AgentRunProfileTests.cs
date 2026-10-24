@@ -45,9 +45,9 @@ public sealed class AgentRunProfileTests
     public void BlankHostedCapabilitiesAreRejected()
     {
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedCapabilities: ["WebSearch", " "]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedCapabilities: ["WebSearch", " "]));
     }
 
     [Fact]
@@ -73,10 +73,10 @@ public sealed class AgentRunProfileTests
         var function = AIFunctionFactory.Create(() => "ok", "web_search");
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                tools: [function],
-                hostedTools: [new HostedWebSearchTool()]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            tools: [function],
+            hostedTools: [new HostedWebSearchTool()]));
     }
 
     [Fact]
@@ -85,14 +85,14 @@ public sealed class AgentRunProfileTests
         var function = AIFunctionFactory.Create(() => "ok", "read_text");
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedTools: [function]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedTools: [function]));
 
         Assert.ThrowsAny<ArgumentException>(() => new AgentRunProfile(
-                new ScriptedChatClient((_, _) => StreamAsync("unused")),
-                new AgentSessionOptions(),
-                hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]));
+            new ScriptedChatClient((_, _) => StreamAsync("unused")),
+            new AgentSessionOptions(),
+            hostedTools: [new HostedWebSearchTool(), new HostedWebSearchTool()]));
     }
 
     [Fact(Timeout = 30_000)]

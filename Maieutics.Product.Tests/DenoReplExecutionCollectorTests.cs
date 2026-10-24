@@ -823,7 +823,8 @@ public sealed class DenoReplExecutionCollectorTests
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(InputReply);
         }
-    public bool TryCompleteInput(string requestId, string value) => false;
+
+        public bool TryCompleteInput(string requestId, string value) => false;
 
         private static string PlainTextOf(ReplDisplayBundle data)
         {

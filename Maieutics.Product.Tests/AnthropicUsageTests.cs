@@ -53,7 +53,7 @@ public sealed class AnthropicUsageTests
         // A run result whose usage stayed null is the defect: the stream reported 1 input
         // and 1 output token, and the run result must record them.
         var usage = result.Usage ??
-            throw new InvalidOperationException("The run result recorded no token usage.");
+                    throw new InvalidOperationException("The run result recorded no token usage.");
         Assert.Equal(1L, usage.InputTokenCount);
         Assert.Equal(1L, usage.OutputTokenCount);
         Assert.Equal(2L, usage.TotalTokenCount);

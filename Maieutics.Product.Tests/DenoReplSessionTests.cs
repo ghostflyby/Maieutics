@@ -316,8 +316,10 @@ public sealed class DenoReplSessionTests
     {
         private readonly TaskCompletionSource completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly TaskCompletionSource disposalCompletion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int disposeState;
 
         internal ControlledGeneration(ConcurrencyProbe? probe = null, ControlledOutputConnection? output = null)
@@ -408,6 +410,7 @@ public sealed class DenoReplSessionTests
     {
         private readonly TaskCompletionSource completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly Lock gate = new();
         private readonly List<ControlledEval> executions = [];
         private readonly Channel<ControlledEval> started = Channel.CreateUnbounded<ControlledEval>();
@@ -495,6 +498,7 @@ public sealed class DenoReplSessionTests
     {
         private readonly TaskCompletionSource<ReplEvalTerminal> completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly ConcurrencyProbe? probe;
         private readonly Channel<ReplEvalEvent> events = Channel.CreateUnbounded<ReplEvalEvent>();
         private int terminalState;
@@ -624,6 +628,7 @@ public sealed class DenoReplSessionTests
 
         public bool TryCompleteInput(string requestId, string value) => false;
     }
+
     public bool TryCompleteInput(string requestId, string value) => false;
 
     /// <summary>A bounded output frame channel the collector drains. Frames must be published for

@@ -166,7 +166,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         var tool = Assert.Single(lease.Tools);
         Assert.Equal("echo_safe", tool.Name);
         Assert.Equal("Safe echo", tool.Description);
@@ -203,7 +203,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Empty(lease.Tools);
         Assert.Empty(generation.GetInfo().Tools);
         var retirement = generation.Retire();
@@ -233,7 +233,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                    ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal(["echo", "echo_alias"], lease.Tools.Select(static function => function.Name));
         using var argumentsDocument = JsonDocument.Parse("{\"value\":\"hi\"}");
         var arguments = new AIFunctionArguments(argumentsDocument.RootElement.EnumerateObject().ToDictionary(
@@ -273,7 +273,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var firstLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                         ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
@@ -288,7 +288,7 @@ public sealed class McpServerGenerationTests
         await adjuster.WaitForInvocationsAsync(2, deadline.Token);
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var refreshedLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                             ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Empty(refreshedLease.Tools);
         var retirement = generation.Retire();
         await refreshedLease.DisposeAsync();
@@ -306,7 +306,7 @@ public sealed class McpServerGenerationTests
         JsonElement? lastGood = null;
         // The real chain's sticky semantics, embedded in the fake: a failing backend
         // keeps the last adjusted listing active.
-        var adjuster = new FakeToolSurfaceAdjuster(listing =>
+        var adjuster = new FakeToolSurfaceAdjuster(_ =>
         {
             if (fail) return lastGood;
             lastGood = ParseJson("""[{"aliasOf":"echo","name":"echo_safe"}]""");
@@ -321,7 +321,7 @@ public sealed class McpServerGenerationTests
             toolSurfaceAdjuster: adjuster);
 
         var firstLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                         ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(firstLease.Tools).Name);
         await firstLease.DisposeAsync();
 
@@ -333,7 +333,7 @@ public sealed class McpServerGenerationTests
         await adjuster.WaitForInvocationsAsync(2, deadline.Token);
         await generation.WaitForToolRefreshApplicationAsync(refreshesBefore, deadline.Token);
         var stickyLease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a lease");
+                          ?? throw new InvalidOperationException("generation did not expose a lease");
         Assert.Equal("echo_safe", Assert.Single(stickyLease.Tools).Name);
         var retirement = generation.Retire();
         await stickyLease.DisposeAsync();
@@ -429,7 +429,7 @@ public sealed class McpServerGenerationTests
         clock.Advance(McpServerGeneration.InitialReconnectDelay);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+                    ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
         Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         Assert.Equal(MaieuticsMcpServerState.Connected, generation.GetInfo().State);
         var retirement = generation.Retire();
@@ -475,7 +475,7 @@ public sealed class McpServerGenerationTests
         clock.Advance(doubled);
         await reconnected.WaitAsync(deadline.Token);
         var lease = generation.TryAcquire()
-            ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
+                    ?? throw new InvalidOperationException("generation did not expose a reconnected lease");
         Assert.Equal("echo", Assert.Single(lease.Tools).Name);
         var retirement = generation.Retire();
         await lease.DisposeAsync();
@@ -634,10 +634,10 @@ public sealed class McpServerGenerationTests
         Assert.Equal(McpServerTransportKind.Http, httpDefinition.Kind);
 
         Assert.ThrowsAny<JsonException>(() =>
-            {
-                using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
-                return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
-            });
+        {
+            using var unknown = JsonDocument.Parse("""{ "type": "tcp", "url": "https://example.com" }""");
+            return unknown.RootElement.Deserialize(McpJsonContext.Default.McpTransportDefinition);
+        });
     }
 
     private static McpServerDefinition CreateStdioDefinition(bool rootsEnabled = false, bool elicitationEnabled = false)
@@ -927,18 +927,18 @@ public sealed class McpServerGenerationTests
                             Description = "Echoes one value.",
                             UseStructuredContent = true
                         })
-                : elicit
-                    ? McpServerTool.Create(
-                        (Func<string, McpServer, CancellationToken, Task<EchoResult>>)ElicitingEcho,
-                        new McpServerToolCreateOptions
-                        {
-                            Name = "echo",
-                            Description = "Echoes one value.",
-                            UseStructuredContent = true
-                        })
-                    : McpServerTool.Create(
-                        AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
-                        new McpServerToolCreateOptions { UseStructuredContent = true });
+                    : elicit
+                        ? McpServerTool.Create(
+                            (Func<string, McpServer, CancellationToken, Task<EchoResult>>)ElicitingEcho,
+                            new McpServerToolCreateOptions
+                            {
+                                Name = "echo",
+                                Description = "Echoes one value.",
+                                UseStructuredContent = true
+                            })
+                        : McpServerTool.Create(
+                            AIFunctionFactory.Create((string value) => new EchoResult(value), "echo", "Echoes one value."),
+                            new McpServerToolCreateOptions { UseStructuredContent = true });
             var server = McpServer.Create(
                 serverTransport,
                 new McpServerOptions

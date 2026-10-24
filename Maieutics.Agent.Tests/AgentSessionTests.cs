@@ -2,8 +2,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentSessionTests
@@ -64,7 +64,8 @@ public sealed class AgentSessionTests
         Assert.Equal(1, result.Transcript.Version);
         Assert.Single(result.Transcript.Turns);
         Assert.Equal(run.Id, result.Transcript.Turns[0].RunId);
-        Assert.Equal([(result.UserMessage.Role, result.UserMessage.Text), (result.AssistantMessage.Role, result.AssistantMessage.Text),
+        Assert.Equal([
+            (result.UserMessage.Role, result.UserMessage.Text), (result.AssistantMessage.Role, result.AssistantMessage.Text),
         ], result.Transcript.Turns[0].Messages.Select(static message => (message.Role, message.Text)));
         Assert.Equivalent(result.Transcript, session.GetTranscriptSnapshot());
     }
@@ -293,21 +294,21 @@ public sealed class AgentSessionTests
             (_, _, _) => ValueTask.FromResult<JsonElement?>(null));
 
         var assertion3 = Assert.ThrowsAny<ArgumentException>(() => new AgentSession(
-                client,
-                tools: [new MetadataAIFunction(valid, "invalid name", valid.JsonSchema)]));
+            client,
+            tools: [new MetadataAIFunction(valid, "invalid name", valid.JsonSchema)]));
         Assert.Matches("(?is)^.*Tool\\ names.*$", assertion3.Message);
 
         var assertion4 = Assert.ThrowsAny<ArgumentException>(() => new AgentSession(client, tools: [valid, valid]));
         Assert.Matches("(?is)^.*already\\ registered.*$", assertion4.Message);
 
         var assertion5 = Assert.ThrowsAny<ArgumentException>(() => new AgentSession(
-                client,
-                tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("[]"))]));
+            client,
+            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("[]"))]));
         Assert.Matches("(?is)^.*schema\\ must\\ describe\\ a\\ JSON\\ object.*$", assertion5.Message);
 
         var assertion6 = Assert.ThrowsAny<ArgumentException>(() => new AgentSession(
-                client,
-                tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("{\"type\":\"string\"}"))]));
+            client,
+            tools: [new MetadataAIFunction(valid, valid.Name, ParseJson("{\"type\":\"string\"}"))]));
         Assert.Matches("(?is)^.*schema\\ must\\ describe\\ a\\ JSON\\ object.*$", assertion6.Message);
     }
 
@@ -364,7 +365,8 @@ public sealed class AgentSessionTests
         var result = await run.Completion.WaitAsync(deadline.Token);
 
         Assert.Equal(Enumerable.Range(1, events.Count).Select(static value => (long)value), events.Select(agentEvent => agentEvent.Sequence));
-        Assert.Equal([typeof(AgentMessageCompleted), typeof(AgentToolStarted), typeof(AgentToolProgress), typeof(AgentToolFinished), typeof(AgentTextDelta), typeof(AgentMessageCompleted),
+        Assert.Equal([
+            typeof(AgentMessageCompleted), typeof(AgentToolStarted), typeof(AgentToolProgress), typeof(AgentToolFinished), typeof(AgentTextDelta), typeof(AgentMessageCompleted),
         ], events.Select(agentEvent => agentEvent.GetType()));
         Assert.Equal(2, events.OfType<AgentMessageCompleted>().Count());
         Assert.Equal("hello", events.OfType<AgentToolStarted>().Single().Arguments
@@ -474,7 +476,7 @@ public sealed class AgentSessionTests
         Assert.Equal(new[] { "one", "two" }, order);
         Assert.Equal(1, maximumActive);
         Assert.Equal(["one", "two"], events.OfType<AgentToolStarted>().Select(started =>
-                started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text));
+            started.Arguments.Deserialize(AgentTestJsonContext.Default.EchoArguments)?.Text));
     }
 
     [Fact(Timeout = 30_000)]
@@ -876,8 +878,11 @@ public sealed class AgentSessionTests
 
         // The run completed and closed its event writer; a straggler reporter observes the
         // typed recoverable failure instead of ChannelClosedException.
-        await Assert.ThrowsAnyAsync<AgentRunCompletedException>(async () => { await context
-            .ReportProgressAsync(new TextContent("late"), deadline.Token).AsTask(); });
+        await Assert.ThrowsAnyAsync<AgentRunCompletedException>(async () =>
+        {
+            await context
+                .ReportProgressAsync(new TextContent("late"), deadline.Token).AsTask();
+        });
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), deadline.Token);
         await ReadEventsAsync(next, deadline.Token);
@@ -1075,7 +1080,6 @@ public sealed class AgentSessionTests
 
         public override JsonElement JsonSchema { get; } = jsonSchema.Clone();
     }
-
 }
 
 internal sealed record EchoArguments([property: JsonPropertyName("text")] string Text);

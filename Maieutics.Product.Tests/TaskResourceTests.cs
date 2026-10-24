@@ -149,9 +149,8 @@ public sealed class TaskResourceTests
         var owner = AgentSessionId.Create();
         var result = await StartTimedOutOneShotAsync(harness, owner);
 
-        var timeout = () => harness.Provider.WaitTaskAsync(
-            result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
-        Assert.Equal("task_wait_timeout", (await Assert.ThrowsAnyAsync<ResourceException>(async () => { await timeout.Invoke(); })).Code);
+        Assert.Equal("task_wait_timeout", (await Assert.ThrowsAnyAsync<ResourceException>(async () => await harness.Provider.WaitTaskAsync(
+            result.TaskUri!, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken))).Code);
 
         harness.Process.EndOfOutput();
         harness.Process.RaiseExited(0);

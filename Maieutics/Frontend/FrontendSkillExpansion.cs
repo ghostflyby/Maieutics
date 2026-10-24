@@ -27,7 +27,8 @@ internal static class FrontendSkillExpansion
         SkillResourceProvider provider,
         IReadOnlyList<FrontendSkillMarkers.Marker> markers,
         CancellationToken cancellationToken)
-    {        var contents = ImmutableArray.CreateBuilder<AIContent>();
+    {
+        var contents = ImmutableArray.CreateBuilder<AIContent>();
         var expanded = new HashSet<string>(StringComparer.Ordinal);
         var totalBytes = 0L;
         foreach (var marker in markers)

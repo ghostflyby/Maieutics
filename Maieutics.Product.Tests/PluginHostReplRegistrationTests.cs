@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.WebSockets;
 using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.DenoExecution;
@@ -7,8 +6,8 @@ using Maieutics.DenoRepl;
 using Maieutics.Permissions;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
-
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
+
 namespace Maieutics.Product.Tests;
 
 /// <summary>
@@ -395,7 +394,6 @@ public sealed class PluginHostReplRegistrationTests
     }
 
     /// <summary>In-memory host WebSocket: captures the kernel's outgoing envelopes (SendAsync) and
-
     private sealed class FakeVariableSource : Execution.IPermissionVariableSource
     {
         public string? GetVariable(string name)

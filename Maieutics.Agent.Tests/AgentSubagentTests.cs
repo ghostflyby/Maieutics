@@ -4,8 +4,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentSubagentTests
@@ -325,8 +325,11 @@ public sealed class AgentSubagentTests
                 Subagents = new AgentSubagentOptions { MaxDepth = 1, EventSink = new EventCollector() }
             });
 
-        await Assert.ThrowsAnyAsync<ArgumentException>(async () => { await (Spawner: spawner, deadline.Token).Spawner.StartChildAsync(
-            new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, (Spawner: spawner, deadline.Token).Token); });
+        await Assert.ThrowsAnyAsync<ArgumentException>(async () =>
+        {
+            await (Spawner: spawner, deadline.Token).Spawner.StartChildAsync(
+                new AgentSubagentSpec { Input = "x", Tools = ["nope"] }, (Spawner: spawner, deadline.Token).Token);
+        });
     }
 
     [Fact(Timeout = 30_000)]
@@ -375,7 +378,7 @@ public sealed class AgentSubagentTests
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
             return messages.Any(message =>
-                       message.Contents.Any(content => content is FunctionResultContent))
+                message.Contents.Any(content => content is FunctionResultContent))
                 ? Interlocked.Increment(ref postToolCalls) == 1
                     ? StreamAsync(ToolCallUpdate("wait", "agent_wait"))
                     : StreamAsync("done")
@@ -505,7 +508,7 @@ public sealed class AgentSubagentTests
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
             return messages.Any(message =>
-                       message.Contents.Any(content => content is FunctionResultContent))
+                message.Contents.Any(content => content is FunctionResultContent))
                 ? Interlocked.Increment(ref postToolCalls) == 1
                     ? StreamAsync(ToolCallUpdate("call", "agent_cancel"))
                     : StreamAsync("done")
@@ -618,7 +621,7 @@ public sealed class AgentSubagentTests
         IAsyncEnumerable<ChatResponseUpdate> Route(IReadOnlyList<ChatMessage> messages, CancellationToken token)
         {
             return messages.Any(message =>
-                       message.Contents.Any(content => content is FunctionResultContent))
+                message.Contents.Any(content => content is FunctionResultContent))
                 ? Interlocked.Increment(ref postToolCalls) == 1
                     ? StreamAsync(ToolCallUpdate("wait", "agent_wait"))
                     : StreamAsync("done")
@@ -723,8 +726,11 @@ public sealed class AgentSubagentTests
             new AgentSubagentSpec { Input = "second" }, spawnerOptions, [], token);
         Assert.Equal(nameof(AgentSubagentOptions.MaxDetachedChildren), (await Assert.ThrowsAnyAsync<AgentSubagentBudgetExceededException>(async () => { await second.Invoke(); })).LimitName);
 
-        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await session.SubagentHost.WaitDetachedAsync(
-            AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None); });
+        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () =>
+        {
+            await session.SubagentHost.WaitDetachedAsync(
+                AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None);
+        });
     }
 
     [Fact(Timeout = 30_000)]
@@ -735,7 +741,7 @@ public sealed class AgentSubagentTests
         var sessionRef = new SessionRef();
         AgentSubagentStatus orchestrationStatus = default;
 
-        var orchestrateTool = CreateSpawnTool("orchestrate", async (arguments, token) =>
+        var orchestrateTool = CreateSpawnTool("orchestrate", async (_, token) =>
         {
             // Inside the tool call the session's run is in flight: the orchestration surface
             // resolves to the run-owned spawner, and the child it spawns is joined before the
@@ -804,8 +810,11 @@ public sealed class AgentSubagentTests
             .CancelChildByIdAsync(handle.RunId, deadline.Token);
         Assert.Equal(AgentSubagentStatus.Completed, cancelled.Status);
 
-        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () => { await session.SubagentHost.WaitChildByIdAsync(
-            AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None); });
+        await Assert.ThrowsAnyAsync<AgentSubagentNotFoundException>(async () =>
+        {
+            await session.SubagentHost.WaitChildByIdAsync(
+                AgentRunId.Create(), TimeSpan.FromSeconds(1), CancellationToken.None);
+        });
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)

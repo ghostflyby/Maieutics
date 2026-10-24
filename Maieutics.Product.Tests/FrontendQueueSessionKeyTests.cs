@@ -1,10 +1,6 @@
-using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
-using System.Text;
 using System.Text.Json;
-using Maieutics.Providers.OpenAI;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using GatedProvider = Maieutics.Testing.GatedModelProvider;
 
@@ -98,8 +94,8 @@ public sealed class FrontendQueueSessionKeyTests
             Assert.Equal(
                 "queue_full",
                 (await over.Content.ReadFromJsonAsync<JsonElement>(deadline.Token))
-                    .GetProperty("code")
-                    .GetString());
+                .GetProperty("code")
+                .GetString());
             Trace("capacity probe rejected");
 
             // Clearing through the canonical spelling clears the queue the uppercase spelling
@@ -294,5 +290,4 @@ public sealed class FrontendQueueSessionKeyTests
 
     private static bool HasRunningItem(JsonElement queue) =>
         queue.TryGetProperty("running", out var running) && running.ValueKind == JsonValueKind.Object;
-
 }

@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using System.Net.WebSockets;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Control;
@@ -12,13 +11,12 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
 using System.Text;
+
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 /// <summary>
 ///     B5b (ADR 0020): the kernel sends <c>host.repl.derive</c> to the plugin host and the
 ///     session factory derives the REPL through it. These tests cover the .NET send side: the
@@ -250,9 +248,12 @@ public sealed class DenoReplHostDeriveTests
             new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
             deadline.Token);
         // A duplicate derive for the same session/generation is rejected synchronously.
-        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () => { await harness.Manager.RequestReplDeriveAsync(
-            new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
-            deadline.Token); });
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(async () =>
+        {
+            await harness.Manager.RequestReplDeriveAsync(
+                new HostReplDerivePayload("dup-session", 0, "file:///proc/main.ts", new()),
+                deadline.Token);
+        });
         harness.Manager.HandleHostMessage(
             """{"version":1,"type":"host.repl.spawned","payload":{"sessionId":"dup-session","generation":0,"pid":55}}""");
         Assert.False((await first).Failed);

@@ -148,7 +148,9 @@ internal sealed class McpResourceProvider : IResourceCatalogProvider
                    server.Catalog.Resources.Any(resource =>
                        string.Equals(resource.Uri, uri, StringComparison.Ordinal))) ??
                servers.FirstOrDefault(server => server.Catalog.Contains(uri));
-    }    private async ValueTask<ResourceReadResult> ReadFromServerAsync(
+    }
+
+    private async ValueTask<ResourceReadResult> ReadFromServerAsync(
         McpResourceServerAccess server,
         string resourceUri,
         ResourceReadRequest request,

@@ -4,7 +4,6 @@ using Maieutics.Permissions;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 public sealed class VariableInterpolationTests
 {
     [Fact]

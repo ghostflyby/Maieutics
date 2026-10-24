@@ -166,6 +166,7 @@ internal sealed partial class ReplControlHost
     {
         private readonly TaskCompletionSource completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly CancellationTokenSource lifetime = new();
         private readonly Channel<CommOutgoingMessage> outgoing;
         private readonly WebSocket socket;

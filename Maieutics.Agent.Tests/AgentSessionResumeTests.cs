@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using Microsoft.Extensions.AI;
-
 using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentSessionResumeTests
@@ -124,5 +124,4 @@ public sealed class AgentSessionResumeTests
             }
         }
     }
-
 }

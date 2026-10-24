@@ -4,8 +4,8 @@ using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Plugins;
 using Microsoft.Extensions.Logging.Abstractions;
-
 using FakeHostWebSocket = Maieutics.Testing.TestWebSocket;
+
 namespace Maieutics.Product.Tests;
 
 /// <summary>
@@ -172,7 +172,7 @@ public sealed class PluginHostInvokeTests
         await using var harness = await CreateHarnessAsync(deadline.Token);
         harness.Manager.SetCapabilityGrants("plugin-1", ["tools.invoke"]);
         var executed = new List<string>();
-        harness.Manager.CapabilityExecutor = (tool, arguments, _) =>
+        harness.Manager.CapabilityExecutor = (tool, _, _) =>
         {
             executed.Add(tool);
             return Task.FromResult(JsonSerializer.SerializeToElement(
@@ -502,68 +502,67 @@ public sealed class PluginHostInvokeTests
     [Fact(Timeout = 60_000)]
     public async Task IdeQueryCapabilityInvokesWhitelistedReadTools()
     {
-    if (OperatingSystem.IsWindows())
-        Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
-    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-    deadline.CancelAfter(Deadline);
-    await using var harness = await CreateHarnessAsync(deadline.Token);
-    harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
-    var executed = new List<string>();
-    harness.Manager.CapabilityExecutor = (tool, arguments, _) =>
-    {
-        executed.Add(tool);
-        return Task.FromResult(JsonSerializer.SerializeToElement(
-            new { status = "ok", value = $"ide:{tool}" }));
-    };
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
+        var executed = new List<string>();
+        harness.Manager.CapabilityExecutor = (tool, _, _) =>
+        {
+            executed.Add(tool);
+            return Task.FromResult(JsonSerializer.SerializeToElement(
+                new { status = "ok", value = $"ide:{tool}" }));
+        };
 
-    harness.Manager.HandleHostMessage(
-        "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-1\"," +
-        "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
-        "\"payload\":{\"tool\":\"ide_diagnostics\",\"arguments\":{}}}}");
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-1\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
+            "\"payload\":{\"tool\":\"ide_diagnostics\",\"arguments\":{}}}}");
 
-    var sent = await harness.Host.ReadSentAsync(deadline.Token);
-    var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-    Assert.Equal("capability.result", envelope.Type);
-    var payload = JsonSerializer.Deserialize(
-        envelope.Payload!.Value.GetRawText(),
-        ReplControlJsonContext.Default.CapabilityResultPayload)!;
-    Assert.Equal("ide:ide_diagnostics", payload.Result.GetProperty("value").GetString());
-    Assert.Equal("ide_diagnostics", Assert.Single(executed));
-}
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        Assert.Equal("capability.result", envelope.Type);
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.CapabilityResultPayload)!;
+        Assert.Equal("ide:ide_diagnostics", payload.Result.GetProperty("value").GetString());
+        Assert.Equal("ide_diagnostics", Assert.Single(executed));
+    }
 
     [Fact(Timeout = 60_000)]
     public async Task IdeQueryCapabilityRejectsWriteToolsByWhitelist()
     {
-    if (OperatingSystem.IsWindows())
-        Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The simulated host attaches over a Unix-socket Kestrel harness.");
 
-    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-    deadline.CancelAfter(Deadline);
-    await using var harness = await CreateHarnessAsync(deadline.Token);
-    harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
-    var executorRan = false;
-    harness.Manager.CapabilityExecutor = (_, _, _) =>
-    {
-        executorRan = true;
-        return Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
-    };
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        await using var harness = await CreateHarnessAsync(deadline.Token);
+        harness.Manager.SetCapabilityGrants("plugin-1", ["ide.query"]);
+        var executorRan = false;
+        harness.Manager.CapabilityExecutor = (_, _, _) =>
+        {
+            executorRan = true;
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { status = "ok" }));
+        };
 
-    harness.Manager.HandleHostMessage(
-        "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-2\"," +
-        "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
-        "\"payload\":{\"tool\":\"ide_apply_edit\",\"arguments\":{}}}}");
+        harness.Manager.HandleHostMessage(
+            "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ide-2\"," +
+            "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ide.query\"," +
+            "\"payload\":{\"tool\":\"ide_apply_edit\",\"arguments\":{}}}}");
 
-    var sent = await harness.Host.ReadSentAsync(deadline.Token);
-    var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
-    Assert.Equal("capability.error", envelope.Type);
-    var payload = JsonSerializer.Deserialize(
-        envelope.Payload!.Value.GetRawText(),
-        ReplControlJsonContext.Default.BusErrorPayload)!;
-    Assert.Equal("invalid_capability_invoke", payload.Code);
-    Assert.False(executorRan, "write tools are unreachable through ide.query");
-}
-
+        var sent = await harness.Host.ReadSentAsync(deadline.Token);
+        var envelope = JsonSerializer.Deserialize(sent, ReplControlJsonContext.Default.ReplEnvelope)!;
+        Assert.Equal("capability.error", envelope.Type);
+        var payload = JsonSerializer.Deserialize(
+            envelope.Payload!.Value.GetRawText(),
+            ReplControlJsonContext.Default.BusErrorPayload)!;
+        Assert.Equal("invalid_capability_invoke", payload.Code);
+        Assert.False(executorRan, "write tools are unreachable through ide.query");
+    }
 }
 
 public sealed class IdeQueryWhitelistSyncTests

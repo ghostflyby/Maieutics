@@ -1,7 +1,7 @@
 <Solution>
-    <Project Path="Maieutics.Agent/Maieutics.Agent.csproj"/>
-    <Project Path="Maieutics.Agent.Tests/Maieutics.Agent.Tests.csproj"/>
-    <Project Path="Maieutics.Testing/Maieutics.Testing.csproj"/>
-    <Project Path="Maieutics.Product.Tests/Maieutics.Product.Tests.csproj"/>
-    <Project Path="Maieutics/Maieutics.csproj"/>
+  <Project Path="Maieutics.Agent/Maieutics.Agent.csproj"/>
+  <Project Path="Maieutics.Agent.Tests/Maieutics.Agent.Tests.csproj"/>
+  <Project Path="Maieutics.Testing/Maieutics.Testing.csproj"/>
+  <Project Path="Maieutics.Product.Tests/Maieutics.Product.Tests.csproj"/>
+  <Project Path="Maieutics/Maieutics.csproj"/>
 </Solution>

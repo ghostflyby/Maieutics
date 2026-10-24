@@ -150,7 +150,9 @@ internal sealed class PluginHostManager(
     {
         "ide_diagnostics", "ide_hover", "ide_navigate", "ide_document_symbols", "ide_workspace_symbols", "ide_request"
     };
+
     private const int EnvelopeVersion = 1;
+
     // 30s: the extension-point channel also covers on-demand worker starts
     // (ADR 0035) — a cold spawn's handshake rides the same budget.
     private static readonly TimeSpan InvokeTimeout = TimeSpan.FromSeconds(30);
@@ -225,6 +227,7 @@ internal sealed class PluginHostManager(
     // Restartable lifecycle state: a plugin-set change tears the host process down and starts a
     // fresh one, so these are replaced per generation instead of being readonly-once.
     private CancellationTokenSource lifetime = new();
+
     private TaskCompletionSource readiness =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -288,11 +291,14 @@ internal sealed class PluginHostManager(
     /// ignored (a spontaneous host-derived REPL still registers its pid through
     /// <see cref="RegisterHostRepl"/>).</summary>
     private const int OutboundCapacity = 512;
+
     private Channel<byte[]>? outbound;
     private Task? outboundWriter;
     private readonly List<Task> capabilityCalls = [];
+
     private readonly Dictionary<string, IReadOnlyList<string>> capabilityGrants =
         new(StringComparer.Ordinal);
+
     private readonly Dictionary<string, IReadOnlyList<PluginExtensionEntry>> descriptorExtensions =
         new(StringComparer.Ordinal);
 
@@ -462,7 +468,10 @@ internal sealed class PluginHostManager(
     /// deadline.</summary>
     internal Task HostConnectionReleased
     {
-        get { lock (gate) return hostConnectionReleased.Task; }
+        get
+        {
+            lock (gate) return hostConnectionReleased.Task;
+        }
     }
 
     /// <summary>Internal test observability: completes when a live host connection is accepted —
@@ -474,7 +483,10 @@ internal sealed class PluginHostManager(
     /// deadline.</summary>
     internal Task HostConnectionAttached
     {
-        get { lock (gate) return hostConnectionAttached.Task; }
+        get
+        {
+            lock (gate) return hostConnectionAttached.Task;
+        }
     }
 
     /// <summary>
@@ -1061,8 +1073,7 @@ internal sealed class PluginHostManager(
             initialSnapshot = registrations.ToArray();
             seedPlugins = descriptors
                 .Where(descriptor => !IsApprovalBlockedLock(descriptor.Id) &&
-                                     descriptor.Extensions.Any(
-                                         static entry => Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind)))
+                                     descriptor.Extensions.Any(static entry => Contributions.SkillsContributionKind.Instance.OwnsExtensionKind(entry.Kind)))
                 .Select(static descriptor => descriptor.Id)
                 .ToArray();
         }
@@ -1145,7 +1156,7 @@ internal sealed class PluginHostManager(
         {
             var dependencies = descriptors.ToDictionary(
                 static descriptor => descriptor.Id,
-                static descriptor => (IReadOnlyList<string>)descriptor.Dependencies);
+                static descriptor => descriptor.Dependencies);
             var adjusters = registrations
                 .Where(registration => registration.ExtensionPoint == ReplExtensionPointName.McpAdjust)
                 .Select(registration => new McpAdjusterRegistration(registration.PluginId, registration.ExportName))
@@ -3321,8 +3332,8 @@ internal sealed class PluginHostManager(
                     string.IsNullOrWhiteSpace(frame.CommId) ||
                     (frame.Kind != "open" && frame.Kind != "message" && frame.Kind != "close") ||
                     (frame.Kind == "open" &&
-                    (string.IsNullOrWhiteSpace(frame.TargetName) ||
-                     !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
+                     (string.IsNullOrWhiteSpace(frame.TargetName) ||
+                      !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
                 {
                     await PushCapabilityErrorAsync(
                         socket,
@@ -4203,5 +4214,4 @@ internal sealed class PluginHostManager(
             return false;
         }
     }
-
 }

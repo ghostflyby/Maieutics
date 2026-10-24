@@ -196,8 +196,8 @@ public sealed class WorkspaceLinksTests
         var context = Workspace.Create(home);
 
         Assert.ThrowsAny<DirectoryNotFoundException>(() => context.OpenLink(
-                Path.Combine(workspace.ParentPath, "missing"),
-                null));
+            Path.Combine(workspace.ParentPath, "missing"),
+            null));
 
         if (OperatingSystem.IsWindows())
         {
@@ -242,10 +242,13 @@ public sealed class WorkspaceLinksTests
             TestContext.Current.CancellationToken);
         Assert.Contains("Projects: none", closed.Markdown);
 
-        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () => { await executor.ExecuteAsync(
-            "%workspace use somewhere",
-            null,
-            TestContext.Current.CancellationToken); });
+        await Assert.ThrowsAnyAsync<Commands.MaieuticsCommandException>(async () =>
+        {
+            await executor.ExecuteAsync(
+                "%workspace use somewhere",
+                null,
+                TestContext.Current.CancellationToken);
+        });
     }
 
     private static string TargetHash(string canonicalTarget, int characters)

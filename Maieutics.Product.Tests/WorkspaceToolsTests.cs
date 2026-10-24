@@ -8,8 +8,8 @@ using Maieutics.Execution;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-
 using ScriptedWorkspaceChatClient = Maieutics.Testing.ScriptedChatClient;
+
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
@@ -23,7 +23,7 @@ public sealed class WorkspaceToolsTests
 
         Assert.Equal(["list_directory", "read_text", "search_text"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object"));
+                                                             function.JsonSchema.GetProperty("type").GetString() == "object"));
 
         var list = functions.Single(static function => function.Name == "list_directory");
         var result = await list.InvokeAsync(
@@ -31,11 +31,14 @@ public sealed class WorkspaceToolsTests
             TestContext.Current.CancellationToken);
         Assert.IsType<JsonElement>(result);
 
-        var assertion44 = await Assert.ThrowsAnyAsync<Exception>(async () => { await list.InvokeAsync(
-            Arguments("""{"unexpected":true}"""),
-            TestContext.Current.CancellationToken).AsTask(); });
+        var assertion44 = await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await list.InvokeAsync(
+                Arguments("""{"unexpected":true}"""),
+                TestContext.Current.CancellationToken).AsTask();
+        });
         Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
-                exception.GetType() == typeof(JsonException)))(assertion44));
+                                                                 exception.GetType() == typeof(JsonException)))(assertion44));
     }
 
     [Fact(Timeout = 30_000)]
@@ -375,9 +378,12 @@ public sealed class WorkspaceToolsTests
         using var canceled = new CancellationTokenSource();
         await canceled.CancelAsync();
         var token = canceled.Token;
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await fileLimited.InvokeAsync(
-            Arguments("""{"query":"target"}"""),
-            token).AsTask(); });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await fileLimited.InvokeAsync(
+                Arguments("""{"query":"target"}"""),
+                token).AsTask();
+        });
     }
 
     [Fact(Timeout = 10_000)]
@@ -389,10 +395,10 @@ public sealed class WorkspaceToolsTests
         using var workspace = TemporaryWorkspace.Create();
         var fifo = Path.Combine(workspace.Path, "input.fifo");
         using (var process = Process.Start(new ProcessStartInfo("mkfifo")
-        {
-            UseShellExecute = false,
-            ArgumentList = { fifo }
-        }) ?? throw new InvalidOperationException("mkfifo did not start."))
+               {
+                   UseShellExecute = false,
+                   ArgumentList = { fifo }
+               }) ?? throw new InvalidOperationException("mkfifo did not start."))
         {
             await process.WaitForExitAsync(TestContext.Current.CancellationToken);
             Assert.Equal(0, process.ExitCode);
@@ -521,11 +527,11 @@ public sealed class WorkspaceToolsTests
         WriteWorkspaceConfiguration(configurationFile, jsonRoot);
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-        {
-            ["MAIEUTICS_CONFIG"] = null,
-            ["MAIEUTICS_WORKSPACE"] = aliasRoot,
-            ["Maieutics__Workspace__Root"] = standardRoot
-        }))
+               {
+                   ["MAIEUTICS_CONFIG"] = null,
+                   ["MAIEUTICS_WORKSPACE"] = aliasRoot,
+                   ["Maieutics__Workspace__Root"] = standardRoot
+               }))
         {
             var standardBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var standardHost = standardBuilder.Build();
@@ -535,17 +541,18 @@ public sealed class WorkspaceToolsTests
                 ["--config", configurationFile, "--workspace", commandRoot]);
             using var commandHost = commandBuilder.Build();
             Assert.Equal(commandRoot, commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
-            Assert.Equal(["list_directory", "read_text", "search_text", "write_text", "edit_text", "apply_patch", "list_resources", "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close", "agent_spawn", "task_wait", "task_cancel",
+            Assert.Equal([
+                "list_directory", "read_text", "search_text", "write_text", "edit_text", "apply_patch", "list_resources", "repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close", "agent_spawn", "task_wait", "task_cancel",
             ], commandHost.Services.GetRequiredService<IReadOnlyList<AIFunction>>()
                 .Select(static function => function.Name));
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-        {
-            ["MAIEUTICS_CONFIG"] = null,
-            ["MAIEUTICS_WORKSPACE"] = aliasRoot,
-            ["Maieutics__Workspace__Root"] = null
-        }))
+               {
+                   ["MAIEUTICS_CONFIG"] = null,
+                   ["MAIEUTICS_WORKSPACE"] = aliasRoot,
+                   ["Maieutics__Workspace__Root"] = null
+               }))
         {
             var aliasBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var aliasHost = aliasBuilder.Build();
@@ -553,11 +560,11 @@ public sealed class WorkspaceToolsTests
         }
 
         using (new EnvironmentVariableScope(new Dictionary<string, string?>
-        {
-            ["MAIEUTICS_CONFIG"] = null,
-            ["MAIEUTICS_WORKSPACE"] = null,
-            ["Maieutics__Workspace__Root"] = null
-        }))
+               {
+                   ["MAIEUTICS_CONFIG"] = null,
+                   ["MAIEUTICS_WORKSPACE"] = null,
+                   ["Maieutics__Workspace__Root"] = null
+               }))
         {
             var frozenBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             WriteWorkspaceConfiguration(configurationFile, reloadRoot);
@@ -569,7 +576,7 @@ public sealed class WorkspaceToolsTests
         var path = workspace.Path;
 
         Assert.ThrowsAny<DirectoryNotFoundException>(() => MaieuticsHost.CreateApplicationBuilder(
-                ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]));
+            ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]));
     }
 
     [Fact]
@@ -702,5 +709,4 @@ public sealed class WorkspaceToolsTests
             foreach (var (name, value) in original) Environment.SetEnvironmentVariable(name, value);
         }
     }
-
 }

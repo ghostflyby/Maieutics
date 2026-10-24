@@ -5,7 +5,6 @@ using Maieutics.Processes;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 public sealed class ProcessEnvironmentTests
 {
     [Fact]

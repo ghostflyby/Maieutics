@@ -176,7 +176,7 @@ public sealed class ResourceReadToolTests
         var endpoint = new UnixDomainSocketEndPoint(socketPath);
         return new HttpClient(new SocketsHttpHandler
         {
-            ConnectCallback = async (context, cancellationToken) =>
+            ConnectCallback = async (_, cancellationToken) =>
             {
                 var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.IP);
                 await socket.ConnectAsync(endpoint, cancellationToken).ConfigureAwait(false);
@@ -190,9 +190,11 @@ public sealed class ResourceReadToolTests
     {
         _ = TestContext.Current.CancellationToken;
         using var workspace = TemporaryWorkspace.Create();
-        var registry = new ResourceRegistry([new FakeProvider([
-            new ResourceCatalogEntry("fake", "notes://team/binary", null, null, null, "resource", null)
-        ])]);
+        var registry = new ResourceRegistry([
+            new FakeProvider([
+                new ResourceCatalogEntry("fake", "notes://team/binary", null, null, null, "resource", null)
+            ])
+        ]);
         var functions = CreateFunctions(workspace.Path, registry);
         var readText = Function(functions, "read_text");
 

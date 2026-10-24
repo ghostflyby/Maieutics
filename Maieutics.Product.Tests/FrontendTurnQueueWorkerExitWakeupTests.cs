@@ -1,8 +1,5 @@
 using System.Collections;
-using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
-using System.Text;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using GatedProvider = Maieutics.Testing.GatedModelProvider;
 using Maieutics.Frontend;
@@ -84,8 +81,8 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         Assert.True(
             finalVersion > settledVersion,
             $"the worker exited without publishing: the queue version stayed at the settle's {settledVersion}, "
-                + "so a waiter that re-subscribed at the settled version is never woken and the drain waits out "
-                + "its whole budget on a quiescent queue");
+            + "so a waiter that re-subscribed at the settled version is never woken and the drain waits out "
+            + "its whole budget on a quiescent queue");
     }
 
     /// <summary>Resolves the session queue worker's completion task while the worker is
@@ -129,5 +126,4 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
             provider,
             hanging: false);
     }
-
 }

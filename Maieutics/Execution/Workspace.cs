@@ -7,7 +7,6 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Maieutics.Execution;
 
-
 /// <summary>The authoritative workspace: a fixed, product-owned home directory
 /// (ADR 0027). The root never changes mid-process; external projects are opened as managed
 /// links under <c>projects/</c>, which bumps the snapshot version. Exposes the permission
@@ -247,7 +246,7 @@ internal sealed partial record WorkspaceSnapshot(
         }
         catch (Exception exception) when
             (exception is ArgumentException or NotSupportedException or PathTooLongException
-                or System.Security.SecurityException)
+                 or System.Security.SecurityException)
         {
             return false;
         }
@@ -813,7 +812,7 @@ internal sealed partial record WorkspaceSnapshot(
         var separator = Path.DirectorySeparatorChar;
         var start = baseRoot.Length;
         if (start < physicalPath.Length && (physicalPath[start] == separator ||
-            physicalPath[start] == Path.AltDirectorySeparatorChar))
+                                            physicalPath[start] == Path.AltDirectorySeparatorChar))
             start++;
 
         for (var index = start; index < physicalPath.Length;)

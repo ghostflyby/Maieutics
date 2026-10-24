@@ -982,7 +982,8 @@ public sealed class PluginManifestTests
         Assert.True(mcp.StickyPerSourceKey);
         Assert.False(mcp.UsesKernelRetrySet, "MCP retries inside its revision engine");
         // The defaults are the former fixed values byte-for-byte.
-        Assert.Equal([TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30),
+        Assert.Equal([
+            TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30),
         ], mcp.DefaultTimeouts);
         Assert.True(mcp.DeclarationInterpolation, "the data path joins the interpolation parity");
     }

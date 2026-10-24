@@ -150,6 +150,7 @@ internal interface IFrontendPresentationTarget
 internal sealed class FrontendDenoReplPresentationSink(IFrontendPresentationTarget target) : IDenoReplPresentationSink
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+
     private readonly Dictionary<string, TaskCompletionSource<string>> pendingInputs =
         new(StringComparer.Ordinal);
 

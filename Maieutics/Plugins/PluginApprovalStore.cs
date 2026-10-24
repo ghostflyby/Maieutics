@@ -80,7 +80,7 @@ internal sealed class PluginApprovalStore
         }
         catch (Exception exception) when (
             exception is JsonException or IOException or UnauthorizedAccessException or
-            NotSupportedException or InvalidOperationException)
+                NotSupportedException or InvalidOperationException)
         {
             store.writable = false;
             error = $"The plugin approvals file '{path}' could not be read: {exception.Message}";

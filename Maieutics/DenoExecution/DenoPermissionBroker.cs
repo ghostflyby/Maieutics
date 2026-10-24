@@ -31,7 +31,9 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
     private readonly TimeSpan policyRegistrationWait;
     private readonly ConcurrentDictionary<int, TaskCompletionSource<EffectivePolicy>> registrations = new();
     private readonly string? socketPath;
+
     private readonly string? pipeName;
+
     // Serializes the pipe listener's replacement (the accept loop) with its shutdown release (the
     // accept loop's cleanup), so a release can never race a replacement.
     private readonly Lock listenerGate = new();

@@ -11,6 +11,7 @@ internal sealed class SessionBusConnection : IAsyncDisposable
 {
     private readonly TaskCompletionSource completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly CancellationTokenSource lifetime = new();
     private readonly Channel<OutgoingMessage> outgoing;
     private readonly Lock stateLock = new();

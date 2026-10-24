@@ -29,24 +29,33 @@ internal sealed record FrontendUiFormField(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("label")] string? Label = null,
     [property: JsonPropertyName("type")] string Type = "text",
-    [property: JsonPropertyName("choices")] IReadOnlyList<FrontendUiFormChoice>? Choices = null,
-    [property: JsonPropertyName("required")] bool? Required = null,
-    [property: JsonPropertyName("placeholder")] string? Placeholder = null);
+    [property: JsonPropertyName("choices")]
+    IReadOnlyList<FrontendUiFormChoice>? Choices = null,
+    [property: JsonPropertyName("required")]
+    bool? Required = null,
+    [property: JsonPropertyName("placeholder")]
+    string? Placeholder = null);
 
 /// <summary>The <c>maieutics/form</c> family state carried on comm_open and in the announcement.</summary>
 internal sealed record FrontendUiFormState(
     [property: JsonPropertyName("title")] string? Title = null,
     [property: JsonPropertyName("fields")] IReadOnlyList<FrontendUiFormField>? Fields = null,
-    [property: JsonPropertyName("submitLabel")] string? SubmitLabel = null,
-    [property: JsonPropertyName("cancelLabel")] string? CancelLabel = null,
+    [property: JsonPropertyName("submitLabel")]
+    string? SubmitLabel = null,
+    [property: JsonPropertyName("cancelLabel")]
+    string? CancelLabel = null,
     [property: JsonPropertyName("values")] Dictionary<string, object?>? Values = null)
-{}
+{
+}
 
 /// <summary>The announcement value inside the <see cref="FrontendUiWire.ViewMime" /> display member.</summary>
 internal sealed record FrontendUiFormAnnouncement(
-    [property: JsonPropertyName("modelId")] string ModelId,
-    [property: JsonPropertyName("viewFamily")] string ViewFamily,
-    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("modelId")]
+    string ModelId,
+    [property: JsonPropertyName("viewFamily")]
+    string ViewFamily,
+    [property: JsonPropertyName("version")]
+    string Version,
     [property: JsonPropertyName("state")] FrontendUiFormState State);
 
 /// <summary>The native uplink dialect: state deltas and one-shot events.</summary>
@@ -54,7 +63,8 @@ internal sealed record FrontendUiUplinkPayload(
     [property: JsonPropertyName("method")] string? Method = null,
     [property: JsonPropertyName("state")] Dictionary<string, object?>? State = null,
     [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("payload")] JsonElement? Payload = null);
+    [property: JsonPropertyName("payload")]
+    JsonElement? Payload = null);
 
 /// <summary>
 ///     Handler surface of one kernel-owned form model: submit/cancel arrive as one-shot

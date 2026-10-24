@@ -78,14 +78,14 @@ internal static class PluginTriggerReader
                 throw new JsonException("The 'triggers' entries must be objects.");
 
             var name = ReadString(entry, "name") ??
-                throw new JsonException("A trigger requires a non-empty 'name'.");
+                       throw new JsonException("A trigger requires a non-empty 'name'.");
             if (!names.Add(name))
                 throw new JsonException($"A trigger named '{name}' is declared more than once.");
 
             var actionValue = ReadString(entry, "action") ?? "event";
             var action = ParseAction(entry, actionValue);
             var kind = ReadString(entry, "kind") ??
-                throw new JsonException($"Trigger '{name}' requires a 'kind'.");
+                       throw new JsonException($"Trigger '{name}' requires a 'kind'.");
 
             switch (kind)
             {
@@ -123,7 +123,7 @@ internal static class PluginTriggerReader
                 case "cron":
                 {
                     var expression = ReadString(entry, "expression") ??
-                        throw new JsonException($"Cron trigger '{name}' requires an 'expression'.");
+                                     throw new JsonException($"Cron trigger '{name}' requires an 'expression'.");
                     ValidateCron(name, expression);
                     triggers.Add(new PluginTrigger(
                         name, "cron", action, [], null, expression, null));

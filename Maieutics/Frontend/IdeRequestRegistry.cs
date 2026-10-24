@@ -23,6 +23,7 @@ internal sealed record IdeRequestAnswer(JsonElement? Value, string? ErrorCode, s
 internal sealed class IdeRequestRegistry
 {
     private readonly Lock gate = new();
+
     private readonly Dictionary<string, TaskCompletionSource<IdeRequestAnswer>> pending =
         new(StringComparer.Ordinal);
 

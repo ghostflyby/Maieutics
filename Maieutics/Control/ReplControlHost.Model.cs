@@ -77,8 +77,8 @@ internal sealed partial class ReplControlHost
             // The composition root disabled subagent spawning: the orchestration surface
             // honors the same deny-by-default knob as the model's own agent_spawn tool.
             await WriteSubagentErrorAsync(
-                context, StatusCodes.Status409Conflict, "agent_subagent_disabled",
-                "Subagent spawning is not enabled for this host.", cancellationToken)
+                    context, StatusCodes.Status409Conflict, "agent_subagent_disabled",
+                    "Subagent spawning is not enabled for this host.", cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -103,14 +103,14 @@ internal sealed partial class ReplControlHost
             var spawner = session.TryCreateActiveRunSpawner();
             handle = spawner is not null
                 ? await spawner.StartChildAsync(
-                      spec, cancellationToken, onChildSessionCreated).ConfigureAwait(false)
+                    spec, cancellationToken, onChildSessionCreated).ConfigureAwait(false)
                 : await session.SubagentHost.StartDetachedChildAsync(
-                      spec,
-                      baseSessionOptions,
-                      orchestration.Tools(),
-                      cancellationToken,
-                      onChildSessionCreated)
-                  .ConfigureAwait(false);
+                        spec,
+                        baseSessionOptions,
+                        orchestration.Tools(),
+                        cancellationToken,
+                        onChildSessionCreated)
+                    .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)
         {

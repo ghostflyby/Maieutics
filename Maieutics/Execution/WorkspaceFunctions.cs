@@ -454,12 +454,14 @@ internal sealed class WorkspaceFunctions
                     if (bridged is not null)
                         return new SearchTextResult(
                             bridgedRoot.Uri,
-                            [.. bridged.Matches.Select(match => new WorkspaceSearchMatch(
-                                ToRootedUri(snapshot, bridgedRoot.Segments, match.RelativePath),
-                                match.Line,
-                                match.Column,
-                                match.Preview))
-                                .Where(static match => match.Uri.Length > 0)],
+                            [
+                                .. bridged.Matches.Select(match => new WorkspaceSearchMatch(
+                                        ToRootedUri(snapshot, bridgedRoot.Segments, match.RelativePath),
+                                        match.Line,
+                                        match.Column,
+                                        match.Preview))
+                                    .Where(static match => match.Uri.Length > 0)
+                            ],
                             bridged.Truncated,
                             bridged.ScannedBytes,
                             0,

@@ -67,86 +67,100 @@ internal static class PluginUiFormInterpreter
 {
     internal static PluginUiFormDefinition InterpretUiForm(JsonElement data)
     {
-    try
-    {
-        if (data.ValueKind != JsonValueKind.Object)
+        try
         {
-            return new PluginUiFormDefinition(null, [], null, null, null, "The ui data entry must be a JSON object.");
-        }
-
-        string? title = data.TryGetProperty("title", out var titleElement) &&
-            titleElement.ValueKind == JsonValueKind.String ? titleElement.GetString() : null;
-
-        var fields = new List<PluginUiFormField>();
-        if (data.TryGetProperty("fields", out var fieldsElement) && fieldsElement.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var fieldElement in fieldsElement.EnumerateArray())
+            if (data.ValueKind != JsonValueKind.Object)
             {
-                if (fieldElement.ValueKind != JsonValueKind.Object ||
-                    !fieldElement.TryGetProperty("name", out var nameElement) ||
-                    nameElement.ValueKind != JsonValueKind.String ||
-                    nameElement.GetString() is not { Length: > 0 } name)
-                {
-                    fields.Add(new PluginUiFormField("", null, "", null, null, null));
-                    continue;
-                }
+                return new PluginUiFormDefinition(null, [], null, null, null, "The ui data entry must be a JSON object.");
+            }
 
-                var type = fieldElement.TryGetProperty("type", out var typeElement) &&
-                    typeElement.ValueKind == JsonValueKind.String ? typeElement.GetString() : "text";
+            string? title = data.TryGetProperty("title", out var titleElement) &&
+                            titleElement.ValueKind == JsonValueKind.String
+                ? titleElement.GetString()
+                : null;
 
-                IReadOnlyList<PluginUiFormChoice>? choices = null;
-                if (fieldElement.TryGetProperty("choices", out var choicesElement) &&
-                    choicesElement.ValueKind == JsonValueKind.Array)
+            var fields = new List<PluginUiFormField>();
+            if (data.TryGetProperty("fields", out var fieldsElement) && fieldsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var fieldElement in fieldsElement.EnumerateArray())
                 {
-                    var parsed = new List<PluginUiFormChoice>();
-                    foreach (var choice in choicesElement.EnumerateArray())
+                    if (fieldElement.ValueKind != JsonValueKind.Object ||
+                        !fieldElement.TryGetProperty("name", out var nameElement) ||
+                        nameElement.ValueKind != JsonValueKind.String ||
+                        nameElement.GetString() is not { Length: > 0 } name)
                     {
-                        var value = choice.ValueKind switch
-                        {
-                            JsonValueKind.String => choice.GetString(),
-                            JsonValueKind.Number => choice.GetRawText(),
-                            JsonValueKind.True => "true",
-                            JsonValueKind.False => "false",
-                            _ => null,
-                        };
-                        if (value is not null) parsed.Add(new PluginUiFormChoice(value, value));
+                        fields.Add(new PluginUiFormField("", null, "", null, null, null));
+                        continue;
                     }
 
-                    choices = parsed;
-                }
+                    var type = fieldElement.TryGetProperty("type", out var typeElement) &&
+                               typeElement.ValueKind == JsonValueKind.String
+                        ? typeElement.GetString()
+                        : "text";
 
-                fields.Add(new PluginUiFormField(
-                    name,
-                    fieldElement.TryGetProperty("label", out var labelElement) &&
-                        labelElement.ValueKind == JsonValueKind.String ? labelElement.GetString() : null,
-                    type ?? "text",
-                    choices,
-                    fieldElement.TryGetProperty("required", out var requiredElement) &&
+                    IReadOnlyList<PluginUiFormChoice>? choices = null;
+                    if (fieldElement.TryGetProperty("choices", out var choicesElement) &&
+                        choicesElement.ValueKind == JsonValueKind.Array)
+                    {
+                        var parsed = new List<PluginUiFormChoice>();
+                        foreach (var choice in choicesElement.EnumerateArray())
+                        {
+                            var value = choice.ValueKind switch
+                            {
+                                JsonValueKind.String => choice.GetString(),
+                                JsonValueKind.Number => choice.GetRawText(),
+                                JsonValueKind.True => "true",
+                                JsonValueKind.False => "false",
+                                _ => null,
+                            };
+                            if (value is not null) parsed.Add(new PluginUiFormChoice(value, value));
+                        }
+
+                        choices = parsed;
+                    }
+
+                    fields.Add(new PluginUiFormField(
+                        name,
+                        fieldElement.TryGetProperty("label", out var labelElement) &&
+                        labelElement.ValueKind == JsonValueKind.String
+                            ? labelElement.GetString()
+                            : null,
+                        type ?? "text",
+                        choices,
+                        fieldElement.TryGetProperty("required", out var requiredElement) &&
                         requiredElement.ValueKind == JsonValueKind.True,
-                    fieldElement.TryGetProperty("placeholder", out var placeholderElement) &&
-                        placeholderElement.ValueKind == JsonValueKind.String ? placeholderElement.GetString() : null));
+                        fieldElement.TryGetProperty("placeholder", out var placeholderElement) &&
+                        placeholderElement.ValueKind == JsonValueKind.String
+                            ? placeholderElement.GetString()
+                            : null));
+                }
             }
-        }
-        else
-        {
-            return new PluginUiFormDefinition(title, [], null, null, null, "The ui data entry requires a fields array.");
-        }
+            else
+            {
+                return new PluginUiFormDefinition(title, [], null, null, null, "The ui data entry requires a fields array.");
+            }
 
-        return new PluginUiFormDefinition(
-            title,
-            fields,
-            data.TryGetProperty("submitLabel", out var submitElement) &&
-                submitElement.ValueKind == JsonValueKind.String ? submitElement.GetString() : null,
-            data.TryGetProperty("cancelLabel", out var cancelElement) &&
-                cancelElement.ValueKind == JsonValueKind.String ? cancelElement.GetString() : null,
-            data.TryGetProperty("submitTool", out var submitToolElement) &&
-                submitToolElement.ValueKind == JsonValueKind.String ? submitToolElement.GetString() : null,
-            null);
-    }
-    catch (Exception exception) when (exception is InvalidOperationException or JsonException)
-    {
-        return new PluginUiFormDefinition(null, [], null, null, null, $"Invalid ui data entry: {exception.Message}");
-    }
+            return new PluginUiFormDefinition(
+                title,
+                fields,
+                data.TryGetProperty("submitLabel", out var submitElement) &&
+                submitElement.ValueKind == JsonValueKind.String
+                    ? submitElement.GetString()
+                    : null,
+                data.TryGetProperty("cancelLabel", out var cancelElement) &&
+                cancelElement.ValueKind == JsonValueKind.String
+                    ? cancelElement.GetString()
+                    : null,
+                data.TryGetProperty("submitTool", out var submitToolElement) &&
+                submitToolElement.ValueKind == JsonValueKind.String
+                    ? submitToolElement.GetString()
+                    : null,
+                null);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException)
+        {
+            return new PluginUiFormDefinition(null, [], null, null, null, $"Invalid ui data entry: {exception.Message}");
+        }
     }
 }
 
@@ -328,12 +342,11 @@ internal static class PluginManifest
         // discoverable-but-failed). The extensions entries themselves pass through
         // untouched; their per-entry validation stays in the discovery-time branch.
         IReadOnlyList<McpServerDefinition> mcpServers = [];
-        string? mcpServersError = null;
         var mcpDeclared = Contributions.McpDiscoverContributionKind.Instance.ParseDeclared(
             new Contributions.ContributionDeclarationContext(id, directory, extensions, dataEntries));
         if (mcpDeclared.Descriptors.Count > 0)
             mcpServers = Contributions.ContributionDescriptorUnwrap.McpServers(mcpDeclared.Descriptors);
-        mcpServersError = mcpDeclared.PluginLevelError;
+        var mcpServersError = mcpDeclared.PluginLevelError;
 
         // Inspections are the content-observation declaration (ADR 0032): a plugin that
         // declares contentReadAll receives tool results in its post-invoke hooks. Absence
@@ -664,8 +677,8 @@ internal static class PluginManifest
         try
         {
             var manifest = JsonSerializer.Deserialize(
-                               File.ReadAllText(denoJson),
-                               PluginManifestJsonContext.Default.PluginManifestFile);
+                File.ReadAllText(denoJson),
+                PluginManifestJsonContext.Default.PluginManifestFile);
             return PluginImportReader.Read(manifest?.Imports);
         }
         catch (JsonException)

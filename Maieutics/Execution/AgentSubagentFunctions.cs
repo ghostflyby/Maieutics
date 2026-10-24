@@ -87,18 +87,18 @@ internal sealed class AgentSubagentFunctions
         try
         {
             handle = await spawner.StartChildAsync(
-                new AgentSubagentSpec
-                {
-                    Instructions = instructions,
-                    Input = input,
-                    Tools = tools
-                },
-                cancellationToken,
-                onChildSessionCreated: childSessionId =>
-                {
-                    permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
-                    childScopes?.Invoke()?.RegisterChildScope(childSessionId, context.SessionId);
-                })
+                    new AgentSubagentSpec
+                    {
+                        Instructions = instructions,
+                        Input = input,
+                        Tools = tools
+                    },
+                    cancellationToken,
+                    onChildSessionCreated: childSessionId =>
+                    {
+                        permissionOverrides?.RegisterChildScope(childSessionId, context.SessionId);
+                        childScopes?.Invoke()?.RegisterChildScope(childSessionId, context.SessionId);
+                    })
                 .ConfigureAwait(false);
         }
         catch (AgentSubagentBudgetExceededException exception)

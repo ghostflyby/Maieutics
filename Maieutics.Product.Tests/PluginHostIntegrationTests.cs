@@ -16,7 +16,6 @@ using Microsoft.Extensions.Time.Testing;
 namespace Maieutics.Product.Tests;
 
 [Collection(ProductIntegrationCollection.Name)]
-
 public sealed class PluginHostIntegrationTests
 {
     private static readonly DenoPermissionBroker SharedBroker =
@@ -451,8 +450,8 @@ public sealed class PluginHostIntegrationTests
                     .Select(static item => item.Value?.GetRawText())
                     .Where(static text => text is not null)
                     .ToArray();
-                var trace = string.Join("\n", result.Outputs.Select(static item =>
-                    $"{item.Kind}:{(item.Value is { } value ? value.GetRawText() : item.Text)}")) +
+                _ = string.Join("\n", result.Outputs.Select(static item =>
+                        $"{item.Kind}:{(item.Value is { } value ? value.GetRawText() : item.Text)}")) +
                     $"\nstatus={result.ExecutionStatus}";
                 // The hook replaced the bogus outer path with the real root listing only
                 // if the capability callback executed the kernel tool end to end; a failed
@@ -1207,12 +1206,12 @@ public sealed class PluginHostIntegrationTests
 
         // Plain concatenation: no raw-string interpolation to mis-escape.
         var json = "{\n" +
-            "  \"name\": \"@maieutics/root-plugin\",\n" +
-            "  \"version\": \"0.1.0\",\n" +
-            "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
-            "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
-            "  \"imports\": " + imports + "\n" +
-            "}";
+                   "  \"name\": \"@maieutics/root-plugin\",\n" +
+                   "  \"version\": \"0.1.0\",\n" +
+                   "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
+                   "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
+                   "  \"imports\": " + imports + "\n" +
+                   "}";
         File.WriteAllText(path, json);
     }
 
@@ -1234,12 +1233,12 @@ public sealed class PluginHostIntegrationTests
         imports.Append('}');
 
         var json = "{\n" +
-            "  \"name\": \"@maieutics/root-plugin\",\n" +
-            "  \"version\": \"0.1.0\",\n" +
-            "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
-            "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
-            "  \"imports\": " + imports + "\n" +
-            "}";
+                   "  \"name\": \"@maieutics/root-plugin\",\n" +
+                   "  \"version\": \"0.1.0\",\n" +
+                   "  \"exports\": { \"./main\": \"./mod.ts\" },\n" +
+                   "  \"permissions\": { \"default\": { \"read\": [\"./\"] } },\n" +
+                   "  \"imports\": " + imports + "\n" +
+                   "}";
         File.WriteAllText(path, json);
     }
 
@@ -1276,7 +1275,7 @@ public sealed class PluginHostIntegrationTests
                     handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
                   });
                   """
-                  : """
+                : """
                   import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.1";
                   export const discover = defineExtensionPoint("McpDiscover", {
                     handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
@@ -1400,7 +1399,13 @@ public sealed class PluginHostIntegrationTests
     {
         private readonly object gate = new();
         private readonly List<string> lines = [];
-        public IReadOnlyList<string> Lines { get { lock (gate) return [.. lines]; } }
+        public IReadOnlyList<string> Lines
+        {
+            get
+            {
+                lock (gate) return [.. lines];
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
@@ -1419,6 +1424,7 @@ public sealed class PluginHostIntegrationTests
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             var line = formatter(state, exception);
@@ -1433,7 +1439,6 @@ public sealed class PluginHostIntegrationTests
         public ILogger CreateLogger(string categoryName) => new DebugConsoleLogger<object>();
         public void Dispose() { }
     }
-
 
 
     private sealed record McpDiscoveryTestShape(string Module, object Transport);

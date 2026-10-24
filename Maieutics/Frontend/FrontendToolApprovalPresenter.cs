@@ -25,6 +25,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     private readonly ILogger<FrontendToolApprovalPresenter> logger;
     private readonly TimeSpan waitTimeout;
     private readonly Lock gate = new();
+
     private readonly Dictionary<string, TaskCompletionSource<AgentToolApprovalDecision>> pending =
         new(StringComparer.Ordinal);
 
@@ -34,6 +35,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// on the child id would find nothing and deny with a false "no frontend" reason. Bounded
     /// by the same discipline as the permission registry's child scopes.</summary>
     private readonly Dictionary<AgentSessionId, AgentSessionId> parents = [];
+
     private readonly Queue<AgentSessionId> parentOrder = new();
     private const int MaximumParentScopes = 256;
 

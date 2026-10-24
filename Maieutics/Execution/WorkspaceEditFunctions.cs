@@ -335,9 +335,9 @@ internal sealed class WorkspaceEditFunctions
 
         var bridgeBeforeBytes = EncodeUtf8(answered);
         var bridgeBefore = TryDecodeText(bridgeBeforeBytes, out var bridgeHadBom) ??
-            throw new WorkspaceException(
-                "workspace_binary_file",
-                "The file is not UTF-8 text, so edit_text cannot edit it.");
+                           throw new WorkspaceException(
+                               "workspace_binary_file",
+                               "The file is not UTF-8 text, so edit_text cannot edit it.");
 
         var (bridgeSearch, bridgeReplacement) = MatchLineEndings(bridgeBefore, oldText, newText);
         var bridgeOccurrences = CountOccurrences(bridgeBefore, bridgeSearch);
@@ -386,8 +386,7 @@ internal sealed class WorkspaceEditFunctions
         [Description("The exact current text to replace, including indentation. Must appear exactly " +
                      "once unless replaceAll is true.")]
         string oldText,
-        [Description("The replacement text.")]
-        string newText,
+        [Description("The replacement text.")] string newText,
         [Description("Replace every occurrence. Defaults to false.")]
         bool? replaceAll = null,
         CancellationToken cancellationToken = default)
@@ -445,9 +444,9 @@ internal sealed class WorkspaceEditFunctions
                     $"edit_text edits files of at most {maximumEditedFileBytes} bytes.");
 
             var before = TryDecodeText(bounded.Bytes, out var hadByteOrderMark) ??
-                throw new WorkspaceException(
-                    "workspace_binary_file",
-                    "The file is not UTF-8 text, so edit_text cannot edit it.");
+                         throw new WorkspaceException(
+                             "workspace_binary_file",
+                             "The file is not UTF-8 text, so edit_text cannot edit it.");
 
             var (search, replacement) = MatchLineEndings(before, oldText, newText);
             var occurrences = CountOccurrences(before, search);
@@ -574,9 +573,9 @@ internal sealed class WorkspaceEditFunctions
                         $"edit tools edit files of at most {maximumEditedFileBytes} bytes.");
 
                 var before = TryDecodeText(bounded.Bytes, out var hadByteOrderMark) ??
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+                             throw new WorkspaceException(
+                                 "workspace_binary_file",
+                                 $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
 
                 var after = ApplyChangeSections(before, change.Path, change.Changes);
                 if (string.Equals(before, after, StringComparison.Ordinal))
@@ -707,9 +706,9 @@ internal sealed class WorkspaceEditFunctions
                 }
 
                 var before = TryDecodeText(EncodeUtf8(answered), out var hadByteOrderMark) ??
-                    throw new WorkspaceException(
-                        "workspace_binary_file",
-                        $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
+                             throw new WorkspaceException(
+                                 "workspace_binary_file",
+                                 $"The file '{change.Path}' is not UTF-8 text, so the patch cannot update it.");
 
                 var after = ApplyChangeSections(before, change.Path, change.Changes);
                 if (string.Equals(before, after, StringComparison.Ordinal))

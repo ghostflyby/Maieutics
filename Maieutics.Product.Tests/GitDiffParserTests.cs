@@ -144,20 +144,20 @@ public sealed class GitDiffParserTests
     {
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse("not a diff at all")).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 @@ -1 +1 @@
                 -old
                 """)).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ -1 +1 @@
                 -old
                 """)).Code);
         Assert.Equal("ide_selector_patch_malformed", Assert.ThrowsAny<WorkspaceException>(() => GitDiffParser.Parse(
-                """
+            """
                 --- a/x.txt
                 +++ b/x.txt
                 @@ not-a-header @@

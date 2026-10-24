@@ -81,7 +81,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Reads one workspace file's full text through the IDE bridge.")]
     private async ValueTask<JsonElement> ReadFileAsync(
-        [Description("A workspace://local URI.")] string uri,
+        [Description("A workspace://local URI.")]
+        string uri,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -105,7 +106,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Writes one workspace file's full text through the IDE bridge.")]
     private async ValueTask<JsonElement> WriteFileAsync(
-        [Description("A workspace://local URI; missing parents are created.")] string uri,
+        [Description("A workspace://local URI; missing parents are created.")]
+        string uri,
         [Description("The complete file content, written verbatim as UTF-8 without a byte order mark.")]
         string content,
         AIFunctionArguments arguments,
@@ -140,7 +142,8 @@ internal sealed class WorkspaceBridgeFunctions
 
     [Description("Lists one workspace directory through the IDE bridge.")]
     private async ValueTask<JsonElement> ListAsync(
-        [Description("A workspace://local directory URI; the root lists the workspace root.")] string? uri,
+        [Description("A workspace://local directory URI; the root lists the workspace root.")]
+        string? uri,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
@@ -163,10 +166,12 @@ internal sealed class WorkspaceBridgeFunctions
         return JsonSerializer.SerializeToElement(
             new WorkspaceFsListValue(
                 logical.Uri,
-                [.. listing.Entries.Select(static entry => new WorkspaceFsEntryValue(
-                    entry.Name,
-                    entry.Kind,
-                    entry.SizeBytes))],
+                [
+                    .. listing.Entries.Select(static entry => new WorkspaceFsEntryValue(
+                        entry.Name,
+                        entry.Kind,
+                        entry.SizeBytes))
+                ],
                 false),
             WorkspaceBridgeJsonSerializerContext.Default.WorkspaceFsListValue);
     }

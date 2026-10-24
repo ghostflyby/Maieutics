@@ -13,10 +13,13 @@ internal sealed class ReplEvalWebSocketHost(
 {
     private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CancellationTokenSource lifetime = new();
+
     private readonly ReplControlCredentialRegistry credentialRegistry =
         credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+
     private readonly ConcurrentDictionary<ReplEvalConnectionKey, ConnectionSlot> slots = new();
     private int disposeState;
     private int shutdownState;

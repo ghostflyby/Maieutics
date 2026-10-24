@@ -303,5 +303,4 @@ public sealed class FrontendUiModelTests
         Assert.Equal(1, closedCount);
         Assert.Empty(plane.SnapshotLive());
     }
-
 }

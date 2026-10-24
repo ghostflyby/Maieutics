@@ -297,7 +297,6 @@ public sealed class AgentSubagentFunctionsTests
                     arguments.ToDictionary(static argument => argument.Name, static argument => argument.Value))
             ]);
     }
-
 }
 
 internal sealed record ProbeValue(string Status);
@@ -306,4 +305,3 @@ internal sealed record ProbeValue(string Status);
 [JsonSerializable(typeof(JsonElement?))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal sealed partial class ProbeJsonContext : JsonSerializerContext;
-

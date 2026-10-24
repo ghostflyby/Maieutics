@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.IO.Pipelines;
 using Maieutics.Frontend;
 using Maieutics.Mcp;
@@ -52,13 +53,12 @@ public sealed class McpPromptIntegrationTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         await using var harness = await PromptServerHarness.StartAsync(deadline.Token);
 
-        var act = () => FrontendPromptExpansion.ExpandAsync(
+        var code = (await Assert.ThrowsAnyAsync<FrontendFailureException>(() => FrontendPromptExpansion.ExpandAsync(
             [harness.Access],
             [Marker("code_review", new Dictionary<string, string> { ["depth"] = "deep", ["nope"] = "x" })],
             FrontendSkillExpansion.MaximumTurnSkillBytes,
-            deadline.Token);
-
-        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, (await Assert.ThrowsAnyAsync<FrontendFailureException>(async () => { await act.Invoke(); })).Code);
+            deadline.Token))).Code;
+        Assert.Equal(FrontendErrors.McpPromptArgumentInvalid, code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -192,17 +192,14 @@ file sealed class PromptServerHarness : IAsyncDisposable
         {
             await retirement.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        catch (TimeoutException)
-        {
-        }
+        catch (TimeoutException) { }
+
         await lifetime.CancelAsync();
         try
         {
             await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
         }
-        catch (TimeoutException)
-        {
-        }
+        catch (TimeoutException) { }
 
         lifetime.Dispose();
     }
@@ -232,7 +229,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                 ],
                 Handlers = new McpServerHandlers
                 {
-                    ListPromptsHandler = (request, ct) => ValueTask.FromResult(new ListPromptsResult
+                    ListPromptsHandler = (_, _) => ValueTask.FromResult(new ListPromptsResult
                     {
                         Prompts =
                         [
@@ -257,7 +254,7 @@ file sealed class PromptServerHarness : IAsyncDisposable
                             new Prompt { Name = "mixed", Description = "Text plus image" }
                         ]
                     }),
-                    GetPromptHandler = (request, ct) => ValueTask.FromResult(request.Params?.Name switch
+                    GetPromptHandler = (request, _) => ValueTask.FromResult(request.Params?.Name switch
                     {
                         "image_only" => new GetPromptResult
                         {

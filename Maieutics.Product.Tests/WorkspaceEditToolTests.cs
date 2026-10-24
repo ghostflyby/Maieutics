@@ -20,14 +20,17 @@ public sealed class WorkspaceEditToolTests
 
         Assert.Equal(["write_text", "edit_text", "apply_patch"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object"));
+                                                             function.JsonSchema.GetProperty("type").GetString() == "object"));
 
         var write = Function(functions, "write_text");
-        var assertion40 = await Assert.ThrowsAnyAsync<Exception>(async () => { await write.InvokeAsync(
-            Arguments("""{"uri":"workspace://local/a.txt","content":"x","extra":1}"""),
-            cancellationToken).AsTask(); });
+        var assertion40 = await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            await write.InvokeAsync(
+                Arguments("""{"uri":"workspace://local/a.txt","content":"x","extra":1}"""),
+                cancellationToken).AsTask();
+        });
         Assert.True(((Func<Exception, bool>)(static exception => exception.GetType() == typeof(ArgumentException) ||
-                exception.GetType() == typeof(JsonException)))(assertion40));
+                                                                 exception.GetType() == typeof(JsonException)))(assertion40));
     }
 
     [Fact(Timeout = 30_000)]
@@ -126,24 +129,24 @@ public sealed class WorkspaceEditToolTests
         var edit = Function(CreateFunctions(workspace.Path).Functions, "edit_text");
 
         Assert.Equal("workspace_edit_target_not_found", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/dupe.txt","oldText":"absent","newText":"new"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/dupe.txt","oldText":"absent","newText":"new"}""",
+            cancellationToken)).Code);
 
         Assert.Equal("workspace_edit_target_not_unique", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"new"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"new"}""",
+            cancellationToken)).Code);
 
         Assert.Equal("workspace_invalid_arguments", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"x"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/dupe.txt","oldText":"x","newText":"x"}""",
+            cancellationToken)).Code);
 
         Assert.Equal("workspace_binary_file", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/bin.dat","oldText":"x","newText":"y"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/bin.dat","oldText":"x","newText":"y"}""",
+            cancellationToken)).Code);
 
         Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/missing.txt","oldText":"x","newText":"y"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/missing.txt","oldText":"x","newText":"y"}""",
+            cancellationToken)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -189,23 +192,23 @@ public sealed class WorkspaceEditToolTests
         var edit = Function(CreateFunctions(workspace.Path, maximumWriteBytes: 8).Functions, "edit_text");
 
         Assert.Equal("workspace_path_denied", (await ShouldFailAsync(write,
-                """{"uri":"workspace://local/.git/config","content":"x"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/.git/config","content":"x"}""",
+            cancellationToken)).Code);
         Assert.Equal("workspace_invalid_uri", (await ShouldFailAsync(write,
-                """{"uri":"workspace://local/","content":"x"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/","content":"x"}""",
+            cancellationToken)).Code);
         Assert.Equal("workspace_not_regular_file", (await ShouldFailAsync(write,
-                """{"uri":"workspace://local/sub","content":"x"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/sub","content":"x"}""",
+            cancellationToken)).Code);
         Assert.Equal("workspace_file_too_large", (await ShouldFailAsync(write,
-                """{"uri":"workspace://local/big.txt","content":"0123456789"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/big.txt","content":"0123456789"}""",
+            cancellationToken)).Code);
         Assert.Equal("workspace_not_regular_file", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/sub","oldText":"a","newText":"b"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/sub","oldText":"a","newText":"b"}""",
+            cancellationToken)).Code);
         Assert.Equal("workspace_path_not_found", (await ShouldFailAsync(edit,
-                """{"uri":"workspace://local/missing.txt","oldText":"a","newText":"b"}""",
-                cancellationToken)).Code);
+            """{"uri":"workspace://local/missing.txt","oldText":"a","newText":"b"}""",
+            cancellationToken)).Code);
     }
 
     [Fact(Timeout = 30_000)]
@@ -376,24 +379,21 @@ public sealed class WorkspaceEditToolTests
         async Task<JsonElement> invokeWrite(string uri)
         {
             var result = await write.InvokeAsync(new AIFunctionArguments(
-                new Dictionary<string, object?> { ["uri"] = uri, ["content"] = "# hi" })
-            { Context = ContextArguments(sessionId).Context }, TestContext.Current.CancellationToken);
+                    new Dictionary<string, object?> { ["uri"] = uri, ["content"] = "# hi" })
+                { Context = ContextArguments(sessionId).Context }, TestContext.Current.CancellationToken);
             return (JsonElement)result!;
         }
 
         // Default posture: instruction surfaces deny model-initiated writes even though the
         // file sits inside the workspace root (ADR 0032 decision 1).
-        var gateForbidden = await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/AGENTS.md"));
+        var gateForbidden = await Record.ExceptionAsync(() => invokeWrite("workspace://local/AGENTS.md"));
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbidden).Code);
 
-        var gateForbiddenSkill = await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
+        var gateForbiddenSkill = await Record.ExceptionAsync(() => invokeWrite("workspace://local/.agents/skills/x/SKILL.md"));
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(gateForbiddenSkill).Code);
 
         // Ordinary workspace files are unaffected by the instruction gate.
-        Assert.Null(await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/docs/notes.md")));
+        Assert.Null(await Record.ExceptionAsync(() => invokeWrite("workspace://local/docs/notes.md")));
 
         // A session override allow admits the instruction path explicitly (the migration path).
         registry.Set(sessionId, new PermissionLayer
@@ -404,11 +404,11 @@ public sealed class WorkspaceEditToolTests
             }
         });
 
-        Assert.Null(await Record.ExceptionAsync(
-            () => invokeWrite("workspace://local/AGENTS.md")));
+        Assert.Null(await Record.ExceptionAsync(() => invokeWrite("workspace://local/AGENTS.md")));
     }
 
     private sealed record ToolInvocation(JsonElement? Result, AgentToolException? Failure);
+
     private static IPermissionLayerSource LayerSource(PermissionOverrideRegistry registry) =>
         new RegistrySource(registry);
 

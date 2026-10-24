@@ -83,14 +83,17 @@ internal sealed class ContributionCoordinator
 {
     private readonly ILogger logger;
     private readonly Lock flightGate = new();
+
     private readonly Dictionary<(string KindName, string PluginId), ReconcileFlight> flights =
         new(FlightKeyComparer.Ordinal);
+
     private readonly Dictionary<string, HashSet<string>> retryPending = new(StringComparer.Ordinal);
 
     /// <summary>Reload-epoch baselines and the deferred forced rediscoveries (the
     /// former <c>hostReloadEpochs</c> / <c>pendingReloadForces</c>). Mutated only
     /// under the host gate.</summary>
     private readonly Dictionary<string, int> hostReloadEpochs = new(StringComparer.Ordinal);
+
     private readonly Dictionary<string, int> pendingReloadForces = new(StringComparer.Ordinal);
     private IReadOnlyList<IContributionDelivery> deliveries = [];
 

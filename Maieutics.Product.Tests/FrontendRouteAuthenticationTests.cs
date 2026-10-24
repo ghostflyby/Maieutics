@@ -9,7 +9,6 @@ using Maieutics.Frontend;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -169,13 +168,12 @@ public sealed class FrontendRouteAuthenticationTests
         {
             result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
             message.Write(buffer, 0, result.Count);
-        }
-        while (!result.EndOfMessage);
+        } while (!result.EndOfMessage);
 
         Assert.Equal(WebSocketMessageType.Text, result.MessageType);
         using var document = JsonDocument.Parse(message.ToArray());
         return document.RootElement.GetProperty("type").GetString()
-            ?? throw new InvalidOperationException("The events frame carried no type.");
+               ?? throw new InvalidOperationException("The events frame carried no type.");
     }
 
     /// <summary>A bare <c>WebApplication</c> hosting the real frontend endpoint table with
@@ -212,9 +210,9 @@ public sealed class FrontendRouteAuthenticationTests
 
         public IReadOnlyList<RouteEndpoint> EnumerateRouteEndpoints() =>
             ((IEndpointRouteBuilder)application).DataSources
-                .SelectMany(static source => source.Endpoints)
-                .OfType<RouteEndpoint>()
-                .ToArray();
+            .SelectMany(static source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .ToArray();
 
         public async Task<string> CreateForegroundSessionAsync(CancellationToken cancellationToken)
         {
@@ -226,8 +224,8 @@ public sealed class FrontendRouteAuthenticationTests
                 response.IsSuccessStatusCode,
                 $"The foreground session could not be described: {(int)response.StatusCode}.");
             var session = await response.Content.ReadFromJsonAsync(
-                    FrontendJsonContext.Default.FrontendSessionInfo, cancellationToken)
-                ?? throw new InvalidOperationException("The session description body was empty.");
+                              FrontendJsonContext.Default.FrontendSessionInfo, cancellationToken)
+                          ?? throw new InvalidOperationException("The session description body was empty.");
             return session.Id;
         }
 
@@ -274,6 +272,4 @@ public sealed class FrontendRouteAuthenticationTests
             return new FrontendFixture(application, options, host, manager);
         }
     }
-
-
 }

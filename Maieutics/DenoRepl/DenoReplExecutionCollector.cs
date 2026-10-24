@@ -21,11 +21,13 @@ internal sealed class DenoReplExecutionCollector
 {
     private const int ModelItemOverheadBytes = 64;
     private const int DigestOverheadBytes = 64;
+
     /// <summary>How long the collector keeps draining the output stream after the eval terminal
     /// arrives. The TS client sends all output frames before the terminal, but the frames travel a
     /// separate WebSocket, so this window absorbs the cross-socket race between the last frame and
     /// the terminal at the host.</summary>
     internal static readonly TimeSpan OutputTailDrainWindow = TimeSpan.FromMilliseconds(100);
+
     private readonly Dictionary<string, int> digestIndexByDisplayId = new(StringComparer.Ordinal);
     private readonly List<DenoReplDisplayDigest> digests = [];
     private readonly Dictionary<string, ReplDisplayId> displayIds;

@@ -1,4 +1,3 @@
-using Maieutics;
 using Maieutics.Control;
 using Maieutics.DenoRepl;
 using Maieutics.Mcp;
@@ -786,5 +785,4 @@ public sealed class PluginDeclarativeExtensionsTests
             if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
-
 }

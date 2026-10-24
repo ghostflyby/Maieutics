@@ -25,7 +25,8 @@ public sealed class TerminalInputParserTests
 
         Assert.Equal(3, batch.Operations.Count());
         var first = Assert.IsType<TerminalKeysOperation>(batch.Operations[0]);
-        Assert.Equal([new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)),
+        Assert.Equal([
+            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Escape, TerminalKeyModifiers.None)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Enter, TerminalKeyModifiers.None)),
         ], first.Keys);
 
         var second = Assert.IsType<TerminalKeysOperation>(batch.Operations[1]);
@@ -34,7 +35,8 @@ public sealed class TerminalInputParserTests
             new TerminalSpecialKey(TerminalKeyName.Down, TerminalKeyModifiers.None)), Assert.Single(second.Keys));
 
         var third = Assert.IsType<TerminalKeysOperation>(batch.Operations[2]);
-        Assert.Equal([new TerminalCharKey('w', TerminalKeyModifiers.Control), new TerminalCharKey('j', TerminalKeyModifiers.Control),
+        Assert.Equal([
+            new TerminalCharKey('w', TerminalKeyModifiers.Control), new TerminalCharKey('j', TerminalKeyModifiers.Control),
         ], third.Keys.Select(static key => key.Spec));
     }
 
@@ -98,7 +100,8 @@ public sealed class TerminalInputParserTests
     {
         var batch = TerminalInputBatchParser.Parse("k <S-Tab> <C-F1> <A-Up>");
         var keys = Assert.IsType<TerminalKeysOperation>(batch.Operations.Single());
-        Assert.Equal([new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)),
+        Assert.Equal([
+            new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Tab, TerminalKeyModifiers.Shift)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.F1, TerminalKeyModifiers.Control)), new TerminalKey(null, new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Alt)),
         ], keys.Keys);
     }
 
@@ -224,9 +227,11 @@ public sealed class TerminalKeyEncoderTests
     public void CtrlArrowEmitsTheExtendedCsiSequence()
     {
         var encoder = CreateEncoder(out _);
-        var bytes = encoder.Encode([new TerminalKey(
-            null,
-            new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Control))]);
+        var bytes = encoder.Encode([
+            new TerminalKey(
+                null,
+                new TerminalSpecialKey(TerminalKeyName.Up, TerminalKeyModifiers.Control))
+        ]);
 
         Assert.Equal(Esc.Concat([.. "[1;5A"u8]), bytes);
     }

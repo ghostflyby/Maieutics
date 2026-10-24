@@ -41,13 +41,13 @@ internal static partial class WorkspaceFileIdentityReader
         }
         catch (Exception exception) when (
             exception is IOException or
-            UnauthorizedAccessException or
-            DirectoryNotFoundException or
-            FileNotFoundException or
-            DllNotFoundException or
-            EntryPointNotFoundException or
-            Win32Exception or
-            ArgumentOutOfRangeException)
+                UnauthorizedAccessException or
+                DirectoryNotFoundException or
+                FileNotFoundException or
+                DllNotFoundException or
+                EntryPointNotFoundException or
+                Win32Exception or
+                ArgumentOutOfRangeException)
         {
             return null;
         }
@@ -92,9 +92,9 @@ internal static partial class WorkspaceFileIdentityReader
         }
         catch (Exception exception) when (
             exception is IOException or
-            DllNotFoundException or
-            EntryPointNotFoundException or
-            ArgumentOutOfRangeException)
+                DllNotFoundException or
+                EntryPointNotFoundException or
+                ArgumentOutOfRangeException)
         {
             return null;
         }
@@ -124,10 +124,10 @@ internal static partial class WorkspaceFileIdentityReader
     internal static bool HasReparseTag(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
     {
         return GetFileInformationByHandleEx(
-                handle,
-                FileAttributeTagInfoClass,
-                out var info,
-                (uint)Marshal.SizeOf<FileAttributeTagInfo>()) &&
+                   handle,
+                   FileAttributeTagInfoClass,
+                   out var info,
+                   (uint)Marshal.SizeOf<FileAttributeTagInfo>()) &&
                (info.FileAttributes & 0x400) != 0; // FILE_ATTRIBUTE_REPARSE_POINT
     }
 
@@ -268,10 +268,17 @@ internal static partial class WorkspaceFileIdentityReader
     [StructLayout(LayoutKind.Explicit, Size = 144)]
     internal struct StatMacOS
     {
-        [FieldOffset(0)] public uint Device;
-        [FieldOffset(8)] public ulong Inode;
-        [FieldOffset(80)] public long BirthSeconds;
-        [FieldOffset(88)] public long BirthNanoseconds;
+        [FieldOffset(0)]
+        public uint Device;
+
+        [FieldOffset(8)]
+        public ulong Inode;
+
+        [FieldOffset(80)]
+        public long BirthSeconds;
+
+        [FieldOffset(88)]
+        public long BirthNanoseconds;
     }
 
     /// <summary>The buffer the Linux <c>statx</c> syscall writes. The UAPI struct is fixed
@@ -281,12 +288,23 @@ internal static partial class WorkspaceFileIdentityReader
     [StructLayout(LayoutKind.Explicit, Size = 0x100)]
     internal struct StatLinux
     {
-        [FieldOffset(0)] public uint Mask;
-        [FieldOffset(32)] public ulong Inode;
-        [FieldOffset(80)] public long BirthSeconds;
-        [FieldOffset(88)] public uint BirthNanoseconds;
-        [FieldOffset(136)] public uint DeviceMajor;
-        [FieldOffset(140)] public uint DeviceMinor;
+        [FieldOffset(0)]
+        public uint Mask;
+
+        [FieldOffset(32)]
+        public ulong Inode;
+
+        [FieldOffset(80)]
+        public long BirthSeconds;
+
+        [FieldOffset(88)]
+        public uint BirthNanoseconds;
+
+        [FieldOffset(136)]
+        public uint DeviceMajor;
+
+        [FieldOffset(140)]
+        public uint DeviceMinor;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]

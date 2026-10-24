@@ -1,4 +1,3 @@
-
 namespace Maieutics.Agent.Tests;
 
 public sealed class AgentSessionIdTests

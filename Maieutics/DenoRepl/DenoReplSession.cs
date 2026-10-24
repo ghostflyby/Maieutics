@@ -7,8 +7,10 @@ internal sealed class DenoReplSession : IAsyncDisposable
 {
     private readonly TaskCompletionSource disposalCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly Dictionary<string, ReplDisplayId> displayIds =
         new(StringComparer.Ordinal);
+
     private readonly SemaphoreSlim executionGate = new(1, 1);
     private readonly IDenoReplSessionFactory factory;
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
@@ -17,11 +19,13 @@ internal sealed class DenoReplSession : IAsyncDisposable
     private readonly DenoReplOptions options;
     private readonly IDenoReplPresentationRouter presentationRouter;
     private readonly IReplDisplayObjectStore? displayObjectStore;
+
     /// <summary>Session-lifetime display rate limiter, shared by every execution so the sliding
     /// budget accumulates across turns (aligned with jupyter_server's global iopub rate limit).
     /// A restart intentionally keeps the window: it is not a new frontend, and the window prunes
     /// stale samples within <see cref="DenoReplOptions.DisplayRateLimitWindow"/>.</summary>
     private readonly ReplOutputRateLimiter rateLimiter;
+
     private readonly Lock stateGate = new();
     private int disposeState;
     private int generation = 1;

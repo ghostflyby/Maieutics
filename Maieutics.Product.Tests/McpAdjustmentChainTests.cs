@@ -77,7 +77,7 @@ public sealed class McpAdjustmentChainTests
             {
                 var body = request ?? default;
                 var ids = body.ValueKind == JsonValueKind.Object &&
-                    body.TryGetProperty("servers", out var servers)
+                          body.TryGetProperty("servers", out var servers)
                     ? string.Join(",", servers.EnumerateArray()
                         .Select(server => server.GetProperty("id").GetString()))
                     : string.Empty;
@@ -152,7 +152,7 @@ public sealed class McpAdjustmentChainTests
             {
                 var body = request ?? default;
                 seenServers = body.ValueKind == JsonValueKind.Object &&
-                    body.TryGetProperty("servers", out var servers)
+                              body.TryGetProperty("servers", out var servers)
                     ? servers.GetRawText()
                     : string.Empty;
                 return Task.FromResult<JsonElement?>(Json("""{"servers":[]}"""));

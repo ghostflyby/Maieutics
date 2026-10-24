@@ -316,8 +316,7 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
     private static IReadOnlyDictionary<string, EndpointCapabilityProfile> CreateEndpointProfiles(
         IConfigurationSection section)
     {
-        var entries = section.Get<EndpointCapabilityOptions[]>(
-            static binder => binder.ErrorOnUnknownConfiguration = true);
+        var entries = section.Get<EndpointCapabilityOptions[]>(static binder => binder.ErrorOnUnknownConfiguration = true);
         if (entries is null || entries.Length == 0)
             return new Dictionary<string, EndpointCapabilityProfile>(StringComparer.Ordinal);
 

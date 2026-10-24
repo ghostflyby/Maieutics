@@ -176,7 +176,7 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
                 }
             }
             catch (Exception exception) when (exception is OperationCanceledException or
-                InvalidOperationException or IOException)
+                                                  InvalidOperationException or IOException)
             {
                 // The socket died mid-hand-off; its own drain loop withdraws the
                 // registration. One dead announcer must not block the others.

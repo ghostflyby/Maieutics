@@ -464,7 +464,7 @@ public sealed class PluginContributionCoordinatorTests
             for (var i = 0; i < 20_000; i++)
                 _ = adapter.HoldsFace(i % 2 == 0 ? "p1" : "p3");
         }, TestContext.Current.CancellationToken));
-        var writers = Enumerable.Range(0, 4).Select(channel => Task.Run(() =>
+        var writers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
         {
             for (var i = 0; i < 5_000; i++)
                 adapter.PublishFrame(frame, guardDisposed: true);

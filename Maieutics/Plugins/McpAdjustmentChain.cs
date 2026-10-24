@@ -350,10 +350,10 @@ internal sealed class McpAdjustmentChain : IMcpToolSurfaceAdjuster
             foreach (var tool in adjusted.EnumerateArray())
             {
                 var aliasOf = tool.ValueKind == JsonValueKind.Object &&
-                    tool.TryGetProperty("aliasOf", out var value) &&
-                    value.ValueKind == JsonValueKind.String
-                        ? value.GetString()
-                        : null;
+                              tool.TryGetProperty("aliasOf", out var value) &&
+                              value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
                 if (aliasOf is null || !known.Contains(aliasOf))
                 {
                     if (aliasOf is not null && warned.Add(aliasOf))

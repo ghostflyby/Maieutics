@@ -12,6 +12,7 @@ public sealed class ScriptedChatClient(
     : IChatClient
 {
     private readonly Lock gate = new();
+
     private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
         IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
 

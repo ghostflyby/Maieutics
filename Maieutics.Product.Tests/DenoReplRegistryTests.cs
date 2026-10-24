@@ -25,7 +25,7 @@ public sealed class DenoReplRegistryTests
 
         Assert.Equal(["repl_execute", "repl_create", "repl_list", "repl_restart", "repl_close"], functions.Select(static function => function.Name));
         Assert.All(functions, static function => Assert.True(function.JsonSchema.ValueKind == JsonValueKind.Object &&
-            function.JsonSchema.GetProperty("type").GetString() == "object"));
+                                                             function.JsonSchema.GetProperty("type").GetString() == "object"));
         Assert.Equal(new[] { "code", "sessionId" }, SchemaProperties(functions.Single(static function => function.Name == "repl_execute")));
         Assert.Equal(["code"], functions.Single(static function => function.Name == "repl_execute")
             .JsonSchema.GetProperty("required").EnumerateArray()
@@ -72,9 +72,12 @@ public sealed class DenoReplRegistryTests
             Assert.Equal([firstRoot, firstRoot], factory.Starts.Select(static start => start.WorkingDirectory));
             Assert.Equal(2, registry.List(owner).Sessions.Count());
 
-            var limitFailure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (Registry: registry, Owner: owner).Registry.CreateAsync(
-                (Registry: registry, Owner: owner).Owner,
-                TestContext.Current.CancellationToken); });
+            var limitFailure = await Assert.ThrowsAnyAsync<AgentToolException>(async () =>
+            {
+                await (Registry: registry, Owner: owner).Registry.CreateAsync(
+                    (Registry: registry, Owner: owner).Owner,
+                    TestContext.Current.CancellationToken);
+            });
             Assert.Equal("repl_session_limit", limitFailure.Code);
 
             var restarted = await registry.RestartAsync(
@@ -116,9 +119,12 @@ public sealed class DenoReplRegistryTests
 
         try
         {
-            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () => { await (Registry: registry, Owner: owner).Registry.CreateAsync(
-                (Registry: registry, Owner: owner).Owner,
-                TestContext.Current.CancellationToken); });
+            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(async () =>
+            {
+                await (Registry: registry, Owner: owner).Registry.CreateAsync(
+                    (Registry: registry, Owner: owner).Owner,
+                    TestContext.Current.CancellationToken);
+            });
             Assert.Equal("repl_start_failed", failure.Code);
 
             var faulted = Assert.Single(registry.List(owner).Sessions);

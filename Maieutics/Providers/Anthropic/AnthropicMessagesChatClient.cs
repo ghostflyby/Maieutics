@@ -16,12 +16,14 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     /// <summary>Anthropic's server-executed web search tool. The version selects behavior; no
     /// beta header is involved.</summary>
     private const string WebSearchToolType = "web_search_20250305";
+
     private const string WebSearchToolName = "web_search";
 
     /// <summary>Additional-property key carrying a server tool block exactly as Anthropic sent
     /// it. It is replayed verbatim, which is what keeps <c>encrypted_content</c> and citation
     /// indices valid across turns (an altered or dropped value is a 400).</summary>
     internal const string RawBlockProperty = "anthropicRawBlock";
+
     private readonly HttpClient httpClient;
     private readonly string model;
 
@@ -127,15 +129,15 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         switch (eventType)
         {
             case "error":
-                {
-                    var error = root.GetProperty("error");
-                    var errorType = error.TryGetProperty("type", out var type)
-                        ? type.GetString()
-                        : null;
-                    throw new InvalidDataException(string.IsNullOrWhiteSpace(errorType)
-                        ? "Anthropic reported a streaming error."
-                        : $"Anthropic reported the streaming error '{errorType}'.");
-                }
+            {
+                var error = root.GetProperty("error");
+                var errorType = error.TryGetProperty("type", out var type)
+                    ? type.GetString()
+                    : null;
+                throw new InvalidDataException(string.IsNullOrWhiteSpace(errorType)
+                    ? "Anthropic reported a streaming error."
+                    : $"Anthropic reported the streaming error '{errorType}'.");
+            }
             case "message_start":
                 RecordMessageStartUsage(root, messageUsage);
                 return [];
@@ -183,12 +185,14 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         [
             new ChatResponseUpdate(
                 ChatRole.Assistant,
-                [new UsageContent(new UsageDetails
-                {
-                    InputTokenCount = inputTokens,
-                    OutputTokenCount = outputTokens,
-                    TotalTokenCount = (inputTokens ?? 0) + (outputTokens ?? 0)
-                })])
+                [
+                    new UsageContent(new UsageDetails
+                    {
+                        InputTokenCount = inputTokens,
+                        OutputTokenCount = outputTokens,
+                        TotalTokenCount = (inputTokens ?? 0) + (outputTokens ?? 0)
+                    })
+                ])
         ];
     }
 
@@ -214,46 +218,46 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         switch (delta.GetProperty("type").GetString())
         {
             case "text_delta":
+            {
+                var text = delta.GetProperty("text").GetString();
+                if (string.IsNullOrEmpty(text)) return [];
+                // Streamed through immediately so partial output survives a cancellation or a
+                // truncated stream. A delta for a block that never announced itself still
+                // opens one rather than failing the whole stream.
+                if (!blocks.TryGetValue(index, out var textBlock))
                 {
-                    var text = delta.GetProperty("text").GetString();
-                    if (string.IsNullOrEmpty(text)) return [];
-                    // Streamed through immediately so partial output survives a cancellation or a
-                    // truncated stream. A delta for a block that never announced itself still
-                    // opens one rather than failing the whole stream.
-                    if (!blocks.TryGetValue(index, out var textBlock))
-                    {
-                        textBlock = StreamingBlock.Text();
-                        blocks[index] = textBlock;
-                    }
-
-                    if (textBlock.Kind != StreamingBlockKind.Text)
-                        throw new InvalidDataException(
-                            $"Anthropic streamed text for non-text content block {index}.");
-
-                    textBlock.TextBuilder.Append(text);
-                    return [new ChatResponseUpdate(ChatRole.Assistant, text)];
+                    textBlock = StreamingBlock.Text();
+                    blocks[index] = textBlock;
                 }
+
+                if (textBlock.Kind != StreamingBlockKind.Text)
+                    throw new InvalidDataException(
+                        $"Anthropic streamed text for non-text content block {index}.");
+
+                textBlock.TextBuilder.Append(text);
+                return [new ChatResponseUpdate(ChatRole.Assistant, text)];
+            }
             case "input_json_delta":
-                {
-                    // Both a client tool_use block and a server_tool_use block stream their
-                    // arguments as input_json_delta.
-                    if (!blocks.TryGetValue(index, out var call) ||
-                        call.Kind is not (StreamingBlockKind.ToolCall or StreamingBlockKind.ServerToolUse))
-                        throw new InvalidDataException(
-                            $"Anthropic streamed tool arguments for unknown content block {index}.");
+            {
+                // Both a client tool_use block and a server_tool_use block stream their
+                // arguments as input_json_delta.
+                if (!blocks.TryGetValue(index, out var call) ||
+                    call.Kind is not (StreamingBlockKind.ToolCall or StreamingBlockKind.ServerToolUse))
+                    throw new InvalidDataException(
+                        $"Anthropic streamed tool arguments for unknown content block {index}.");
 
-                    call.Arguments.Append(delta.GetProperty("partial_json").GetString());
-                    return [];
-                }
+                call.Arguments.Append(delta.GetProperty("partial_json").GetString());
+                return [];
+            }
             case "citations_delta":
-                {
-                    if (blocks.TryGetValue(index, out var cited) &&
-                        cited.Kind == StreamingBlockKind.Text &&
-                        delta.TryGetProperty("citation", out var citation))
-                        cited.Citations.Add(citation.Clone());
+            {
+                if (blocks.TryGetValue(index, out var cited) &&
+                    cited.Kind == StreamingBlockKind.Text &&
+                    delta.TryGetProperty("citation", out var citation))
+                    cited.Citations.Add(citation.Clone());
 
-                    return [];
-                }
+                return [];
+            }
             default:
                 return [];
         }
@@ -273,10 +277,12 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                 [
                     new ChatResponseUpdate(
                         ChatRole.Assistant,
-                        [new FunctionCallContent(
-                            block.CallId,
-                            block.Name,
-                            ParseArguments(block.Arguments.ToString()))])
+                        [
+                            new FunctionCallContent(
+                                block.CallId,
+                                block.Name,
+                                ParseArguments(block.Arguments.ToString()))
+                        ])
                 ];
             case StreamingBlockKind.ServerToolUse:
                 return
@@ -286,26 +292,26 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
                         [CreateServerToolUseContent(block)])
                 ];
             case StreamingBlockKind.Text:
-                {
-                    // The text and its citations both arrive as deltas, so the complete block can
-                    // only be built here. It is reconstructed rather than replayed from the start
-                    // event (which is an empty stub) so citations keep their encrypted_index.
-                    // The text itself already streamed with its deltas. When the block carried
-                    // citations, emit them as a trailing empty-text item: Microsoft.Extensions.AI
-                    // aggregates its annotations without repeating any text, and the preserved
-                    // wire block is what the next turn replays. The write path merges the run of
-                    // text items back into the single block Anthropic expects.
-                    if (block.Citations.Count == 0) return [];
+            {
+                // The text and its citations both arrive as deltas, so the complete block can
+                // only be built here. It is reconstructed rather than replayed from the start
+                // event (which is an empty stub) so citations keep their encrypted_index.
+                // The text itself already streamed with its deltas. When the block carried
+                // citations, emit them as a trailing empty-text item: Microsoft.Extensions.AI
+                // aggregates its annotations without repeating any text, and the preserved
+                // wire block is what the next turn replays. The write path merges the run of
+                // text items back into the single block Anthropic expects.
+                if (block.Citations.Count == 0) return [];
 
-                    var citations = new TextContent(string.Empty);
-                    var annotations = new List<AIAnnotation>(block.Citations.Count);
-                    foreach (var citation in block.Citations)
-                        annotations.Add(CreateCitationAnnotation(citation));
+                var citations = new TextContent(string.Empty);
+                var annotations = new List<AIAnnotation>(block.Citations.Count);
+                foreach (var citation in block.Citations)
+                    annotations.Add(CreateCitationAnnotation(citation));
 
-                    citations.Annotations = annotations;
-                    ShadeWithRawBlock(citations, BuildTextBlock(block));
-                    return [new ChatResponseUpdate(ChatRole.Assistant, [citations])];
-                }
+                citations.Annotations = annotations;
+                ShadeWithRawBlock(citations, BuildTextBlock(block));
+                return [new ChatResponseUpdate(ChatRole.Assistant, [citations])];
+            }
             default:
                 return [];
         }
@@ -678,70 +684,70 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
 
                 return [];
             case "tool_use":
-                {
-                    var call = StreamingBlock.ToolCall(
-                        block.GetProperty("id").GetString()
-                        ?? throw new InvalidDataException("Anthropic tool_use omitted its id."),
-                        block.GetProperty("name").GetString()
-                        ?? throw new InvalidDataException("Anthropic tool_use omitted its name."));
-                    if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object &&
-                        input.EnumerateObject().Any())
-                        call.Arguments.Append(input.GetRawText());
+            {
+                var call = StreamingBlock.ToolCall(
+                    block.GetProperty("id").GetString()
+                    ?? throw new InvalidDataException("Anthropic tool_use omitted its id."),
+                    block.GetProperty("name").GetString()
+                    ?? throw new InvalidDataException("Anthropic tool_use omitted its name."));
+                if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object &&
+                    input.EnumerateObject().Any())
+                    call.Arguments.Append(input.GetRawText());
 
-                    if (!blocks.TryAdd(index, call))
-                        throw new InvalidDataException($"Anthropic repeated content block index {index}.");
+                if (!blocks.TryAdd(index, call))
+                    throw new InvalidDataException($"Anthropic repeated content block index {index}.");
 
-                    return [];
-                }
+                return [];
+            }
             case "server_tool_use":
-                {
-                    var call = StreamingBlock.ServerToolUse(
-                        block.GetProperty("id").GetString()
-                        ?? throw new InvalidDataException("Anthropic server_tool_use omitted its id."),
-                        block.GetProperty("name").GetString()
-                        ?? throw new InvalidDataException("Anthropic server_tool_use omitted its name."));
-                    if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object &&
-                        input.EnumerateObject().Any())
-                        call.Arguments.Append(input.GetRawText());
+            {
+                var call = StreamingBlock.ServerToolUse(
+                    block.GetProperty("id").GetString()
+                    ?? throw new InvalidDataException("Anthropic server_tool_use omitted its id."),
+                    block.GetProperty("name").GetString()
+                    ?? throw new InvalidDataException("Anthropic server_tool_use omitted its name."));
+                if (block.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object &&
+                    input.EnumerateObject().Any())
+                    call.Arguments.Append(input.GetRawText());
 
-                    if (!blocks.TryAdd(index, call))
-                        throw new InvalidDataException($"Anthropic repeated content block index {index}.");
+                if (!blocks.TryAdd(index, call))
+                    throw new InvalidDataException($"Anthropic repeated content block index {index}.");
 
-                    return [];
-                }
+                return [];
+            }
             case "web_search_tool_result":
+            {
+                var toolUseId = block.GetProperty("tool_use_id").GetString()
+                                ?? throw new InvalidDataException(
+                                    "Anthropic web_search_tool_result omitted its tool_use_id.");
+                var content = new WebSearchToolResultContent(toolUseId)
                 {
-                    var toolUseId = block.GetProperty("tool_use_id").GetString()
-                        ?? throw new InvalidDataException(
-                            "Anthropic web_search_tool_result omitted its tool_use_id.");
-                    var content = new WebSearchToolResultContent(toolUseId)
+                    Outputs = new List<AIContent>()
+                };
+                var raw = block.Clone();
+                content.AdditionalProperties = new AdditionalPropertiesDictionary
+                {
+                    [RawBlockProperty] = raw
+                };
+                // A failed search carries an error object instead of a result list; the
+                // provider-neutral error content keeps that visible to the transcript.
+                if (raw.TryGetProperty("content", out var results) &&
+                    results.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var result in results.EnumerateArray())
                     {
-                        Outputs = new List<AIContent>()
-                    };
-                    var raw = block.Clone();
-                    content.AdditionalProperties = new AdditionalPropertiesDictionary
-                    {
-                        [RawBlockProperty] = raw
-                    };
-                    // A failed search carries an error object instead of a result list; the
-                    // provider-neutral error content keeps that visible to the transcript.
-                    if (raw.TryGetProperty("content", out var results) &&
-                        results.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var result in results.EnumerateArray())
-                        {
-                            if (result.TryGetProperty("type", out var resultType) &&
-                                resultType.GetString() == "web_search_tool_result_error")
-                                content.Outputs.Add(new ErrorContent(
-                                    result.TryGetProperty("error_code", out var code)
-                                        ? code.GetString()
-                                        : "web_search_tool_result_error"));
-                        }
+                        if (result.TryGetProperty("type", out var resultType) &&
+                            resultType.GetString() == "web_search_tool_result_error")
+                            content.Outputs.Add(new ErrorContent(
+                                result.TryGetProperty("error_code", out var code)
+                                    ? code.GetString()
+                                    : "web_search_tool_result_error"));
                     }
-
-                    blocks.Remove(index);
-                    return [new ChatResponseUpdate(ChatRole.Assistant, [content])];
                 }
+
+                blocks.Remove(index);
+                return [new ChatResponseUpdate(ChatRole.Assistant, [content])];
+            }
             default:
                 return [];
         }

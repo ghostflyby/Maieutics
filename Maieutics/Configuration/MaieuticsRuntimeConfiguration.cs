@@ -139,9 +139,12 @@ internal sealed class MaieuticsRuntimeConfiguration :
     /// <summary>Every built-in tool name plus the capability-gated terminal tool names and
     /// the connection-gated IDE tool names (ADR 0042 decision 9). MCP and plugin tools must
     /// never collide with these even while the gated families are hidden from a run.</summary>
-    internal HashSet<string> ReservedToolNames => [.. builtInTools.Select(static function => function.Name),
+    internal HashSet<string> ReservedToolNames =>
+    [
+        .. builtInTools.Select(static function => function.Name),
         .. terminalFunctions.Functions.Select(static function => function.Name),
-        .. ideTools?.Tools.Select(static function => function.Name) ?? []];
+        .. ideTools?.Tools.Select(static function => function.Name) ?? []
+    ];
 
     internal long CompletedReloadAttempt => Interlocked.Read(ref completedReloadAttempt);
 

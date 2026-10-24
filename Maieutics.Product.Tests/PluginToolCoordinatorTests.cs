@@ -150,7 +150,7 @@ public sealed class PluginToolCoordinatorTests
     public async Task ACallRoutesTheModelArgumentsAndReturnsTheEnvelope()
     {
         using var arguments = JsonDocument.Parse("""{"text":"hello"}""");
-        var invoker = new FakeInvoker((pluginId, exportName, extensionPoint, _, _, _, callId) =>
+        var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, callId) =>
             Task.FromResult(callId is null
                 ? Describe(pluginId, exportName, "echo")
                 : ExtensionCallOutcome.Result(
@@ -176,7 +176,7 @@ public sealed class PluginToolCoordinatorTests
     [Fact(Timeout = 30_000)]
     public async Task ARecoverableErrorOutcomeBecomesAnErrorEnvelope()
     {
-        var invoker = new FakeInvoker((pluginId, exportName, extensionPoint, _, _, _, callId) =>
+        var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, callId) =>
             Task.FromResult(callId is null
                 ? Describe(pluginId, exportName, "echo")
                 : ExtensionCallOutcome.Result(JsonSerializer.SerializeToElement(

@@ -25,11 +25,15 @@ internal sealed class ReplOutputWebSocketHost(
     ReplControlCredentialRegistry credentialRegistry) : IAsyncDisposable
 {
     private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly ReplControlCredentialRegistry credentialRegistry =
         credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+
     private readonly CancellationTokenSource lifetime = new();
+
     private readonly ReplControlSessionRegistry sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+
     private readonly ConcurrentDictionary<ReplOutputConnectionKey, ConnectionSlot> slots = new();
     private int disposeState;
     private int shutdownState;

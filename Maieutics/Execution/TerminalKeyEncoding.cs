@@ -366,7 +366,6 @@ internal sealed class TerminalKeyEncoder
         bytes[0] = 0x1b;
         payload.CopyTo(bytes, 1);
         return bytes;
-
     }
 
     private byte[] EncodeSpecialKey(TerminalSpecialKey key)

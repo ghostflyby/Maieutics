@@ -37,8 +37,8 @@ public sealed class WorkspaceLinkAtomicityTests
                 UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
         try
         {
-        var exception = Assert.ThrowsAny<Exception>(() => context.OpenLink(second, null));
-        Assert.True(exception is IOException or UnauthorizedAccessException, $"the link creation failed with {exception.GetType().Name}");
+            var exception = Assert.ThrowsAny<Exception>(() => context.OpenLink(second, null));
+            Assert.True(exception is IOException or UnauthorizedAccessException, $"the link creation failed with {exception.GetType().Name}");
 
             var entries = WorkspaceLinkRegistry.Load(home.HomePath).Entries();
             Assert.Equal("first", Assert.Single(entries).Name);

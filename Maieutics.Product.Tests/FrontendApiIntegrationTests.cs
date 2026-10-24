@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -181,7 +180,7 @@ public sealed class FrontendApiIntegrationTests
         Assert.Equal(Answer, string.Concat(deltas));
         Assert.True(frames.Select(frame => frame.TryGetProperty("sequence", out var sequence) ? sequence.GetInt64() : 0)
             .Where(sequence => sequence > 0).SequenceEqual(frames.Select(frame => frame.TryGetProperty("sequence", out var sequence) ? sequence.GetInt64() : 0)
-            .Where(sequence => sequence > 0).OrderBy(static item => item)));
+                .Where(sequence => sequence > 0).OrderBy(static item => item)));
         Assert.All(frames.Select(frame => frame.TryGetProperty("runId", out var run) ? run.GetString() : null)
             .Where(value => value is not null), value => Assert.True(value == runId));
 
@@ -1059,8 +1058,8 @@ public sealed class FrontendApiIntegrationTests
                 .ToArray();
             Assert.Contains("apply_patch", toolTypes);
             Assert.DoesNotContain(firstRequest.GetProperty("tools").EnumerateArray(), tool => tool.TryGetProperty("name", out _) &&
-                               (tool.GetProperty("name").GetString() == "write_text" ||
-                                tool.GetProperty("name").GetString() == "edit_text"));
+                                                                                              (tool.GetProperty("name").GetString() == "write_text" ||
+                                                                                               tool.GetProperty("name").GetString() == "edit_text"));
 
             // The follow-up request replays the call in its original structured
             // shape and carries the structured result envelope as its output.
@@ -1166,40 +1165,39 @@ public sealed class FrontendApiIntegrationTests
         // root project's mcp data entry (ADR 0037); without it the data file stays
         // pending and no MCP server is ever acquired.
         var previousApprovals = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS");
-        string approvalsPath;
-            await File.WriteAllTextAsync(
-                Path.Combine(pluginsRoot, "maieutics.json"),
-                """{ "entrypoints": { "mcp": "mcp.json" } }""",
-                deadline.Token);
-            await File.WriteAllTextAsync(
-                Path.Combine(pluginsRoot, "mcp.json"),
-                new JsonObject
-                {
-                    ["mcpServers"] = new JsonObject
-                    {
-                        ["test"] = new JsonObject
-                        {
-                            ["command"] = Path.GetFullPath(mcpServer),
-                            ["args"] = new JsonArray(),
-                            ["env"] = new JsonObject()
-                        }
-                    }
-                }.ToJsonString(),
-                deadline.Token);
-            await File.WriteAllTextAsync(
-                configurationFile,
-                ConfigurationTemplate
-                    .Replace("{{model}}", "test-model")
-                    .Replace("{{endpoint}}", provider.Endpoint.ToString()),
-                deadline.Token);
-
-            approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot);
-            Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", approvalsPath);
-
-            var harness = await FrontendHarness.StartAsync(
-                deadline.Token, provider, hanging: false, configureBuilder: null);
-            try
+        await File.WriteAllTextAsync(
+            Path.Combine(pluginsRoot, "maieutics.json"),
+            """{ "entrypoints": { "mcp": "mcp.json" } }""",
+            deadline.Token);
+        await File.WriteAllTextAsync(
+            Path.Combine(pluginsRoot, "mcp.json"),
+            new JsonObject
             {
+                ["mcpServers"] = new JsonObject
+                {
+                    ["test"] = new JsonObject
+                    {
+                        ["command"] = Path.GetFullPath(mcpServer),
+                        ["args"] = new JsonArray(),
+                        ["env"] = new JsonObject()
+                    }
+                }
+            }.ToJsonString(),
+            deadline.Token);
+        await File.WriteAllTextAsync(
+            configurationFile,
+            ConfigurationTemplate
+                .Replace("{{model}}", "test-model")
+                .Replace("{{endpoint}}", provider.Endpoint.ToString()),
+            deadline.Token);
+
+        var approvalsPath = PluginApprovalSeeds.SeedLocalPlugins(pluginsRoot);
+        Environment.SetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS", approvalsPath);
+
+        var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false, configureBuilder: null);
+        try
+        {
             var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 
             var mcpList = await harness.Client.PostAsJsonAsync(

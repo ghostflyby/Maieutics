@@ -84,7 +84,7 @@ public sealed class PluginHostStartupAvailabilityTests
         }
         catch (Exception exception) when
             (exception is TimeoutException or InvalidOperationException or IOException
-                or System.ComponentModel.Win32Exception)
+                 or System.ComponentModel.Win32Exception)
         {
         }
     }

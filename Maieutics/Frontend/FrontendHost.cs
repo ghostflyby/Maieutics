@@ -43,6 +43,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     /// <summary>The live comm router, so tests can observe a session plane's live-set
     /// transitions through its completion signal instead of probing with hello reads.</summary>
     internal FrontendCommRouter? CommRouter => commRouter;
+
     private readonly IFrontendPluginSurface? pluginSurface;
     private readonly Skills.SkillCatalog? skillCatalog;
     private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;
@@ -75,11 +76,11 @@ internal sealed class FrontendHost : IAsyncDisposable
         this.ideRequests = ideRequests;
         this.ideSockets = ideSockets;
         this.elicitationPresenter = elicitationPresenter
-            ?? new FrontendElicitationPresenter(
-                NoFramesPublisher.Instance,
-                new FrontendFormModelHost(
-                    commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
-                    NoFramesPublisher.Instance));
+                                    ?? new FrontendElicitationPresenter(
+                                        NoFramesPublisher.Instance,
+                                        new FrontendFormModelHost(
+                                            commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
+                                            NoFramesPublisher.Instance));
         this.toolApprovalPresenter = toolApprovalPresenter;
         this.objectStore = objectStore;
         this.commRouter = commRouter;
@@ -227,7 +228,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         // arrive as a query parameter on the endpoints that opted in via metadata.
         var acceptsQueryToken = endpoint.Metadata.GetMetadata<FrontendQueryTokenMetadata>() is not null;
         if (!TryGetBearerToken(context, out var provided) && !(acceptsQueryToken &&
-                TryGetQueryToken(context, out provided)) ||
+                                                               TryGetQueryToken(context, out provided)) ||
             !CryptographicOperations.FixedTimeEquals(expectedToken, provided))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -287,8 +288,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                     surface.Form.Fields,
                     surface.Form.SubmitLabel,
                     surface.Form.CancelLabel),
-                surface.FormError,
-                surface.PageUrl)).ToArray();
+            surface.FormError,
+            surface.PageUrl)).ToArray();
         return Results.Json(
             new FrontendPluginsResponse(plugins),
             FrontendJsonContext.Default.FrontendPluginsResponse);
@@ -455,7 +456,7 @@ internal sealed class FrontendHost : IAsyncDisposable
 
         await GuardAsync(context, () => Task.FromResult<IResult>(
             Results.Json(new FrontendCommandResponse(
-                $"**GC** removed {service.PruneObjects(sessionId, graceHours)} unreferenced object(s) (grace {graceHours} h)."),
+                    $"**GC** removed {service.PruneObjects(sessionId, graceHours)} unreferenced object(s) (grace {graceHours} h)."),
                 FrontendJsonContext.Default.FrontendCommandResponse)));
     }
 
@@ -481,8 +482,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             if (MaieuticsCommandLanguage.IsCommandCell(request.Text))
             {
                 var addressed = ParseOptionalSessionId(sessionId)
-                    ?? throw new FrontendFailureException(
-                        FrontendErrors.InvalidRequest, "The session id is not valid.");
+                                ?? throw new FrontendFailureException(
+                                    FrontendErrors.InvalidRequest, "The session id is not valid.");
                 var (markdown, movedForeground) = await service
                     .ExecuteCommandAsync(request.Text, addressed, context.RequestAborted)
                     .ConfigureAwait(false);
@@ -1403,7 +1404,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     message = FrontendCommEnvelope.Decode(payload).Message;
                 }
                 catch (Exception exception) when (exception is InvalidDataException or
-                    JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException)
+                                                      JsonException or ArgumentOutOfRangeException or IndexOutOfRangeException)
                 {
                     // Invariant 17: a malformed frame ends this connection with a typed
                     // close instead of crashing the receive loop.

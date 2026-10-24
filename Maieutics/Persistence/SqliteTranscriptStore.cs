@@ -330,7 +330,8 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     }
 
     public IReadOnlyList<AgentSessionDescriptor> ListSessions()
-    {        lock (gate)
+    {
+        lock (gate)
         {
             using var query = connection.CreateCommand();
             query.CommandText = """

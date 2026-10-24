@@ -53,7 +53,8 @@ public sealed class PluginImportMergerTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"mc-merge-{Guid.NewGuid():N}");
         var (imports, _, _) = Merge(
-            Plugin("a", rootDirectory: root, imports: [
+            Plugin("a", rootDirectory: root, imports:
+            [
                 Entry("./util.ts", "./util.ts"),
                 Entry("../shared.ts", "../shared.ts"),
             ]));
@@ -78,7 +79,8 @@ public sealed class PluginImportMergerTests
     public void SkipsKeysThatNormalizeToPluginActorSpecifiers()
     {
         var (imports, exclusions, warnings) = Merge(
-            Plugin("consumer", workers: [Worker("main")], imports: [
+            Plugin("consumer", workers: [Worker("main")], imports:
+            [
                 Entry("@acme/widget/main", "jsr:@acme/widget@1/main"),
                 Entry("jsr:@acme/widget@2/main", "jsr:@acme/widget@2/main"),
             ]),
@@ -139,11 +141,13 @@ public sealed class PluginImportMergerTests
     public void DedupedKeyKeepsItsFirstOwnerWhenTheLaterPluginConflicts()
     {
         var (imports, exclusions, _) = Merge(
-            Plugin("a", imports: [
+            Plugin("a", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/path", "jsr:@std/path@^1"),
             ]),
-            Plugin("b", imports: [
+            Plugin("b", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/path", "jsr:@std/path@2"),
             ]));
@@ -159,7 +163,8 @@ public sealed class PluginImportMergerTests
     public void ExcludedPluginCommitsNoEntries()
     {
         var (imports, exclusions, _) = Merge(
-            Plugin("a", imports: [
+            Plugin("a", imports:
+            [
                 Entry("@std/bytes", "jsr:@std/bytes@1"),
                 Entry("@std/other", "@std/bytes"),
             ]),

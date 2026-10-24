@@ -90,7 +90,7 @@ public sealed class FrontendObjectAttachmentTests
         // The third marker's display name carries the grammar's quote/backslash escapes;
         // the server must reverse them exactly like the extension does.
         var text = $"Look\n[[maieutics:object sha256={first.Sha256} mime=image/png name=\"shot.png\"]]\n"
-            + $"[[maieutics:object sha256={second.Sha256} mime=application/pdf name=\"my \\\"shot\\\"\\\\v1.pdf\"]]";
+                   + $"[[maieutics:object sha256={second.Sha256} mime=application/pdf name=\"my \\\"shot\\\"\\\\v1.pdf\"]]";
 
         await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
         await events.ReceiveFrameAsync(deadline.Token);

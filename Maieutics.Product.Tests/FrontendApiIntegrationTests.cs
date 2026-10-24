@@ -8,7 +8,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Maieutics.Agent;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -403,8 +402,9 @@ public sealed class FrontendApiIntegrationTests
     public async Task ToolLoopStreamsToolActivityFramesAndFinalAnswer()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "echo",
             toolArgumentsJson: "{\"text\":\"hello\"}");
@@ -596,7 +596,7 @@ public sealed class FrontendApiIntegrationTests
         // the configured count and stops answering after that.
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
@@ -679,7 +679,7 @@ public sealed class FrontendApiIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         // The Responses flavor's final event carries the provider usage; the
         // chat-completions flavor omits it unless the client asks for it.
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, answer: Answer);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, answer: Answer);
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false,
             transformConfiguration: body => body.Replace("ChatCompletions", "Responses"));
@@ -720,8 +720,8 @@ public sealed class FrontendApiIntegrationTests
     public async Task ForkAppliesTheRequestedProfileOverride()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -777,8 +777,8 @@ public sealed class FrontendApiIntegrationTests
     public async Task AddressedModelCommandsLazilyResumeStoredSessions()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -817,8 +817,9 @@ public sealed class FrontendApiIntegrationTests
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             answer: "public answer",
             reasoning: "secret chain of thought");
         await using var harness = await FrontendHarness.StartAsync(
@@ -851,12 +852,14 @@ public sealed class FrontendApiIntegrationTests
     public async Task ConfigurationReloadSwitchesTheProviderForTheNextTurn()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var firstProvider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var firstProvider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             model: "model-one",
             answer: "answer from model one");
-        var secondProvider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var secondProvider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             model: "model-two",
             answer: "answer from model two");
         await using var harness = await FrontendHarness.StartAsync(
@@ -964,7 +967,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task AnthropicToolLoopStreamsAndCommitsTheTranscript()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", toolFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", toolFlow: true);
         var anthropicEndpoint = provider.Endpoint.ToString();
         var anthropicConfig = AnthropicConfigTemplate.Replace("{{endpoint}}", anthropicEndpoint);
         var harness = await FrontendHarness.StartAsync(
@@ -1012,8 +1015,9 @@ public sealed class FrontendApiIntegrationTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
         var operation = """{"type":"create_file","path":"patched.txt","diff":"+patched body\n"}""";
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.Responses,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.Responses,
+            ProviderGateMode.Scripted,
             applyPatchFlow: true,
             applyPatchOperationJson: operation,
             answer: "tool-backed answer");
@@ -1074,7 +1078,7 @@ public sealed class FrontendApiIntegrationTests
             await harness.DisposeAsync();
             try
             {
-                Directory.Delete(workspace, recursive: true);
+                await TempArea.DeleteAsync(workspace, CancellationToken.None);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -1088,8 +1092,8 @@ public sealed class FrontendApiIntegrationTests
         // 45 s inside the 60 s outer Fact timeout: the switch exercises two providers and a
         // canonical-history replay, while the outer attribute still fires with time to report.
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(45));
-        var openAi = new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, model: "test-model", answer: "openai answer");
-        var anthropic = new FakeAnthropicServer("claude-test", "anthropic answer");
+        var openAi = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "openai answer");
+        var anthropic = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "anthropic answer");
         var dualConfig = DualProviderConfigTemplate
             .Replace("{{openaiEndpoint}}", openAi.Endpoint.ToString())
             .Replace("{{anthropicEndpoint}}", anthropic.Endpoint.ToString());
@@ -1142,8 +1146,9 @@ public sealed class FrontendApiIntegrationTests
             "Requires an external stdio MCP test server; set MAIEUTICS_TEST_MCP_SERVER_EXECUTABLE.");
 
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(80));
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             toolFlow: true,
             toolName: "echo",
             toolArgumentsJson: "{\"value\":\"native mcp value\"}");
@@ -1232,7 +1237,7 @@ public sealed class FrontendApiIntegrationTests
     /// its own budget, not the test token: after a timeout that token is canceled and
     /// would abort cleanup and leak the tree.</summary>
     private static Task DeleteDirectoryWithRetryAsync(string path) =>
-        TempDirectoryCleanup.DeleteWithRetryAsync(path);
+        TempArea.DeleteAsync(path);
 
     [Fact(Timeout = 60_000)]
     public async Task SessionQueriesAreServedPerSessionWithLazyResolve()
@@ -1277,7 +1282,7 @@ public sealed class FrontendApiIntegrationTests
         // single-active semantics busy-rejected the second submission).
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer, requestCount: 2),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer, requestCount: 2),
             hanging: false);
         using var client = harness.CreateClient();
 
@@ -1320,7 +1325,7 @@ public sealed class FrontendApiIntegrationTests
         // is enabled; the transform turns it on for this host.
         await using var harness = await FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: Answer),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer),
             hanging: false,
             transformConfiguration: body => body.Replace(
                 "\"Maieutics\": {",
@@ -1356,7 +1361,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task ResponsesWebSearchStreamsTheSearchAndItsCitation()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true);
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapability(
@@ -1400,7 +1405,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task ResponsesBuiltinCallsBeyondTheEndpointLimitFailTheTurn()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeOpenAiServer(OpenAiApiFlavor.Responses, webSearchFlow: true, webSearchCalls: 2);
+        var provider = new GatedModelProvider(ModelApiFlavor.Responses, ProviderGateMode.Scripted, webSearchFlow: true, webSearchCalls: 2);
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
             transformConfiguration: body => DeclareEndpointCapabilityWithLimit(
@@ -1433,7 +1438,7 @@ public sealed class FrontendApiIntegrationTests
     public async Task AnthropicWebSearchStreamsTheServerToolAndCommitsTheTranscript()
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(40));
-        var provider = new FakeAnthropicServer("claude-test", "tool-backed answer", webSearchFlow: true);
+        var provider = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "tool-backed answer", webSearchFlow: true);
         var config = AnthropicConfigTemplate.Replace("{{endpoint}}", provider.Endpoint.ToString());
         var harness = await FrontendHarness.StartAsync(
             deadline.Token, provider, hanging: false, configureBuilder: null,
@@ -1503,8 +1508,9 @@ public sealed class FrontendApiIntegrationTests
     {
         return await FrontendHarness.StartAsync(
             cancellationToken,
-            new FakeOpenAiServer(
-                OpenAiApiFlavor.ChatCompletions,
+            new GatedModelProvider(
+                ModelApiFlavor.ChatCompletions,
+                ProviderGateMode.Scripted,
                 answer: Answer),
             hanging: false);
     }
@@ -1514,7 +1520,7 @@ public sealed class FrontendApiIntegrationTests
     {
         return await FrontendHarness.StartAsync(
             cancellationToken,
-            new HangingOpenAiServer(),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Hanging, answer: "late"),
             hanging: true);
     }
 
@@ -1526,7 +1532,7 @@ public sealed class FrontendApiIntegrationTests
         private readonly IAsyncDisposable provider;
         private readonly string configurationFile;
         private readonly string dataRoot;
-        private readonly HangingOpenAiServer? hangingProvider;
+        private readonly GatedModelProvider? hangingProvider;
 
         private FrontendHarness(
             IHost host,
@@ -1541,7 +1547,7 @@ public sealed class FrontendApiIntegrationTests
             this.provider = provider;
             this.configurationFile = configurationFile;
             this.dataRoot = dataRoot;
-            hangingProvider = hanging ? (HangingOpenAiServer)provider : null;
+            hangingProvider = hanging ? (GatedModelProvider)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;
             Client = CreateClient();
@@ -1577,8 +1583,7 @@ public sealed class FrontendApiIntegrationTests
                 $"maieutics-frontend-config-{Guid.NewGuid():N}.json");
             // The model and provider endpoint live in the configuration file (not the CLI or
             // in-memory configuration) so the hot-reload test can rewrite them.
-            var endpoint = (provider as FakeOpenAiServer)?.Endpoint.ToString()
-                ?? (provider as HangingOpenAiServer)?.Endpoint.ToString() ?? string.Empty;
+            var endpoint = (provider as GatedModelProvider)?.Endpoint.ToString() ?? string.Empty;
             var configurationFileBody = ConfigurationTemplate
                 .Replace("{{model}}", model)
                 .Replace("{{endpoint}}", endpoint);
@@ -1670,10 +1675,23 @@ public sealed class FrontendApiIntegrationTests
         public IdeRequestRegistry IdeRequests =>
             host.Services.GetRequiredService<IdeRequestRegistry>();
 
+        /// <summary>The live comm router, so tests can await a session plane's live-set
+        /// transitions instead of probing with throwaway hello reads.</summary>
+        public Frontend.FrontendCommRouter CommRouter =>
+            host.Services.GetRequiredService<Frontend.FrontendCommRouter>();
+
         /// <summary>The live IDE announcement gate, so tests observe the per-socket
         /// capability lifecycle without driving a run.</summary>
         public Configuration.IIdeFrontendGate IdeGate =>
             host.Services.GetRequiredService<Configuration.IIdeFrontendGate>();
+
+        /// <summary>Waits for the session's announcing sockets to lapse (the last one
+        /// withdrawing is the completion). Capture the task before closing the socket:
+        /// the underlying signal is re-armed by the next announce.</summary>
+        public Task IdeLapsedAsync(string sessionId)
+        {
+            return ((FrontendIdeSockets)IdeGate).Lapsed(sessionId);
+        }
 
         /// <summary>Attaches a test presentation target to the live REPL presentation
         /// router so tests can drive stdin-style input requests against the real
@@ -1745,13 +1763,33 @@ public sealed class FrontendApiIntegrationTests
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             wait.CancelAfter(TimeSpan.FromSeconds(20));
+
+            // Completion-driven: the run's settlement is the completion notification for
+            // "the turn finished" — the transcript commit follows it. With a runId the
+            // harness awaits that run's settlement; without one, the session's latest
+            // run's settlement stands in (every caller submits exactly one turn before
+            // waiting). The transcript REST read then verifies the commit and carries the
+            // diagnostic on the failure path.
+            if (runId is not null)
+            {
+                if (SessionService.TryGetRun(runId, out var stream) && stream is not null)
+                    await stream.Settled.WaitAsync(wait.Token);
+            }
+            else if (Guid.TryParseExact(sessionId, "N", out var parsed) &&
+                     SessionService.TryGetLatestRun(
+                         new Agent.AgentSessionId(parsed),
+                         out var latest) &&
+                     latest is not null)
+            {
+                await latest.Settled.WaitAsync(wait.Token);
+            }
+
             while (true)
             {
                 var transcript = await Client.GetFromJsonAsync<JsonElement>(
                     $"/v1/agent/sessions/{sessionId}/transcript",
                     wait.Token);
                 if (transcript.GetProperty("turns").GetArrayLength() > 0) return;
-
                 // A run that already settled can never commit a turn, so polling until the
                 // budget expires only rewrites the real cause as an empty
                 // TaskCanceledException. Name it instead: the run's retained stream carries
@@ -1827,12 +1865,13 @@ public sealed class FrontendApiIntegrationTests
             await provider.DisposeAsync();
             try
             {
-                Directory.Delete(dataRoot, recursive: true);
+                await TempArea.DeleteAsync(dataRoot, CancellationToken.None);
             }
-            catch (IOException)
+            catch (TimeoutException)
             {
-                // A store connection can hold the directory briefly on Windows; a
-                // leftover temp directory must not mask the test result.
+                // A store connection can hold the directory briefly on Windows; the shared
+                // retry rides that out, and a leftover temp directory must not mask the
+                // test result.
             }
             try
             {
@@ -1914,130 +1953,6 @@ public sealed class FrontendApiIntegrationTests
             CancellationToken cancellationToken)
         {
             Published.Add((type, displayId, data.Clone()));
-        }
-    }
-
-    /// <summary>A chat-completions SSE server that accepts the request and never answers
-    /// until released, making run lifetime deterministic.</summary>
-    private sealed class HangingOpenAiServer : IAsyncDisposable
-    {
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly Task serveLoop;
-        private readonly Lock gate = new();
-        private readonly List<Task> connections = [];
-
-        public HangingOpenAiServer()
-        {
-            listener.Start();
-            var endpoint = (IPEndPoint)listener.LocalEndpoint;
-            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            serveLoop = ServeAsync(cancellation.Token);
-        }
-
-        public Uri Endpoint { get; }
-
-        public void Release() => release.TrySetResult();
-
-        /// <summary>Failure diagnostics: how many provider connections were accepted, how
-        /// many reached the park point, and whether a release was already requested.</summary>
-        internal string DescribeState()
-        {
-            return $"connections={Volatile.Read(ref connectionsOpened)} "
-                + $"parked={Volatile.Read(ref parkedCount)} released={release.Task.IsCompleted}";
-        }
-
-        private int connectionsOpened;
-        private int parkedCount;
-
-        public async ValueTask DisposeAsync()
-        {
-            await cancellation.CancelAsync();
-            listener.Stop();
-            release.TrySetResult();
-            Task[] connectionTasks;
-            lock (gate)
-            {
-                connectionTasks = [.. connections];
-            }
-
-            try
-            {
-                // Every client task observes the cancellation (parked, answering, or
-                // holding the connection open for the client), so this settles promptly.
-                await Task.WhenAll(connectionTasks).ConfigureAwait(false);
-                // The accept loop settles once the listener stops; without observing
-                // it, a late ObjectDisposedException on the disposed CTS escapes.
-                await serveLoop.ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            cancellation.Dispose();
-        }
-
-        private async Task ServeAsync(CancellationToken cancellationToken)
-        {
-            // Accept in a loop: the provider client (and any retried request) may open more
-            // than one connection; a single accept would hang the second one on slow CI.
-            try
-            {
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    var client = await listener.AcceptTcpClientAsync(cancellationToken);
-                    Task connection = ServeClientAsync(client, cancellationToken);
-                    lock (gate)
-                    {
-                        connections.Add(connection);
-                    }
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException)
-            {
-            }
-        }
-
-        private async Task ServeClientAsync(TcpClient client, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var stream = client.GetStream();
-                Interlocked.Increment(ref connectionsOpened);
-                // The request must be read in full before parking: the release can land
-                // while the client is still sending, and answering-and-closing a
-                // partially-sent request resets the connection under the client's
-                // response read — Windows discards the buffered response bytes on the
-                // reset, surfacing as an agent_provider_error flake on slow runners.
-                await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref parkedCount);
-                await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                var body = Encoding.UTF8.GetBytes(
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n");
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-                // Hold the connection open (keep-alive, like a real HTTP server) instead
-                // of disposing it right after the response: the close races the client's
-                // response read. The drain ends at the client's EOF or server disposal.
-                var buffer = new byte[4096];
-                while (await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false) > 0)
-                {
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or EndOfStreamException or SocketException
-                or IOException or ObjectDisposedException or InvalidDataException or JsonException)
-            {
-            }
-            finally
-            {
-                client.Dispose();
-            }
         }
     }
 }

@@ -31,6 +31,28 @@ internal sealed class FrontendCommStream
     private long replayBytes;
     private long nextSequence;
     private bool truncated;
+    private TaskCompletionSource liveSetChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Internal test observability: completes on the next live-set mutation
+    /// (open or forget). The completed source is swapped for a fresh one under the same
+    /// lock as the mutation, so a captured task always observes exactly one later
+    /// mutation — the completion notification for a live-set transition.</summary>
+    internal Task LiveSetChanged
+    {
+        get
+        {
+            lock (gate)
+            {
+                return liveSetChanged.Task;
+            }
+        }
+    }
+
+    private void NotifyLiveSetChangedLocked()
+    {
+        liveSetChanged.TrySetResult();
+        liveSetChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     /// <summary>One replayed downlink frame with its session-local sequence and the
     /// encoded frame size the retention budget is accountable for.</summary>
@@ -50,10 +72,12 @@ internal sealed class FrontendCommStream
                     {
                         liveCommTargets[message.CommId] = message.TargetName ?? message.CommId;
                         liveCommOrder.Enqueue(message.CommId);
+                        NotifyLiveSetChangedLocked();
                     }
 
                     break;
                 case ReplCommKind.Close:
+                    if (liveCommTargets.ContainsKey(message.CommId)) NotifyLiveSetChangedLocked();
                     ForgetComm(message.CommId);
                     break;
             }
@@ -100,6 +124,7 @@ internal sealed class FrontendCommStream
     {
         lock (gate)
         {
+            if (liveCommTargets.ContainsKey(commId)) NotifyLiveSetChangedLocked();
             ForgetComm(commId);
         }
     }

@@ -55,12 +55,9 @@ public sealed class PluginHostStartupAvailabilityTests
             Assert.False(File.Exists(release), "the scan is still parked in its child process");
 
             var status = Task.Run(manager.GetStatus, deadline.Token);
-            var settled = await Task.WhenAny(status, Task.Delay(TimeSpan.FromSeconds(15), deadline.Token));
+            var observed = await status.WaitAsync(TimeSpan.FromSeconds(15), deadline.Token);
 
-            Assert.Same(status, settled);
             Assert.False(File.Exists(release), "the scan had not been released, so status was answered without waiting for it");
-
-            var observed = await status;
             Assert.NotNull(observed);
 
             // Let the scan finish so startup can proceed to its (irrelevant here) host launch.
@@ -72,7 +69,7 @@ public sealed class PluginHostStartupAvailabilityTests
             await manager.DisposeAsync();
             TryDelete(marker);
             TryDelete(release);
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root)) await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -142,12 +139,29 @@ public sealed class PluginHostStartupAvailabilityTests
         return path;
     }
 
+    /// <summary>Waits for the marker file's creation as an OS completion event: the
+    /// watcher's Created notification IS the file's appearance, so the wait is
+    /// event-driven — the child writes the marker mid-run and no in-process signal
+    /// exists for it.</summary>
     private static async Task WaitForFileAsync(string path, CancellationToken cancellationToken)
     {
-        while (!File.Exists(path))
+        if (File.Exists(path)) return;
+
+        using var watcher = new FileSystemWatcher(
+            Path.GetDirectoryName(path) ?? ".",
+            Path.GetFileName(path))
         {
-            await Task.Delay(25, cancellationToken).ConfigureAwait(false);
-        }
+            EnableRaisingEvents = true,
+            NotifyFilter = NotifyFilters.FileName,
+        };
+        var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        watcher.Created += (_, _) => created.TrySetResult();
+
+        // The watch is armed before the second existence check, so a file created between
+        // the two cannot slip past the event.
+        if (File.Exists(path)) return;
+
+        await created.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static void TryDelete(string path)

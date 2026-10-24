@@ -183,7 +183,7 @@ public sealed class WorkspaceLinksTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
 
-        TemporaryWorkspace.DeleteTree(home.ProjectsRoot);
+        TempArea.DeleteTree(home.ProjectsRoot);
         Assert.True(File.Exists(marker), "link-aware deletion of product-owned workspace state must not follow managed links");
     }
 
@@ -257,7 +257,9 @@ public sealed class WorkspaceLinksTests
     [Fact]
     public void OpenRejectsATargetReachedThroughASymlinkedAncestor()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The test exercises symlink semantics, which are POSIX-only.");
+
 
         // The home is reachable through a symlinked ancestor, so the raw target string looks
         // like it is outside the home while it physically resolves inside it. Resolving only the

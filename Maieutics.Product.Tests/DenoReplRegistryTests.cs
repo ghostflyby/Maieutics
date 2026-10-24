@@ -96,7 +96,7 @@ public sealed class DenoReplRegistryTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -135,7 +135,7 @@ public sealed class DenoReplRegistryTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -176,7 +176,7 @@ public sealed class DenoReplRegistryTests
         finally
         {
             generation.AllowDisposal.TrySetResult();
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -210,7 +210,7 @@ public sealed class DenoReplRegistryTests
         {
             generation.AllowDisposal.TrySetResult();
             await registry.DisposeAsync();
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

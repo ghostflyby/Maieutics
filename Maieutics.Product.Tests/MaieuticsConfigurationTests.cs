@@ -22,7 +22,7 @@ public sealed class MaieuticsConfigurationTests
     /// signal, so the retry waits by delay — asynchronously, never blocking a pool
     /// thread. Delegates to the shared cleanup policy (same budget and retry shape).</summary>
     internal static Task DeleteDirectoryWithRetryAsync(string path, CancellationToken cancellationToken) =>
-        TempDirectoryCleanup.DeleteWithRetryAsync(path, cancellationToken);
+        TempArea.DeleteAsync(path, cancellationToken);
 
     [Fact(Timeout = 30_000)]
     public async Task ConfigurationPathResolutionUsesExplicitEnvironmentPortableThenUserPath()

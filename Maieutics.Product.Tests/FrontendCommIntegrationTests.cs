@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
 
@@ -24,7 +23,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",
@@ -46,7 +45,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -102,7 +101,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -113,24 +112,22 @@ public sealed class FrontendCommIntegrationTests
         await CommChildSocketStub.SendAsync(child, Open("w1", "tw1", null), deadline.Token);
         await CommChildSocketStub.SendAsync(child, Open("w2", "tw2", null), deadline.Token);
 
-        // The child's open frames are in flight the moment SendAsync returns; on a
-        // slow receiver the plane has not processed them yet (the ubuntu CI flake:
-        // hello carried an empty live list). The plane exposes no child-visible ack,
-        // so the test probes with throwaway hello reads until the registry reflects
-        // both opens, then runs the real subscriber against the settled plane.
-        JsonElement firstHello;
+        // The child's open frames are in flight the moment SendAsync returns; the
+        // plane's live set is the observable, and each mutation has a completion
+        // signal. Capture the signal BEFORE checking the state (the signal-swap and
+        // the mutation share the plane's lock, so a mutation between the check and
+        // the capture would strand the waiter on an already-consumed signal), then
+        // re-check after every wake — no throwaway probe connections.
+        var plane = harness.CommRouter.PlaneFor(sessionId);
         while (true)
         {
-            using var probe = await ConnectCommsAsync(harness, sessionId, deadline.Token);
-            firstHello = await ReceiveHelloAsync(probe, deadline.Token);
-            var liveCount = firstHello.GetProperty("live").GetArrayLength();
-            await probe.CloseAsync(WebSocketCloseStatus.NormalClosure, "probe", deadline.Token);
-            if (liveCount >= 2) break;
-            await Task.Delay(50, deadline.Token);
+            var changed = plane.LiveSetChanged;
+            if (plane.SnapshotLive().Count >= 2) break;
+            await changed.WaitAsync(deadline.Token);
         }
 
         using var first = await ConnectCommsAsync(harness, sessionId, deadline.Token);
-        firstHello = await ReceiveHelloAsync(first, deadline.Token);
+        var firstHello = await ReceiveHelloAsync(first, deadline.Token);
         Assert.False(firstHello.GetProperty("replayed").GetBoolean());
         Assert.Equal(["w1", "w2"], firstHello.GetProperty("live").EnumerateArray().Select(entry => entry.GetProperty("commId").GetString()));
         var (one, _) = await ReceiveCommAsync(first, deadline.Token);
@@ -158,7 +155,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -184,7 +181,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -211,7 +208,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         harness.RegisterControlPeer(sessionId);
@@ -257,7 +254,7 @@ public sealed class FrontendCommIntegrationTests
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(30));
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             deadline.Token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
 

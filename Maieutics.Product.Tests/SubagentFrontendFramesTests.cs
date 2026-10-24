@@ -29,6 +29,14 @@ public sealed class SubagentFrontendFramesTests
         // strictly after the terminal frames are published, so the snapshot below is whole.
         await stream.Settled.WaitAsync(deadline.Token);
 
+        // The child frames ride the parent stream through a display tap whose publishes
+        // are synchronous on the child's pump: OnSubagentStartedAsync publishes the
+        // child run.started BEFORE StartChildAsync returns (the pump's first await is
+        // inside that callback's call site), so every child frame strictly precedes the
+        // spawn tool's result — which the parent renders as its tool.finished frame.
+        // The parent's tool.finished is therefore the strict successor proving the child
+        // frames were offered, and Settled (awaited above) orders the parent's whole
+        // frame sequence after it. Assert synchronously on the settled snapshot.
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
         var initial = initialList.ToList();
@@ -272,62 +280,7 @@ public sealed class SubagentFrontendFramesTests
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken) =>
         TestDeadlines.Create(cancellationToken);
 
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Lock gate = new();
 
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            var request = messages.Select(message => message.Clone()).ToArray();
-            Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> response;
-            lock (gate)
-            {
-                response = responses.Dequeue();
-            }
-
-            return response(request, cancellationToken);
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
-        {
-            return null;
-        }
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class FixedProfileProvider(AgentRunProfile profile) : IAgentRunProfileProvider
-    {
-        public Task<IAgentRunProfileLease> AcquireAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IAgentRunProfileLease>(new Lease(profile));
-        }
-
-        private sealed class Lease(AgentRunProfile profile) : IAgentRunProfileLease
-        {
-            public AgentRunProfile Profile { get; } = profile;
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        }
-    }
 }
 
 internal sealed record SpawnValue(string Status);

@@ -61,7 +61,7 @@ public sealed class DenoReplPolicyCacheTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -115,7 +115,7 @@ public sealed class DenoReplPolicyCacheTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -160,7 +160,7 @@ public sealed class DenoReplPolicyCacheTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -190,7 +190,7 @@ public sealed class DenoReplPolicyCacheTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -230,7 +230,7 @@ public sealed class DenoReplPolicyCacheTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

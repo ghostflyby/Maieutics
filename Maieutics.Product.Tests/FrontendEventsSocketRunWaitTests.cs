@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Maieutics.Providers.OpenAI;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 
 namespace Maieutics.Product.Tests;
@@ -21,7 +20,7 @@ public sealed class FrontendEventsSocketRunWaitTests
     public FrontendEventsSocketRunWaitTests(ITestOutputHelper output) => this.output = output;
 
     private void Trace(string message) =>
-        output.WriteLine($"[events-run-wait] {DateTime.UtcNow.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture)} {message}");
+        TestTrace.Write(output, "events-run-wait", message);
 
     /// <summary>A run announced after the turn queue has fully drained must still be served on
     /// a socket that observed the queue's transitions. The drain's queue wakes are what used to
@@ -32,8 +31,9 @@ public sealed class FrontendEventsSocketRunWaitTests
     {
         using var deadline = CreateDeadline(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(70));
         // The harness owns the provider's lifetime and disposes it with the host.
-        var provider = new FakeOpenAiServer(
-            OpenAiApiFlavor.ChatCompletions,
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions,
+            ProviderGateMode.Scripted,
             requestCount: 3);
         await using var harness = await Harness.StartAsync(
             deadline.Token,

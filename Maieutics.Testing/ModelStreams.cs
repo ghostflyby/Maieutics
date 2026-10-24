@@ -1,226 +1,14 @@
-using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using Maieutics.Providers.OpenAI;
-using Microsoft.Extensions.AI;
 
-namespace Maieutics.Product.Tests;
+namespace Maieutics.Testing;
 
-internal sealed class FakeOpenAiServer : IAsyncDisposable
+/// <summary>The SSE answer-stream builders for the fake model providers: one home for
+/// every flavor and flow shape the suite serves.</summary>
+public static class ModelStreams
 {
-    private readonly string answer;
-    private readonly OpenAiApiFlavor apiFlavor;
-    private readonly CancellationTokenSource cancellation = new();
-    private readonly string? expectedToolResultText;
-    private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-    private readonly string model;
-    private readonly string? reasoning;
-    private readonly int requestCount;
-    private readonly string toolArgumentsJson;
-
-    private readonly bool toolFlow;
-    private readonly bool applyPatchFlow;
-    private readonly string? applyPatchOperationJson;
-    private readonly bool webSearchFlow;
-    private readonly int webSearchCalls;
-    private readonly string toolName;
-
-    public FakeOpenAiServer(
-        OpenAiApiFlavor apiFlavor,
-        bool toolFlow = false,
-        string model = "test-model",
-        string answer = "native answer",
-        string? reasoning = null,
-        int? requestCount = null,
-        string toolName = "echo",
-        string toolArgumentsJson = "{\"text\":\"hello\"}",
-        string? expectedToolResultText = null,
-        bool applyPatchFlow = false,
-        string? applyPatchOperationJson = null,
-        bool webSearchFlow = false,
-        int webSearchCalls = 1)
-    {
-        this.apiFlavor = apiFlavor;
-        this.toolFlow = toolFlow;
-        this.model = model;
-        this.answer = answer;
-        this.reasoning = reasoning;
-        this.toolName = toolName;
-        this.toolArgumentsJson = toolArgumentsJson;
-        this.expectedToolResultText = expectedToolResultText;
-        this.applyPatchFlow = applyPatchFlow;
-        this.applyPatchOperationJson = applyPatchOperationJson;
-        this.webSearchFlow = webSearchFlow;
-        this.webSearchCalls = webSearchCalls;
-        this.requestCount = requestCount ?? (toolFlow || applyPatchFlow ? 2 : 1);
-        listener.Start();
-        var endpoint = (IPEndPoint)listener.LocalEndpoint;
-        Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-        Completion = ServeAsync(cancellation.Token);
-    }
-
-    public Uri Endpoint { get; }
-
-    public Task Completion { get; }
-
-    public ConcurrentQueue<JsonElement> RequestBodies { get; } = new();
-
-    public async ValueTask DisposeAsync()
-    {
-        await cancellation.CancelAsync();
-        listener.Stop();
-        try
-        {
-            await Completion.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (SocketException) when (cancellation.IsCancellationRequested)
-        {
-        }
-
-        cancellation.Dispose();
-    }
-
-    private async Task ServeAsync(CancellationToken cancellationToken)
-    {
-        // Handle the expected requests across connections. The OpenAI SDK's
-        // HttpClient pools connections (keep-alive by default), so a client
-        // may reuse the same TCP connection for consecutive requests or open
-        // a fresh one — and concurrent runs issue their requests on distinct
-        // connections at the same time. Connections are therefore served
-        // concurrently: each accepted connection reads and answers requests
-        // (keeping it open for reuse) until the expected count is served. The
-        // served counter is the global request ordinal, so a tool flow's
-        // two-step sequence stays ordered as long as its calls are.
-        var served = 0;
-        using var faulted = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var connections = new List<Task>();
-        while (Volatile.Read(ref served) < requestCount)
-        {
-            var client = await listener.AcceptTcpClientAsync(cancellationToken)
-                .ConfigureAwait(false);
-            connections.Add(ServeConnectionAsync(
-                client,
-                faulted.Token,
-                () => Volatile.Read(ref served),
-                () => Interlocked.Increment(ref served) - 1,
-                faulted.Cancel));
-        }
-
-        try
-        {
-            await Task.WhenAll(connections).ConfigureAwait(false);
-        }
-        catch (Exception) when (faulted.IsCancellationRequested &&
-                                !cancellationToken.IsCancellationRequested)
-        {
-            // A connection task faulted (an assertion, most likely): surface the
-            // original failure instead of letting the test time out.
-            throw;
-        }
-    }
-
-    private async Task ServeConnectionAsync(
-        TcpClient client,
-        CancellationToken cancellationToken,
-        Func<int> servedCount,
-        Func<int> claimRequestIndex,
-        Action fault)
-    {
-        try
-        {
-            await using var stream = client.GetStream();
-            while (servedCount() < requestCount)
-            {
-                HttpRequest request;
-                try
-                {
-                    request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                }
-                catch (EndOfStreamException)
-                {
-                    // The client closed this connection (dispose or a fresh
-                    // connection for the next request).
-                    return;
-                }
-                var served = claimRequestIndex();
-                RequestBodies.Enqueue(request.Body.Clone());
-                AssertRequest(request, served);
-
-                var data = (apiFlavor, toolFlow, served) switch
-                {
-                    (OpenAiApiFlavor.Responses, true, 0) => CreateResponsesToolStream(
-                        toolName,
-                        toolArgumentsJson),
-                    (OpenAiApiFlavor.ChatCompletions, true, 0) => CreateChatCompletionsToolStream(
-                        toolName,
-                        toolArgumentsJson),
-                    (OpenAiApiFlavor.Responses, _, _) when webSearchFlow && served == 0 =>
-                        CreateResponsesWebSearchStream(webSearchCalls),
-                    (OpenAiApiFlavor.Responses, false, 0) when applyPatchFlow =>
-                        CreateResponsesApplyPatchStream(applyPatchOperationJson!),
-                    (OpenAiApiFlavor.Responses, _, _) => CreateResponsesStream(
-                        toolFlow ? "tool-backed answer" : answer),
-                    (OpenAiApiFlavor.ChatCompletions, _, _) => CreateChatCompletionsStream(
-                        toolFlow ? "tool-backed answer" : answer,
-                        reasoning),
-                    _ => throw new InvalidOperationException(
-                        $"Unsupported test API flavor '{apiFlavor}'.")
-                };
-                var body = Encoding.UTF8.GetBytes(data);
-                // Keep the connection open (no "Connection: close") so the
-                // client's pooled connection can carry the next request.
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +
-                    $"Content-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            // Rethrown below, so the failure surfaces through WhenAll.
-            _ = exception;
-            fault();
-            throw;
-        }
-        finally
-        {
-            client.Dispose();
-        }
-    }
-
-    private void AssertRequest(HttpRequest request, int requestIndex)
-    {
-        Assert.Equal("POST", request.Method);
-        Assert.Equal(apiFlavor switch
-        {
-            OpenAiApiFlavor.Responses => "/v1/responses",
-            OpenAiApiFlavor.ChatCompletions => "/v1/chat/completions",
-            _ => throw new InvalidOperationException($"Unsupported test API flavor '{apiFlavor}'.")
-        }, request.Path);
-        Assert.Equal(model, request.Body.GetProperty("model").GetString());
-        Assert.True(request.Body.GetProperty("stream").GetBoolean());
-        Assert.False(request.Body.GetProperty("store").GetBoolean());
-        if (!toolFlow) return;
-
-        Assert.True(request.Body.GetProperty("tools").GetArrayLength() > 0);
-        Assert.Contains(toolName, request.Body.GetRawText());
-        if (requestIndex > 0)
-        {
-            Assert.Contains("status", request.Body.GetRawText());
-            Assert.Contains("ok", request.Body.GetRawText());
-            if (expectedToolResultText is not null)
-                Assert.Contains(expectedToolResultText, request.Body.GetRawText());
-        }
-    }
-
-    private static string CreateChatCompletionsStream(string text, string? reasoning = null)
+    /// <summary>Serves the raw SSE answer stream for the CreateChatCompletionsStream scenario; see the shape below.</summary>
+    public static string CreateChatCompletionsStream(string text, string? reasoning = null)
     {
         return (reasoning is null
                    ? string.Empty
@@ -237,7 +25,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                "data: [DONE]\n\n";
     }
 
-    private static string CreateChatCompletionsToolStream(string toolName, string argumentsJson)
+    /// <summary>Serves the raw SSE answer stream for the CreateChatCompletionsToolStream scenario; see the shape below.</summary>
+    public static string CreateChatCompletionsToolStream(string toolName, string argumentsJson)
     {
         return "data: {\"id\":\"chatcmpl-tool\",\"object\":\"chat.completion.chunk\",\"created\":0," +
                "\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{" +
@@ -250,7 +39,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
                "data: [DONE]\n\n";
     }
 
-    private static string CreateResponsesStream(string text)
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesStream scenario; see the shape below.</summary>
+    public static string CreateResponsesStream(string text)
     {
         const string inProgressResponse =
             "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
@@ -313,7 +103,7 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
     /// then the assistant message with a url_citation annotation. Server-executed, so no
     /// tool-result round trip follows. The stream carries <paramref name="calls"/> search
     /// items so a per-request built-in call ceiling can be exercised.</summary>
-    private static string CreateResponsesWebSearchStream(int calls)
+    public static string CreateResponsesWebSearchStream(int calls)
     {
         var searchItems = new List<string>();
         for (var index = 0; index < calls; index++)
@@ -385,7 +175,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
         return stream.ToString();
     }
 
-    private static string CreateResponsesApplyPatchStream(string operationJson)
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesApplyPatchStream scenario; see the shape below.</summary>
+    public static string CreateResponsesApplyPatchStream(string operationJson)
     {
         const string inProgressResponse =
             "{\"id\":\"resp-apc\",\"object\":\"response\",\"created_at\":0," +
@@ -425,7 +216,8 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
             "\"response\":" + completedResponse + "}\n\n";
     }
 
-    private static string CreateResponsesToolStream(string toolName, string argumentsJson)
+    /// <summary>Serves the raw SSE answer stream for the CreateResponsesToolStream scenario; see the shape below.</summary>
+    public static string CreateResponsesToolStream(string toolName, string argumentsJson)
     {
         const string inProgressResponse =
             "{\"id\":\"resp-tool\",\"object\":\"response\",\"created_at\":0," +
@@ -474,77 +266,103 @@ internal sealed class FakeOpenAiServer : IAsyncDisposable
             "\"response\":" + completedResponse + "}\n\n";
     }
 
-    internal static async Task<HttpRequest> ReadRequestAsync(
-        NetworkStream stream,
-        CancellationToken cancellationToken)
+    /// <summary>Serves the raw SSE answer stream for the CreateTextStream scenario; see the shape below.</summary>
+    public static string CreateTextStream(string text)
     {
-        var buffer = new byte[4096];
-        var request = new MemoryStream();
-        var headerLength = -1;
-        var contentLength = 0;
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
 
-        while (headerLength < 0 || request.Length < headerLength + contentLength)
-        {
-            var count = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (count == 0)
-                throw new EndOfStreamException("The OpenAI-compatible request ended before its body was complete.");
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
-            request.Write(buffer, 0, count);
-            if (headerLength >= 0) continue;
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":TEXT_PLACEHOLDER}}
 
-            var bytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
-            var delimiter = "\r\n\r\n"u8;
-            var delimiterIndex = bytes.IndexOf(delimiter);
-            if (delimiterIndex < 0) continue;
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
 
-            headerLength = delimiterIndex + delimiter.Length;
-            var headers = Encoding.ASCII.GetString(bytes[..delimiterIndex]);
-            foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
-                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                {
-                    contentLength = int.Parse(line["Content-Length:".Length..].Trim());
-                    break;
-                }
-        }
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
 
-        var requestBytes = request.GetBuffer().AsSpan(0, checked((int)request.Length));
-        var requestLineEnd = requestBytes.IndexOf("\r\n"u8);
-        if (requestLineEnd < 0)
-            throw new InvalidDataException("The OpenAI-compatible request did not contain a request line.");
+               event: message_stop
+               data: {"type":"message_stop"}
 
-        var requestLine = Encoding.ASCII.GetString(requestBytes[..requestLineEnd]);
-        var requestLineParts = requestLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (requestLineParts.Length != 3)
-            throw new InvalidDataException($"Invalid OpenAI-compatible request line: '{requestLine}'.");
-
-        var bodyBytes = request.GetBuffer().AsMemory(headerLength, contentLength);
-        var body = JsonDocument.Parse(bodyBytes).RootElement.Clone();
-        return new HttpRequest(requestLineParts[0], requestLineParts[1], body);
+               """.Replace("TEXT_PLACEHOLDER",
+            JsonSerializer.Serialize(text), StringComparison.Ordinal);
     }
 
-    internal sealed record HttpRequest(string Method, string Path, JsonElement Body);
+    /// <summary>A server-executed web search turn: a text preamble, the server tool use block
+    /// (arguments stream as input_json_delta), the complete result block, then the answer text.
+    /// Mirrors Anthropic's documented ordering; the result arrives whole inside one
+    /// content_block_start with its encrypted_content intact.</summary>
+    public static string CreateWebSearchStream()
+    {
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_search","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_test","name":"web_search","input":{}}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"zhipu ai\"}"}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_test","content":[{"type":"web_search_result","title":"Zhipu AI","url":"https://example.com/zhipu","encrypted_content":"ENCRYPTED_PAYLOAD","page_age":"April 30, 2025"}]}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":1}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Zhipu AI is a Chinese AI company."}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":2,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com/zhipu","title":"Zhipu AI","encrypted_index":"ENCRYPTED_INDEX","cited_text":"Zhipu AI is a Chinese AI company."}}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":2}
+
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5,"server_tool_use":{"web_search_requests":1}}}
+
+               event: message_stop
+               data: {"type":"message_stop"}
+
+               """;
+    }
+
+    /// <summary>Serves the raw SSE answer stream for the CreateToolStream scenario; see the shape below.</summary>
+    public static string CreateToolStream()
+    {
+        return """
+               event: message_start
+               data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}
+
+               event: content_block_start
+               data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_test","name":"echo","input":{}}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"text\":"}}
+
+               event: content_block_delta
+               data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello\"}"}}
+
+               event: content_block_stop
+               data: {"type":"content_block_stop","index":0}
+
+               event: message_delta
+               data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}
+
+               event: message_stop
+               data: {"type":"message_stop"}
+
+               """;
+    }
 }
-
-internal static class FrontendTestFunctions
-{
-internal static AIFunction CreateEchoFunction()
-{
-    return AIFunctionFactory.Create(
-        (string text) => JsonSerializer.SerializeToElement(
-            text,
-            HostIntegrationJsonContext.Default.String),
-        new AIFunctionFactoryOptions
-        {
-            Name = "echo",
-            Description = "Returns the supplied text.",
-            SerializerOptions = HostIntegrationJsonContext.Default.Options
-        });
-}
-
-}
-
-
-
-[JsonSerializable(typeof(string))]
-[JsonSerializable(typeof(JsonElement))]
-internal sealed partial class HostIntegrationJsonContext : JsonSerializerContext;

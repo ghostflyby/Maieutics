@@ -42,7 +42,7 @@ public sealed class PermissionProfileLoaderTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -72,7 +72,7 @@ public sealed class PermissionProfileLoaderTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -92,7 +92,7 @@ public sealed class PermissionProfileLoaderTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            TempArea.DeleteTree(root);
         }
     }
 
@@ -112,7 +112,7 @@ public sealed class PermissionProfileLoaderTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            TempArea.DeleteTree(root);
         }
     }
 }

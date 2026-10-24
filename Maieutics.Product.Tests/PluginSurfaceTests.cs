@@ -1,6 +1,5 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
 
@@ -24,7 +23,7 @@ public sealed class PluginSurfaceTests
         var token = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
 
         var plugins = await harness.Client.GetFromJsonAsync<JsonElement>(

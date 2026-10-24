@@ -39,7 +39,7 @@ public sealed class PermissionPipelineIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            TempArea.DeleteTree(root);
         }
     }
 

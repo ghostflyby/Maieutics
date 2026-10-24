@@ -22,7 +22,7 @@ public sealed class ObjectStoreConcurrencyTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
+        await TempArea.DeleteAsync(objectsRoot, CancellationToken.None);
     }
 
     /// <summary>Many ingests of identical bytes, released simultaneously, must all succeed and

@@ -39,7 +39,7 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -68,7 +68,7 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -112,7 +112,7 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 
@@ -237,7 +237,7 @@ public sealed class DenoPermissionBrokerTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

@@ -149,7 +149,7 @@ public sealed class ReplControlChannelIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, true);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 120_000)]
@@ -215,7 +215,7 @@ public sealed class ReplControlChannelIntegrationTests
             }
         }
 
-        Directory.Delete(workspaceRoot, true);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
     }
 
     private static async Task<WebApplication> StartHostAsync(

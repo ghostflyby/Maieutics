@@ -523,11 +523,7 @@ public sealed class AgentRunProfileTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken cancellationToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
-        return deadline;
-    }
+        => TestDeadlines.Create(cancellationToken);
 
     private static AIFunction CreateSuccessfulTool(string name = "echo")
     {

@@ -3,7 +3,6 @@ using Maieutics.Agent;
 using Maieutics.DenoRepl;
 using System.Net.Http.Json;
 using Maieutics.Frontend;
-using Maieutics.Providers.OpenAI;
 using Maieutics.Mcp;
 
 namespace Maieutics.Product.Tests;
@@ -209,7 +208,7 @@ public sealed class FrontendUiModelTests
         var token = TestContext.Current.CancellationToken;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             token,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "ok"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),
             hanging: false);
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",

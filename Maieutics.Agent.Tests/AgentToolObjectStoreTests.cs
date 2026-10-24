@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
+using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
 namespace Maieutics.Agent.Tests;
 
 /// <summary>Tool results exceeding the inline envelope limit are stored whole in the object
@@ -82,11 +83,7 @@ public sealed class AgentToolObjectStoreTests
     }
 
     private static CancellationTokenSource CreateDeadline(CancellationToken testToken)
-    {
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(testToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(25));
-        return deadline;
-    }
+        => TestDeadlines.Create(testToken, TimeSpan.FromSeconds(25));
 
     private static async Task<List<AgentEvent>> ReadEventsAsync(
         IAgentRun run,
@@ -128,35 +125,6 @@ public sealed class AgentToolObjectStoreTests
             new AIFunctionFactoryOptions { Name = name });
     }
 
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return responses.Dequeue()(messages.ToArray(), cancellationToken);
-        }
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
-    }
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {

@@ -1,13 +1,17 @@
 namespace Maieutics.Product.Tests;
 
-/// <summary>A throwaway workspace directory tree shared by workspace and resource
-/// tool tests; disposing removes the whole tree.</summary>
+/// <summary>Workspace-shaped wrapper over the shared <see cref="Testing.TempArea" />: a
+/// parent temp area whose <c>workspace</c> subdirectory is the tested workspace root.
+/// Disposal delegates to the area's reparse-safe delete.</summary>
 internal sealed class TemporaryWorkspace : IDisposable
 {
-    private TemporaryWorkspace(string parentPath, string path)
+    private readonly TempArea area;
+
+    private TemporaryWorkspace(TempArea area)
     {
-        ParentPath = parentPath;
-        Path = path;
+        this.area = area;
+        ParentPath = area.Path;
+        Path = System.IO.Path.Combine(area.Path, "workspace");
     }
 
     internal string ParentPath { get; }
@@ -16,35 +20,13 @@ internal sealed class TemporaryWorkspace : IDisposable
 
     public void Dispose()
     {
-        DeleteTree(ParentPath);
-    }
-
-    /// <summary>Recursive deletion that never descends into reparse points. .NET's
-    /// recursive delete throws ("the parameter is incorrect") the moment it meets a
-    /// junction on Windows — it does not follow it — so managed links are removed
-    /// non-recursively first and the remaining tree is deleted afterwards.</summary>
-    internal static void DeleteTree(string path)
-    {
-        if (!Directory.Exists(path)) return;
-
-        foreach (var entry in Directory.EnumerateDirectories(path))
-        {
-            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
-                Directory.Delete(entry, false);
-            else
-                DeleteTree(entry);
-        }
-
-        Directory.Delete(path, true);
+        area.Dispose();
     }
 
     internal static TemporaryWorkspace Create()
     {
-        var parent = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"maieutics-workspace-tests-{Guid.NewGuid():N}");
-        var path = System.IO.Path.Combine(parent, "workspace");
-        Directory.CreateDirectory(path);
-        return new TemporaryWorkspace(parent, path);
+        var area = TempArea.Create("workspace-tests");
+        Directory.CreateDirectory(System.IO.Path.Combine(area.Path, "workspace"));
+        return new TemporaryWorkspace(area);
     }
 }

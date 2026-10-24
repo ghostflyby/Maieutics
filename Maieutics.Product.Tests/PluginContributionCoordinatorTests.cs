@@ -488,25 +488,32 @@ public sealed class PluginContributionCoordinatorTests
     private static Skills.SkillDescriptor CreateSkill(string name) =>
         new(name, $"description of {name}", Skills.SkillSource.PluginGenerated, RootDirectory: "/");
 
-    private static async Task WaitForAsync(Func<bool> predicate, int seconds = 5)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(seconds);
-        while (DateTime.UtcNow < deadline)
-        {
-            if (predicate()) return;
-            await Task.Delay(20);
-        }
-
-        Assert.Fail("The expected engine state was not reached within the deadline.");
-    }
-
     private sealed class FakeDelivery(string kindName, ContributionDeliveryShape shape) : IContributionDelivery
     {
         private readonly object sync = new();
         private TaskCompletionSource release = NewTcs();
+        private TaskCompletionSource changed = NewTcs();
         private bool holdPasses;
         private int activePasses;
         private int completedPasses;
+
+        /// <summary>Completes the change signal and swaps in a fresh source. Every
+        /// observable state mutation of this double notifies, so waits on its state are
+        /// signal-driven, never timer-sliced.</summary>
+        private void NotifyChangedLocked()
+        {
+            changed.TrySetResult();
+            changed = NewTcs();
+        }
+
+        /// <summary>Notify from outside a lock hold; takes the lock only for the swap.</summary>
+        private void NotifyChanged()
+        {
+            lock (sync)
+            {
+                NotifyChangedLocked();
+            }
+        }
 
         public string KindName { get; } = kindName;
 
@@ -534,6 +541,7 @@ public sealed class PluginContributionCoordinatorTests
             {
                 Frames.Add(frame);
                 Guarded.Add(guardDisposed);
+                NotifyChangedLocked();
             }
         }
 
@@ -547,6 +555,7 @@ public sealed class PluginContributionCoordinatorTests
                 {
                     FailNextPass = false;
                     Interlocked.Increment(ref completedPasses);
+                    NotifyChanged();
                     throw new InvalidOperationException("simulated pass failure");
                 }
 
@@ -554,16 +563,19 @@ public sealed class PluginContributionCoordinatorTests
                 if (gate is null)
                 {
                     Interlocked.Increment(ref completedPasses);
+                    NotifyChanged();
                     return Task.CompletedTask;
                 }
 
                 Interlocked.Increment(ref activePasses);
+                NotifyChanged();
             }
 
             return gate.Task.ContinueWith(_ =>
             {
                 Interlocked.Decrement(ref activePasses);
                 Interlocked.Increment(ref completedPasses);
+                NotifyChanged();
             });
         }
 
@@ -592,12 +604,34 @@ public sealed class PluginContributionCoordinatorTests
             gate.TrySetResult();
         }
 
-        public Task WaitUntilAsync(Func<bool> predicate, int seconds = 5)
+        /// <summary>Waits for the fake's state to satisfy the predicate, driven by the
+        /// change signal every mutation notifies; the deadline is the failure budget,
+        /// never the observation mechanism.</summary>
+        public async Task WaitUntilAsync(Func<bool> predicate, int seconds = 5)
         {
-            return WaitForAsync(() =>
+            using var deadline = TestDeadlines.Create(
+                TestContext.Current.CancellationToken,
+                TimeSpan.FromSeconds(seconds));
+            while (true)
             {
-                lock (sync) return predicate();
-            }, seconds);
+                Task signal;
+                lock (sync)
+                {
+                    if (predicate()) return;
+                    signal = changed.Task;
+                }
+
+                try
+                {
+                    await signal.WaitAsync(deadline.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"The contribution engine did not reach the expected state within the stage budget; "
+                        + "the budget is the failure, not the observation.");
+                }
+            }
         }
 
         private static TaskCompletionSource NewTcs() =>

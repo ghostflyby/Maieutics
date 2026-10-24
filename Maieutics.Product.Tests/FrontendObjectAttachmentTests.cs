@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Maieutics.Providers.OpenAI;
 
 namespace Maieutics.Product.Tests;
 
@@ -216,7 +215,7 @@ public sealed class FrontendObjectAttachmentTests
         // enabled; the transform turns it on for this host.
         return FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             cancellationToken,
-            new FakeOpenAiServer(OpenAiApiFlavor.ChatCompletions, answer: "seen"),
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "seen"),
             hanging: false,
             transformConfiguration: body => body.Replace(
                 "\"Maieutics\": {",

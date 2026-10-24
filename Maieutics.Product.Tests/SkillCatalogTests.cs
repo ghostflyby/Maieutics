@@ -18,8 +18,8 @@ public sealed class SkillCatalogTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(workspaceRoot);
-        await TempDirectoryCleanup.DeleteWithRetryAsync(userRoot);
+        await TempArea.DeleteAsync(workspaceRoot, CancellationToken.None);
+        await TempArea.DeleteAsync(userRoot, CancellationToken.None);
     }
 
     private static void WriteSkill(string root, string name, string description)
@@ -474,7 +474,7 @@ public sealed class SkillResourceProviderTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        await TempArea.DeleteAsync(root, CancellationToken.None);
     }
 
     private SkillCatalog CreateCatalog()
@@ -564,7 +564,9 @@ public sealed class SkillResourceProviderTests : IAsyncDisposable
     [Fact(Timeout = 30_000)]
     public async Task BodyRelinkedOutsideTheRootAfterDiscoveryIsATypedNotFound()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The test exercises symlink semantics, which are POSIX-only.");
+
 
         var outsideDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outsideDirectory);
@@ -613,7 +615,7 @@ public sealed class SkillsProfileProviderTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        await TempArea.DeleteAsync(root, CancellationToken.None);
     }
 
     private static async Task<AgentRunProfile> AcquireAsync(SkillsProfileProvider provider)

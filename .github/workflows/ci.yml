@@ -12,7 +12,7 @@ on:
         required: false
         default: "1"
       test_filter:
-        description: "Optional --filter expression for the Test job"
+        description: "Optional fully-qualified test class name for the Test job (--filter-class)"
         required: false
         default: ""
       test_projects:
@@ -187,9 +187,13 @@ jobs:
           # The default solution scope reuses the build step via --no-build; a scoped
           # project hunt builds itself, because `dotnet test <csproj> --no-build` fails
           # test-host resolution under the .NET 10 MTP bridge (zero tests, no RID).
+          # Filtering uses the MTP-native class filter: xUnit under MTP does not accept
+          # the VSTest-style --filter, and unknown arguments are forwarded to the test
+          # application (which then fails with exit 5).
           args=("$TEST_PROJECTS" --configuration Release)
           if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--no-restore --no-build); fi
-          if [ -n "$TEST_FILTER" ]; then args+=(--filter "$TEST_FILTER"); fi
+          if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--minimum-expected-tests 1000); fi
+          if [ -n "$TEST_FILTER" ]; then args+=(--filter-class "$TEST_FILTER"); fi
           for pass in $(seq 1 "$TEST_REPEATS"); do
             echo "=== test pass $pass/$TEST_REPEATS ==="
             dotnet test "${args[@]}" || exit 1

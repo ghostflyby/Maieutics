@@ -9,7 +9,7 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        await TempArea.DeleteAsync(root, CancellationToken.None);
     }
 
     private string WriteSkill(string relativeDirectory, string body, string fileName = "SKILL.md")
@@ -194,7 +194,9 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
     [Fact]
     public void SymlinkedBodyEscapingTheRootIsRejected()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The test exercises symlink semantics, which are POSIX-only.");
+
 
         var outsideDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outsideDirectory);
@@ -219,7 +221,9 @@ public sealed class SkillDiscoveryTests : IAsyncDisposable
     [Fact]
     public void SymlinkedSkillDirectoryIsNotTraversed()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The test exercises symlink semantics, which are POSIX-only.");
+
 
         var outsideDirectory = Path.Combine(Path.GetTempPath(), $"maieutics-outside-{Guid.NewGuid():N}");
         Directory.CreateDirectory(outsideDirectory);

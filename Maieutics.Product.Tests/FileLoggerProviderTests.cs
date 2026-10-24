@@ -28,7 +28,7 @@ public sealed class FileLoggerProviderTests : IAsyncDisposable
     {
         try
         {
-            await TempDirectoryCleanup.DeleteWithRetryAsync(logDirectory);
+            await TempArea.DeleteAsync(logDirectory, CancellationToken.None);
         }
         catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException)
         {

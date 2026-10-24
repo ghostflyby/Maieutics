@@ -17,7 +17,7 @@ public sealed class PluginToolCoordinatorTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(10);
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DescribedExportsBecomeSnapshotTools()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
@@ -33,7 +33,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal(JsonValueKind.Object, tool.JsonSchema.ValueKind);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task RemovedRegistrationDropsTheDefinition()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
@@ -48,7 +48,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Empty(coordinator.SnapshotTools());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AFailedDescribeKeepsThePreviousDefinitionAndRetriesNextFrame()
     {
         var fail = false;
@@ -81,7 +81,7 @@ public sealed class PluginToolCoordinatorTests
             "a failed describe is retried on the next frame");
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnInvalidDeclarationIsHiddenAndDoesNotThrow()
     {
         var invoker = new FakeInvoker((_, _, _, _, _, _, _) =>
@@ -95,7 +95,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Empty(coordinator.SnapshotTools());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AReservedNameIsHidden()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
@@ -110,7 +110,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Empty(coordinator.SnapshotTools());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AForcedPluginIsDescribedAgain()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
@@ -129,7 +129,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal(before + 1, invoker.Calls.Count(call => call.Phase == "describe"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheSnapshotIsStableAcrossLaterFrames()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, _) =>
@@ -146,7 +146,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Empty(coordinator.SnapshotTools());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ACallRoutesTheModelArgumentsAndReturnsTheEnvelope()
     {
         using var arguments = JsonDocument.Parse("""{"text":"hello"}""");
@@ -173,7 +173,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.NotNull(call.SessionId);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ARecoverableErrorOutcomeBecomesAnErrorEnvelope()
     {
         var invoker = new FakeInvoker((pluginId, exportName, extensionPoint, _, _, _, callId) =>
@@ -196,7 +196,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal("no_match", envelope.GetProperty("code").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AHostErrorBecomesARecoverableEnvelope()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, callId) =>
@@ -218,7 +218,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal("plugin_pending_approval", envelope.GetProperty("code").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ABudgetExpiryBecomesATimeoutEnvelope()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, callId) =>
@@ -244,7 +244,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal("tool_timeout", envelope.GetProperty("code").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AShutdownCancelPropagatesInsteadOfBecomingAResult()
     {
         var invoker = new FakeInvoker((pluginId, exportName, _, _, _, _, callId) =>
@@ -268,7 +268,7 @@ public sealed class PluginToolCoordinatorTests
             Task.Run(() => InvokeAsync(tool, arguments.RootElement, cancellation.Token)));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task DisposeCancelsAnInFlightDescribe()
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -287,7 +287,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Empty(coordinator.SnapshotTools());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AHostUnavailableExceptionBecomesARecoverableEnvelope()
     {
         // The plugin host is a separate process that can be disconnected, restarting, or gone.
@@ -314,7 +314,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Contains("not connected", envelope.GetProperty("message").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ADisposedHostLifetimeBecomesARecoverableEnvelope()
     {
         // A restart window can dispose the manager's lifetime source, which makes the linked
@@ -338,7 +338,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal("plugin_unavailable", envelope.GetProperty("code").GetString());
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ATurnCancellationStillPropagatesRatherThanBecomingAnEnvelope()
     {
         // The recoverable mapping must not swallow a real cancellation: a cancelled turn is
@@ -363,7 +363,7 @@ public sealed class PluginToolCoordinatorTests
                 cancellation.Token)));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheDeclaredTimeoutReachesTheInvocation()
     {
         // The declaration's budget must arrive at the manager as the call's timeout; a
@@ -391,7 +391,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal(TimeSpan.FromSeconds(7), observed);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AnUndeclaredTimeoutUsesTheDefaultBudget()
     {
         TimeSpan? observed = null;
@@ -416,7 +416,7 @@ public sealed class PluginToolCoordinatorTests
         Assert.Equal(PluginToolDefinition.DefaultTimeout, observed);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task TheKernelWaitAddsTheWorkerStartAllowance()
     {
         // The declared budget is the handler's, so the kernel's own wait must be strictly
@@ -515,7 +515,7 @@ public sealed class PluginToolCoordinatorTests
         return JsonSerializer.Deserialize(json, ReplControlJsonContext.Default.ReplEnvelope)!;
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task ABudgetLessCallKeepsTheDefaultCeiling()
     {
         // The worker-start allowance protects a *declared* handler budget. A budget-less call
@@ -549,8 +549,11 @@ public sealed class PluginToolCoordinatorTests
         // the caller still wins immediately (the caller's token is always linked).
         var call = tool.InvokeAsync(invocation, deadline.Token).AsTask();
         _ = await harness.Host.ReadSentAsync(deadline.Token);
+        // Scenario time, not a detector: the declared budget is the condition under test —
+        // the wait must outlive it (allowance applied), so no successor event exists to
+        // await; absence of the call's completion IS the assertion.
         await Task.Delay(TimeSpan.FromMilliseconds(200), deadline.Token);
-        Assert.False(call.IsCompleted);
+        Assert.False(call.IsCompleted, "the kernel wait outlives the declared handler budget");
 
         await deadline.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await call; });

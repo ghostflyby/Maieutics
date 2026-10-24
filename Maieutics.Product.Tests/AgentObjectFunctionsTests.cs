@@ -20,7 +20,7 @@ public sealed class AgentObjectFunctionsTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await TempDirectoryCleanup.DeleteWithRetryAsync(objectsRoot);
+        await TempArea.DeleteAsync(objectsRoot, CancellationToken.None);
     }
 
     [Fact(Timeout = 30_000)]

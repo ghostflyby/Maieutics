@@ -35,6 +35,34 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
 
     private long sequence;
 
+    private readonly Lock lapseGates = new();
+    private readonly Dictionary<string, TaskCompletionSource> lapseSignals = new(StringComparer.Ordinal);
+
+    /// <summary>Internal test observability: completes when the session's last announcing
+    /// socket withdraws — the same removal that takes the session out of the gate, so an
+    /// awaited task guarantees a subsequent gate read observes the lapse. The completed
+    /// source is swapped for a fresh one both on completion and on the next announce, so
+    /// the property always reflects the NEXT lapse: capture it before closing the socket
+    /// and await it after.</summary>
+    internal Task Lapsed(string sessionId)
+    {
+        lock (lapseGates)
+        {
+            return GetLapseSignalLocked(sessionId).Task;
+        }
+    }
+
+    private TaskCompletionSource GetLapseSignalLocked(string sessionId)
+    {
+        if (!lapseSignals.TryGetValue(sessionId, out var signal))
+        {
+            signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lapseSignals[sessionId] = signal;
+        }
+
+        return signal;
+    }
+
     /// <inheritdoc />
     public bool HasIdeFrontend => !counts.IsEmpty;
 
@@ -51,6 +79,13 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
         counts.AddOrUpdate(sessionId, 1, static (_, count) => count + 1);
         var id = Guid.NewGuid();
         registrations[id] = new Registration(sessionId, Interlocked.Increment(ref sequence), sendAsync, new SemaphoreSlim(1, 1));
+        lock (lapseGates)
+        {
+            // A completed lapse signal belongs to the previous cycle; re-arming here keeps
+            // Lapsed(sessionId) meaningful across announce/withdraw rounds.
+            lapseSignals[sessionId] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
         return id;
     }
 
@@ -75,7 +110,17 @@ internal sealed class FrontendIdeSockets : IIdeFrontendGate
             {
                 if (((ICollection<KeyValuePair<string, int>>)counts).Remove(
                         new KeyValuePair<string, int>(sessionId, count)))
+                {
+                    if (count > 0)
+                    {
+                        lock (lapseGates)
+                        {
+                            GetLapseSignalLocked(sessionId).TrySetResult();
+                        }
+                    }
+
                     return;
+                }
             }
             else if (counts.TryUpdate(sessionId, count - 1, count))
             {

@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
+using GatedProvider = Maieutics.Testing.GatedModelProvider;
 using Maieutics.Frontend;
 
 namespace Maieutics.Product.Tests;
@@ -39,7 +40,7 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
     public async Task WorkerExitTransitionWakesAWaiterThatSubscribedAtTheSettledVersion()
     {
         using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken, TimeSpan.FromSeconds(50));
-        var provider = new GatedProvider();
+        var provider = new GatedProvider(answer: Answer);
         await using var harness = await StartHarnessAsync(deadline.Token, provider);
         var sessionId = await harness.GetSessionIdAsync(deadline.Token);
         var addressed = new Agent.AgentSessionId(Guid.ParseExact(sessionId, "N"));
@@ -122,189 +123,11 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         CancellationToken cancellationToken,
         GatedProvider provider)
     {
-        // The shared harness extracts the endpoint only from its known provider types, so
-        // the gated server injects its endpoint through the configuration transform.
+        // The shared harness extracts the endpoint from the provider instance, gated or not.
         return await Harness.StartAsync(
             cancellationToken,
             provider,
-            hanging: false,
-            transformConfiguration: body => body.Replace(
-                "\"Endpoint\": \"\"",
-                $"\"Endpoint\": \"{provider.Endpoint}\"",
-                StringComparison.Ordinal));
+            hanging: false);
     }
 
-    /// <summary>A chat-completions SSE provider that parks every request until the test
-    /// releases it, so run settlements become explicit steps and the queue's settle
-    /// publish is a deterministic observation point (the shape of the turn queue tests'
-    /// gated server, trimmed to this test's single parked run).</summary>
-    private sealed class GatedProvider : IAsyncDisposable
-    {
-        private readonly CancellationTokenSource cancellation = new();
-        private readonly TcpListener listener = new(IPAddress.Loopback, 0);
-        private readonly Task serveLoop;
-        private readonly Lock gate = new();
-        private readonly List<TaskCompletionSource> parked = [];
-        private TaskCompletionSource parkedChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly List<Task> connections = [];
-
-        public GatedProvider()
-        {
-            listener.Start();
-            var endpoint = (IPEndPoint)listener.LocalEndpoint;
-            Endpoint = new Uri($"http://127.0.0.1:{endpoint.Port}/v1/");
-            serveLoop = ServeAsync(cancellation.Token);
-        }
-
-        public Uri Endpoint { get; }
-
-        /// <summary>Waits until at least <paramref name="minimum" /> provider requests
-        /// have arrived and are waiting for release. Signal-driven: every parked-count
-        /// mutation completes a fresh source, so the wait needs no polling.</summary>
-        public async Task WaitForParkedAsync(int minimum, CancellationToken cancellationToken)
-        {
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                Task signal;
-                lock (gate)
-                {
-                    if (parked.Count >= minimum) return;
-
-                    signal = parkedChanged.Task;
-                }
-
-                await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        /// <summary>Releases the oldest provider request still awaiting release. The
-        /// completed source is fired outside the lock: the entry is already unlisted, so
-        /// only this call can complete it.</summary>
-        public void ReleaseNext()
-        {
-            TaskCompletionSource? release = null;
-            lock (gate)
-            {
-                while (parked.Count > 0)
-                {
-                    var next = parked[0];
-                    parked.RemoveAt(0);
-                    if (next.Task.IsCompleted) continue;
-                    release = next;
-                    break;
-                }
-
-                if (release is not null)
-                {
-                    parkedChanged.TrySetResult();
-                    parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                }
-            }
-
-            release?.TrySetResult();
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            listener.Stop();
-            parkedChanged.TrySetResult();
-            Task[] connectionTasks;
-            lock (gate)
-            {
-                connectionTasks = [.. connections];
-            }
-
-            try
-            {
-                await Task.WhenAll(connectionTasks).ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            try
-            {
-                await serveLoop.ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or IOException or ObjectDisposedException)
-            {
-            }
-
-            cancellation.Dispose();
-        }
-
-        private async Task ServeAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    var client = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
-                    Task connection = ServeClientAsync(client, cancellationToken);
-                    lock (gate)
-                    {
-                        connections.Add(connection);
-                    }
-                }
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or SocketException or ObjectDisposedException or IOException)
-            {
-            }
-        }
-
-        private async Task ServeClientAsync(TcpClient client, CancellationToken cancellationToken)
-        {
-            try
-            {
-                await using var stream = client.GetStream();
-                // The request must be read in full before parking, so a release can never
-                // land while the client is still sending: answering a partially-sent
-                // request resets the connection and surfaces as a provider error instead
-                // of this test's answer.
-                await FakeOpenAiServer.ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
-                var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                lock (gate)
-                {
-                    parked.Add(release);
-                    parkedChanged.TrySetResult();
-                    parkedChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                }
-
-                try
-                {
-                    await release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    lock (gate)
-                    {
-                        parked.Remove(release);
-                    }
-                }
-
-                var body = Encoding.UTF8.GetBytes(
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"" + Answer + "\"}}]}\n\n" +
-                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
-                var headers = Encoding.ASCII.GetBytes(
-                    $"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {body.Length}\r\n\r\n");
-                await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
-                await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when
-                (exception is OperationCanceledException or EndOfStreamException or SocketException or IOException
-                    or ObjectDisposedException)
-            {
-            }
-            finally
-            {
-                client.Dispose();
-            }
-        }
-    }
 }

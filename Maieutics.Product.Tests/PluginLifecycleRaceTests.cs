@@ -64,7 +64,7 @@ public sealed class PluginLifecycleRaceTests
         var released = harness.Manager.HostConnectionReleased;
         harness.Host.Dispose();
         await released.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
-        var replacement = new PluginHostInvokeTests.FakeHostWebSocket();
+        var replacement = new TestWebSocket();
         var attached = harness.Manager.HostConnectionAttached;
         var replacementAttach = harness.Manager.AttachHostAsync(replacement, deadline.Token);
         await attached.WaitAsync(TimeSpan.FromSeconds(30), deadline.Token);
@@ -221,7 +221,7 @@ public sealed class PluginLifecycleRaceTests
             // dispose landed, readiness is completed but the previous generation's connection
             // slot is still held and the attach is refused instead. Either way nothing
             // attaches, which the untouched accept signal below pins.
-            using var probe = new PluginHostInvokeTests.FakeHostWebSocket();
+            using var probe = new TestWebSocket();
             try
             {
                 await harness.Manager.AttachHostAsync(probe, deadline.Token);
@@ -238,7 +238,7 @@ public sealed class PluginLifecycleRaceTests
         }
         finally
         {
-            if (Directory.Exists(pluginsRoot)) Directory.Delete(pluginsRoot, true);
+            if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);
         }
     }
 

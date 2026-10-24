@@ -453,7 +453,7 @@ public sealed class ReplControlHostTests
         }
         finally
         {
-            Directory.Delete(root, true);
+            await TempArea.DeleteAsync(root, CancellationToken.None);
         }
     }
 

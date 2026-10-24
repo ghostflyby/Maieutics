@@ -121,7 +121,7 @@ public sealed class WorkspaceLinkIdentityTests
             Path.Combine(replacementSource, "marker.txt"),
             "replacement project",
             TestContext.Current.CancellationToken);
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
         Directory.Move(replacementSource, project);
         var replacement = project;
 
@@ -156,7 +156,7 @@ public sealed class WorkspaceLinkIdentityTests
         var home = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         Workspace.Create(home).OpenLink(project, null);
 
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);
         var links = Workspace.Create(remounted).Capture().Links
                     ?? throw new InvalidOperationException("missing links");
@@ -323,7 +323,7 @@ public sealed class WorkspaceLinkIdentityTests
         // on every file system regardless of birth-time support.
         var replacementSource = Directory.CreateDirectory(
             Path.Combine(workspace.ParentPath, "project-replacement")).FullName;
-        Directory.Delete(project, true);
+        await TempArea.DeleteAsync(project, CancellationToken.None);
         Directory.Move(replacementSource, project);
 
         var remounted = WorkspaceHome.Ensure(workspace.Path, workspace.Path);

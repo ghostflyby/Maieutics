@@ -39,6 +39,10 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly FrontendTurnQueue turnQueue;
     private readonly ObjectStore? objectStore;
     private readonly FrontendCommRouter? commRouter;
+
+    /// <summary>The live comm router, so tests can observe a session plane's live-set
+    /// transitions through its completion signal instead of probing with hello reads.</summary>
+    internal FrontendCommRouter? CommRouter => commRouter;
     private readonly IFrontendPluginSurface? pluginSurface;
     private readonly Skills.SkillCatalog? skillCatalog;
     private readonly Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor;

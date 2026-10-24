@@ -211,7 +211,7 @@ public sealed class PermissionLayerRegistrationTests
     /// never blocking a pool thread. Teardown gets its own budget, not the test token: after a
     /// timeout that token is canceled and would abort cleanup and leak the tree.</summary>
     private static Task DeleteTemporaryRootAsync(string root) =>
-        TempDirectoryCleanup.DeleteWithRetryAsync(root);
+        TempArea.DeleteAsync(root);
 
     /// <summary>Builds the configuration the composition root binds. The workspace home points at
     /// the test's own directory so the host under test reads and writes only inside it; the

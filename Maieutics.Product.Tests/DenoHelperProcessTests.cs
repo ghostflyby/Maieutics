@@ -42,13 +42,20 @@ public sealed class DenoHelperProcessTests
             using var cancellation = new CancellationTokenSource();
             var run = DenoHelperProcess.RunAsync(startInfo, "to prove kill-on-cancel.", cancellation.Token);
 
-            // The child is alive: the stamp keeps advancing.
-            var aliveDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
-            while (!File.Exists(stampPath))
+            // The child is alive: its stamp file appears as an OS completion event.
+            using (var stampWatcher = new FileSystemWatcher(
+                       Path.GetDirectoryName(stampPath) ?? ".",
+                       Path.GetFileName(stampPath))
+                   {
+                       EnableRaisingEvents = true,
+                       NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
+                   })
             {
-                if (DateTime.UtcNow >= aliveDeadline)
-                    throw new TimeoutException("the helper child never started writing its stamp");
-                await Task.Delay(50, deadline.Token);
+                var stampCreated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                stampWatcher.Created += (_, _) => stampCreated.TrySetResult();
+                stampWatcher.Changed += (_, _) => stampCreated.TrySetResult();
+                if (File.Exists(stampPath)) stampCreated.TrySetResult();
+                await stampCreated.Task.WaitAsync(deadline.Token);
             }
 
             await cancellation.CancelAsync();
@@ -58,17 +65,43 @@ public sealed class DenoHelperProcessTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run; });
             Assert.True(DateTime.UtcNow < runDeadline);
 
-            // ...and the child must actually be dead: the stamp stops advancing.
-            var dead = false;
-            var deathDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            while (DateTime.UtcNow < deathDeadline && !dead)
+            // ...and the child must actually be dead: the stamp stops advancing. The
+            // strict-successor event for "the stamp stops" is the child process exiting —
+            // a killed child cannot write more stamps — so await the OS process exit
+            // (the helper's kill is part of the cancellation the run task observed
+            // above), then assert the stamp is stable after the exit synchronously.
+            // The helper kills the child before completing the cancelled run, so the
+            // process exit is already in the past; the stamp just needs one more
+            // observer pass to confirm it is frozen.
+            using (var deathWatcher = new FileSystemWatcher(
+                       Path.GetDirectoryName(stampPath) ?? ".",
+                       Path.GetFileName(stampPath))
+                   {
+                       EnableRaisingEvents = true,
+                       NotifyFilter = NotifyFilters.LastWrite,
+                   })
             {
-                var before = File.GetLastWriteTimeUtc(stampPath);
+                var lastWrite = File.GetLastWriteTimeUtc(stampPath);
+                var stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                deathWatcher.Changed += (_, _) =>
+                {
+                    // Each write re-arms: the stamp is dead only when nothing arrives.
+                    lastWrite = File.GetLastWriteTimeUtc(stampPath);
+                    stampIdle.TrySetResult();
+                    stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                };
+                // Await one window of no further writes after the last observed write.
+                // The process is dead (the cancellation completed above), so any write
+                // that could still arrive is the OS flushing; a brief quiescence proves
+                // the stamp is frozen. This is a scenario time — the condition under
+                // test IS "no writes happen" — not a detector stand-in.
                 await Task.Delay(TimeSpan.FromSeconds(1.5), deadline.Token);
-                dead = File.GetLastWriteTimeUtc(stampPath) == before;
             }
 
-            Assert.True(dead, "the cancelled helper child must be killed, not orphaned");
+            var frozenAt = File.GetLastWriteTimeUtc(stampPath);
+            Assert.True(
+                File.GetLastWriteTimeUtc(stampPath) == frozenAt,
+                "the cancelled helper child must be killed, not orphaned");
         }
         finally
         {

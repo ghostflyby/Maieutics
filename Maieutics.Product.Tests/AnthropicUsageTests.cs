@@ -13,7 +13,7 @@ public sealed class AnthropicUsageTests
     public async Task AdapterEmitsTheStreamedMessageUsageAsOneUsageContent()
     {
         using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
-        await using var server = new FakeAnthropicServer("claude-test", "Hello from Claude");
+        await using var server = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "Hello from Claude");
         using var client = new AnthropicMessagesChatClient("claude-test", "configured-key", server.Endpoint);
 
         var updates = new List<ChatResponseUpdate>();
@@ -35,7 +35,7 @@ public sealed class AnthropicUsageTests
     public async Task RunResultRecordsTheUsageTheAnthropicStreamReported()
     {
         using var deadline = TestDeadlines.Create(TestContext.Current.CancellationToken);
-        await using var server = new FakeAnthropicServer("claude-test", "Hello from Claude");
+        await using var server = new GatedModelProvider(ModelApiFlavor.Anthropic, ProviderGateMode.Scripted, model: "claude-test", answer: "Hello from Claude");
         using var client = AnthropicChatClientFactory.Create(
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));

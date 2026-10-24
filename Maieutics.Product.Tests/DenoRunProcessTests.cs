@@ -59,7 +59,9 @@ public sealed class DenoRunProcessTests
 
         await using var process = await StartChildAsync(startInfo, InternalDenoProcessKind.DenoRepl, new NullLogger());
 
-        Assert.Null(process.ExitCode);
+        // The start call may return after an instantly-exiting child has already been
+        // reaped, so the pre-completion ExitCode is not a stable observable; the
+        // completion's exit code is: the reaped code surfaces through the wait handle.
         await process.Completion.WaitAsync(deadline.Token);
         Assert.Equal(7, process.ExitCode);
     }
@@ -194,11 +196,25 @@ public sealed class DenoRunProcessTests
                         int.TryParse(await File.ReadAllTextAsync(pidFilePath, deadline.Token), out var parsed))
                         grandchildPid = parsed;
                     else
-                        await Task.Delay(50, deadline.Token);
+                    {
+                        using var pidWatcher = new FileSystemWatcher(
+                            Path.GetDirectoryName(pidFilePath) ?? ".",
+                            Path.GetFileName(pidFilePath))
+                        {
+                            EnableRaisingEvents = true,
+                            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                        };
+                        var pidArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        pidWatcher.Created += (_, _) => pidArrived.TrySetResult();
+                        pidWatcher.Changed += (_, _) => pidArrived.TrySetResult();
+                        if (File.Exists(pidFilePath)) pidArrived.TrySetResult();
+                        await pidArrived.Task.WaitAsync(deadline.Token);
+                    }
                 }
 
-                // Give the parent a moment to actually exit, then verify the grandchild is live.
-                await Task.Delay(500, deadline.Token);
+                // The parent exit has a completion signal: the eval task completing IS the
+                // parent finishing its own exit (the helper observes and forwards it).
+                // The grandchild liveness check is synchronous after that completion.
                 using (var grandchild = Process.GetProcessById(grandchildPid))
                 {
                     Assert.False(grandchild.HasExited, "the test requires a live drain holder");

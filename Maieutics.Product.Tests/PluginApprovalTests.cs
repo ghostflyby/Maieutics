@@ -588,6 +588,6 @@ public sealed class PluginApprovalTests
 
     private static void Cleanup(string root)
     {
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        TempArea.DeleteTree(root);
     }
 }

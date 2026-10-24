@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
+using ScriptedChatClient = Maieutics.Testing.ScriptedChatClient;
 namespace Maieutics.Agent.Tests;
 
 /// <summary>The content triage point: small UTF-8 text stays inline; binary and oversized
@@ -214,35 +215,6 @@ public sealed class AgentBlobContentTests
         }
     }
 
-    private sealed class ScriptedChatClient(
-        params Func<IReadOnlyList<ChatMessage>, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>[] responses)
-        : IChatClient
-    {
-        private readonly Queue<Func<IReadOnlyList<ChatMessage>, CancellationToken,
-            IAsyncEnumerable<ChatResponseUpdate>>> responses = new(responses);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return responses.Dequeue()(messages.ToArray(), cancellationToken);
-        }
-
-        public Task<ChatResponse> GetResponseAsync(
-            IEnumerable<ChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromException<ChatResponse>(new NotSupportedException());
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
-    }
 
     private sealed class InMemoryObjectStore : IAgentObjectStore
     {

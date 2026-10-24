@@ -397,21 +397,16 @@ public sealed class PluginMcpCoordinatorTests
             ]));
         Assert.True(await coordinator.PublishRegistryAsync([providerRegistration]).WaitAsync(deadline.Token));
         Assert.Single(generationFactory.Generations);
-        // The fingerprint change re-projects the tool surface over the LIVE
-        // connection: poll the exposed surface instead of racing the refresh.
-        while (true)
-        {
-            var poll = coordinator.AcquireLeases();
-            if (poll.Count == 1 &&
-                poll[0].Tools.Select(static function => function.Name).Order().SequenceEqual(["echo", "echo_alias"]))
-            {
-                await poll[0].DisposeAsync();
-                break;
-            }
-
-            foreach (var lease in poll) await lease.DisposeAsync();
-            await Task.Delay(50, deadline.Token);
-        }
+        // The fingerprint change re-projects the tool surface over the LIVE connection.
+        // The revision's application has a completion signal: await the registry
+        // reconciliation, then assert the re-projected surface synchronously.
+        await coordinator.RegistryReconciled.WaitAsync(deadline.Token);
+        var projected = coordinator.AcquireLeases();
+        Assert.Single(projected);
+        Assert.Equal(
+            ["echo", "echo_alias"],
+            projected[0].Tools.Select(static function => function.Name).Order());
+        await projected[0].DisposeAsync();
 
         // The adjuster drops the server: it leaves the view before the merge, so
         // no generation survives the revision.

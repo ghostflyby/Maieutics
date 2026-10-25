@@ -282,8 +282,10 @@ public static class MaieuticsHost
             MaieuticsProcessSandboxMode.Require => Processes.ProcessSandboxMode.Require,
             _ => Processes.ProcessSandboxMode.Prefer
         };
-        builder.Services.AddSingleton<Processes.IProcessSandboxPolicy>(
-            new Processes.PolicyProcessSandboxPolicy(processSandboxMode));
+        builder.Services.AddSingleton<Processes.IProcessSandboxPolicy>(services =>
+            new Processes.PolicyProcessSandboxPolicy(
+                processSandboxMode,
+                trustedWorkspaceRoot: services.GetRequiredService<Workspace>().RootPath));
         builder.Services.AddSingleton<Processes.ProcessSpawnFunctions>(static services =>
             new Processes.ProcessSpawnFunctions(
                 services.GetRequiredService<Processes.IProcessSandboxPolicy>(),

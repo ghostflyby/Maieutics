@@ -21,7 +21,8 @@ internal enum ProcessSandboxMode
 /// vector to actually launch (the requested executable verbatim, or a platform sandbox wrapper
 /// carrying it) together with the environment the child receives — always captured from the
 /// session's effective policy by <see cref="ProcessEnvironment"/>, never the kernel's own
-/// environment.</summary>
+/// environment — and, when the launch owns one, the per-spawn temporary directory the caller
+/// must delete when the child settles.</summary>
 internal abstract record ProcessLaunchPlan
 {
     internal static ProcessLaunchPlan Denied(string reason)
@@ -32,9 +33,10 @@ internal abstract record ProcessLaunchPlan
     internal static ProcessLaunchPlan Launch(
         IReadOnlyList<string> argv,
         IReadOnlyDictionary<string, string?> environment,
-        bool sandboxed)
+        bool sandboxed,
+        string? temporaryDirectory)
     {
-        return new LaunchPlan(argv, environment, sandboxed);
+        return new LaunchPlan(argv, environment, sandboxed, temporaryDirectory);
     }
 
     internal sealed record DeniedPlan(string Reason) : ProcessLaunchPlan;
@@ -42,7 +44,8 @@ internal abstract record ProcessLaunchPlan
     internal sealed record LaunchPlan(
         IReadOnlyList<string> Argv,
         IReadOnlyDictionary<string, string?> Environment,
-        bool Sandboxed) : ProcessLaunchPlan;
+        bool Sandboxed,
+        string? TemporaryDirectory) : ProcessLaunchPlan;
 }
 
 /// <summary>The process-sandbox enforcement seam for spawns requested from inside a Deno child

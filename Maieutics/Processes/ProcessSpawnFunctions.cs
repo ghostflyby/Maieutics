@@ -54,7 +54,7 @@ internal sealed class ProcessSpawnFunctions
         Functions =
         [
             CreateFunction(
-                (Func<string, string[]?, string?, int?, AIFunctionArguments, CancellationToken, ValueTask<ProcessSpawnResult>>)
+                (Func<string, string[]?, string?, int?, string[]?, AIFunctionArguments, CancellationToken, ValueTask<ProcessSpawnResult>>)
                     SpawnAsync,
                 "process_spawn",
                 "Runs one executable with arguments on behalf of the calling session's Deno child: " +
@@ -89,6 +89,8 @@ internal sealed class ProcessSpawnFunctions
         string? stdin = null,
         [Description("The timeout in milliseconds after which the process tree is killed, 1 through 600000. Defaults to 60000.")]
         int? timeoutMs = null,
+        [Description("Environment variable NAMES the child may receive; the values come from the policy's env allowlist, never from the caller. Omit for the full allowlisted environment.")]
+        string[]? environmentNames = null,
         AIFunctionArguments toolArguments = default,
         CancellationToken cancellationToken = default)
     {
@@ -104,6 +106,17 @@ internal sealed class ProcessSpawnFunctions
                 throw new AgentToolException(
                     "process_spawn_invalid_arguments",
                     $"An argument exceeds {MaximumArgumentCharacters} characters.");
+        }
+        if (environmentNames is { Length: > 256 })
+            throw new AgentToolException(
+                "process_spawn_invalid_arguments",
+                "At most 256 environment names are accepted.");
+        foreach (var name in environmentNames ?? [])
+        {
+            if (name.Length == 0 || name.Length > 256)
+                throw new AgentToolException(
+                    "process_spawn_invalid_arguments",
+                    "Environment names must be 1-256 characters.");
         }
 
         var requestedTimeout = timeoutMs ?? DefaultTimeoutMs;
@@ -125,6 +138,14 @@ internal sealed class ProcessSpawnFunctions
                       AgentSessionId.TryParse(text, out var parsed)
             ? parsed
             : (AgentSessionId?)null;
+        foreach (var argument in requestedArguments)
+        {
+            if (argument.Contains('\0'))
+                throw new AgentToolException(
+                    "process_spawn_invalid_arguments",
+                    "An argument contains a NUL character.");
+        }
+
         // The spawn surface's baseline matches the model-tool posture (the workspace root is
         // readable and writable): a sandboxed child must at least resolve its own working
         // directory, and a build tool that cannot write its tree is useless — configuration
@@ -136,6 +157,24 @@ internal sealed class ProcessSpawnFunctions
             throw new AgentToolException("process_spawn_denied", denied.Reason);
 
         var launch = (ProcessLaunchPlan.LaunchPlan)plan;
+        if (environmentNames is { Length: > 0 })
+        {
+            // The caller selects names only; the values stay the policy allowlist's, so no
+            // environment value ever crosses from the cell into the child. The comparer
+            // matches ProcessEnvironment's platform semantics so a lowercase spelling of an
+            // allowlisted name still selects it on Windows.
+            var selected = new HashSet<string>(
+                environmentNames,
+                OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            launch = new ProcessLaunchPlan.LaunchPlan(
+                launch.Argv,
+                launch.Environment
+                    .Where(pair => selected.Contains(pair.Key))
+                    .ToDictionary(static pair => pair.Key, static pair => pair.Value),
+                launch.Sandboxed,
+                launch.TemporaryDirectory);
+        }
+
         return await RunAsync(
                 launch,
                 stdinBytes,
@@ -146,9 +185,11 @@ internal sealed class ProcessSpawnFunctions
     }
 
     /// <summary>Owns the child for one spawn: starts the planned vector with the planned
-    /// environment, streams both outputs into bounded buffers, kills the whole tree on the
-    /// timeout, an output cap, or cancellation, and decodes strictly. The launch vector is
-    /// trusted kernel-planned argv (positional, no shell), so no quoting rules apply.</summary>
+    /// environment, streams both outputs into bounded buffers (past the cap the stream is
+    /// drained and discarded, never a reason to kill the child), kills the whole tree on the
+    /// timeout or cancellation, deletes the per-spawn temporary directory when the child
+    /// settles, and decodes strictly. The launch vector is trusted kernel-planned argv
+    /// (positional, no shell), so no quoting rules apply.</summary>
     private static async Task<ProcessSpawnResult> RunAsync(
         ProcessLaunchPlan.LaunchPlan launch,
         byte[] stdinBytes,
@@ -176,62 +217,97 @@ internal sealed class ProcessSpawnFunctions
         timeoutSource.CancelAfter(timeout);
         var killToken = timeoutSource.Token;
 
-        using var process = new ChildProcess { StartInfo = startInfo, EnableRaisingEvents = true };
-        if (!process.Start())
-            throw new AgentToolException("process_spawn_failed", "The process could not be started.");
-
-        var stdout = CaptureAsync(process, process.StandardOutput.BaseStream);
-        var stderr = CaptureAsync(process, process.StandardError.BaseStream);
-        var exitTask = WaitForExitAsync(process, killToken);
-
-        if (stdinBytes.Length > 0)
+        ChildProcess process;
+        try
         {
-            try
-            {
-                await process.StandardInput.BaseStream.WriteAsync(stdinBytes, killToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (
-                exception is IOException or ObjectDisposedException or OperationCanceledException)
-            {
-                // The child closed its stdin early or died; the exit task reports the outcome.
-            }
+            process = new ChildProcess { StartInfo = startInfo, EnableRaisingEvents = true };
+            process.Start();
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or PlatformNotSupportedException or IOException)
+        {
+            throw new AgentToolException(
+                "process_spawn_failed",
+                $"The process could not be started: {exception.Message}");
         }
 
         try
         {
-            await process.StandardInput.BaseStream.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (IOException)
-        {
-        }
+            // The reads carry the kill token so an orphaned descendant holding the pipe
+            // write-ends cannot outlive the timeout: the captured prefix returns as
+            // truncated instead of hanging the tool.
+            var stdout = CaptureAsync(process.StandardOutput.BaseStream, killToken);
+            var stderr = CaptureAsync(process.StandardError.BaseStream, killToken);
+            var exitTask = WaitForExitAsync(process, killToken);
 
-        var exited = await exitTask.ConfigureAwait(false);
-        var stdoutBytes = await stdout.ConfigureAwait(false);
-        var stderrBytes = await stderr.ConfigureAwait(false);
+            if (stdinBytes.Length > 0)
+            {
+                try
+                {
+                    await process.StandardInput.BaseStream.WriteAsync(stdinBytes, killToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or ObjectDisposedException or OperationCanceledException)
+                {
+                    // The child closed its stdin early or died; the exit task reports the outcome.
+                }
+            }
 
-        if (!exited)
-        {
-            // The timeout (or the caller's cancellation) fired: the tree is killed by the
-            // exit task; the captured prefix is the honest partial output.
-            if (cancellationToken.IsCancellationRequested)
-                cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await process.StandardInput.BaseStream.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+            }
+
+            var exited = await exitTask.ConfigureAwait(false);
+            var stdoutBytes = await stdout.ConfigureAwait(false);
+            var stderrBytes = await stderr.ConfigureAwait(false);
+
+            if (!exited)
+            {
+                // The timeout (or the caller's cancellation) fired: the tree is killed by the
+                // exit task; the captured prefix is the honest partial output.
+                if (cancellationToken.IsCancellationRequested)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                return new ProcessSpawnResult(
+                    null,
+                    TimedOut: true,
+                    OutputTruncated: stdoutBytes.Truncated || stderrBytes.Truncated,
+                    launch.Sandboxed,
+                    DecodeOutput(stdoutBytes.Buffer, "stdout"),
+                    DecodeOutput(stderrBytes.Buffer, "stderr"));
+            }
 
             return new ProcessSpawnResult(
-                null,
-                TimedOut: true,
+                process.ExitCode,
+                TimedOut: false,
                 OutputTruncated: stdoutBytes.Truncated || stderrBytes.Truncated,
                 launch.Sandboxed,
                 DecodeOutput(stdoutBytes.Buffer, "stdout"),
                 DecodeOutput(stderrBytes.Buffer, "stderr"));
         }
+        finally
+        {
+            DeleteTemporaryDirectory(launch.TemporaryDirectory);
+        }
+    }
 
-        return new ProcessSpawnResult(
-            process.ExitCode,
-            TimedOut: false,
-            OutputTruncated: stdoutBytes.Truncated || stderrBytes.Truncated,
-            launch.Sandboxed,
-            DecodeOutput(stdoutBytes.Buffer, "stdout"),
-            DecodeOutput(stderrBytes.Buffer, "stderr"));
+    /// <summary>Best-effort cleanup of the per-spawn temporary directory: the child has
+    /// settled, and a file it still holds open (or a wedged tree) must not fail the answer.</summary>
+    private static void DeleteTemporaryDirectory(string? temporaryDirectory)
+    {
+        if (temporaryDirectory is null) return;
+        try
+        {
+            Directory.Delete(temporaryDirectory, recursive: true);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+        {
+        }
     }
 
     /// <summary>Waits for the child's exit, killing the whole process tree when the token
@@ -266,41 +342,42 @@ internal sealed class ProcessSpawnFunctions
         }
     }
 
-    /// <summary>Reads one output stream to EOF or the byte cap; the cap kills the process tree
-    /// and the captured prefix returns as truncated.</summary>
+    /// <summary>Reads one output stream to EOF, the byte cap, or the kill token. The cap stops
+    /// the capture and drains the rest (a chatty build tool is not a reason to kill the
+    /// child); the kill token returns the captured prefix so an orphaned descendant holding
+    /// the pipe cannot outlive the timeout.</summary>
     private static async Task<(byte[] Buffer, bool Truncated)> CaptureAsync(
-        ChildProcess process,
-        Stream stream)
+        Stream stream,
+        CancellationToken killToken)
     {
         var buffer = new MemoryStream();
         var chunk = new byte[8_192];
+        var truncated = false;
         try
         {
             while (true)
             {
-                var read = await stream.ReadAsync(chunk.AsMemory(0, chunk.Length), CancellationToken.None)
+                var read = await stream.ReadAsync(chunk.AsMemory(0, chunk.Length), killToken)
                     .ConfigureAwait(false);
-                if (read == 0) return (buffer.ToArray(), Truncated: false);
-                if (buffer.Length + read > MaximumOutputBytesPerStream)
+                if (read == 0) return (buffer.ToArray(), truncated);
+                if (truncated || buffer.Length + read > MaximumOutputBytesPerStream)
                 {
-                    try
-                    {
-                        process.Kill(entireProcessTree: true);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        // Already gone.
-                    }
-
-                    return (buffer.ToArray(), Truncated: true);
+                    // Past the cap the capture stays bounded: keep draining so the child is
+                    // never blocked on a full pipe, without buffering more.
+                    truncated = true;
+                    continue;
                 }
 
                 await buffer.WriteAsync(chunk.AsMemory(0, read), CancellationToken.None).ConfigureAwait(false);
             }
         }
+        catch (OperationCanceledException) when (killToken.IsCancellationRequested)
+        {
+            return (buffer.ToArray(), Truncated: true);
+        }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {
-            return (buffer.ToArray(), Truncated: false);
+            return (buffer.ToArray(), truncated);
         }
     }
 

@@ -336,10 +336,10 @@ Ordinary workspace files are unaffected: they keep the containment-only workspac
 ### Process sandbox
 
 Processes spawned from inside a Deno child — a REPL cell's `new Deno.Command(...)` — run
-through the kernel's launch seam (ADR 0045): the session's `Run` rules gate the executable,
-the read/write/net rules shape a platform sandbox (seatbelt on macOS, bubblewrap on Linux)
-around it, and the environment comes from the policy's env allowlist.
-`Maieutics:ProcessSandbox:Mode` selects the posture:
+through the kernel's launch seam (ADR 0045): the session's `Run` rules gate the executable
+deny-by-default (grant `Run` allows to admit executables), the read/write/net rules shape a
+platform sandbox (seatbelt on macOS, bubblewrap on Linux) around it, and the environment
+comes from the policy's env allowlist. `Maieutics:ProcessSandbox:Mode` selects the posture:
 
 - `Off` — the spawn tool is not registered and the polyfill stays inert: cell spawns keep the
   child's own broker `run` check (deny-by-default), exactly the pre-ADR behavior.
@@ -348,9 +348,10 @@ around it, and the environment comes from the policy's env allowlist.
   environment allowlist.
 - `Require` — refuse any spawn the platform cannot sandbox.
 
-The polyfill supports `output()` semantics (captured stdout/stderr, exit code, a timeout that
-kills the process tree); interactive processes belong to the terminal tools, and binary output
-must be redirected to a file.
+The polyfill supports `output()` semantics (captured stdout/stderr, exit code, a timeout —
+pass Deno's `timeout` option, forwarded as the kill budget — that kills the process tree);
+interactive processes belong to the terminal tools, and binary output must be redirected to
+a file.
 
 ## Skills
 

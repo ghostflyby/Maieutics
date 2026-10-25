@@ -26,9 +26,13 @@ export interface CommandOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly clearEnv?: boolean;
+  readonly uid?: number;
+  readonly gid?: number;
   readonly stdin?: "piped" | "inherit" | "null";
   readonly stdout?: "piped" | "inherit" | "null";
   readonly stderr?: "piped" | "inherit" | "null";
+  /** Deno's own per-command timeout (milliseconds); forwarded to the kernel's kill budget. */
+  readonly timeout?: number;
 }
 
 /** The shape of Deno.CommandOutput the polyfill answers. */
@@ -92,6 +96,12 @@ export function installProcessBridge(
             "pass absolute paths instead of a cwd.",
         );
       }
+      if (this.#options.uid !== undefined || this.#options.gid !== undefined) {
+        throw new Error(
+          "process_spawn_identity_unsupported: the kernel spawns processes with the session's " +
+            "own identity; uid/gid have no kernel round trip.",
+        );
+      }
       if (this.#options.stdin === "inherit") {
         throw new Error(
           "process_spawn_stdin_unsupported: inherited stdin has no kernel round trip; write the " +
@@ -109,6 +119,9 @@ export function installProcessBridge(
         executable: this.#command,
         arguments: [...(this.#options.args ?? [])],
       };
+      if (this.#options.timeout !== undefined) {
+        request.timeoutMs = Math.max(1, Math.floor(this.#options.timeout));
+      }
       // The cell may select env NAMES; the kernel supplies only names the session's
       // policy env allowlist carries, so no value crosses from the cell.
       if (this.#options.env !== undefined) {
@@ -124,10 +137,13 @@ export function installProcessBridge(
           stderr?: unknown;
         };
         if (answer.timedOut === true) {
-          throw new Error(
-            "process_spawn_timeout: the process was killed after its timeout; the captured " +
-              "partial output was discarded.",
-          );
+          const timeout = new Error(
+            "process_spawn_timeout: the process was killed after its timeout.",
+          ) as Error & { stdout?: Uint8Array; stderr?: Uint8Array };
+          // The kernel captured a prefix before the kill; carry it so the cell can inspect it.
+          timeout.stdout = encoder.encode(typeof answer.stdout === "string" ? answer.stdout : "");
+          timeout.stderr = encoder.encode(typeof answer.stderr === "string" ? answer.stderr : "");
+          throw timeout;
         }
 
         return {

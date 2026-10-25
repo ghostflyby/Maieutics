@@ -23,9 +23,10 @@ public sealed class MaieuticsOptions
 
     /// <summary>Process-sandbox enforcement for spawns requested from inside Deno children
     /// (ADR 0045): Off keeps those spawns on the child's own Deno permission path, Prefer
-    /// routes them through the kernel launch seam and wraps them when a platform launcher
-    /// exists, Require refuses spawns the platform cannot sandbox. Terminal and MCP children
-    /// always launch through the kernel seam.</summary>
+    /// routes them through the kernel launch seam (run-gated deny-by-default, environment from
+    /// the policy allowlist) and wraps them when a platform launcher exists, Require refuses
+    /// spawns the platform cannot sandbox. Terminal and MCP children are governed by the run
+    /// launch gate and the environment allowlist, not this seam.</summary>
     public MaieuticsProcessSandboxOptions ProcessSandbox { get; set; } = new();
 
     internal void ValidateCommon()

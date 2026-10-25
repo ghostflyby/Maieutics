@@ -141,7 +141,7 @@ Deno.test("a timeout surfaces typed and tool absence falls back to the native AP
   assertEquals(new TextDecoder().decode(fallback.stdout), "native");
 });
 
-Deno.test("armed spawn/outputSync fail typed; cwd and inherited stdio are refused", async () => {
+Deno.test("armed spawn/outputSync fail typed; cwd, identity, and inherited stdio are refused", async () => {
   const harness = stubDeno();
   const invoke = harness.invokeWith(() => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }));
   installProcessBridge(harness.stub, "prefer", invoke);
@@ -155,6 +155,11 @@ Deno.test("armed spawn/outputSync fail typed; cwd and inherited stdio are refuse
     "process_spawn_cwd_unsupported",
   );
   await assertRejects(
+    () => new harness.stub.Command("sh", { uid: 1000 }).output(),
+    Error,
+    "process_spawn_identity_unsupported",
+  );
+  await assertRejects(
     () => new harness.stub.Command("sh", { stdout: "inherit" }).output(),
     Error,
     "process_spawn_inherit_unsupported",
@@ -164,4 +169,25 @@ Deno.test("armed spawn/outputSync fail typed; cwd and inherited stdio are refuse
     Error,
     "process_spawn_stdin_unsupported",
   );
+});
+
+Deno.test("a timeout option rides the request as the kill budget", async () => {
+  const harness = stubDeno();
+  const invoke = harness.invokeWith(() =>
+    Promise.resolve({ exitCode: 0, stdout: "", stderr: "", timedOut: false }));
+  installProcessBridge(harness.stub, "prefer", invoke);
+
+  await new harness.stub.Command("sleep", { args: ["1"], timeout: 2500 }).output();
+
+  assertEquals(harness.calls[0]?.args.timeoutMs, 2500);
+  // The timeout error carries the kernel's captured prefix.
+  const timedOut = harness.invokeWith(() =>
+    Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" }));
+  installProcessBridge(harness.stub, "prefer", timedOut);
+  const failure = await assertRejects(
+    () => new harness.stub.Command("sleep", { args: ["1"] }).output(),
+    Error,
+    "process_spawn_timeout",
+  ) as Error & { stdout?: Uint8Array };
+  assertEquals(new TextDecoder().decode(failure.stdout ?? new Uint8Array()), "partial");
 });

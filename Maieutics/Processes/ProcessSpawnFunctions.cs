@@ -54,7 +54,7 @@ internal sealed class ProcessSpawnFunctions
         Functions =
         [
             CreateFunction(
-                (Func<string, string[]?, string?, int?, string[]?, AIFunctionArguments, CancellationToken, ValueTask<ProcessSpawnResult>>)
+                (Func<string, AIFunctionArguments, string[]?, string?, int?, string[]?, CancellationToken, ValueTask<ProcessSpawnResult>>)
                     SpawnAsync,
                 "process_spawn",
                 "Runs one executable with arguments on behalf of the calling session's Deno child: " +
@@ -83,6 +83,7 @@ internal sealed class ProcessSpawnFunctions
     [Description("Runs one sandboxed process and captures its output.")]
     private async ValueTask<ProcessSpawnResult> SpawnAsync(
         [Description("The executable to run: a bare command name or an absolute path.")] string executable,
+        AIFunctionArguments toolArguments,
         [Description("The command-line arguments, at most 256.")]
         string[]? arguments = null,
         [Description("UTF-8 text written to the child's stdin before it is closed, at most 64 KiB.")]
@@ -91,7 +92,6 @@ internal sealed class ProcessSpawnFunctions
         int? timeoutMs = null,
         [Description("Environment variable NAMES the child may receive; the values come from the policy's env allowlist, never from the caller. Omit for the full allowlisted environment.")]
         string[]? environmentNames = null,
-        AIFunctionArguments toolArguments = default,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);

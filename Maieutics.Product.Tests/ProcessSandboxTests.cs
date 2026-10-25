@@ -131,7 +131,9 @@ public sealed class ProcessSandboxTests : IDisposable
 
         Assert.Contains("(deny file-read* (subpath \"", profileText, StringComparison.Ordinal);
         Assert.Contains("(deny file-write* (subpath \"", profileText, StringComparison.Ordinal);
-        Assert.Contains(denied, profileText, StringComparison.Ordinal);
+        // SBPL literals escape backslashes and quotes; the expected form mirrors the renderer.
+        var expected = denied.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        Assert.Contains(expected, profileText, StringComparison.Ordinal);
         // Narrow process operations only: no blanket process*, no mach-lookup at all.
         Assert.DoesNotContain("mach-lookup", profileText, StringComparison.Ordinal);
         Assert.Contains("(allow process-exec*)(allow process-fork)", profileText, StringComparison.Ordinal);
@@ -173,6 +175,8 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact]
     public void TheSeatbeltRendererCarriesTheOriginalArgvAfterTheSeparator()
     {
+        if (!OperatingSystem.IsMacOS()) Assert.Skip("The seatbelt renderer targets macOS.");
+
         var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
             ["/ws"],
             ["/tmp"],

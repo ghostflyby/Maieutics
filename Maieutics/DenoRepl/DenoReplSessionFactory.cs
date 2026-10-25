@@ -48,7 +48,8 @@ internal sealed class LocalDenoReplSessionFactory(
     PermissionPolicyAcquirer acquirer,
     PluginHostManager? pluginHosts = null,
     IReplPolicyRegistrar? replPolicyRegistrar = null,
-    ReplOwnerPolicyCache? ownerPolicyCache = null)
+    ReplOwnerPolicyCache? ownerPolicyCache = null,
+    string? processSandboxMode = null)
     : IDenoReplSessionFactory
 {
     private readonly ReplControlCredentialRegistry _credentialRegistry =
@@ -74,6 +75,8 @@ internal sealed class LocalDenoReplSessionFactory(
     private readonly IReplPolicyRegistrar? _replPolicyRegistrar = replPolicyRegistrar;
 
     private readonly ReplOwnerPolicyCache? _ownerPolicyCache = ownerPolicyCache;
+
+    private readonly string? _processSandboxMode = processSandboxMode;
 
     private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -152,7 +155,8 @@ internal sealed class LocalDenoReplSessionFactory(
                     _modules.ClientUrl,
                     _controlHost.WindowsPipeName,
                     broker,
-                    _options.AutoInstallModuleGraph),
+                    _options.AutoInstallModuleGraph,
+                    _processSandboxMode),
                 _logger,
                 acquirer,
                 ownerSessionId,
@@ -284,7 +288,8 @@ internal sealed class LocalDenoReplSessionFactory(
                 generation,
                 _modules.ClientUrl,
                 _controlHost.WindowsPipeName,
-                workspaceRoot: workingDirectory),
+                workspaceRoot: workingDirectory,
+                processSandboxMode: _processSandboxMode),
             policy is null ? null : DenoPermissionRenderer.BuildHostReplPermissions(policy),
             Report: true);
     }

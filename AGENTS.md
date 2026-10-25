@@ -163,7 +163,7 @@ domain whose files participate in one call tree; it is not a folder mirror. See 
 | `Maieutics.Skills` | Skill discovery primitive, merged skill catalog with per-root watchers, the prompt catalog composer, and the skill:// resource plane (ADR 0039) |
 | `Maieutics.Terminal` | PTY sessions, headless VT screen, terminal input encoding, and `terminal_*` tools |
 | `Maieutics.Permissions` | Declarative permission layers, variable interpolation, effective policy, and Deno rendering |
-| `Maieutics.Processes` | General process start policy: environment allowlist and the future sandbox-enforcement seam (terminal and MCP children) |
+| `Maieutics.Processes` | General process start policy: environment allowlist, the run launch gate, and the process-sandbox seam for spawns requested from inside Deno children (ADR 0045) |
 | `Maieutics.DenoExecution` | Supervised internal `deno run` children, Deno permission arguments, and the Deno permission broker |
 | `Maieutics.DenoRepl` | REPL sessions, eval protocol, execution collector, and presentation above `DenoExecution` |
 | `Maieutics.Plugins` | Plugin manifest, host manager, extension points, and MCP coordination |

@@ -8,6 +8,11 @@ import { patchFetch } from "../shared/resource_bridge.ts";
 import { CREDENTIAL_ENV, IPC_ENV } from "./repl_process_env.ts";
 import { type FsBridgeDeno, installFsBridge, WORKSPACE_ROOT_ENV } from "./fs_bridge.ts";
 import {
+  installProcessBridge as installProcessBridgeOn,
+  PROCESS_SANDBOX_ENV,
+  type ProcessBridgeDeno,
+} from "./process_bridge.ts";
+import {
   INPUT_MAILBOX_LINK_LABEL,
   type ReplActorEvent,
   type ReplActorResult,
@@ -54,6 +59,7 @@ export const rpc = {
     await installMaieuticsNamespace();
     installHostEnvironment();
     await installWorkspaceFsBridge();
+    await installProcessBridge();
     kernel = await createReplKernel({ transform: createTsxTransform() });
   },
 
@@ -290,6 +296,30 @@ function installHostEnvironment(): void {
     blockingInput("alert", String(message), false);
   };
   (Deno as unknown as { jupyter: unknown }).jupyter = createJupyterApi();
+}
+
+/**
+ * Arms the process-start polyfill (ADR 0045): the kernel's spawn tool plans
+ * every cell-spawned process against the session's permission policy and the
+ * platform sandbox. No-op unless the kernel passed the arming env — the
+ * native Deno.Command and its broker run check stay entirely.
+ */
+async function installProcessBridge(): Promise<void> {
+  const mode = Deno.env.get(PROCESS_SANDBOX_ENV);
+  if (mode !== "prefer" && mode !== "require") return;
+
+  const clientUrl = Deno.env.get(CLIENT_ENV);
+  if (clientUrl === undefined || clientUrl.length === 0) return;
+  const client = await import(clientUrl) as {
+    tools?: { invoke(name: string, args: Record<string, unknown>): Promise<unknown> };
+  };
+  if (client.tools === undefined) return;
+
+  installProcessBridgeOn(
+    Deno as unknown as ProcessBridgeDeno,
+    mode,
+    (tool, args) => client.tools!.invoke(tool, args),
+  );
 }
 
 /**

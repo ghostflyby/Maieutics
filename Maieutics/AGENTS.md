@@ -64,7 +64,9 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
   `Maieutics.Permissions` and derived from the live workspace and configuration paths through a narrow seam, never
   recomputed by consumers.
 - The Deno REPL and plugin host are internal Deno children: they are privileged by Deno permissions and are not
-  process-sandbox targets. The sandbox seam in `Maieutics.Processes` applies to general starts (terminal, MCP).
+  process-sandbox targets. The processes they ask the kernel to start go through the `Maieutics.Processes` sandbox
+  seam instead: the REPL's `Deno.Command` polyfill routes them to the `process_spawn` tool, whose run gate is
+  deny-by-default and whose sandbox profile derives from the same effective policy (ADR 0045).
 - On Windows, the named-pipe FFI bootstrap is a one-time grant: the child receives an ffi grant only long enough to
   bind `kernel32`, then the broker revokes it. Re-verify platform ffi path-grant behavior before narrowing the flag.
 - The Deno permission broker answers `Deno.permissions.request` against the child's effective policy; `--no-prompt` is

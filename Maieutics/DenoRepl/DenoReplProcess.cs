@@ -20,7 +20,8 @@ internal sealed record DenoReplProcessOptions(
     string ClientUrl,
     string? WindowsPipeName,
     DenoPermissionBroker Broker,
-    bool AutoInstallModuleGraph = true);
+    bool AutoInstallModuleGraph = true,
+    string? ProcessSandboxMode = null);
 
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the Deno REPL child. Owns the
 /// REPL-specific concerns — esbuild-wasm resolution, module-graph install, and the launch-time
@@ -116,7 +117,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
             options.Generation,
             options.ClientUrl,
             options.WindowsPipeName,
-            workspaceRoot: options.WorkingDirectory);
+            workspaceRoot: options.WorkingDirectory,
+            processSandboxMode: options.ProcessSandboxMode);
         environment[DenoReplEnvironment.BrokerAddress] = options.Broker.Address;
         foreach (var pair in environment) startInfo.Environment[pair.Key] = pair.Value;
 
@@ -198,6 +200,7 @@ internal static class DenoReplEnvironment
     internal const string Credential = "MAIEUTICS_REPL_CREDENTIAL";
     internal const string BrokerAddress = "DENO_PERMISSION_BROKER_PATH";
     internal const string WorkspaceRoot = "MAIEUTICS_WORKSPACE_ROOT";
+    internal const string ProcessSandbox = "MAIEUTICS_PROCESS_SANDBOX";
 
     /// <summary>
     ///     Builds the complete REPL child environment both derivation paths use (the kernel-derived
@@ -216,7 +219,8 @@ internal static class DenoReplEnvironment
         int generation,
         string clientModule,
         string? windowsPipeName,
-        string? workspaceRoot = null)
+        string? workspaceRoot = null,
+        string? processSandboxMode = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ipcAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
@@ -230,6 +234,10 @@ internal static class DenoReplEnvironment
             [ClientModule] = clientModule
         };
         if (!string.IsNullOrWhiteSpace(workspaceRoot)) environment[WorkspaceRoot] = workspaceRoot;
+        // The process-start polyfill's arming signal (ADR 0045): prefer/require route the
+        // worker's Deno.Command spawns through the kernel launch seam; off or absent keeps
+        // the native Deno permission path unchanged.
+        if (!string.IsNullOrWhiteSpace(processSandboxMode)) environment[ProcessSandbox] = processSandboxMode;
         CopyEnvironment(environment, "DENO_DIR");
         CopyEnvironment(environment, "TMPDIR");
         CopyEnvironment(environment, "TMP");

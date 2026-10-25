@@ -172,12 +172,16 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Directory.CreateDirectory(Path.Combine(root, ".agents", "skills", "csv,export"));
         var commaPath = Path.Combine(root, ".agents", "skills", "csv,export", "SKILL.md");
         File.WriteAllText(commaPath, "x\n");
-        var starPath = Path.Combine(root, ".agents", "star*");
-        File.WriteAllText(starPath, "x\n");
 
         var withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(Policy(PermissionKindRules.Empty), root);
-
         Assert.False(DenoPermissionResolver.Resolve(withOverlay, "write", commaPath).IsAllowed);
+
+        // '*' is not a legal filename character on Windows; the overlay mechanism itself is
+        // platform-neutral and already covered by the comma case above.
+        if (OperatingSystem.IsWindows()) return;
+        var starPath = Path.Combine(root, ".agents", "star*");
+        File.WriteAllText(starPath, "x\n");
+        withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(Policy(PermissionKindRules.Empty), root);
         Assert.False(DenoPermissionResolver.Resolve(withOverlay, "write", starPath).IsAllowed);
     }
 

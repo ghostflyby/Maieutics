@@ -217,6 +217,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task TheToolRunsARealProcessAndCapturesItsOutput()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
@@ -232,6 +233,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task TheToolForwardsStdinAndSurfacesANonZeroExit()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
@@ -246,6 +248,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task TheToolRefusesARunDeniedExecutable()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var functions = CreateFunctions(denied: "/usr/bin/curl", kind: PermissionKind.Run);
         var failure = await Record.ExceptionAsync(() => InvokeAsync(functions, "process_spawn", """
             {"executable":"/usr/bin/curl","arguments":["http://example.com"]}
@@ -257,6 +260,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task TheToolDeniesByDefaultWithoutRunGrants()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var functions = CreateFunctions(runRules: PermissionKindRules.Empty);
         var failure = await Record.ExceptionAsync(() => InvokeAsync(functions, "process_spawn", """
             {"executable":"/bin/echo","arguments":["hi"]}
@@ -270,6 +274,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task TheTimeoutKillsTheProcessTreeAndReportsIt()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
@@ -284,6 +289,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task OutputPastTheCapIsTruncatedWithoutKillingTheChild()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
@@ -303,6 +309,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task NonUtf8OutputFailsTyped()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
@@ -316,6 +323,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 30_000)]
     public async Task EnvironmentNameSelectionFiltersTheChildEnvironment()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (OperatingSystem.IsWindows()) Assert.Skip("The env-printing stand-in is unix env.");
 
         var functions = CreateFunctions();
@@ -331,6 +339,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 60_000)]
     public async Task AMacOsSandboxedSpawnCannotReadOutsideItsReadableSet()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsMacOS()) Assert.Skip("The seatbelt launcher is macOS-only.");
 
         // A canary under the shared temporary directory, with the session's read rules denying
@@ -364,6 +373,7 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact(Timeout = 60_000)]
     public async Task AMacOsSandboxedSpawnWritesInsideItsWritableSet()
     {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsMacOS()) Assert.Skip("The seatbelt launcher is macOS-only.");
 
         // The positive direction of the same sandbox: the workspace root is writable by the

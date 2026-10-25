@@ -4,8 +4,8 @@ import {
   type CommandOutput,
   installProcessBridge,
   isSpawnToolUnavailable,
-  type ProcessBridgeDeno,
   PROCESS_SANDBOX_ENV,
+  type ProcessBridgeDeno,
 } from "./process_bridge.ts";
 
 /** A recording stub of the worker's Deno namespace: the original Command is
@@ -75,7 +75,8 @@ Deno.test("install is a no-op unless the mode env arms it", async () => {
 Deno.test("an armed output() routes through the kernel spawn tool", async () => {
   const harness = stubDeno();
   const invoke = harness.invokeWith(() =>
-    Promise.resolve({ exitCode: 0, stdout: "captured", stderr: "", timedOut: false }));
+    Promise.resolve({ exitCode: 0, stdout: "captured", stderr: "", timedOut: false })
+  );
   installProcessBridge(harness.stub, "prefer", invoke);
 
   const result = await new harness.stub.Command("git", {
@@ -100,7 +101,8 @@ Deno.test("an armed output() routes through the kernel spawn tool", async () => 
 Deno.test("an armed non-zero exit and a kernel denial surface typed", async () => {
   const harness = stubDeno();
   const invoke = harness.invokeWith(() =>
-    Promise.resolve({ exitCode: 3, stdout: "", stderr: "boom", timedOut: false }));
+    Promise.resolve({ exitCode: 3, stdout: "", stderr: "boom", timedOut: false })
+  );
   installProcessBridge(harness.stub, "require", invoke);
 
   const failed = await new harness.stub.Command("make").output();
@@ -109,7 +111,8 @@ Deno.test("an armed non-zero exit and a kernel denial surface typed", async () =
   assertEquals(new TextDecoder().decode(failed.stderr), "boom");
 
   const denied = harness.invokeWith(() =>
-    Promise.reject(new Error("process_spawn_denied: run policy refuses curl")));
+    Promise.reject(new Error("process_spawn_denied: run policy refuses curl"))
+  );
   installProcessBridge(harness.stub, "require", denied);
   const failure = await assertRejects(
     () => new harness.stub.Command("curl").output(),
@@ -122,7 +125,8 @@ Deno.test("an armed non-zero exit and a kernel denial surface typed", async () =
 Deno.test("a timeout surfaces typed and tool absence falls back to the native API", async () => {
   const harness = stubDeno();
   const timeout = harness.invokeWith(() =>
-    Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" }));
+    Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" })
+  );
   installProcessBridge(harness.stub, "prefer", timeout);
   await assertRejects(
     () => new harness.stub.Command("sleep", { args: ["10"] }).output(),
@@ -174,7 +178,8 @@ Deno.test("armed spawn/outputSync fail typed; cwd, identity, and inherited stdio
 Deno.test("a timeout option rides the request as the kill budget", async () => {
   const harness = stubDeno();
   const invoke = harness.invokeWith(() =>
-    Promise.resolve({ exitCode: 0, stdout: "", stderr: "", timedOut: false }));
+    Promise.resolve({ exitCode: 0, stdout: "", stderr: "", timedOut: false })
+  );
   installProcessBridge(harness.stub, "prefer", invoke);
 
   await new harness.stub.Command("sleep", { args: ["1"], timeout: 2500 }).output();
@@ -182,7 +187,8 @@ Deno.test("a timeout option rides the request as the kill budget", async () => {
   assertEquals(harness.calls[0]?.args.timeoutMs, 2500);
   // The timeout error carries the kernel's captured prefix.
   const timedOut = harness.invokeWith(() =>
-    Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" }));
+    Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" })
+  );
   installProcessBridge(harness.stub, "prefer", timedOut);
   const failure = await assertRejects(
     () => new harness.stub.Command("sleep", { args: ["1"] }).output(),

@@ -9,8 +9,8 @@ import { CREDENTIAL_ENV, IPC_ENV } from "./repl_process_env.ts";
 import { type FsBridgeDeno, installFsBridge, WORKSPACE_ROOT_ENV } from "./fs_bridge.ts";
 import {
   installProcessBridge as installProcessBridgeOn,
-  type ProcessBridgeDeno,
   PROCESS_SANDBOX_ENV,
+  type ProcessBridgeDeno,
 } from "./process_bridge.ts";
 import {
   INPUT_MAILBOX_LINK_LABEL,

@@ -5,6 +5,7 @@ using Maieutics.Agent;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Frontend;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;
@@ -499,6 +500,118 @@ public sealed class FrontendWorkspaceBridgeTests
                 harness.ScriptArguments("""{"uri":"workspace://local/cell.ts"}"""),
                 TestContext.Current.CancellationToken));
         Assert.Equal("workspace_bridge_inactive", Assert.IsType<AgentToolException>(fallback).Code);
+    }
+
+    // ---------- policy: one posture for every surface ----------
+
+    [Fact(Timeout = 60_000)]
+    public async Task BridgedScriptReadUnderAnEmptyPolicyFallsBackToTheSurfaceBaseline()
+    {
+        await using var harness = BridgeHarness.Create();
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "cell.ts"), "const x = 1;\n", TestContext.Current.CancellationToken);
+        // The production wiring always passes the acquirer: with no configured layers the
+        // script surface must keep the workspace-root baseline, not deny by default — the
+        // shim's fallback signal is bridge inactivity, never a permission failure.
+        var functions = new WorkspaceBridgeFunctions(
+            harness.Workspace,
+            harness.Bridge,
+            acquirer: TestPermissionPolicies.Unconfigured());
+
+        var read = functions.Functions.Single(static function => function.Name == "workspace_fs_read");
+        var content = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/cell.ts"}"""),
+            TestContext.Current.CancellationToken))!;
+
+        Assert.Equal("const x = 1;\n", content.GetProperty("content").GetString());
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task BridgedScriptCallsAreJudgedByTheSessionsReplPolicy()
+    {
+        await using var harness = BridgeHarness.Create();
+        await File.WriteAllTextAsync(Path.Combine(harness.Root, "cell.ts"), "const x = 1;\n", TestContext.Current.CancellationToken);
+        // The cached REPL policy mirrors the broker's snapshot for the session's child: the
+        // working directory is readable, and nothing in the workspace is writable.
+        var replPolicy = PermissionLayerStore.Build(
+            [
+                new PermissionLayer
+                {
+                    Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+                    {
+                        [PermissionKind.Read] = new() { Allow = [harness.Root] },
+                        [PermissionKind.Write] = new() { Allow = [] }
+                    }
+                }
+            ],
+            new VariableTable(new NullVariableSource()));
+        var functions = new WorkspaceBridgeFunctions(
+            harness.Workspace,
+            harness.Bridge,
+            acquirer: TestPermissionPolicies.Unconfigured(),
+            replPolicyLookup: id => id == BridgeHarness.SessionId ? replPolicy : null);
+
+        var read = functions.Functions.Single(static function => function.Name == "workspace_fs_read");
+        var content = (JsonElement)(await read.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/cell.ts"}"""),
+            TestContext.Current.CancellationToken))!;
+        Assert.Equal("const x = 1;\n", content.GetProperty("content").GetString());
+
+        var write = functions.Functions.Single(static function => function.Name == "workspace_fs_write");
+        var forbidden = await Record.ExceptionAsync(async () => await write.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/out.ts","content":"x"}"""),
+            TestContext.Current.CancellationToken));
+        Assert.Equal("workspace_write_forbidden", Assert.IsType<AgentToolException>(forbidden).Code);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task WriteDenialsBindLocalAndBridgedModelCallsAlike()
+    {
+        await using var harness = BridgeHarness.Create();
+        var denied = Path.Combine(harness.Root, "docs");
+        Directory.CreateDirectory(denied);
+        var acquirer = new PermissionPolicyAcquirer(
+            () => new DenyingLayerSource(denied),
+            new NullVariableSource());
+
+        // The bridged model write (IDE attached) and the local write (no bridge) deny with
+        // the same code: attaching a frontend never changes what a session may write.
+        var bridged = new WorkspaceEditFunctions(harness.Workspace, acquirer: acquirer, bridge: harness.Bridge);
+        var bridgedWrite = bridged.Functions.Single(static function => function.Name == "write_text");
+        var bridgedFailure = await Record.ExceptionAsync(async () => await bridgedWrite.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/docs/notes.md","content":"x"}"""),
+            TestContext.Current.CancellationToken));
+        Assert.Equal("workspace_write_forbidden", Assert.IsType<AgentToolException>(bridgedFailure).Code);
+
+        var local = new WorkspaceEditFunctions(harness.Workspace, acquirer: acquirer);
+        var localWrite = local.Functions.Single(static function => function.Name == "write_text");
+        var localFailure = await Record.ExceptionAsync(async () => await localWrite.InvokeAsync(
+            harness.ScriptArguments("""{"uri":"workspace://local/docs/notes.md","content":"x"}"""),
+            TestContext.Current.CancellationToken));
+        Assert.Equal("workspace_write_forbidden", Assert.IsType<AgentToolException>(localFailure).Code);
+        Assert.False(File.Exists(Path.Combine(denied, "notes.md")));
+    }
+
+    private sealed class NullVariableSource : Execution.IPermissionVariableSource
+    {
+        public string? GetVariable(string name)
+        {
+            return null;
+        }
+    }
+
+    private sealed class DenyingLayerSource(string deniedDirectory) : IPermissionLayerSource
+    {
+        public PermissionLayer? AppDefaults { get; } = new()
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Write] = new() { Deny = [deniedDirectory] }
+            }
+        };
+
+        public PermissionLayer? WorkspaceProfile => null;
+
+        public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => null;
     }
 
     // ---------- harness ----------

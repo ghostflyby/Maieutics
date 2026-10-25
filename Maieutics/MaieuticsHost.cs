@@ -271,7 +271,11 @@ public static class MaieuticsHost
             services.GetRequiredService<Workspace>(),
             services.GetRequiredService<MaieuticsStatusProvider>(),
             services.GetService<IMaieuticsMcpController>(),
-            services.GetService<PluginHostManager>()));
+            services.GetService<PluginHostManager>(),
+            // The %permissions family sets and renders the session override layer (ADR 0018
+            // Phase 5) — the reachable setter this surface was always meant to be.
+            services.GetRequiredService<PermissionOverrideRegistry>(),
+            services.GetRequiredService<PermissionPolicyAcquirer>()));
         builder.Services.AddSingleton<ReplControlSessionRegistry>();
         var controlSocketPath = ReplControlHost.CreateSocketPath();
         builder.WebHost.ConfigureKestrel(options =>
@@ -357,7 +361,10 @@ public static class MaieuticsHost
             new WorkspaceBridgeFunctions(
                 services.GetRequiredService<Workspace>(),
                 services.GetRequiredService<IWorkspaceIoBridge>(),
-                services.GetRequiredService<PermissionPolicyAcquirer>()));
+                services.GetRequiredService<PermissionPolicyAcquirer>(),
+                // Broker parity for the script surface: judge against the session's cached
+                // REPL policy when one exists (the same snapshot its child resolves through).
+                services.GetRequiredService<ReplOwnerPolicyCache>().TryGet));
         // Deferred: resolving the real presenter here would close a construction cycle
         // back into MaieuticsRuntimeConfiguration (it consumes IMcpElicitationPresenter).
         builder.Services.AddSingleton<IMcpElicitationPresenter>(static services =>
@@ -479,6 +486,9 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<DenoReplModule>();
         builder.Services.AddSingleton<DenoPermissionBroker>(static services =>
             DenoPermissionBroker.Create(services.GetRequiredService<ILogger<DenoPermissionBroker>>()));
+        // Owner-keyed REPL policy snapshot: the IDE workspace bridge judges script calls
+        // against exactly the policy the broker holds for the session's REPL child.
+        builder.Services.AddSingleton<ReplOwnerPolicyCache>();
         builder.Services.AddSingleton<IDenoReplSessionFactory>(static services =>
             new LocalDenoReplSessionFactory(
                 services.GetRequiredService<DenoReplOptions>(),
@@ -492,7 +502,8 @@ public static class MaieuticsHost
                 services.GetRequiredService<DenoPermissionBroker>(),
                 services.GetRequiredService<PermissionPolicyAcquirer>(),
                 services.GetService<PluginHostManager>(),
-                services.GetService<IReplPolicyRegistrar>()));
+                services.GetService<IReplPolicyRegistrar>(),
+                services.GetRequiredService<ReplOwnerPolicyCache>()));
         builder.Services.AddSingleton(static services =>
             new DenoReplRegistry(
                 services.GetRequiredService<Workspace>(),
@@ -503,7 +514,8 @@ public static class MaieuticsHost
                 // The display object store exists only when Agent persistence does (the
                 // /v1/objects route shares its root); without it the collector keeps the
                 // drop-binary-mime fallback instead of violating invariant 26.
-                services.GetService<IReplDisplayObjectStore>()));
+                services.GetService<IReplDisplayObjectStore>(),
+                services.GetRequiredService<ReplOwnerPolicyCache>()));
         builder.Services.AddSingleton<DenoReplFunctions>();
         builder.Services.AddHostedService<DenoReplShutdownHostedService>();
         builder.Services.AddHostedService<DenoModuleGraphWarmer>();
@@ -511,7 +523,11 @@ public static class MaieuticsHost
             new WorkspaceFunctions(
                 services.GetRequiredService<Workspace>(),
                 resources: services.GetRequiredService<ResourceRegistry>(),
-                bridge: services.GetRequiredService<IWorkspaceIoBridge>()));
+                bridge: services.GetRequiredService<IWorkspaceIoBridge>(),
+                // The model read surface enforces the session's read policy (workspace-root
+                // baseline minus configuration denials); without the acquirer the tools keep
+                // the legacy containment-only posture.
+                acquirer: services.GetRequiredService<PermissionPolicyAcquirer>()));
         builder.Services.AddSingleton(static services =>
             new WorkspaceEditFunctions(
                 services.GetRequiredService<Workspace>(),

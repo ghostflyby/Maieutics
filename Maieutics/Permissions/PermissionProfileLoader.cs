@@ -61,6 +61,7 @@ internal static class PermissionProfileLoader
         AddKind(kinds, PermissionKind.Ffi, set.Ffi, baseDirectory);
         AddKind(kinds, PermissionKind.Sys, set.Sys, baseDirectory);
         AddKind(kinds, PermissionKind.Import, set.Import, baseDirectory);
+        AddKind(kinds, PermissionKind.Instructions, set.Instructions, baseDirectory);
         return new PermissionLayer { Kinds = kinds };
     }
 
@@ -74,14 +75,39 @@ internal static class PermissionProfileLoader
 
         // Path kinds (read, write, ffi) resolve relative values against the profile directory;
         // env, run, net, sys, and import values are names or host patterns, never paths (ADR 0018 §4).
-        var resolvePaths = kind is PermissionKind.Read or PermissionKind.Write or PermissionKind.Ffi;
+        var resolvePaths = PermissionKinds.IsFilePathKind(kind);
+        var allowAll = rules.Allow is { Length: 1 } && IsAllowAll(rules.Allow[0]);
+        var denyAll = rules.Deny is { Length: 1 } && IsAllowAll(rules.Deny[0]);
+        RejectStrayWildcards(kind, rules.Allow, allowAll);
+        RejectStrayWildcards(kind, rules.Deny, denyAll);
         kinds[kind] = new PermissionKindRules
         {
-            AllowAll = rules.Allow is { Length: 1 } && IsAllowAll(rules.Allow[0]),
-            DenyAll = rules.Deny is { Length: 1 } && IsAllowAll(rules.Deny[0]),
-            Allow = resolvePaths ? ResolvePaths(rules.Allow, baseDirectory) : Literal(rules.Allow),
-            Deny = resolvePaths ? ResolvePaths(rules.Deny, baseDirectory) : Literal(rules.Deny)
+            // The sole "*" (or empty) entry is consumed by its flag; the lists carry only real
+            // patterns so the store never sees a stray "*" as a list entry.
+            AllowAll = allowAll,
+            DenyAll = denyAll,
+            Allow = allowAll ? [] : ResolveValues(rules.Allow, baseDirectory, resolvePaths),
+            Deny = denyAll ? [] : ResolveValues(rules.Deny, baseDirectory, resolvePaths)
         };
+    }
+
+    /// <summary>A <c>*</c> listed among other entries is rejected at load time: the path kinds
+    /// would otherwise mangle it into a silent junk pattern during path resolution, and no kind
+    /// gives it list-entry meaning — <c>*</c> is only the sole-entry allow-all spelling.</summary>
+    private static void RejectStrayWildcards(PermissionKind kind, string[]? values, bool flagSet)
+    {
+        if (flagSet || values is not { Length: > 1 } || !values.Contains("*"))
+            return;
+
+        throw new PermissionException(
+            "permission_profile_invalid",
+            $"The '{PermissionKinds.GetName(kind)}' rules list '*' among other entries; " +
+            "'*' is only valid as the sole entry.");
+    }
+
+    private static IReadOnlyList<string> ResolveValues(string[]? values, string baseDirectory, bool resolvePaths)
+    {
+        return resolvePaths ? ResolvePaths(values, baseDirectory) : Literal(values);
     }
 
     private static IReadOnlyList<string> Literal(string[]? values)

@@ -35,15 +35,18 @@ internal sealed class WorkspaceBridgeFunctions
     private readonly Workspace _workspace;
     private readonly IWorkspaceIoBridge? _bridge;
     private readonly PermissionPolicyAcquirer? _acquirer;
+    private readonly Func<string, EffectivePolicy?>? _replPolicyLookup;
 
     internal WorkspaceBridgeFunctions(
         Workspace workspace,
         IWorkspaceIoBridge? bridge,
-        PermissionPolicyAcquirer? acquirer = null)
+        PermissionPolicyAcquirer? acquirer = null,
+        Func<string, EffectivePolicy?>? replPolicyLookup = null)
     {
         this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this._bridge = bridge;
         this._acquirer = acquirer;
+        this._replPolicyLookup = replPolicyLookup;
 
         Functions =
         [
@@ -195,7 +198,7 @@ internal sealed class WorkspaceBridgeFunctions
         WorkspaceLogicalPath logical,
         AIFunctionArguments arguments)
     {
-        if (_acquirer is null) return;
+        if (_acquirer is not { } acquirer) return;
 
         var sessionId = TryParseSession(arguments);
         if (sessionId is null)
@@ -206,44 +209,30 @@ internal sealed class WorkspaceBridgeFunctions
                     $"'{logical.DisplayPath}' is an instruction surface: writes require a session-bound " +
                     "policy that explicitly allows them.");
 
-            return;
+            // A session-less caller (no live owner mapping) keeps the surface posture: the
+            // workspace-root baseline minus configuration denials.
         }
 
-        // Broker parity: the broker matches the physical path a direct Deno call would
-        // open, so the bridged path is judged against the same absolute address.
+        // Broker parity: the shim stands in for the Deno fs API, so the bridged call is judged
+        // against exactly the snapshot the broker holds for that session's REPL child; the same
+        // access over the real Deno API resolves through the same policy.
         var physical = _workspace.Capture().ToPhysicalPath(logical.Segments);
-        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
-        var rules = policy.For(kind);
-        var allowed = rules.AllowAll ||
-                      rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, physical));
-        var denied = rules.DenyAll ||
-                     rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, physical));
-        if (denied || !allowed)
-            throw new AgentToolException(
-                kind == PermissionKind.Write ? "workspace_write_forbidden" : "workspace_read_forbidden",
-                $"The session's permission policy denies this bridged {kind.ToString().ToLowerInvariant()} " +
-                $"of '{logical.DisplayPath}'.");
+        var policy = sessionId is { } session && _replPolicyLookup?.Invoke(session.Value.ToString("N")) is { } repl
+            ? repl
+            : WorkspacePermissionSurface.Acquire(acquirer, _workspace, sessionId);
+        if (!WorkspacePermissionSurface.IsAllowed(policy, kind, physical))
+            throw WorkspacePermissionSurface.Forbidden(kind, logical.DisplayPath);
     }
 
+    /// <summary>Gates bridged script writes to instruction surfaces (ADR 0032 decision 1) in
+    /// the kernel-internal <c>instructions</c> domain, judged at the physical workspace address
+    /// like every other gate; the write baseline never loosens it.</summary>
     private void GateInstructionSurface(string relativePath, AIFunctionArguments arguments)
     {
-        if (_acquirer is null || !InstructionSurface.IsInstructionSurface(relativePath)) return;
+        if (!InstructionSurface.IsInstructionSurface(relativePath)) return;
 
         var sessionId = TryParseSession(arguments);
-        if (sessionId is null)
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{relativePath}' is an instruction surface: model-initiated writes require an explicit " +
-                "allow in the calling session's permission policy.");
-
-        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
-        var rules = policy.For(PermissionKind.Write);
-        if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)) ||
-            !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, relativePath)))
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{relativePath}' is an instruction surface: writes require an explicit allow in the " +
-                "calling session's permission policy.");
+        WorkspacePermissionSurface.EnforceInstructions(_acquirer, _workspace, relativePath, sessionId);
     }
 
     private static AgentSessionId? TryParseSession(AIFunctionArguments arguments)

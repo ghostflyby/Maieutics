@@ -42,9 +42,9 @@ internal static class DenoPermissionResolver
 
     private static bool MatchesAny(PermissionKind kind, IReadOnlyList<string> patterns, string value)
     {
-        // Canonical semantics live in the permission layer so the broker and the launch
-        // enforcement seams cannot drift: path kinds match on a directory boundary, the
-        // remaining kinds keep Deno's prefix matching.
+        // Canonical semantics live in the permission kind table so the broker and the launch
+        // enforcement seams cannot drift: path kinds and run match on a directory boundary,
+        // net/import keep prefix matching, and env/sys match whole names.
         return PermissionMatching.MatchesAny(kind, patterns, value);
     }
 

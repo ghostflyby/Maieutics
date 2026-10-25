@@ -10,7 +10,8 @@ internal sealed class DenoReplRegistry(
     IDenoReplSessionFactory factory,
     IDenoReplPresentationRouter presentationRouter,
     ILogger<DenoReplSession> logger,
-    IReplDisplayObjectStore? displayObjectStore = null)
+    IReplDisplayObjectStore? displayObjectStore = null,
+    ReplOwnerPolicyCache? ownerPolicyCache = null)
     : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
@@ -21,6 +22,7 @@ internal sealed class DenoReplRegistry(
     private readonly Lock _gate = new();
     private readonly Dictionary<AgentSessionId, Dictionary<string, DenoReplSession>> _sessions = [];
     private readonly IReplDisplayObjectStore? _displayObjectStore = displayObjectStore;
+    private readonly ReplOwnerPolicyCache? _ownerPolicyCache = ownerPolicyCache;
     private int _disposeState;
 
     public async ValueTask DisposeAsync()
@@ -39,6 +41,7 @@ internal sealed class DenoReplRegistry(
             _sessions.Clear();
         }
 
+        _ownerPolicyCache?.ClearAll();
         try
         {
             await Task.WhenAll(snapshot.Select(static session => session.DisposeAsync().AsTask()))
@@ -230,6 +233,7 @@ internal sealed class DenoReplRegistry(
         string sessionId,
         DenoReplSession expected)
     {
+        var ownerHasNoSessions = false;
         lock (_gate)
         {
             if (!_sessions.TryGetValue(ownerSessionId, out var owned) ||
@@ -238,8 +242,15 @@ internal sealed class DenoReplRegistry(
                 return;
 
             owned.Remove(sessionId);
-            if (owned.Count == 0) _sessions.Remove(ownerSessionId);
+            ownerHasNoSessions = owned.Count == 0;
+            if (ownerHasNoSessions) _sessions.Remove(ownerSessionId);
         }
+
+        // The owner-keyed policy snapshot leaves only with the owner's LAST session: an owner
+        // may keep several live REPLs (each re-caches on start), and clearing the entry while a
+        // sibling stays live would drop the bridge back to the wider model-tool baseline.
+        if (ownerHasNoSessions)
+            _ownerPolicyCache?.Clear(ownerSessionId.Value.ToString("N"));
     }
 
     private static string ResolveSessionId(string? sessionId)

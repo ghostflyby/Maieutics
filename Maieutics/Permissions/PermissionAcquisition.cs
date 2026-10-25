@@ -61,22 +61,30 @@ internal sealed class PermissionPolicyAcquirer(
 
 /// <summary>In-memory per-Agent-session override layers, the session override of the four-layer
 /// overlay (ADR 0018 Phase 5). The registry is the seam a user-facing command surface sets
-/// through; overrides never persist and die with the process. Subagent child runs inherit their
-/// parent session's override through a bounded child-scope map (ADR 0030 decision 3): a spawn
-/// registers the child under its parent, and lookups walk the chain, so a user-imposed session
-/// deny cannot be bypassed by delegating work to a child run. The map is capped — oldest
-/// registrations are evicted — because child runs leave no join callback at this layer; a late
-/// launch after eviction composes the plain overlay, which is never wider than the parent's own
-/// configuration-derived layers.</summary>
+/// through; overrides never persist and die with the process. Subagent child runs inherit by
+/// snapshot (ADR 0030 decision 3): a spawn copies the parent's override at that moment into the
+/// child's own slot, so a user-imposed session deny cannot be bypassed by delegating work to a
+/// child run — and, symmetrically, a parent's later tightening or loosening does not reach
+/// already-spawned children, matching the capture-once rule (AGENTS.md invariant 19). The
+/// registration map stays bounded because child runs leave no join callback at this layer; its
+/// eviction only affects the diagnostic map, never a child's captured override.</summary>
 internal sealed class PermissionOverrideRegistry
 {
     private const int ChildScopeCapacity = 256;
-    private const int MaximumScopeChainDepth = 8;
+
+    /// <summary>Bound for captured child-snapshot override slots. Nothing releases a reaped
+    /// child's slot (the Agent runtime exposes no completion callback), so the FIFO evicts the
+    /// oldest snapshots. The bound assumes reaped runs have ended and never acquire again —
+    /// beyond 1024 concurrent un-reaped children the oldest captured snapshot may drop, which
+    /// can widen that child's policy; no surface sets a child's override directly, so an evicted
+    /// entry can only be a spent or captured snapshot, never a user-authored one.</summary>
+    private const int ChildSnapshotCapacity = 1024;
 
     private readonly Lock _gate = new();
     private readonly Dictionary<AgentSessionId, PermissionLayer> _overrides = [];
     private readonly Dictionary<AgentSessionId, AgentSessionId> _childScopes = [];
     private readonly Queue<AgentSessionId> _childScopeOrder = new();
+    private readonly Queue<AgentSessionId> _childSnapshotOrder = new();
 
     public void Set(AgentSessionId sessionId, PermissionLayer layer)
     {
@@ -99,27 +107,31 @@ internal sealed class PermissionOverrideRegistry
     {
         lock (_gate)
         {
-            if (_overrides.TryGetValue(sessionId, out var own)) return own;
-            return WalkParentChainLocked(sessionId);
+            return _overrides.TryGetValue(sessionId, out var own) ? own : null;
         }
     }
 
-    /// <summary>Registers a spawned child run's session under its owning session, so permission
-    /// lookups for the child compose the parent's override. The child's own override slot stays
-    /// authoritative when set — no surface currently sets overrides for child sessions — and
-    /// the chain walk is depth-capped against registration cycles.</summary>
+    /// <summary>Registers a spawned child run's session under its owning session and captures the
+    /// parent's override at that moment into the child's own slot. The child's own slot stays
+    /// authoritative once set — a later Set for the child (no surface currently does) or a parent
+    /// change after the spawn does not re-capture.</summary>
     public void RegisterChildScope(AgentSessionId childSessionId, AgentSessionId parentSessionId)
     {
         lock (_gate)
         {
+            if (_overrides.TryGetValue(parentSessionId, out var parentLayer) &&
+                _overrides.TryAdd(childSessionId, parentLayer))
+            {
+                _childSnapshotOrder.Enqueue(childSessionId);
+                while (_childSnapshotOrder.Count > ChildSnapshotCapacity)
+                    _overrides.Remove(_childSnapshotOrder.Dequeue());
+            }
+
             if (!_childScopes.TryAdd(childSessionId, parentSessionId))
                 return;
             _childScopeOrder.Enqueue(childSessionId);
             while (_childScopeOrder.Count > ChildScopeCapacity)
-            {
-                var evicted = _childScopeOrder.Dequeue();
-                _childScopes.Remove(evicted);
-            }
+                _childScopes.Remove(_childScopeOrder.Dequeue());
         }
     }
 
@@ -135,30 +147,18 @@ internal sealed class PermissionOverrideRegistry
         }
     }
 
-    /// <summary>Releases one child-scope registration; the spawning surface calls this when it
-    /// reaps the child. Unknown registrations are ignored.</summary>
+    /// <summary>Releases one child-scope registration and the override snapshot it captured; the
+    /// spawning surface calls this when it reaps the child. Unknown registrations are ignored.</summary>
     public void ReleaseChildScope(AgentSessionId childSessionId)
     {
         lock (_gate)
         {
             if (!_childScopes.Remove(childSessionId)) return;
+            _overrides.Remove(childSessionId);
             var remaining = _childScopeOrder.Where(id => !id.Equals(childSessionId)).ToArray();
             _childScopeOrder.Clear();
             foreach (var id in remaining)
                 _childScopeOrder.Enqueue(id);
         }
-    }
-
-    private PermissionLayer? WalkParentChainLocked(AgentSessionId sessionId)
-    {
-        var current = sessionId;
-        for (var depth = 0; depth < MaximumScopeChainDepth; depth++)
-        {
-            if (!_childScopes.TryGetValue(current, out var parent)) return null;
-            if (_overrides.TryGetValue(parent, out var layer)) return layer;
-            current = parent;
-        }
-
-        return null;
     }
 }

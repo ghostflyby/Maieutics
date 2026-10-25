@@ -1,15 +1,17 @@
 using System.Globalization;
+using System.Text;
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Mcp;
+using Maieutics.Permissions;
 using Maieutics.Plugins;
 
 namespace Maieutics.Commands;
 
 /// <summary>
-///     Executes Maieutics command cells (<c>%model</c>, <c>%mcp</c>, <c>%plugin</c>,
-///     <c>%session</c>, <c>%status</c>, <c>%workspace</c>, legacy <c>%maieutics</c>) and renders
+///     Executes Maieutics command cells (<c>%model</c>, <c>%mcp</c>, <c>%permissions</c>,
+///     <c>%plugin</c>, <c>%session</c>, <c>%status</c>, <c>%workspace</c>, legacy <c>%maieutics</c>) and renders
 ///     their markdown answer. This is the shared control surface every frontend adapter
 ///     delegates to, so command semantics cannot drift between frontends.
 ///     Unavailable subsystems and expected failures surface as
@@ -21,7 +23,9 @@ internal sealed class MaieuticsCommandExecutor(
     Workspace? workspace,
     MaieuticsStatusProvider? statusProvider,
     IMaieuticsMcpController? mcpController,
-    PluginHostManager? pluginHosts = null)
+    PluginHostManager? pluginHosts = null,
+    PermissionOverrideRegistry? permissionOverrides = null,
+    PermissionPolicyAcquirer? permissionAcquirer = null)
 {
     /// <summary>The command cell's markdown rendering plus whether this execution moved
     /// the foreground session (a switch the calling notebook should follow).</summary>
@@ -77,6 +81,11 @@ internal sealed class MaieuticsCommandExecutor(
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Status, StringComparison.OrdinalIgnoreCase))
                 return new MaieuticsCommandAnswer(ExecuteStatusCommand(arguments), MovedForeground: false);
+
+            if (string.Equals(arguments[1], MaieuticsCommandLanguage.Permissions, StringComparison.OrdinalIgnoreCase))
+                return new MaieuticsCommandAnswer(
+                    ExecutePermissionsCommand(arguments, session),
+                    MovedForeground: false);
 
             if (string.Equals(arguments[1], MaieuticsCommandLanguage.Session, StringComparison.OrdinalIgnoreCase))
             {
@@ -384,6 +393,129 @@ internal sealed class MaieuticsCommandExecutor(
                 MaieuticsCommandException.Unavailable, "Status is not available in this host.");
 
         return MaieuticsStatusRenderer.Render(statusProvider.Capture());
+    }
+
+    /// <summary>Executes the <c>%permissions</c> family (ADR 0018 Phase 5 session overrides —
+    /// the layer that had no reachable setter): <c>current</c> renders the session's composed
+    /// policy, <c>allow</c>/<c>deny</c> accumulate patterns into the session's override layer,
+    /// and <c>clear</c> drops it. Overrides never persist and die with the process. Patterns keep
+    /// their <c>${env.*}</c>/<c>${var.*}</c> tokens unexpanded here — every acquisition expands
+    /// them — but the merged layer is composed once immediately so an empty, stray-<c>*</c>,
+    /// comma-bearing, or unresolvable pattern fails the command instead of a later launch.</summary>
+    private string ExecutePermissionsCommand(string[] arguments, AgentSessionId? session)
+    {
+        if (permissionOverrides is null || permissionAcquirer is null)
+            throw new MaieuticsCommandException(
+                MaieuticsCommandException.Unavailable, "Permission commands are not available in this host.");
+
+        if (arguments.Length == 2 ||
+            (arguments.Length == 3 && string.Equals(
+                arguments[2],
+                MaieuticsCommandLanguage.Current,
+                StringComparison.OrdinalIgnoreCase)))
+            return RenderPermissions(
+                permissionAcquirer.Acquire(PermissionLayer.Empty, session),
+                session);
+
+        if (arguments.Length == 3 &&
+            string.Equals(arguments[2], MaieuticsCommandLanguage.Clear, StringComparison.OrdinalIgnoreCase))
+        {
+            if (session is not { } cleared)
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError,
+                    "The permissions clear command requires an addressing session.");
+
+            permissionOverrides.Clear(cleared);
+            return RenderPermissions(permissionAcquirer.Acquire(PermissionLayer.Empty, session), session);
+        }
+
+        var isAllow = string.Equals(arguments[2], MaieuticsCommandLanguage.Allow, StringComparison.OrdinalIgnoreCase);
+        var isDeny = string.Equals(arguments[2], MaieuticsCommandLanguage.Deny, StringComparison.OrdinalIgnoreCase);
+        if (isAllow || isDeny)
+        {
+            if (session is not { } addressed)
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError,
+                    "The permissions allow/deny commands require an addressing session.");
+            if (arguments.Length < 5)
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError,
+                    "Usage: %permissions allow|deny <kind> <pattern> [...]");
+
+            if (!PermissionKinds.TryParse(arguments[3], out var kind))
+                throw new MaieuticsCommandException(
+                    MaieuticsCommandException.CommandError,
+                    $"'{arguments[3]}' is not a permission kind " +
+                    "(read, write, net, env, run, ffi, sys, import, instructions).");
+
+            // Path-kind patterns must anchor: every gate judges absolute physical paths, so a
+            // relative pattern would compose into a silently dead rule (run/net/env keep bare
+            // values — command names, hosts, variable names).
+            if (PermissionKinds.IsFilePathKind(kind))
+                foreach (var pattern in arguments[4..])
+                {
+                    if (Path.IsPathRooted(pattern) || pattern.StartsWith("${", StringComparison.Ordinal))
+                        continue;
+                    throw new MaieuticsCommandException(
+                        MaieuticsCommandException.CommandError,
+                        $"The {arguments[3]} pattern '{pattern}' is relative; path patterns must be " +
+                        "absolute or use a ${env.*}/${var.*} token (for example ${var.workspace}/docs).");
+                }
+
+            var current = permissionOverrides.TryGet(addressed) ?? PermissionLayer.Empty;
+            var delta = new PermissionLayer
+            {
+                Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+                {
+                    [kind] = isAllow
+                        ? new PermissionKindRules { Allow = [.. arguments[4..]] }
+                        : new PermissionKindRules { Deny = [.. arguments[4..]] }
+                }
+            };
+            EffectivePolicy composed;
+            try
+            {
+                // The passthrough merge validates shape (empty, stray '*', comma); the
+                // acquisition below resolves every token so a bad variable fails here.
+                composed = PermissionLayerStore.Build([current, delta], VariableTable.Expanded);
+                permissionAcquirer.Acquire(new PermissionLayer { Kinds = composed.Kinds }, null);
+            }
+            catch (PermissionException exception)
+            {
+                throw new MaieuticsCommandException(MaieuticsCommandException.CommandError, exception.Message);
+            }
+
+            permissionOverrides.Set(addressed, new PermissionLayer { Kinds = composed.Kinds });
+            return RenderPermissions(permissionAcquirer.Acquire(PermissionLayer.Empty, session), session);
+        }
+
+        throw new MaieuticsCommandException(
+            MaieuticsCommandException.CommandError,
+            "Usage: %permissions current | allow <kind> <pattern> [...] | deny <kind> <pattern> [...] | clear");
+    }
+
+    private static string RenderPermissions(EffectivePolicy policy, AgentSessionId? session)
+    {
+        var builder = new StringBuilder("Effective permissions");
+        if (session is { } addressed) builder.Append($" (session {addressed.Value.ToString("N")[..8]}…)");
+        builder.AppendLine(":");
+
+        foreach (var kind in Enum.GetValues<PermissionKind>())
+        {
+            var rules = policy.For(kind);
+            if (rules is { AllowAll: false, DenyAll: false, Allow.Count: 0, Deny.Count: 0 })
+                continue;
+
+            builder.Append("- ").Append(PermissionKinds.GetName(kind)).Append(": ");
+            var parts = new List<string>();
+            if (rules.AllowAll) parts.Add("allow-all");
+            else if (rules.Allow.Count > 0) parts.Add("allow " + string.Join(", ", rules.Allow));
+            if (rules.DenyAll) parts.Add("deny-all");
+            else if (rules.Deny.Count > 0) parts.Add("deny " + string.Join(", ", rules.Deny));
+            builder.AppendLine(string.Join("; ", parts));
+        }
+
+        return builder.ToString().TrimEnd();
     }
 
     private string ExecuteSessionCommand(

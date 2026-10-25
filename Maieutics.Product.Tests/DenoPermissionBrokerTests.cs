@@ -170,17 +170,81 @@ public sealed class DenoPermissionBrokerTests
     }
 
     [Fact(Timeout = 10_000)]
-    public void NonPathKindsKeepPrefixMatching()
+    public void EnvAndSysMatchExactNamesWhileNetAndImportKeepPrefixes()
     {
         TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
         var policy = Build(
             (PermissionKind.Env, new PermissionKindRules { Allow = ["MAIEUTICS_TEST"] }),
-            (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }));
+            (PermissionKind.Sys, new PermissionKindRules { Allow = ["hostname"] }),
+            (PermissionKind.Net, new PermissionKindRules { Allow = ["localhost"] }),
+            (PermissionKind.Import, new PermissionKindRules { Allow = ["jsr.io:443"] }));
 
-        // env names and net hosts stay prefix-matched (Deno semantics); only filesystem path
-        // kinds gain the directory-boundary rule.
-        Assert.True(DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed);
+        // env and sys match whole names (the kind table): a grant of one name never covers a
+        // longer name that shares its prefix.
+        Assert.False(DenoPermissionResolver.Resolve(policy, "env", "MAIEUTICS_TEST_SUFFIX").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "sys", "hostname").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "sys", "hostnameExtra").IsAllowed);
+        // net hosts and import specifiers stay prefix-matched: a host grant covers its ports and
+        // a specifier covers the paths under it.
         Assert.True(DenoPermissionResolver.Resolve(policy, "net", "localhost:8080").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "import", "jsr.io:443/mod.ts").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void FfiGrantsMatchOnDirectoryBoundaries()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // ffi is a filesystem-path kind: the loader resolves its patterns against the profile
+        // directory, so the resolver must judge them with the boundary rule like read/write.
+        var policy = Build((PermissionKind.Ffi, new PermissionKindRules { Allow = ["/opt/lib"] }));
+
+        Assert.True(DenoPermissionResolver.Resolve(policy, "ffi", "/opt/lib/libfoo.so").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "ffi", "/opt/lib-evil/libbar.so").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void RunRequestsJudgeWithTheSameBoundaryAsTheLaunchGate()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // The broker and the general-start gate share the kind table, so a run grant cannot be
+        // wider inside a Deno child than at a terminal/MCP launch.
+        var policy = Build((PermissionKind.Run, new PermissionKindRules { Allow = ["/usr/bin"] }));
+
+        Assert.True(DenoPermissionResolver.Resolve(policy, "run", "/usr/bin/deno").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "run", "/usr/bin-evil").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void DotSegmentRequestsCannotPrefixMatchPastAGrant()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        // Deno sends broker request paths exactly as the caller wrote them (verified 2.9.8:
+        // /tmp/x/../y arrives verbatim), so a grant of /granted must not prefix-match a request
+        // phrased /granted/../outside — the file it opens lies outside the grant.
+        var policy = Build((PermissionKind.Read, new PermissionKindRules { Allow = ["/granted"] }));
+
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/../outside/secret").IsAllowed);
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/sub/../../outside/secret").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/sub/./target.txt").IsAllowed);
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/x/../y").IsAllowed);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public void DotSegmentRequestsCannotEvadeADenyEither()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        var policy = Build(
+            (PermissionKind.Read, new PermissionKindRules
+            {
+                AllowAll = true,
+                Deny = ["/granted/secret"]
+            }));
+
+        // Phrased through a sibling hop but actually accessing the denied file: the deny must
+        // see through the phrasing (a raw prefix check would miss /granted/other/../secret/key).
+        Assert.False(DenoPermissionResolver.Resolve(policy, "read", "/granted/other/../secret/key").IsAllowed);
+        // The converse: /granted/secret/../key accesses /granted/key, not the denied tree.
+        Assert.True(DenoPermissionResolver.Resolve(policy, "read", "/granted/secret/../key").IsAllowed);
     }
 
     /// <summary>A later registration for the same pid must replace an already-settled slot.

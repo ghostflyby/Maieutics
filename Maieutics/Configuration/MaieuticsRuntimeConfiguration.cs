@@ -1687,6 +1687,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         AddDefaultsKind(kinds, PermissionKind.Ffi, options.Ffi);
         AddDefaultsKind(kinds, PermissionKind.Sys, options.Sys);
         AddDefaultsKind(kinds, PermissionKind.Import, options.Import);
+        AddDefaultsKind(kinds, PermissionKind.Instructions, options.Instructions);
         return kinds.Count == 0 ? null : new PermissionLayer { Kinds = kinds };
     }
 

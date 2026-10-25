@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Maieutics.Agent;
+using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Execution;
@@ -40,6 +41,7 @@ internal sealed class WorkspaceFunctions
     private readonly Workspace _workspace;
     private readonly ResourceRegistry? _resources;
     private readonly IWorkspaceIoBridge? _bridge;
+    private readonly PermissionPolicyAcquirer? _acquirer;
 
     internal WorkspaceFunctions(
         Workspace workspace,
@@ -48,11 +50,13 @@ internal sealed class WorkspaceFunctions
         int maximumFileBytes = DefaultMaximumFileBytes,
         long maximumSearchBytes = DefaultMaximumSearchBytes,
         ResourceRegistry? resources = null,
-        IWorkspaceIoBridge? bridge = null)
+        IWorkspaceIoBridge? bridge = null,
+        PermissionPolicyAcquirer? acquirer = null)
     {
         this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         this._resources = resources;
         this._bridge = bridge;
+        this._acquirer = acquirer;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDirectoryEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFileBytes);
@@ -123,6 +127,7 @@ internal sealed class WorkspaceFunctions
                     $"pageSize must be between 1 and {MaximumPageSize}.");
 
             var logicalRoot = snapshot.ResolveLogical(uri, allowRoot: true);
+            EnforceRead(snapshot, logicalRoot.Segments, logicalRoot.DisplayPath, arguments);
             List<WorkspaceDirectoryEntry> entries;
             var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
@@ -190,6 +195,42 @@ internal sealed class WorkspaceFunctions
         {
             throw ToAgentToolException(exception);
         }
+    }
+
+    /// <summary>Enforces the session's read policy on one workspace-plane path: the
+    /// model-tool surface baseline (the workspace root) minus configuration denials, so a
+    /// denial bites the same whichever path — bridge or disk — serves the call.</summary>
+    private void EnforceRead(
+        WorkspaceSnapshot snapshot,
+        IReadOnlyList<string> segments,
+        string displayPath,
+        AIFunctionArguments arguments)
+    {
+        WorkspacePermissionSurface.Enforce(
+            _acquirer,
+            _workspace,
+            PermissionKind.Read,
+            snapshot.ToPhysicalPath(segments),
+            displayPath,
+            ParseSession(arguments));
+    }
+
+    private static AgentSessionId? ParseSession(AIFunctionArguments arguments)
+    {
+        return WorkspaceToolCalls.TryGetSessionId(arguments) is { } text &&
+               AgentSessionId.TryParse(text, out var sessionId)
+            ? sessionId
+            : null;
+    }
+
+    /// <summary>The physical path a bridged match refers to. <see cref="Path.GetFullPath" />
+    /// collapses any traversal the frontend sent, and the judge then denies a path outside
+    /// the workspace root, so a hostile relative path cannot pass as covered.</summary>
+    private static string BridgedMatchPhysicalPath(string rootPhysical, string relativePath)
+    {
+        return Path.GetFullPath(Path.Combine(
+            rootPhysical,
+            relativePath.Replace('/', Path.DirectorySeparatorChar)));
     }
 
     /// <summary>Maps a bridged match's root-relative posix path onto the workspace
@@ -268,6 +309,10 @@ internal sealed class WorkspaceFunctions
             }
 
             var snapshot = _workspace.Capture();
+            var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+            // The workspace-plane read is judged against the session's policy before the
+            // bridge or the disk serves it; registered resource URIs are their own plane.
+            EnforceRead(snapshot, logical.Segments, logical.DisplayPath, arguments);
             var bridgedChannel = WorkspaceToolCalls.AcquireBridge(_bridge, arguments);
             if (bridgedChannel is { } channel)
             {
@@ -275,7 +320,6 @@ internal sealed class WorkspaceFunctions
                 // included) and the kernel windows it with the local read conventions.
                 // The coverage ruling: a path outside the frontend's workspace folders
                 // is served locally — the bridge never claims state it does not hold.
-                var logical = snapshot.ResolveLogical(uri, allowRoot: false);
                 try
                 {
                     var text = await channel
@@ -428,6 +472,21 @@ internal sealed class WorkspaceFunctions
 
             var snapshot = _workspace.Capture();
             var searchRoot = snapshot.Resolve(uri);
+            // The session's read policy gates the whole search: the root is enforced once,
+            // and one composed snapshot judges every file the scan visits or the frontend
+            // returns, so a denied subtree cannot leak through match previews.
+            var readPolicy = _acquirer is null
+                ? null
+                : WorkspacePermissionSurface.Acquire(_acquirer, _workspace, ParseSession(arguments));
+            var searchLogicalRoot = snapshot.ResolveLogical(uri, allowRoot: true);
+            if (readPolicy is not null &&
+                !WorkspacePermissionSurface.IsAllowed(
+                    readPolicy,
+                    PermissionKind.Read,
+                    snapshot.ToPhysicalPath(searchLogicalRoot.Segments)))
+            {
+                throw WorkspacePermissionSurface.Forbidden(PermissionKind.Read, searchLogicalRoot.DisplayPath);
+            }
 
             // The search generalization (ADR 0042 stage F-II): like the file
             // operations, the covered search root is served by the elected frontend's
@@ -438,6 +497,7 @@ internal sealed class WorkspaceFunctions
             if (bridgedChannel is { } channel)
             {
                 var bridgedRoot = snapshot.ResolveLogical(uri, allowRoot: true);
+                var bridgedRootPhysical = snapshot.ToPhysicalPath(bridgedRoot.Segments);
                 try
                 {
                     var bridged = await channel.SearchAsync(
@@ -454,11 +514,16 @@ internal sealed class WorkspaceFunctions
                         return new SearchTextResult(
                             bridgedRoot.Uri,
                             [
-                                .. bridged.Matches.Select(match => new WorkspaceSearchMatch(
-                                        ToRootedUri(snapshot, bridgedRoot.Segments, match.RelativePath),
-                                        match.Line,
-                                        match.Column,
-                                        match.Preview))
+                                .. bridged.Matches
+                                    .Where(match => readPolicy is null || WorkspacePermissionSurface.IsAllowed(
+                                        readPolicy,
+                                        PermissionKind.Read,
+                                        BridgedMatchPhysicalPath(bridgedRootPhysical, match.RelativePath)))
+                                    .Select(match => new WorkspaceSearchMatch(
+                                            ToRootedUri(snapshot, bridgedRoot.Segments, match.RelativePath),
+                                            match.Line,
+                                            match.Column,
+                                            match.Preview))
                                     .Where(static match => match.Uri.Length > 0)
                             ],
                             bridged.Truncated,
@@ -488,6 +553,7 @@ internal sealed class WorkspaceFunctions
                 requestedMaximumResults,
                 include,
                 exclude,
+                readPolicy,
                 cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -645,6 +711,7 @@ internal sealed class WorkspaceFunctions
         int maximumResults,
         string[]? include,
         string[]? exclude,
+        EffectivePolicy? readPolicy,
         CancellationToken cancellationToken)
     {
         var matches = ImmutableArray.CreateBuilder<WorkspaceSearchMatch>();
@@ -658,6 +725,15 @@ internal sealed class WorkspaceFunctions
             {
                 truncated = true;
                 break;
+            }
+
+            // The session's read policy is a filter like the globs: a denied file is never
+            // opened, so neither its content nor its preview can surface through a match.
+            if (readPolicy is not null &&
+                !WorkspacePermissionSurface.IsAllowed(readPolicy, PermissionKind.Read, file.FullName))
+            {
+                statistics.SkippedByFilter++;
+                continue;
             }
 
             // The filter contract is shared with the frontend's fast search: the

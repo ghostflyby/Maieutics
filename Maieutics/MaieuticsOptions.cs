@@ -1,3 +1,5 @@
+using Maieutics.Permissions;
+
 namespace Maieutics;
 
 public sealed class MaieuticsOptions
@@ -48,6 +50,10 @@ public sealed class MaieuticsPermissionsOptions
 
     public MaieuticsPermissionKindOptions? Import { get; set; }
 
+    /// <summary>The kernel-internal instruction-surface domain (ADR 0032): a physical-path kind;
+    /// patterns must be absolute or variable-anchored like the other path kinds.</summary>
+    public MaieuticsPermissionKindOptions? Instructions { get; set; }
+
     internal void Validate()
     {
         ValidateKind(Read);
@@ -58,6 +64,11 @@ public sealed class MaieuticsPermissionsOptions
         ValidateKind(Ffi);
         ValidateKind(Sys);
         ValidateKind(Import);
+        ValidateKind(Instructions);
+        ValidatePathPatterns(Read, PermissionKind.Read);
+        ValidatePathPatterns(Write, PermissionKind.Write);
+        ValidatePathPatterns(Ffi, PermissionKind.Ffi);
+        ValidatePathPatterns(Instructions, PermissionKind.Instructions);
     }
 
     private static void ValidateKind(MaieuticsPermissionKindOptions? kind)
@@ -65,6 +76,22 @@ public sealed class MaieuticsPermissionsOptions
         if (kind is null) return;
         foreach (var pattern in kind.Allow) ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
         foreach (var pattern in kind.Deny) ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+    }
+
+    /// <summary>Path-kind patterns in app-wide defaults must be absolute or variable-anchored: the
+    /// app config is anchored to no directory, so a relative path pattern has no defined base
+    /// here (the workspace profile resolves relatives against its own file). <c>run</c> is not a
+    /// path kind for this rule — its values are bare command names or absolute paths.</summary>
+    private static void ValidatePathPatterns(MaieuticsPermissionKindOptions? kind, PermissionKind model)
+    {
+        if (kind is null || !PermissionKinds.IsFilePathKind(model)) return;
+        foreach (var pattern in kind.Allow.Concat(kind.Deny))
+        {
+            if (Path.IsPathRooted(pattern) || pattern.StartsWith("${", StringComparison.Ordinal)) continue;
+            throw new ArgumentException(
+                $"The {PermissionKinds.GetName(model)} permission pattern '{pattern}' is relative; " +
+                "app-wide default path patterns must be absolute or use a ${env.*}/${var.*} variable token.");
+        }
     }
 }
 

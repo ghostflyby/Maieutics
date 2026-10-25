@@ -120,6 +120,33 @@ public sealed class PermissionLayerTests
         Assert.Equal("permission_pattern_empty", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
     }
 
+    [Fact]
+    public void StarPatternFailsBuildWithTypedError()
+    {
+        // '*' is the allow-all/deny-all flag's spelling, never a list entry: in a path kind it
+        // would silently match nothing, in a prefix kind it would match everything.
+        var layer = Layer(
+            (PermissionKind.Net, new PermissionKindRules { Allow = ["*"] }));
+
+        var build = () => PermissionLayerStore.Build([layer], CreateVariables());
+
+        Assert.Equal("permission_pattern_invalid", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
+    }
+
+    [Fact]
+    public void CommaPatternFailsBuildWithTypedError()
+    {
+        // Deno renders a kind's list as one comma-separated flag, so a pattern containing a
+        // comma cannot be expressed; it must fail the build instead of silently narrowing the
+        // grant to the pieces Deno parses.
+        var layer = Layer(
+            (PermissionKind.Read, new PermissionKindRules { Allow = ["/tmp,a"] }));
+
+        var build = () => PermissionLayerStore.Build([layer], CreateVariables());
+
+        Assert.Equal("permission_pattern_invalid", Assert.ThrowsAny<PermissionException>(build.Invoke).Code);
+    }
+
     private static PermissionLayer Layer(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)
     {
         return new PermissionLayer

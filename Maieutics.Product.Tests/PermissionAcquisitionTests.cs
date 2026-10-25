@@ -194,7 +194,7 @@ public sealed class PermissionAcquisitionTests
     }
 
     [Fact]
-    public void ChildScopeRegistrationIsCappedAndEvictsTheOldest()
+    public void ChildScopeEvictionDoesNotStripTheCapturedSnapshot()
     {
         var registry = new PermissionOverrideRegistry();
         var parent = AgentSessionId.Create();
@@ -205,7 +205,12 @@ public sealed class PermissionAcquisitionTests
         for (var index = 0; index < 256; index++)
             registry.RegisterChildScope(AgentSessionId.Create(), parent);
 
-        Assert.Null(registry.TryGet(firstChild));
+        // The scope map is diagnostic and bounded; a captured snapshot outlives its eviction
+        // because a reaped child's run has ended and nothing re-reads it — the eviction can
+        // never widen a live child's policy (the old chain-walk's documented contradiction).
+        Assert.NotNull(registry.TryGet(firstChild));
+        Assert.DoesNotContain(registry.ChildScopes, scope => scope.Child.Equals(firstChild));
+
         var lastChild = AgentSessionId.Create();
         registry.RegisterChildScope(lastChild, parent);
         Assert.NotNull(registry.TryGet(lastChild));

@@ -43,6 +43,12 @@ internal sealed record PermissionProfileSet
 
     [JsonPropertyName("import")]
     public PermissionProfileKindRules? Import { get; init; }
+
+    /// <summary>The kernel-internal instruction-surface domain (ADR 0032): a physical-path kind
+    /// like read/write — the profile loader resolves relatives against the profile directory —
+    /// judged by the instruction gates, never rendered as a Deno flag.</summary>
+    [JsonPropertyName("instructions")]
+    public PermissionProfileKindRules? Instructions { get; init; }
 }
 
 /// <summary>The <c>permissions.json</c> workspace profile document: named sets plus the set to apply

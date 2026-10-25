@@ -98,39 +98,49 @@ internal sealed class WorkspaceEditFunctions
             });
     }
 
-    /// <summary>Gates model-initiated writes to instruction surfaces: an instruction path
-    /// requires an explicit allow in the calling session's effective write policy — absence
-    /// of a matching allow denies, and any matching deny denies (ADR 0032 decision 1). A
-    /// host without the permission acquirer keeps the legacy containment-only behavior. The
-    /// calling session comes from either context — the model's run context or the control
-    /// host's script binding (ADR 0042 decision 12) — and a caller carrying neither is
-    /// denied fail-closed instead of crashing the invocation.</summary>
+    /// <summary>Gates model-initiated writes to instruction surfaces (ADR 0032 decision 1) in
+    /// the kernel-internal <c>instructions</c> domain: an explicit allow in the calling session's
+    /// policy — a physical workspace path — admits, absence denies. A host without the permission
+    /// acquirer keeps the legacy containment-only behavior. The calling session comes from either
+    /// context — the model's run context or the control host's script binding (ADR 0042 decision
+    /// 12) — and a caller carrying neither is denied fail-closed.</summary>
     private void GateInstructionSurface(string? relativePath, AIFunctionArguments arguments)
     {
-        if (_acquirer is null || relativePath is null || !InstructionSurface.IsInstructionSurface(relativePath))
+        // An empty relative path (the bare workspace://local/ prefix) is no instruction
+        // surface; the URI resolution produces its own typed failure later.
+        if (string.IsNullOrWhiteSpace(relativePath) ||
+            !InstructionSurface.IsInstructionSurface(relativePath))
         {
             return;
         }
 
-        var normalized = relativePath.Replace('\\', '/');
-        if (!AgentSessionId.TryParse(WorkspaceToolCalls.TryGetSessionId(arguments), out var sessionId))
-        {
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{normalized}' is an instruction surface: model-initiated writes require an explicit allow " +
-                "in the calling session's permission policy.");
-        }
+        var sessionId = WorkspaceToolCalls.TryGetSessionId(arguments) is { } text &&
+                        AgentSessionId.TryParse(text, out var parsed)
+            ? parsed
+            : (AgentSessionId?)null;
+        WorkspacePermissionSurface.EnforceInstructions(_acquirer, _workspace, relativePath, sessionId);
+    }
 
-        var policy = _acquirer.Acquire(PermissionLayer.Empty, sessionId);
-        var rules = policy.For(PermissionKind.Write);
-        if (rules.Deny.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)) ||
-            !rules.Allow.Any(pattern => PermissionMatching.MatchesPath(pattern, normalized)))
-        {
-            throw new AgentToolException(
-                "instructions_write_forbidden",
-                $"'{normalized}' is an instruction surface: model-initiated writes require an " +
-                "explicit allow in the calling session's permission policy.");
-        }
+    /// <summary>Enforces the session's write policy on one workspace write target — the
+    /// model-tool surface baseline (the workspace root) minus configuration denials — so a
+    /// write denial bites the same whichever channel lands the change. The instruction-surface
+    /// gate runs first and stays stricter: instruction files are that gate's own domain.</summary>
+    private void EnforceWritePolicy(string uri, AIFunctionArguments arguments)
+    {
+        if (_acquirer is null) return;
+
+        var snapshot = _workspace.Capture();
+        var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+        WorkspacePermissionSurface.Enforce(
+            _acquirer,
+            _workspace,
+            PermissionKind.Write,
+            snapshot.ToPhysicalPath(logical.Segments),
+            logical.DisplayPath,
+            WorkspaceToolCalls.TryGetSessionId(arguments) is { } text &&
+                AgentSessionId.TryParse(text, out var sessionId)
+                ? sessionId
+                : null);
     }
 
     [Description("Creates or overwrites one workspace UTF-8 text file.")]
@@ -163,6 +173,7 @@ internal sealed class WorkspaceEditFunctions
         CancellationToken cancellationToken)
     {
         GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+        EnforceWritePolicy(uri, arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -391,6 +402,7 @@ internal sealed class WorkspaceEditFunctions
         CancellationToken cancellationToken = default)
     {
         GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+        EnforceWritePolicy(uri, arguments);
         try
         {
             if (string.IsNullOrEmpty(uri))
@@ -894,7 +906,11 @@ internal sealed class WorkspaceEditFunctions
     {
         var document = ApplyPatchParser.Parse(patch);
         foreach (var change in document.Files)
-            GateInstructionSurface(ToWorkspaceUri(change.Path), arguments);
+        {
+            var uri = ToWorkspaceUri(change.Path);
+            GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+            EnforceWritePolicy(uri, arguments);
+        }
     }
 
     /// <summary>Extracts the workspace-relative path (forward slashes, no leading

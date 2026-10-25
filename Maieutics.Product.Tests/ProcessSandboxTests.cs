@@ -317,8 +317,10 @@ public sealed class ProcessSandboxTests : IDisposable
         if (OperatingSystem.IsWindows()) Assert.Skip("The shell stand-in is unix sh.");
 
         var functions = CreateFunctions();
+        // Octal escapes are POSIX printf; dash (Ubuntu's /bin/sh) does not support \xHH and
+        // would emit the request literally instead of the invalid byte.
         var failure = await Record.ExceptionAsync(() => InvokeAsync(functions, "process_spawn", """
-            {"executable":"/bin/sh","arguments":["-c","printf \\\\xff"],"timeoutMs":10000}
+            {"executable":"/bin/sh","arguments":["-c","printf \\\\377"],"timeoutMs":10000}
             """));
 
         Assert.Equal("process_spawn_output_not_utf8", Assert.IsType<AgentToolException>(failure).Code);

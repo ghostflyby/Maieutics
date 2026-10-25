@@ -220,7 +220,11 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
     [Fact]
     public void AnUnreadableSubtreeStaysResidualInsteadOfFailingTheOverlay()
     {
-        if (OperatingSystem.IsWindows()) Assert.Skip("The mode-based unreadable directory is a Unix stand-in.");
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            Assert.Skip("The mode-based unreadable directory is a Unix stand-in.");
+            return;
+        }
 
         var root = _workspace.Path;
         var locked = Path.Combine(root, "locked");

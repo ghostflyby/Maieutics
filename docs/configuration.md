@@ -308,25 +308,49 @@ like the other watched files; an invalid file rejects the reload and keeps the l
 ### Instruction surfaces
 
 Model-initiated writes to instruction surfaces — `AGENTS.md` at any depth and files under
-`.agents/` — require an explicit `Write` allow in the calling session's effective policy
-(ADR 0032); any matching deny denies, and with no matching allow the write fails with
-`instructions_write_forbidden`. The shipped defaults grant no such allow, so the model cannot
-rewrite the context of future sessions unless the workspace opts in:
+`.agents/` — require an explicit allow in the kernel-internal `Instructions` permission kind
+(ADR 0032, ADR 0045's predecessor fix); any matching deny denies, and with no matching allow
+the write fails with `instructions_write_forbidden`. A `Write` grant never loosens this gate —
+the workspace-root write posture admits `src/` files but never an instruction file. The
+shipped defaults grant no such allow, so the model cannot rewrite the context of future
+sessions unless the workspace opts in:
 
 ```json
 {
   "Maieutics": {
     "Permissions": {
-      "Write": { "allow": ["AGENTS.md"] }
+      "Instructions": { "allow": ["${var.workspace}/AGENTS.md"] }
     }
   }
 }
 ```
 
-Patterns are workspace-relative paths matched by prefix, so `"AGENTS.md"` admits the
-workspace-root file; a nested surface needs its own entry (for example `".agents/skills"`).
+Patterns are physical workspace paths (the workspace profile resolves relative entries against
+its own directory), so `${var.workspace}/AGENTS.md` admits the workspace-root file; a nested
+surface needs its own entry (for example `${var.workspace}/.agents/skills`). The same rules
+reach a REPL cell's direct Deno write through a derived deny overlay, and the
+`%permissions allow instructions <path>` command sets the same grant per session.
 
 Ordinary workspace files are unaffected: they keep the containment-only workspace-root posture.
+
+### Process sandbox
+
+Processes spawned from inside a Deno child — a REPL cell's `new Deno.Command(...)` — run
+through the kernel's launch seam (ADR 0045): the session's `Run` rules gate the executable,
+the read/write/net rules shape a platform sandbox (seatbelt on macOS, bubblewrap on Linux)
+around it, and the environment comes from the policy's env allowlist.
+`Maieutics:ProcessSandbox:Mode` selects the posture:
+
+- `Off` — the spawn tool is not registered and the polyfill stays inert: cell spawns keep the
+  child's own broker `run` check (deny-by-default), exactly the pre-ADR behavior.
+- `Prefer` (the default) — spawn through the kernel and wrap in a platform sandbox when a
+  launcher is installed; without one, launch unwrapped behind the same run gate and
+  environment allowlist.
+- `Require` — refuse any spawn the platform cannot sandbox.
+
+The polyfill supports `output()` semantics (captured stdout/stderr, exit code, a timeout that
+kills the process tree); interactive processes belong to the terminal tools, and binary output
+must be redirected to a file.
 
 ## Skills
 

@@ -21,11 +21,18 @@ public sealed class MaieuticsOptions
     // overlay, between the built-in baseline and the workspace permissions.json profile.
     public MaieuticsPermissionsOptions Permissions { get; set; } = new();
 
+    /// <summary>Process-sandbox enforcement for spawns requested from inside Deno children
+    /// (ADR 0045): Off keeps those spawns on the child's own Deno permission path, Prefer
+    /// routes them through the kernel launch seam and wraps them when a platform launcher
+    /// exists, Require refuses spawns the platform cannot sandbox. Terminal and MCP children
+    /// always launch through the kernel seam.</summary>
+    public MaieuticsProcessSandboxOptions ProcessSandbox { get; set; } = new();
 
     internal void ValidateCommon()
     {
         Agent.Validate();
         Permissions.Validate();
+        ProcessSandbox.Validate();
     }
 }
 
@@ -104,6 +111,31 @@ public sealed class MaieuticsPermissionKindOptions
     public bool AllowAll { get; set; }
 
     public bool DenyAll { get; set; }
+}
+
+/// <summary>Process-sandbox options (ADR 0045): the mode is the single switch. The enum
+/// spelling in configuration is case-insensitive (<c>Off</c>, <c>Prefer</c>,
+/// <c>Require</c>).</summary>
+public sealed class MaieuticsProcessSandboxOptions
+{
+    /// <summary>The enforcement mode. The default is <c>Prefer</c>: cell-spawned processes run
+    /// through the kernel launch seam with the run gate, the policy environment, and a
+    /// platform sandbox whenever one is installed.</summary>
+    public MaieuticsProcessSandboxMode Mode { get; set; } = MaieuticsProcessSandboxMode.Prefer;
+
+    internal void Validate()
+    {
+        if (!Enum.IsDefined(Mode))
+            throw new ArgumentException(
+                $"The process sandbox mode '{Mode}' is not one of Off, Prefer, Require.");
+    }
+}
+
+public enum MaieuticsProcessSandboxMode
+{
+    Off,
+    Prefer,
+    Require
 }
 
 public sealed class MaieuticsModelOptions

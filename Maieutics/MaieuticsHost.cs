@@ -163,6 +163,14 @@ public static class MaieuticsHost
         var skillsOptions = new Skills.SkillsOptions();
         builder.Configuration.GetSection(Skills.SkillsOptions.SectionName).Bind(skillsOptions);
         skillsOptions.Validate();
+        // The process-sandbox mode (ADR 0045) is startup-fixed: the registered seam and the
+        // spawn tool's presence both follow it, and the REPL polyfill treats the tool's
+        // absence as its per-call fallback signal.
+        var processSandboxOptions = new MaieuticsProcessSandboxOptions();
+        builder.Configuration
+            .GetSection($"{MaieuticsOptions.SectionName}:ProcessSandbox")
+            .Bind(processSandboxOptions);
+        processSandboxOptions.Validate();
         // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
         var applicationPaths = ApplicationPaths.Resolve();
         // The workspace root is the fixed home; external projects open as managed links
@@ -265,6 +273,22 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<FrontendDenoReplPresentationRouter>();
         builder.Services.AddSingleton<IDenoReplPresentationRouter>(static services =>
             services.GetRequiredService<FrontendDenoReplPresentationRouter>());
+        // The process-sandbox seam (ADR 0045): one policy implementation answers every spawn a
+        // Deno child requests through the polyfill — the run gate, the policy environment, and
+        // the platform sandbox derived from the same effective policy.
+        var processSandboxMode = processSandboxOptions.Mode switch
+        {
+            MaieuticsProcessSandboxMode.Off => Processes.ProcessSandboxMode.Off,
+            MaieuticsProcessSandboxMode.Require => Processes.ProcessSandboxMode.Require,
+            _ => Processes.ProcessSandboxMode.Prefer
+        };
+        builder.Services.AddSingleton<Processes.IProcessSandboxPolicy>(
+            new Processes.PolicyProcessSandboxPolicy(processSandboxMode));
+        builder.Services.AddSingleton<Processes.ProcessSpawnFunctions>(static services =>
+            new Processes.ProcessSpawnFunctions(
+                services.GetRequiredService<Processes.IProcessSandboxPolicy>(),
+                services.GetRequiredService<Permissions.PermissionPolicyAcquirer>(),
+                services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
             services.GetRequiredService<MaieuticsAgentSessionManager>(),
             services.GetService<IMaieuticsRuntimeConfiguration>(),
@@ -437,7 +461,13 @@ public static class MaieuticsHost
                     .. services.GetRequiredService<TerminalFunctions>().Functions,
                     .. services.GetRequiredService<IdeFunctions>().Functions,
                     .. services.GetRequiredService<IdeDebugTools>().Functions,
-                    .. services.GetRequiredService<WorkspaceBridgeFunctions>().Functions
+                    .. services.GetRequiredService<WorkspaceBridgeFunctions>().Functions,
+                    // Registered only outside Off mode (ADR 0045): the REPL's Deno.Command
+                    // polyfill treats the tool's absence as its per-call fallback to the
+                    // child's native permission path.
+                    .. (processSandboxMode == Processes.ProcessSandboxMode.Off
+                        ? []
+                        : services.GetRequiredService<Processes.ProcessSpawnFunctions>().Functions)
                 ],
                 pluginHosts: services.GetRequiredService<PluginHostManager>(),
                 credentials: services.GetRequiredService<ReplControlCredentialRegistry>(),
@@ -489,7 +519,11 @@ public static class MaieuticsHost
         // Owner-keyed REPL policy snapshot: the IDE workspace bridge judges script calls
         // against exactly the policy the broker holds for the session's REPL child.
         builder.Services.AddSingleton<ReplOwnerPolicyCache>();
-        builder.Services.AddSingleton<IDenoReplSessionFactory>(static services =>
+        // The polyfill's arming signal (ADR 0045): the mode string rides the child env.
+        var processSandboxSignal = processSandboxMode == Processes.ProcessSandboxMode.Off
+            ? null
+            : processSandboxMode.ToString().ToLowerInvariant();
+        builder.Services.AddSingleton<IDenoReplSessionFactory>(services =>
             new LocalDenoReplSessionFactory(
                 services.GetRequiredService<DenoReplOptions>(),
                 services.GetRequiredService<ReplControlHost>(),
@@ -503,7 +537,8 @@ public static class MaieuticsHost
                 services.GetRequiredService<PermissionPolicyAcquirer>(),
                 services.GetService<PluginHostManager>(),
                 services.GetService<IReplPolicyRegistrar>(),
-                services.GetRequiredService<ReplOwnerPolicyCache>()));
+                services.GetRequiredService<ReplOwnerPolicyCache>(),
+                processSandboxSignal));
         builder.Services.AddSingleton(static services =>
             new DenoReplRegistry(
                 services.GetRequiredService<Workspace>(),

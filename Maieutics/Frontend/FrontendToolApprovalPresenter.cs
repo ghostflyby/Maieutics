@@ -44,9 +44,9 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         ILogger<FrontendToolApprovalPresenter> logger,
         TimeSpan? waitTimeout = null)
     {
-        this._publisher = publisher;
-        this._logger = logger;
-        this._waitTimeout = waitTimeout ?? DefaultWaitTimeout;
+        _publisher = publisher;
+        _logger = logger;
+        _waitTimeout = waitTimeout ?? DefaultWaitTimeout;
     }
 
     /// <summary>Registers a spawned child run's session under its owning session, so an

@@ -43,7 +43,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
 
     // Internal as the disposal tests' seam: the pipe listener exists only in the Windows
     // branch, so the unix CI installs an equivalent stand-in to drive the same release path.
-    internal NamedPipeServerStream? _pipeListener;
+    internal NamedPipeServerStream? PipeListener;
 
     private DenoPermissionBroker(
         string? socketPath,
@@ -51,10 +51,10 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
         ILogger<DenoPermissionBroker> logger,
         TimeSpan policyRegistrationWait)
     {
-        this._socketPath = socketPath;
-        this._pipeName = pipeName;
-        this._logger = logger;
-        this._policyRegistrationWait = policyRegistrationWait;
+        _socketPath = socketPath;
+        _pipeName = pipeName;
+        _logger = logger;
+        _policyRegistrationWait = policyRegistrationWait;
     }
 
     /// <summary>Number of pid registration slots currently held. A request may create a pending
@@ -102,7 +102,7 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 $"maieutics-broker-{Guid.NewGuid():N}",
                 logger,
                 policyRegistrationWait);
-            windowsBroker._pipeListener = new NamedPipeServerStream(
+            windowsBroker.PipeListener = new NamedPipeServerStream(
                 windowsBroker._pipeName!,
                 PipeDirection.InOut,
                 MaximumPendingConnections,
@@ -203,17 +203,17 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
                 {
                     try
                     {
-                        await _pipeListener!.WaitForConnectionAsync(_lifetime.Token).ConfigureAwait(false);
+                        await PipeListener!.WaitForConnectionAsync(_lifetime.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
                         return;
                     }
 
-                    _ = ServePipeConnectionAsync(_pipeListener, _lifetime.Token);
+                    _ = ServePipeConnectionAsync(PipeListener, _lifetime.Token);
                     lock (_listenerGate)
                     {
-                        _pipeListener = new NamedPipeServerStream(
+                        PipeListener = new NamedPipeServerStream(
                             _pipeName!,
                             PipeDirection.InOut,
                             MaximumPendingConnections,
@@ -247,8 +247,8 @@ internal sealed class DenoPermissionBroker : IAsyncDisposable
             NamedPipeServerStream? pipe;
             lock (_listenerGate)
             {
-                pipe = _pipeListener;
-                _pipeListener = null;
+                pipe = PipeListener;
+                PipeListener = null;
             }
 
             pipe?.Dispose();

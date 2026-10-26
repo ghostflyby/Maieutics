@@ -44,7 +44,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         Func<string?>? workspaceRootAccessor = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
-        this._workspaceRootAccessor = workspaceRootAccessor;
+        _workspaceRootAccessor = workspaceRootAccessor;
         // Register the provider and SQLite's serialized threading default before opening: a
         // process that reached Microsoft.Data.Sqlite without this assembly's module initializer
         // having run would otherwise open connections with no mutex on a multi-thread engine.

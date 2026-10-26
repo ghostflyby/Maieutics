@@ -170,8 +170,8 @@ file sealed class PromptServerHarness : IAsyncDisposable
     {
         Generation = generation;
         Access = access;
-        this._lifetime = lifetime;
-        this._serverTask = serverTask;
+        _lifetime = lifetime;
+        _serverTask = serverTask;
     }
 
     internal McpServerGeneration Generation { get; }

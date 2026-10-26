@@ -70,12 +70,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         IAsyncDisposable? presentationScope,
         ILogger logger)
     {
-        this._sessionId = sessionId;
-        this._run = run;
+        _sessionId = sessionId;
+        _run = run;
         _ownRunId = run.Id.Value.ToString("N");
-        this._presentationRouter = presentationRouter;
-        this._presentationScope = presentationScope;
-        this._logger = logger;
+        _presentationRouter = presentationRouter;
+        _presentationScope = presentationScope;
+        _logger = logger;
     }
 
     /// <summary>Creates the stream for a run without starting its pump, so the presentation

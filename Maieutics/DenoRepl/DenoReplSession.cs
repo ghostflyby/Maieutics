@@ -49,11 +49,11 @@ internal sealed class DenoReplSession : IAsyncDisposable
         SessionId = sessionId;
         IsDefault = isDefault;
         WorkingDirectory = workingDirectory;
-        this._options = options;
-        this._factory = factory;
-        this._presentationRouter = presentationRouter;
-        this._logger = logger;
-        this._displayObjectStore = displayObjectStore;
+        _options = options;
+        _factory = factory;
+        _presentationRouter = presentationRouter;
+        _logger = logger;
+        _displayObjectStore = displayObjectStore;
         _rateLimiter = new ReplOutputRateLimiter(options);
     }
 

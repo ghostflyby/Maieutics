@@ -28,9 +28,9 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
         ILogger<WindowsPipeBootstrap> logger)
     {
         PipeName = pipeName;
-        this._sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
-        this._credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _sessionRegistry = sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
+        _credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _loop = RunAsync();
     }
 

@@ -70,14 +70,14 @@ internal sealed class TerminalSession : IAsyncDisposable
     {
         SessionId = sessionId;
         IsDefault = isDefault;
-        this._workingDirectory = workingDirectory;
-        this._kind = kind;
-        this._executable = executable;
-        this._launchArguments = launchArguments;
-        this._policy = policy;
-        this._options = options;
-        this._factory = factory;
-        this._logger = logger;
+        _workingDirectory = workingDirectory;
+        _kind = kind;
+        _executable = executable;
+        _launchArguments = launchArguments;
+        _policy = policy;
+        _options = options;
+        _factory = factory;
+        _logger = logger;
         _terminal = new Terminal(new XTerm.Options.TerminalOptions
         {
             Cols = options.Columns,

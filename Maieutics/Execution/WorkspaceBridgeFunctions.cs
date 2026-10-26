@@ -43,10 +43,10 @@ internal sealed class WorkspaceBridgeFunctions
         PermissionPolicyAcquirer? acquirer = null,
         Func<string, EffectivePolicy?>? replPolicyLookup = null)
     {
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this._bridge = bridge;
-        this._acquirer = acquirer;
-        this._replPolicyLookup = replPolicyLookup;
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _bridge = bridge;
+        _acquirer = acquirer;
+        _replPolicyLookup = replPolicyLookup;
 
         Functions =
         [

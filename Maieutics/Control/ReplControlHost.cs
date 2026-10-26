@@ -54,15 +54,15 @@ internal sealed partial class ReplControlHost : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(socketPath);
         SocketPath = socketPath;
-        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this._scriptTools = scriptTools ?? [];
-        this._pluginHosts = pluginHosts;
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _scriptTools = scriptTools ?? [];
+        _pluginHosts = pluginHosts;
         _credentialRegistry = credentials;
-        this._windowsPipeBootstrap = windowsPipeBootstrap;
-        this._commFrontendSink = commFrontendSink;
-        this._resources = resources;
-        this._orchestration = orchestration;
+        _windowsPipeBootstrap = windowsPipeBootstrap;
+        _commFrontendSink = commFrontendSink;
+        _resources = resources;
+        _orchestration = orchestration;
     }
 
     /// <summary>Gets the Unix socket path used by the process-wide channel on Unix.</summary>

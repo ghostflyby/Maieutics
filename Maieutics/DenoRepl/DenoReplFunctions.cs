@@ -15,7 +15,7 @@ internal sealed class DenoReplFunctions
 
     public DenoReplFunctions(DenoReplRegistry registry)
     {
-        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         Functions =
         [
             CreateFunction(

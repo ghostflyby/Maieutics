@@ -368,8 +368,8 @@ internal sealed class AgentTaskResourceSource : ITaskResourceSource
         Func<AgentSessionId, AgentSession?> resolveSession,
         Func<IReadOnlyList<AgentSessionId>> listLiveSessions)
     {
-        this._resolveSession = resolveSession ?? throw new ArgumentNullException(nameof(resolveSession));
-        this._listLiveSessions = listLiveSessions ?? throw new ArgumentNullException(nameof(listLiveSessions));
+        _resolveSession = resolveSession ?? throw new ArgumentNullException(nameof(resolveSession));
+        _listLiveSessions = listLiveSessions ?? throw new ArgumentNullException(nameof(listLiveSessions));
     }
 
     public string Authority => AgentAuthority;

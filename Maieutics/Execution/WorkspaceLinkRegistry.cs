@@ -56,9 +56,9 @@ internal sealed class WorkspaceLinkRegistry
         List<WorkspaceLinkRecord> links,
         List<WorkspaceRetiredLink> retired)
     {
-        this._path = path;
-        this._links = links;
-        this._retired = retired;
+        _path = path;
+        _links = links;
+        _retired = retired;
     }
 
     /// <summary>Loads the registry or starts a fresh one. A file that cannot be parsed is

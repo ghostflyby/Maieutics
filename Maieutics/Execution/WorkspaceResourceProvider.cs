@@ -11,7 +11,7 @@ internal sealed class WorkspaceResourceProvider : IResourceProvider
 
     internal WorkspaceResourceProvider(Workspace workspace)
     {
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
     }
 
     public string Id => "workspace.local";

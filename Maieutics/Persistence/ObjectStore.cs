@@ -26,7 +26,7 @@ internal sealed class ObjectStore : IAgentObjectStore, IObjectReclaimer
     public ObjectStore(string objectsRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(objectsRoot);
-        this._objectsRoot = objectsRoot;
+        _objectsRoot = objectsRoot;
         _stagingRoot = Path.Combine(objectsRoot, ".staging");
         Directory.CreateDirectory(objectsRoot);
         Directory.CreateDirectory(_stagingRoot);

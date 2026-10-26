@@ -111,20 +111,20 @@ public sealed class GatedModelProvider : IAsyncDisposable
         if (applyPatchFlow && applyPatchOperationJson is null)
             throw new ArgumentException("The apply-patch flow requires an operation JSON.", nameof(applyPatchOperationJson));
 
-        this._flavor = flavor;
-        this._mode = mode;
-        this._answer = answer;
-        this._model = model;
-        this._reasoning = reasoning;
-        this._toolFlow = toolFlow;
-        this._toolName = toolName;
-        this._toolArgumentsJson = toolArgumentsJson;
-        this._expectedToolResultText = expectedToolResultText;
-        this._applyPatchFlow = applyPatchFlow;
-        this._applyPatchOperationJson = applyPatchOperationJson;
-        this._webSearchFlow = webSearchFlow;
-        this._webSearchCalls = webSearchCalls;
-        this._requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
+        _flavor = flavor;
+        _mode = mode;
+        _answer = answer;
+        _model = model;
+        _reasoning = reasoning;
+        _toolFlow = toolFlow;
+        _toolName = toolName;
+        _toolArgumentsJson = toolArgumentsJson;
+        _expectedToolResultText = expectedToolResultText;
+        _applyPatchFlow = applyPatchFlow;
+        _applyPatchOperationJson = applyPatchOperationJson;
+        _webSearchFlow = webSearchFlow;
+        _webSearchCalls = webSearchCalls;
+        _requestCount = requestCount ?? (toolFlow || applyPatchFlow || webSearchFlow && flavor == ModelApiFlavor.Anthropic ? 2 : 1);
         _listener.Start();
         var endpoint = (IPEndPoint)_listener.LocalEndpoint;
         // The OpenAI SDK joins relative to the /v1/ base; the Anthropic SDK joins to the
@@ -578,7 +578,6 @@ public sealed class GatedModelProvider : IAsyncDisposable
         }
         catch (SocketException)
         {
-            return;
         }
     }
 }

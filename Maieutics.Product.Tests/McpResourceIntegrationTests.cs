@@ -132,9 +132,9 @@ public sealed class McpResourceIntegrationTests
             Task serverTask,
             CatalogSource catalogSource)
         {
-            this._lifetime = lifetime;
-            this._generation = generation;
-            this._serverTask = serverTask;
+            _lifetime = lifetime;
+            _generation = generation;
+            _serverTask = serverTask;
             Source = catalogSource;
         }
 

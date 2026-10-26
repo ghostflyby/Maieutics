@@ -41,12 +41,12 @@ internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         Func<string>? createTemporaryDirectory = null,
         string? trustedWorkspaceRoot = null)
     {
-        this._mode = mode;
-        this._locateSeatbelt = locateSeatbelt ?? LocateSeatbelt;
-        this._locateBubblewrap = locateBubblewrap ?? LocateBubblewrap;
-        this._createTemporaryDirectory = createTemporaryDirectory ??
+        _mode = mode;
+        _locateSeatbelt = locateSeatbelt ?? LocateSeatbelt;
+        _locateBubblewrap = locateBubblewrap ?? LocateBubblewrap;
+        _createTemporaryDirectory = createTemporaryDirectory ??
             (static () => Directory.CreateTempSubdirectory("maieutics-spawn-").FullName);
-        this._trustedWorkspaceRoot = trustedWorkspaceRoot;
+        _trustedWorkspaceRoot = trustedWorkspaceRoot;
     }
 
     /// <summary>The mode the composition root binds from

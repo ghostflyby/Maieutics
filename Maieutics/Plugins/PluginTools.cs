@@ -476,9 +476,9 @@ internal sealed class PluginToolCoordinator : IAsyncDisposable
         Func<IReadOnlySet<string>> reservedToolNames,
         ILogger logger)
     {
-        this._invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
-        this._reservedToolNames = reservedToolNames ?? throw new ArgumentNullException(nameof(reservedToolNames));
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _invoke = invoke ?? throw new ArgumentNullException(nameof(invoke));
+        _reservedToolNames = reservedToolNames ?? throw new ArgumentNullException(nameof(reservedToolNames));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>Completes when no describe pass is running or queued. Tests await this to

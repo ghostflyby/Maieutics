@@ -34,7 +34,7 @@ internal sealed class LocalTerminalProcess : ITerminalProcess
 
     internal LocalTerminalProcess(PtyProcess process)
     {
-        this._process = process;
+        _process = process;
         process.Exited += _ => Exited?.Invoke(this);
     }
 

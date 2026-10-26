@@ -11,8 +11,6 @@ namespace Maieutics.Agent.Tests;
 /// </summary>
 public sealed class AgentToolApprovalTests
 {
-    private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(10);
-
     [Fact(Timeout = 30_000)]
     public async Task ADeniedCallReturnsToolDeniedAndTheTurnContinues()
     {
@@ -465,7 +463,7 @@ public sealed class AgentToolApprovalTests
         internal RecordingGate(
             Func<AgentToolApprovalRequest, CancellationToken, ValueTask<AgentToolApprovalDecision>> body)
         {
-            this._body = body;
+            _body = body;
         }
 
         internal List<AgentToolApprovalRequest> Requests { get; } = [];

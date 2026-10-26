@@ -505,7 +505,7 @@ public sealed class DenoReplSessionTests
 
         internal ControlledEval(string executionId, ConcurrencyProbe? probe = null)
         {
-            this._probe = probe;
+            _probe = probe;
             Execution = new ReplEvalExecution(executionId, _events.Reader, _completion.Task);
             probe?.Enter();
         }

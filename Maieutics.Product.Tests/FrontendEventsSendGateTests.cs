@@ -419,9 +419,9 @@ public sealed class FrontendEventsSendGateTests
             FrontendSessionService service,
             FrontendIdeSockets ideSockets)
         {
-            this._application = application;
-            this._options = options;
-            this._host = host;
+            _application = application;
+            _options = options;
+            _host = host;
             Manager = manager;
             Service = service;
             IdeSockets = ideSockets;

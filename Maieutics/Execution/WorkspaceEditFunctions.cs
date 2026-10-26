@@ -46,17 +46,17 @@ internal sealed class WorkspaceEditFunctions
         int maximumDiffLines = DefaultMaximumDiffLines,
         IWorkspaceIoBridge? bridge = null)
     {
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this._acquirer = acquirer;
-        this._bridge = bridge;
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _acquirer = acquirer;
+        _bridge = bridge;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumWriteBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEditedFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDiffLines);
-        this._maximumWriteBytes = maximumWriteBytes;
-        this._maximumEditedFileBytes = maximumEditedFileBytes;
-        this._maximumDiffBytes = maximumDiffBytes;
-        this._maximumDiffLines = maximumDiffLines;
+        _maximumWriteBytes = maximumWriteBytes;
+        _maximumEditedFileBytes = maximumEditedFileBytes;
+        _maximumDiffBytes = maximumDiffBytes;
+        _maximumDiffLines = maximumDiffLines;
 
         Functions =
         [

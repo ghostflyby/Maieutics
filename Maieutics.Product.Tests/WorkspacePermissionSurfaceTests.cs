@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Maieutics.Agent;
-using Maieutics.Control;
 using Maieutics.Execution;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
@@ -172,14 +171,14 @@ public sealed class WorkspacePermissionSurfaceTests : IDisposable
 
     private sealed class FixedLayerSource(PermissionLayer appDefaults) : IPermissionLayerSource
     {
-        public PermissionLayer? AppDefaults => appDefaults;
+        public PermissionLayer AppDefaults => appDefaults;
 
         public PermissionLayer? WorkspaceProfile => null;
 
         public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => null;
     }
 
-    private sealed class NullVariableSource : Execution.IPermissionVariableSource
+    private sealed class NullVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

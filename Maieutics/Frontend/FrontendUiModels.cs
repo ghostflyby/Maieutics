@@ -95,9 +95,9 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
         AgentSessionId sessionId,
         FrontendFormHandlers handlers)
     {
-        this._router = router;
-        this._sessionId = sessionId;
-        this._handlers = handlers;
+        _router = router;
+        _sessionId = sessionId;
+        _handlers = handlers;
     }
 
     internal string CommId => _commId;

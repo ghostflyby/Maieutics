@@ -121,7 +121,7 @@ internal sealed class ContributionCoordinator
 
     public ContributionCoordinator(ILogger logger)
     {
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>One-time wiring of the delivery endpoints, after the coordinator and

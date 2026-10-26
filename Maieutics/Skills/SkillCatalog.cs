@@ -147,13 +147,13 @@ internal sealed class SkillCatalog : IAsyncDisposable
             ordered.Add(new DeclaredRoot(source, resolved));
         }
 
-        this._roots = ordered
+        _roots = ordered
             .OrderBy(static root => root.Source)
             .ThenBy(static root => root.RootDirectory, StringComparer.Ordinal)
             .ToImmutableArray();
-        this._timeProvider = timeProvider;
-        this._logger = logger;
-        this._onProgressiveCommit = onProgressiveCommit;
+        _timeProvider = timeProvider;
+        _logger = logger;
+        _onProgressiveCommit = onProgressiveCommit;
     }
 
     /// <summary>The composition-root factory: creates the root directories, runs the initial

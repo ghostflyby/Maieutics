@@ -124,9 +124,9 @@ public sealed class DenoReplRegistryTests
         {
             var first = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
             var second = await registry.CreateAsync(owner, TestContext.Current.CancellationToken);
-            var policy = Maieutics.Permissions.PermissionLayerStore.Build(
+            var policy = Permissions.PermissionLayerStore.Build(
                 [],
-                new Maieutics.Permissions.VariableTable(new NullVariableSource()));
+                new Permissions.VariableTable(new NullVariableSource()));
             ownerCache.Cache(owner.Value.ToString("N"), policy);
 
             // Closing one of the owner's REPLs must not drop the owner-keyed snapshot: the
@@ -144,7 +144,7 @@ public sealed class DenoReplRegistryTests
         }
     }
 
-    private sealed class NullVariableSource : Maieutics.Execution.IPermissionVariableSource
+    private sealed class NullVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

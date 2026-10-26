@@ -63,9 +63,9 @@ public sealed class AgentSession : IAgentSession
         IAgentObjectStore? objectStore = null,
         AgentSessionId? sessionId = null)
     {
-        this._profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this._transcriptStore = transcriptStore;
-        this._objectStore = objectStore;
+        _profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        _transcriptStore = transcriptStore;
+        _objectStore = objectStore;
         _fixedTools = CreateToolRegistry(tools).Values.ToImmutableArray();
 
         Id = sessionId ?? AgentSessionId.Create();

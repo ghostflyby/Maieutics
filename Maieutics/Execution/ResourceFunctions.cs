@@ -23,7 +23,7 @@ internal sealed class ResourceFunctions
 
     internal ResourceFunctions(ResourceRegistry registry)
     {
-        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
 
         Functions =
         [

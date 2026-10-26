@@ -190,10 +190,10 @@ public sealed class FrontendRouteAuthenticationTests
             FrontendHost host,
             MaieuticsAgentSessionManager manager)
         {
-            this._application = application;
-            this._options = options;
-            this._host = host;
-            this._manager = manager;
+            _application = application;
+            _options = options;
+            _host = host;
+            _manager = manager;
             // No default Authorization header: the anonymous probes must reach the
             // gate without a token, so callers attach credentials per request.
             _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{options.Port}") };

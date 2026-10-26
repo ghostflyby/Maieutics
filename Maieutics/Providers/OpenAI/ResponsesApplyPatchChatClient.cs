@@ -47,7 +47,7 @@ internal sealed class ResponsesApplyPatchChatClient : DelegatingChatClient
         : base(inner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        this._toolName = toolName;
+        _toolName = toolName;
     }
 
     public override async Task<ChatResponse> GetResponseAsync(

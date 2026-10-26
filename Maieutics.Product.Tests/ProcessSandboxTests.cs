@@ -479,7 +479,7 @@ public sealed class ProcessSandboxTests : IDisposable
 
     private sealed class FixedLayerSource(PermissionLayer appDefaults) : IPermissionLayerSource
     {
-        public PermissionLayer? AppDefaults => appDefaults;
+        public PermissionLayer AppDefaults => appDefaults;
 
         public PermissionLayer? WorkspaceProfile => null;
 

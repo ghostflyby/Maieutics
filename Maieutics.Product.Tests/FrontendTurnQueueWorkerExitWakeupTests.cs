@@ -43,7 +43,7 @@ public sealed class FrontendTurnQueueWorkerExitWakeupTests
         // alive while the run is parked, so its completion task is resolvable now.
         harness.TurnQueue.Enqueue(sessionId, [Answer]);
         await provider.WaitForParkedAsync(1, TestContext.Current.CancellationToken);
-        if (!harness.TurnQueue._sessions.TryGetValue(addressed, out var state))
+        if (!harness.TurnQueue.Sessions.TryGetValue(addressed, out var state))
             throw new InvalidOperationException("The session has no queue state.");
 
         if (state.Worker is not { } worker)

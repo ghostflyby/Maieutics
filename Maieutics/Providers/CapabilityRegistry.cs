@@ -56,8 +56,8 @@ internal sealed class CapabilityRegistry : IEquatable<CapabilityRegistry>
         IReadOnlyDictionary<string, EndpointCapabilityProfile> endpointProfiles,
         IReadOnlyDictionary<string, VendorCapabilityProfile> vendorProfiles)
     {
-        this._endpointProfiles = endpointProfiles;
-        this._vendorProfiles = vendorProfiles;
+        _endpointProfiles = endpointProfiles;
+        _vendorProfiles = vendorProfiles;
     }
 
     /// <summary>

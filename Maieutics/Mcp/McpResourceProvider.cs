@@ -20,7 +20,7 @@ internal sealed class McpResourceProvider : IResourceCatalogProvider
 
     internal McpResourceProvider(Func<IMcpResourceCatalogSource> sourceFactory)
     {
-        this._sourceFactory = sourceFactory ?? throw new ArgumentNullException(nameof(sourceFactory));
+        _sourceFactory = sourceFactory ?? throw new ArgumentNullException(nameof(sourceFactory));
     }
 
     /// <summary>Resolved on first use: the composition root wires this provider into the

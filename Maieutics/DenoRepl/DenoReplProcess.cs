@@ -35,7 +35,7 @@ internal sealed class DenoReplProcess : IAsyncDisposable
 
     private DenoReplProcess(DenoRunProcess inner)
     {
-        this._inner = inner;
+        _inner = inner;
     }
 
     internal int ProcessId => _inner.ProcessId;

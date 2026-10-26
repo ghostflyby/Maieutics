@@ -38,9 +38,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 
     public FrontendWorkspaceBridge(FrontendIdeSockets sockets, IdeRequestRegistry requests, Workspace workspace)
     {
-        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
-        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        _requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
     }
 
     /// <summary>How long one bridge request waits for the frontend's answer before the

@@ -19,7 +19,7 @@ internal sealed class TerminalFunctions
 
     public TerminalFunctions(TerminalRegistry registry)
     {
-        this._registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         Functions =
         [
             CreateFunction(

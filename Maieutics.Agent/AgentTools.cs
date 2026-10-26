@@ -45,7 +45,7 @@ public sealed class AgentToolContext
         SessionId = sessionId;
         RunId = runId;
         CallId = callId;
-        this._reportProgress = reportProgress;
+        _reportProgress = reportProgress;
     }
 
     /// <summary>Gets the owning session identifier.</summary>

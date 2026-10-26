@@ -526,7 +526,7 @@ public sealed class FrontendRunStreamTests
         private int _cancelCount;
         private int _disposeCount;
 
-        private ScriptedRun(Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events) => this._events = events;
+        private ScriptedRun(Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> events) => _events = events;
 
         public AgentRunId Id { get; } = AgentRunId.Create();
 

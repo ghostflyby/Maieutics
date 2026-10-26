@@ -35,9 +35,9 @@ internal sealed class AgentSubagentFunctions
         PermissionOverrideRegistry? permissionOverrides = null,
         Func<IAgentChildScopeRegistry?>? childScopes = null)
     {
-        this._taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
-        this._permissionOverrides = permissionOverrides;
-        this._childScopes = childScopes;
+        _taskResources = taskResources ?? throw new ArgumentNullException(nameof(taskResources));
+        _permissionOverrides = permissionOverrides;
+        _childScopes = childScopes;
         Functions =
         [
             CreateFunction(

@@ -98,7 +98,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
     private MaieuticsConfigurationFileProvider(IFileProvider provider, string relativePath, IDisposable? owner)
     {
         Provider = provider;
-        this._owner = owner;
+        _owner = owner;
         RelativePath = relativePath;
     }
 
@@ -149,7 +149,7 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
         internal PollingFileProvider(string root, TimeSpan interval)
         {
             _inner = new PhysicalFileProvider(root);
-            this._interval = interval;
+            _interval = interval;
         }
 
         public void Dispose()
@@ -199,8 +199,8 @@ internal sealed class MaieuticsConfigurationFileProvider : IDisposable
 
         internal PollingChangeToken(string path, TimeSpan interval, Action onChanged)
         {
-            this._onChanged = onChanged;
-            this._interval = interval;
+            _onChanged = onChanged;
+            _interval = interval;
             _initialStamp = FileStamp.Read(path);
             _timer = new Timer(Poll, path, interval, interval);
         }

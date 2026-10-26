@@ -35,7 +35,7 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
-        this._model = model;
+        _model = model;
         _httpClient = handler is null ? new HttpClient() : new HttpClient(handler, true);
         _httpClient.BaseAddress = NormalizeEndpoint(endpoint ?? new Uri("https://api.anthropic.com/"));
         _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);

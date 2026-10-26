@@ -138,7 +138,7 @@ internal sealed class ResourceRegistry
     public ResourceRegistry(IEnumerable<IResourceProvider> providers)
     {
         ArgumentNullException.ThrowIfNull(providers);
-        this._providers = providers.ToArray();
+        _providers = providers.ToArray();
     }
 
     internal IReadOnlyList<IResourceProvider> Providers => _providers;

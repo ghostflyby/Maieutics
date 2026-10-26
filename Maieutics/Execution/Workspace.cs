@@ -24,8 +24,8 @@ internal sealed class Workspace : IPermissionVariableSource
 
     private Workspace(WorkspaceHome? home, string rootPath)
     {
-        this._home = home;
-        this._rootPath = rootPath;
+        _home = home;
+        _rootPath = rootPath;
         _current = new WorkspaceSnapshot(rootPath, 0, home?.LinksView());
     }
 

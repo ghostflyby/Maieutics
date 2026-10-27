@@ -68,6 +68,7 @@ import {
   StoredSessionMetadataKey,
 } from "./serializer.ts";
 import {
+  type ReasoningSummaryView,
   type ReplDisplayEntry,
   type SubagentSnapshotView,
   type ToolSnapshotView,
@@ -2552,6 +2553,7 @@ function isNotFound(error: unknown): boolean {
  * markdown fallback lives inside that renderer as a per-output view toggle. */
 function structuredOutput(snapshot: {
   text: string;
+  reasoning?: ReasoningSummaryView[];
   tools: ToolSnapshotView[];
   truncated: boolean;
   repl?: ReplDisplayEntry[];

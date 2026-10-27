@@ -19,10 +19,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 {
     internal const int ReplayRetention = 4096;
     internal const int SubscriberQueueCapacity = 1024;
-    private static readonly TimeSpan ShutdownCancelTimeout = TimeSpan.FromSeconds(15);
+    internal static readonly TimeSpan ShutdownCancelTimeout = TimeSpan.FromSeconds(15);
 
     private readonly Lock _gate = new();
-    private readonly List<FrontendEventFrame> _replay = [];
+    private readonly Queue<FrontendEventFrame> _replay = new(ReplayRetention);
     private readonly List<Subscriber> _subscribers = [];
     private readonly CancellationTokenSource _lifetime = new();
     private readonly AgentSessionId _sessionId;
@@ -30,6 +30,9 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly IAgentRun _run;
     private readonly FrontendDenoReplPresentationRouter? _presentationRouter;
     private readonly ILogger _logger;
+    private readonly TimeProvider _timeProvider;
+    private Task _settlement = Task.CompletedTask;
+    private readonly TaskCompletionSource _settlementBudgetRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource _replayAppended = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -68,7 +71,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         IAgentRun run,
         FrontendDenoReplPresentationRouter? presentationRouter,
         IAsyncDisposable? presentationScope,
-        ILogger logger)
+        ILogger logger,
+        TimeProvider? timeProvider)
     {
         _sessionId = sessionId;
         _run = run;
@@ -76,6 +80,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         _presentationRouter = presentationRouter;
         _presentationScope = presentationScope;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>Creates the stream for a run without starting its pump, so the presentation
@@ -84,9 +89,10 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         AgentSessionId sessionId,
         IAgentRun run,
         FrontendDenoReplPresentationRouter? presentationRouter,
-        ILogger logger)
+        ILogger logger,
+        TimeProvider? timeProvider = null)
     {
-        return new FrontendRunStream(sessionId, run, presentationRouter, null, logger);
+        return new FrontendRunStream(sessionId, run, presentationRouter, null, logger, timeProvider);
     }
 
     /// <summary>Starts the pump. The stream owns the run's disposal and detaches the
@@ -115,13 +121,16 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
 
     /// <summary>
     ///     Waits for the stream's full settlement: terminal frames published, the run
-    ///     disposed, and the presentation scope detached. Completes strictly after
+    ///     disposed, and the presentation scope detached. Successful settlement follows
     ///     <see cref="Completion" /> — the pump's teardown detaches the presentation
     ///     router's per-session sink last, so a follow-up turn on the same session (which
     ///     attaches that sink while wiring its run stream) can only start after this task
-    ///     completes. Never faults.
+    ///     completes. A teardown that exceeds its total budget faults with a timeout;
+    ///     the original owner continues observing the run and releasing it when it exits.
     /// </summary>
     internal Task Settled => _disposal.Task;
+
+    internal Task SettlementBudgetRegistered => _settlementBudgetRegistered.Task;
 
     /// <summary>Requests cooperative cancellation and waits for the run to terminate.</summary>
     internal Task CancelAsync(CancellationToken cancellationToken) => _run.CancelAsync(cancellationToken);
@@ -279,9 +288,15 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             return;
         }
 
-        await _lifetime.CancelAsync().ConfigureAwait(false);
-        await _disposal.Task.ConfigureAwait(false);
-        _lifetime.Dispose();
+        try
+        {
+            await _lifetime.CancelAsync().ConfigureAwait(false);
+            await _disposal.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifetime.Dispose();
+        }
     }
 
     /// <summary>Cancels the run so shutdown does not wait on a provider stream. The host's
@@ -323,7 +338,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 if (rendered is not null) Publish(rendered);
             }
 
-            PublishTerminal(await _run.Completion.ConfigureAwait(false), truncated);
+            PublishTerminal(await _run.Completion.WaitAsync(_lifetime.Token).ConfigureAwait(false), truncated);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -345,7 +360,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 RunId: _run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.Cancelled,
                 Message: exception.Message));
-            await SettleRunAsync().ConfigureAwait(false);
         }
         catch (AgentException exception)
         {
@@ -366,7 +380,6 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 RunId: _run.Id.Value.ToString("N"),
                 Code: code,
                 Message: exception.Message));
-            await SettleRunAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -376,14 +389,23 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 RunId: _run.Id.Value.ToString("N"),
                 Code: RunFailedCodes.AgentError,
                 Message: "The agent turn failed."));
-            await SettleRunAsync().ConfigureAwait(false);
         }
         finally
         {
             // Safety net for every exit path: the pump owns the run's settlement, so a run
             // that never completed (its producer parked in the bounded events channel)
             // would hold the session's turn gate and this stream's disposal forever.
-            await SettleRunAsync().ConfigureAwait(false);
+            TimeoutException? settlementFailure = null;
+            try
+            {
+                await SettleRunAsync().ConfigureAwait(false);
+            }
+            catch (TimeoutException exception)
+            {
+                settlementFailure = exception;
+                _logger.LogError(exception,
+                    "Run {RunId} exceeded the frontend teardown budget; its owner will continue cleanup when it exits.", _run.Id);
+            }
             MarkCompleted();
             try
             {
@@ -400,7 +422,12 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                     _run.Id);
             }
 
-            _disposal.TrySetResult();
+            if (settlementFailure is null) _disposal.TrySetResult();
+            else
+            {
+                _disposal.TrySetException(settlementFailure);
+                _ = _disposal.Task.Exception;
+            }
         }
     }
 
@@ -416,6 +443,16 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private async Task SettleRunAsync()
     {
         if (Interlocked.Exchange(ref _settleState, 1) != 0) return;
+        // Cancellation callbacks and disposal can themselves block. One owned task keeps
+        // observing all stages after timeout; callers receive a failure, never false settlement.
+        _settlement = Task.Run(SettleRunCoreAsync);
+        var wait = _settlement.WaitAsync(ShutdownCancelTimeout, _timeProvider);
+        _settlementBudgetRegistered.TrySetResult();
+        await wait.ConfigureAwait(false);
+    }
+
+    private async Task SettleRunCoreAsync()
+    {
         if (!_run.Completion.IsCompleted)
         {
             // The pump exited without the run reaching a terminal state: either an
@@ -431,9 +468,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                 DescribeCompletion(_run.Completion));
             try
             {
-                using var budget = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
-                budget.CancelAfter(ShutdownCancelTimeout);
-                await _run.CancelAsync(budget.Token).ConfigureAwait(false);
+                await _run.CancelAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -462,7 +497,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         }
     }
 
-    private async Task CancelForShutdownAsync()
+    private Task CancelForShutdownAsync()
     {
         _logger.LogInformation(
             "Frontend run {RunId} of session {SessionId} is being cancelled because the host is shutting down; publishing run.failed with code {Code}.",
@@ -474,18 +509,7 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             RunId: _run.Id.Value.ToString("N"),
             Code: RunFailedCodes.Cancelled,
             Message: "The host is shutting down."));
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
-            timeout.CancelAfter(ShutdownCancelTimeout);
-            await _run.CancelAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "Cancelling run {RunId} during shutdown did not settle.", _run.Id);
-        }
-
-        await ObserveCompletionAsync().ConfigureAwait(false);
+        return Task.CompletedTask;
     }
 
     private async Task ObserveCompletionAsync()
@@ -652,19 +676,18 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
             if (sequence > _latestSequence) _latestSequence = sequence;
         }
 
-        _replay.Add(frame);
+        _replay.Enqueue(frame);
         ReplayAppendedLocked();
         if (_replay.Count > ReplayRetention)
         {
-            var evicted = _replay[0];
-            _replay.RemoveAt(0);
+            var evicted = _replay.Dequeue();
             // Retention evicts from the front of the buffer, so the oldest retained
             // sequence must follow the eviction: if it kept the all-time minimum,
             // resumed clients behind the eviction would look current and silently
             // receive a truncated replay (invariant 16's only permitted loss must
             // surface as run.missing). Child frames are skipped: their sequences live
             // in their own run-local spaces.
-            if (trackSequence &&
+            if (evicted.RunId == _ownRunId &&
                 evicted.Sequence is { } evictedSequence && evictedSequence == _oldestSequence)
             {
                 _oldestSequence = 0;
@@ -802,7 +825,14 @@ internal sealed class FrontendRunRegistry
         // the lock must not be held across awaits.
         if (evicted is not null)
             foreach (var removed in evicted)
-                await removed.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await removed.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // The stream already reported its teardown timeout and still owns cleanup.
+                }
     }
 }
 

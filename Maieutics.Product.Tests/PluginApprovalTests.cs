@@ -388,6 +388,92 @@ public sealed class PluginApprovalTests
         }
     }
 
+    [Theory(Timeout = 60_000)]
+    [InlineData("process")]
+    [InlineData("run")]
+    [InlineData("ffi")]
+    public async Task IsolationRequiringDeclarationChangesRevokeApproval(string change)
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The fake deno executable is a shell script.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var root = CreateProbePluginsRoot("approval-isolation");
+        var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
+        var clock = new FakeTimeProvider();
+        await using var manager = CreateManager(root, approvals, clock);
+        try
+        {
+            await StartAsync(manager);
+            Assert.Single(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+            manager.StopPluginWatcher();
+            var applied = manager.ReloadApplied;
+            if (change == "process")
+                await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"),
+                    """{"isolation":"process","capabilities":["tools.invoke"]}""", deadline.Token);
+            else
+                await File.WriteAllTextAsync(Path.Combine(root, "deno.json"),
+                    $$$$"""{"name":"@maieutics/probe","permissions":{"default":{"read":["./"],"{{{{change}}}}":["/tmp/probe"]}}}""",
+                    deadline.Token);
+            manager.OnPluginFileChanged(manager, new FileSystemEventArgs(WatcherChangeTypes.Changed, root,
+                change == "process" ? "maieutics.json" : "deno.json"));
+            await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(manager, clock, applied, deadline.Token);
+
+            Assert.Equal(PluginApprovalState.PendingApproval, Assert.Single(manager.ListPluginApprovals()).State);
+            Assert.Empty(manager.GetRegistrations(McpDiscoverContributionKind.ExtensionKind));
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Cleanup(root);
+            File.Delete(approvals);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task AWatcherBatchReconcilesEveryChangedPlugin()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The fake deno executable is a shell script.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(Deadline);
+        var root = CreateProbePluginsRoot("approval-batch");
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"),
+            """{"name":"@maieutics/root","imports":{"alpha":"./alpha/mod.ts","beta":"./beta/mod.ts"}}""", deadline.Token);
+        WriteNestedPlugin(root, "alpha", null);
+        WriteNestedPlugin(root, "beta", null);
+        var approvals = PluginApprovalSeeds.SeedPlugins(root, Path.Combine(root, "alpha"), Path.Combine(root, "beta"));
+        var clock = new FakeTimeProvider();
+        await using var manager = CreateManager(root, approvals, clock);
+        try
+        {
+            await StartAsync(manager);
+            manager.StopPluginWatcher();
+            foreach (var name in new[] { "alpha", "beta" })
+            {
+                var directory = Path.Combine(root, name);
+                await File.WriteAllTextAsync(Path.Combine(directory, "deno.json"),
+                    $$$$"""{"name":"@maieutics/{{{{name}}}}","permissions":{"default":{"read":["./","/tmp"]}}}""", deadline.Token);
+                var registered = manager.WatcherDebounceRegistered;
+                if (registered.IsCompleted) registered = manager.WatcherDebounceRegistered;
+                manager.OnPluginFileChanged(manager, new FileSystemEventArgs(WatcherChangeTypes.Changed, directory, "deno.json"));
+                await registered.WaitAsync(deadline.Token);
+            }
+
+            var applied = manager.ReloadApplied;
+            clock.Advance(PluginHostManager.PluginReloadDebounce);
+            await applied.WaitAsync(deadline.Token);
+            var changed = manager.ListPluginApprovals().Where(plugin => plugin.PluginId is "alpha" or "beta").ToArray();
+            Assert.Equal(new[] { "alpha", "beta" }, changed.Select(plugin => plugin.PluginId));
+            Assert.All(changed,
+                plugin => Assert.Equal(PluginApprovalState.PendingApproval, plugin.State));
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Cleanup(root);
+            File.Delete(approvals);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task PendingDependenciesBlockTheirDependents()
     {

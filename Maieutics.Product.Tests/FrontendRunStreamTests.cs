@@ -6,6 +6,8 @@ using Maieutics.Frontend;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+using System.Runtime.CompilerServices;
 
 namespace Maieutics.Product.Tests;
 
@@ -311,6 +313,40 @@ public sealed class FrontendRunStreamTests
         await run.Completion;
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(FrontendRunStream.ReplayRetention - 1)]
+    [InlineData(FrontendRunStream.ReplayRetention)]
+    public async Task ChildFrameEvictionReportsTheMissingParentHistory(int childFrames)
+    {
+        var run = ScriptedRun.HeldDeltas(3);
+        await using var stream = FrontendRunStream.Create(
+            run.SessionId, run, null, NullLogger.Instance);
+        stream.Start(null);
+        try
+        {
+            while (true)
+            {
+                var appended = stream.ReplayAppended;
+                var (snapshot, subscription) = stream.Subscribe(0);
+                stream.Unsubscribe(subscription);
+                if (snapshot.Any(frame => frame.Sequence == 3)) break;
+                await appended.WaitAsync(TestContext.Current.CancellationToken);
+            }
+
+            var childId = AgentRunId.Create().Value.ToString("N");
+            for (var index = 1; index <= childFrames; index++)
+                stream.PublishChildFrame(new FrontendEventFrame("assistant.delta", RunId: childId, Sequence: index));
+
+            var (frames, channel) = stream.Subscribe(1);
+            stream.Unsubscribe(channel);
+            Assert.Equal("run.missing", frames[0].Type);
+        }
+        finally
+        {
+            run.Release();
+        }
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task PumpFailureCancelsAndDisposesTheRunExactlyOnce()
     {
@@ -358,6 +394,49 @@ public sealed class FrontendRunStreamTests
         Assert.Equal(1, run.DisposeCount);
         Assert.Equal(0, run.CancelCount);
         await run.Completion;
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("cancel")]
+    [InlineData("completion")]
+    [InlineData("dispose")]
+    [InlineData("both")]
+    public async Task ShutdownUsesOneBudgetAndKeepsOwnershipAfterTimeout(string blockedStage)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var clock = new FakeTimeProvider();
+        var run = new UncooperativeRun(blockedStage);
+        var stream = FrontendRunStream.Create(run.SessionId, run, null, NullLogger.Instance, clock);
+        stream.Start(null);
+        try
+        {
+            await run.EventsStarted.Task.WaitAsync(deadline.Token);
+            var dispose = stream.DisposeAsync().AsTask();
+            await stream.SettlementBudgetRegistered.WaitAsync(deadline.Token);
+            await run.CancelRequested.Task.WaitAsync(deadline.Token);
+            if (blockedStage == "both")
+            {
+                clock.Advance(TimeSpan.FromSeconds(10));
+                run.AllowCancellation();
+                await run.DisposeStarted.Task.WaitAsync(deadline.Token);
+                clock.Advance(FrontendRunStream.ShutdownCancelTimeout - TimeSpan.FromSeconds(10));
+            }
+            else
+            {
+                if (blockedStage == "dispose") await run.DisposeStarted.Task.WaitAsync(deadline.Token);
+                clock.Advance(FrontendRunStream.ShutdownCancelTimeout);
+            }
+
+            await Assert.ThrowsAnyAsync<TimeoutException>(() => dispose.WaitAsync(deadline.Token));
+            await Assert.ThrowsAnyAsync<TimeoutException>(() => stream.Settled.WaitAsync(deadline.Token));
+            Assert.False(run.Disposed.Task.IsCompleted);
+        }
+        finally
+        {
+            run.Release();
+            await run.Disposed.Task.WaitAsync(deadline.Token);
+        }
     }
 
     /// <summary>Waits for the run's pump to reach its terminal frame and returns the
@@ -511,10 +590,52 @@ public sealed class FrontendRunStreamTests
         }
     }
 
-    /// <summary>A scripted run whose events, completion, cancellation, and disposal the
-    /// test drives directly. It models the real run's producer: the completion task settles
-    /// when the event iterator finishes normally, or when the cancellation unblocks a
-    /// producer parked in the bounded events channel — never on its own after a fault.</summary>
+    /// <summary>A run with independently held teardown stages for virtual-time shutdown tests.</summary>
+    private sealed class UncooperativeRun(string blockedStage) : IAgentRun
+    {
+        private readonly Channel<AgentEvent> _events = Channel.CreateBounded<AgentEvent>(1);
+        private readonly TaskCompletionSource<AgentRunResult> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _cancelRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource EventsStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource CancelRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource DisposeStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public AgentRunId Id { get; } = AgentRunId.Create();
+        public AgentSessionId SessionId { get; } = AgentSessionId.Create();
+        public IAsyncEnumerable<AgentEvent> Events => ReadEventsAsync();
+        public Task<AgentRunResult> Completion => _completion.Task;
+
+        public async Task CancelAsync(CancellationToken cancellationToken = default)
+        {
+            CancelRequested.TrySetResult();
+            if (blockedStage is "cancel" or "both") await _cancelRelease.Task;
+            if (blockedStage != "completion") _completion.TrySetCanceled();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            DisposeStarted.TrySetResult();
+            if (blockedStage is "dispose" or "both") await _release.Task;
+            Disposed.TrySetResult();
+        }
+
+        internal void AllowCancellation() => _cancelRelease.TrySetResult();
+        internal void Release()
+        {
+            _cancelRelease.TrySetResult();
+            _release.TrySetResult();
+            _completion.TrySetCanceled();
+        }
+
+        private async IAsyncEnumerable<AgentEvent> ReadEventsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            EventsStarted.TrySetResult();
+            await foreach (var item in _events.Reader.ReadAllAsync(cancellationToken)) yield return item;
+        }
+    }
+
+    /// <summary>A scripted run whose completion follows normal event exhaustion or explicit cancellation.</summary>
     private sealed class ScriptedRun : IAgentRun
     {
         private readonly Func<ScriptedRun, IAsyncEnumerable<AgentEvent>> _events;

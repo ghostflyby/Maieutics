@@ -404,6 +404,7 @@ internal sealed class PluginHostManager(
 
     private FileSystemWatcher? _pluginWatcher;
     private CancellationTokenSource? _watcherDebounce;
+    private readonly Dictionary<string, string> _pendingPluginChanges = new(StringComparer.Ordinal);
 
     /// <summary>Tracked debounce/reload tasks spawned by the plugin watcher, pruned the same way
     /// as <see cref="_capabilityCalls"/> so stop can observe them instead of leaving unobserved
@@ -1174,7 +1175,7 @@ internal sealed class PluginHostManager(
     /// <summary>Watches the plugins root for manifest/permission/source changes and reloads the
     /// owning plugin's worker in-process with its latest config (the config file is re-resolved
     /// per reload, so a permission change applies without restarting the host process). Changes
-    /// are debounced; only the most recent change triggers one reload.</summary>
+    /// are debounced into one batch that reloads every changed plugin.</summary>
     private void StartPluginWatcher()
     {
         // The plugins root always exists (EnsurePluginsRoot ran in Start), so the
@@ -1194,22 +1195,23 @@ internal sealed class PluginHostManager(
         _logger.LogInformation("Watching '{PluginsRoot}' for plugin changes.", pluginsRoot);
     }
 
-    private void StopPluginWatcher()
+    internal void StopPluginWatcher()
     {
         lock (_gate)
         {
             _watcherDebounce?.Cancel();
             _watcherDebounce?.Dispose();
             _watcherDebounce = null;
+            _pendingPluginChanges.Clear();
             _pluginWatcher?.Dispose();
             _pluginWatcher = null;
         }
     }
 
-    private void OnPluginFileChanged(object sender, FileSystemEventArgs args)
+    internal void OnPluginFileChanged(object sender, FileSystemEventArgs args)
     {
         // Debounce: a burst of file writes (e.g. deno fmt, git checkout) collapses into one
-        // reload. The most recent change wins; earlier pending reloads are superseded. The
+        // batch. Each owning plugin keeps one changed path across superseded waits. The
         // generation's CTS is captured with the debounce so a handler that resumes after a
         // restart replaced `lifetime` still dies with its own generation instead of linking
         // against (or observing) the new one.
@@ -1219,6 +1221,18 @@ internal sealed class PluginHostManager(
         {
             generation = _lifetime;
             if (generation.IsCancellationRequested) return;
+            foreach (var path in args is RenamedEventArgs renamed
+                         ? new[] { renamed.OldFullPath, renamed.FullPath }
+                         : new[] { args.FullPath })
+            {
+                var comparison = OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal;
+                var owner = _descriptors
+                    .Where(descriptor => IsWithin(path, descriptor.RootDirectory, comparison))
+                    .MaxBy(static descriptor => descriptor.RootDirectory.Length);
+                if (owner is not null) _pendingPluginChanges[owner.Id] = path;
+            }
             try
             {
                 _watcherDebounce?.Cancel();
@@ -1287,7 +1301,25 @@ internal sealed class PluginHostManager(
                     return;
                 }
 
-                await ReloadChangedPluginAsync(args.FullPath).ConfigureAwait(false);
+                string[] changedPaths;
+                lock (_gate)
+                {
+                    if (!ReferenceEquals(_watcherDebounce, debounce)) return;
+                    changedPaths = [.. _pendingPluginChanges.Values];
+                    _pendingPluginChanges.Clear();
+                }
+
+                foreach (var changedPath in changedPaths)
+                {
+                    try
+                    {
+                        await ReloadChangedPluginAsync(changedPath).ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogWarning(exception, "Plugin reload for '{Path}' did not complete.", changedPath);
+                    }
+                }
                 _logger.LogDebug(
                     "Watched change at '{Path}' applied.",
                     args.FullPath);
@@ -1306,6 +1338,14 @@ internal sealed class PluginHostManager(
                     exception,
                     "Plugin reload for '{Path}' did not complete.",
                     args.FullPath);
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_watcherDebounce, debounce)) _watcherDebounce = null;
+                }
+                debounce.Dispose();
             }
         }));
     }
@@ -1567,95 +1607,86 @@ internal sealed class PluginHostManager(
                     "Restart the host process to apply it — the worker still reloads with the previous map.",
                     owner.Id);
             }
-            if (RequiresProcessIsolation(reloaded))
+            // Approval gate first (ADR 0037): fingerprint the re-read declarations
+            // before anything ships. A mismatch (or first sighting) revokes —
+            // stops the workers, clears the declarations — and the plugin returns
+            // to pending until re-approved; a revert to the approved shape re-matches
+            // the still-stored record and reactivates through the upsert path. The
+            // whole pass runs under the reconcile serialization so a concurrent
+            // approve/revoke cannot interleave its frames with these.
+            await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            _logger.LogDebug(
+                "Plugin '{PluginId}' reload holds the reconcile pass; approval blocked: {Blocked}.",
+                owner.Id,
+                IsApprovalBlocked(reloaded.Id));
+            try
             {
-                // A plugin that newly declares run/ffi (or switches to process
-                // isolation) cannot take effect through an in-process worker
-                // reload — that would require a host-process restart. Keep the
-                // previous grants and surface the gap instead of silently
-                // reloading with stale permissions.
-                _logger.LogWarning(
-                    "Plugin '{PluginId}' now requires process isolation (run/ffi grants or isolation=process); " +
-                    "an in-process reload cannot apply it. Restart the host process to pick up the change.",
-                    owner.Id);
-            }
-            else
-            {
-                // Approval gate first (ADR 0037): fingerprint the re-read declarations
-                // before anything ships. A mismatch (or first sighting) revokes —
-                // stops the workers, clears the declarations — and the plugin returns
-                // to pending until re-approved; a revert to the approved shape re-matches
-                // the still-stored record and reactivates through the upsert path. The
-                // whole pass runs under the reconcile serialization so a concurrent
-                // approve/revoke cannot interleave its frames with these.
-                await _reconcile.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-                _logger.LogDebug(
-                    "Plugin '{PluginId}' reload holds the reconcile pass; approval blocked: {Blocked}.",
-                    owner.Id,
-                    IsApprovalBlocked(reloaded.Id));
-                try
+                HashSet<string> previouslyBlocked;
+                lock (_gate)
                 {
-                    HashSet<string> previouslyBlocked;
+                    previouslyBlocked = BlockedIdsLock();
+                    ReplaceDescriptorLock(reloaded);
+                    RecomputeApprovalStatesLock(_descriptors);
+                }
+
+                if (IsApprovalBlocked(reloaded.Id))
+                {
+                    if (!previouslyBlocked.Contains(reloaded.Id))
+                        _logger.LogWarning(
+                            "Plugin '{PluginId}' declarations changed since approval; its approval is revoked " +
+                            "and the plugin stays inactive until re-approved (%plugin approve {CommandTarget}).",
+                            reloaded.Id,
+                            reloaded.Id);
+                    await ApplyApprovalSnapshotAsync(previouslyBlocked, owner).ConfigureAwait(false);
+                    shipOwnerReload = false;
+                }
+                else if (RequiresProcessIsolation(reloaded))
+                {
+                    _logger.LogWarning(
+                        "Plugin '{PluginId}' requires process isolation and cannot be reloaded in-process.", owner.Id);
+                    shipOwnerReload = false;
+                }
+                else
+                {
+                    var config = BuildConfig([reloaded]);
+                    replacement = config.Plugins.FirstOrDefault();
+                    // The re-read worker's module text and declarations can change
+                    // what its exports return while its registration records stay
+                    // identical, so the reloaded plugin's MCP discovery and skill
+                    // generators re-run in the forced form — but only AFTER the
+                    // reload completes. The mark defers the force to the registry
+                    // frame whose epoch proves the worker was replaced: forcing now
+                    // would invoke the outgoing worker, and the unchanged export-set
+                    // frame that follows a reload would never re-run it. The mark
+                    // precedes the snapshot pass because a blocked→active owner's
+                    // upsert reload ships from inside it.
                     lock (_gate)
                     {
-                        previouslyBlocked = BlockedIdsLock();
-                        ReplaceDescriptorLock(reloaded);
-                        RecomputeApprovalStatesLock(_descriptors);
+                        _contributions?.MarkReloadForce(reloaded.Id);
                     }
 
-                    if (IsApprovalBlocked(reloaded.Id))
+                    // Declarations and capability grants follow the re-read manifest
+                    // (authority stays in the kernel); dependents a re-approval just
+                    // unblocked join through the same snapshot pass.
+                    await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+                    if (previouslyBlocked.Contains(reloaded.Id))
                     {
-                        if (!previouslyBlocked.Contains(reloaded.Id))
-                            _logger.LogWarning(
-                                "Plugin '{PluginId}' declarations changed since approval; its approval is revoked " +
-                                "and the plugin stays inactive until re-approved (%plugin approve {CommandTarget}).",
-                                reloaded.Id,
-                                reloaded.Id);
-                        await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
+                        // The owner just transitioned blocked→active and already
+                        // received its upsert from the snapshot pass.
                         shipOwnerReload = false;
                     }
                     else
                     {
-                        var config = BuildConfig([reloaded]);
-                        replacement = config.Plugins.FirstOrDefault();
-                        // The re-read worker's module text and declarations can change
-                        // what its exports return while its registration records stay
-                        // identical, so the reloaded plugin's MCP discovery and skill
-                        // generators re-run in the forced form — but only AFTER the
-                        // reload completes. The mark defers the force to the registry
-                        // frame whose epoch proves the worker was replaced: forcing now
-                        // would invoke the outgoing worker, and the unchanged export-set
-                        // frame that follows a reload would never re-run it. The mark
-                        // precedes the snapshot pass because a blocked→active owner's
-                        // upsert reload ships from inside it.
-                        lock (_gate)
-                        {
-                            _contributions?.MarkReloadForce(reloaded.Id);
-                        }
-
-                        // Declarations and capability grants follow the re-read manifest
-                        // (authority stays in the kernel); dependents a re-approval just
-                        // unblocked join through the same snapshot pass.
-                        await ApplyApprovalSnapshotAsync(previouslyBlocked).ConfigureAwait(false);
-                        if (previouslyBlocked.Contains(reloaded.Id))
-                        {
-                            // The owner just transitioned blocked→active and already
-                            // received its upsert from the snapshot pass.
-                            shipOwnerReload = false;
-                        }
-                        else
-                        {
-                            foreach (var worker in owner.Workers)
-                                await SendReloadAsync(owner.Id, worker.ExportName, replacement)
-                                    .ConfigureAwait(false);
-                            shipOwnerReload = false;
-                        }
+                        foreach (var worker in owner.Workers)
+                            await SendReloadAsync(owner.Id, worker.ExportName, replacement)
+                                .ConfigureAwait(false);
+                        shipOwnerReload = false;
                     }
                 }
-                finally
-                {
-                    _reconcile.Release();
-                }
+            }
+            finally
+            {
+                _reconcile.Release();
             }
         }
 
@@ -1920,6 +1951,9 @@ internal sealed class PluginHostManager(
     /// test observability: a registry frame's reconciliation is observable deterministically
     /// instead of by polling the tool list.</summary>
     internal Task PluginToolsIdle => _toolCoordinator?.FlightIdle ?? Task.CompletedTask;
+
+    /// <summary>Completes after registry-triggered contribution passes have drained.</summary>
+    internal Task ContributionsIdle => _contributions?.FlightIdle ?? Task.CompletedTask;
 
     /// <summary>Acquires leases for plugin-discovered MCP servers that are ready.</summary>
     public async Task<IReadOnlyList<McpServerGeneration.McpServerLease>> AcquireDynamicMcpLeasesAsync(
@@ -2685,7 +2719,7 @@ internal sealed class PluginHostManager(
     /// so two approvals/reloads can never interleave their sends and leave the host's
     /// worker set contradicting the kernel's approval state. Nothing here awaits under
     /// <see cref="_gate" />.</summary>
-    private async Task ApplyApprovalSnapshotAsync(HashSet<string> previouslyBlocked)
+    private async Task ApplyApprovalSnapshotAsync(HashSet<string> previouslyBlocked, PluginDescriptor? previousDescriptor = null)
     {
         var activations = new List<(string PluginId, PluginHostConfigPlugin Config, string[] Exports)>();
         var stops = new List<(string PluginId, string[] Exports)>();
@@ -2738,10 +2772,15 @@ internal sealed class PluginHostManager(
 
             foreach (var descriptor in _descriptors)
             {
-                if (descriptor.Workers.Count == 0 || RequiresProcessIsolation(descriptor)) continue;
                 var wasBlocked = previouslyBlocked.Contains(descriptor.Id);
                 if (wasBlocked == blocked.Contains(descriptor.Id)) continue;
-                var exports = descriptor.Workers
+                // Revocation targets the outgoing worker set even if the new declaration
+                // removed exports or now requires an unsupported isolation mode.
+                var workers = blocked.Contains(descriptor.Id) && previousDescriptor?.Id == descriptor.Id
+                    ? previousDescriptor.Workers
+                    : descriptor.Workers;
+                if (workers.Count == 0) continue;
+                var exports = workers
                     .Select(static worker => worker.ExportName)
                     .ToArray();
                 if (blocked.Contains(descriptor.Id))

@@ -259,7 +259,7 @@ public sealed class AgentSession : IAgentSession
         if (budget is not null) budget.CancelAfter(options.MaxTurnDuration);
 
         var loopToken = budget?.Token ?? cancellationToken;
-        var requestMessages = GetCommittedChatMessages().ToList();
+        var requestMessages = GetCommittedChatMessages(options).ToList();
         requestMessages.Add(run.UserMessage);
         // Hosted tools are declared alongside the local functions but executed by the provider;
         // they never enter the local registry and no call for them reaches the runtime.
@@ -340,10 +340,16 @@ public sealed class AgentSession : IAgentSession
 
             var builder = _canonicalState.Turns.ToBuilder();
             builder.Add(detachedTurn);
-
-            while (builder.Count > options.MaxRetainedTurns ||
-                   CountHistoryBytes(builder) > options.MaxHistoryBytes)
-                builder.RemoveAt(0);
+            long historyBytes = 0;
+            foreach (var turn in builder) historyBytes += turn.MessageByteCount;
+            var evictedTurns = 0;
+            while (builder.Count - evictedTurns > options.MaxRetainedTurns ||
+                   historyBytes > options.MaxHistoryBytes)
+            {
+                historyBytes -= builder[evictedTurns].MessageByteCount;
+                evictedTurns++;
+            }
+            if (evictedTurns > 0) builder.RemoveRange(0, evictedTurns);
 
             committed = new AgentTranscriptState(
                 Id,
@@ -376,7 +382,7 @@ public sealed class AgentSession : IAgentSession
             prepared.Usage);
     }
 
-    private IReadOnlyList<ChatMessage> GetCommittedChatMessages()
+    private IReadOnlyList<ChatMessage> GetCommittedChatMessages(AgentSessionOptions options)
     {
         AgentTranscriptState snapshot;
         lock (_transcriptGate)
@@ -389,9 +395,22 @@ public sealed class AgentSession : IAgentSession
         // instead of re-serializing the whole history per request. The cached bytes were
         // validated at commit time and deserialize products cannot reintroduce inline binary
         // content, so re-validation is unnecessary.
-        var messages = new List<ChatMessage>();
-        foreach (var turn in snapshot.Turns)
+        // Restored histories and profile changes can exceed this run's current limits.
+        // Select a complete-turn suffix without mutating the authoritative snapshot.
+        var start = snapshot.Turns.Length;
+        long historyBytes = 0;
+        while (start > 0 && snapshot.Turns.Length - start < options.MaxRetainedTurns)
         {
+            var nextBytes = snapshot.Turns[start - 1].MessageByteCount;
+            if (historyBytes + nextBytes > options.MaxHistoryBytes) break;
+            historyBytes += nextBytes;
+            start--;
+        }
+
+        var messages = new List<ChatMessage>();
+        for (var index = start; index < snapshot.Turns.Length; index++)
+        {
+            var turn = snapshot.Turns[index];
             IReadOnlyList<ChatMessage> turnMessages = AgentTranscriptCodec.DeserializeMessages(turn.CanonicalBytes);
             if (turn.Truncated) turnMessages = TrimTruncatedTurn(turnMessages);
 
@@ -471,14 +490,6 @@ public sealed class AgentSession : IAgentSession
             throw new AgentModelCapabilityException(
                 AgentModelCapabilities.FunctionCalling,
                 profile.ModelIdentity);
-    }
-
-    private static int CountHistoryBytes(IEnumerable<AgentTranscriptStateTurn> source)
-    {
-        var count = 0;
-        foreach (var turn in source) count = checked(count + turn.MessageByteCount);
-
-        return count;
     }
 
     private static ImmutableDictionary<string, AIFunction> CreateToolRegistry(IEnumerable<AIFunction>? source)

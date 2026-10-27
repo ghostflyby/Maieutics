@@ -855,8 +855,10 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
         }
     }
 
-    [Fact(Timeout = Deadline)]
-    public async Task AnInapplicableReloadStillForcesRediscoveryAfterCompletion()
+    [Theory(Timeout = Deadline)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnIsolationChangeRevokesGeneratedSkillsAndRejectsStaleRegistryFrames(bool removeWorkers)
     {
         if (OperatingSystem.IsWindows())
             Assert.Skip("The simulated host attaches over a Unix-socket harness.");
@@ -888,14 +890,12 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
                 TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
-            // A manifest edit that demands process isolation cannot be applied by an
-            // in-process reload, but the owner still restarts with its previous config
-            // so new module text is picked up — and that replacement worker's output
-            // must be fetched, exactly like the ordinary reload path.
+            // Isolation is approval-bearing. Revoke the outgoing worker and its generated
+            // contribution even though the replacement cannot run in-process.
             var applied = manager.ReloadApplied;
             await File.WriteAllTextAsync(
                 Path.Combine(root, "maieutics.json"),
-                """
+                removeWorkers ? """{"isolation":"process","entrypoints":{}}""" : """
                 {
                   "isolation": "process",
                   "entrypoints": { "worker": { "main": ["./mod.ts"] } }
@@ -903,22 +903,19 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
                 """, TestContext.Current.CancellationToken);
             await PluginWatcherTestWaits.AwaitReloadAppliedByAdvancingAsync(
                 manager, clock, applied, TestContext.Current.CancellationToken);
-            await AssertNoFurtherSkillInvokeAsync(fakeSocket, TestContext.Current.CancellationToken);
+            using var stop = JsonDocument.Parse(await fakeSocket.ReadAsync(TestContext.Current.CancellationToken));
+            Assert.Equal("plugin.reload", stop.RootElement.GetProperty("type").GetString());
+            Assert.True(stop.RootElement.GetProperty("payload").GetProperty("stop").GetBoolean());
+            Assert.Equal(PluginApprovalState.PendingApproval, Assert.Single(manager.ListPluginApprovals()).State);
+            await AwaitCatalogAsync(catalog, snapshot => snapshot.Skills.All(skill => skill.Name != "gen-skill"),
+                TestContext.Current.CancellationToken);
             Assert.Equal(1, fakeSocket.TotalSkillInvokes);
 
             manager.HandleHostMessage(SkillsRegistryFrameWithEpochs(
                 new Dictionary<string, int> { [pluginId] = 1 }, (pluginId, "./mod.ts")));
-            var reloadInvoke = await fakeSocket.ReadSkillInvokeAsync(TestContext.Current.CancellationToken);
-            fakeSocket.Reply(
-                manager,
-                reloadInvoke,
-                """{"value":[{"name":"gen-skill","description":"after the isolation reload"}]}""");
-            await AwaitCatalogAsync(
-                catalog,
-                snapshot => snapshot.Skills.Any(skill =>
-                    skill is { Name: "gen-skill", Description: "after the isolation reload" }),
-                TestContext.Current.CancellationToken);
-            Assert.Equal(2, fakeSocket.TotalSkillInvokes);
+            await manager.ContributionsIdle.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(1, fakeSocket.TotalSkillInvokes);
+            Assert.DoesNotContain(catalog.Current.Skills, skill => skill.Name == "gen-skill");
         }
         finally
         {

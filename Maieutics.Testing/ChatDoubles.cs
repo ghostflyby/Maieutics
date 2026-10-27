@@ -135,7 +135,7 @@ public sealed class FixedProfileProvider : IAgentRunProfileProvider
     /// <summary>Returns the given profile on every acquire.</summary>
     public FixedProfileProvider(AgentRunProfile profile)
     {
-        this._profile = profile;
+        _profile = profile;
     }
 
     /// <summary>Wraps the given client (or a stub) in a default profile.</summary>

@@ -9,7 +9,7 @@ internal sealed class TemporaryWorkspace : IDisposable
 
     private TemporaryWorkspace(TempArea area)
     {
-        this._area = area;
+        _area = area;
         ParentPath = area.Path;
         Path = System.IO.Path.Combine(area.Path, "workspace");
     }

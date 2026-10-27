@@ -85,11 +85,11 @@ internal sealed class IdeFunctions
         WorkspaceEditFunctions workspaceEdits,
         FrontendIdeSockets sockets)
     {
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this._gate = gate ?? throw new ArgumentNullException(nameof(gate));
-        this._workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
-        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        _gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        _workspaceEdits = workspaceEdits ?? throw new ArgumentNullException(nameof(workspaceEdits));
+        _sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
 
         Functions =
         [

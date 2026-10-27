@@ -219,15 +219,15 @@ internal sealed class McpServerGeneration
         McpConnectionGeneration connection,
         IMcpToolSurfaceAdjuster? toolSurfaceAdjuster = null)
     {
-        this._definition = definition;
-        this._loggerFactory = loggerFactory;
-        this._timeProvider = timeProvider;
-        this._transportFactory = transportFactory;
-        this._reservedToolNames = reservedToolNames;
-        this._rootsSource = rootsSource;
-        this._elicitationCoordinator = elicitationCoordinator;
+        _definition = definition;
+        _loggerFactory = loggerFactory;
+        _timeProvider = timeProvider;
+        _transportFactory = transportFactory;
+        _reservedToolNames = reservedToolNames;
+        _rootsSource = rootsSource;
+        _elicitationCoordinator = elicitationCoordinator;
         _logger = loggerFactory.CreateLogger($"Maieutics.Mcp.{definition.Id}");
-        this._toolSurfaceAdjuster = toolSurfaceAdjuster;
+        _toolSurfaceAdjuster = toolSurfaceAdjuster;
         _current = connection;
     }
 

@@ -31,7 +31,7 @@ internal sealed class ReplOutputWebSocketConnection : IAsyncDisposable
 
     internal ReplOutputWebSocketConnection(WebSocket socket)
     {
-        this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        _socket = socket ?? throw new ArgumentNullException(nameof(socket));
         _frames = Channel.CreateBounded<ReplOutputFrame>(new BoundedChannelOptions(ReplOutputProtocol.QueueCapacity)
         {
             SingleReader = true,

@@ -591,7 +591,7 @@ public sealed class FrontendWorkspaceBridgeTests
         Assert.False(File.Exists(Path.Combine(denied, "notes.md")));
     }
 
-    private sealed class NullVariableSource : Execution.IPermissionVariableSource
+    private sealed class NullVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

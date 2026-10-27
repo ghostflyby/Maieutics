@@ -54,7 +54,7 @@ internal sealed class ContributionSlotTable
 
     public ContributionSlotTable(string kindName)
     {
-        this._kindName = kindName;
+        _kindName = kindName;
     }
 
     public string KindName => _kindName;

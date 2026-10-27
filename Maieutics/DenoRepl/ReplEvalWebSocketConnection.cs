@@ -47,10 +47,10 @@ internal sealed class ReplEvalWebSocketConnection : IDenoReplConnection, IAsyncD
         ReplEvalIdentity identity,
         string readyCorrelationId)
     {
-        this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        _socket = socket ?? throw new ArgumentNullException(nameof(socket));
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         ArgumentException.ThrowIfNullOrWhiteSpace(readyCorrelationId);
-        this._readyCorrelationId = readyCorrelationId;
+        _readyCorrelationId = readyCorrelationId;
         _outgoing = Channel.CreateBounded<OutgoingMessage>(new BoundedChannelOptions(ReplEvalProtocol.QueueCapacity)
         {
             SingleReader = true,
@@ -687,7 +687,7 @@ internal sealed class ReplEvalExecution
         Task<ReplEvalTerminal> completion)
     {
         ExecutionId = executionId;
-        this._events = events;
+        _events = events;
         Completion = completion;
     }
 

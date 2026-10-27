@@ -29,7 +29,7 @@ internal sealed class SessionBusConnection : IAsyncDisposable
 
     internal SessionBusConnection(WebSocket socket)
     {
-        this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+        _socket = socket ?? throw new ArgumentNullException(nameof(socket));
         _outgoing = Channel.CreateBounded<OutgoingMessage>(new BoundedChannelOptions(
             ReplControlLimits.QueueCapacity)
         {

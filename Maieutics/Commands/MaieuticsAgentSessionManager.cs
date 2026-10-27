@@ -60,17 +60,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         AgentSubagentOptions? subagents = null,
         SkillCatalog? skillCatalog = null)
     {
-        this._profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
-        this._runtimeConfiguration = runtimeConfiguration;
-        this._familiesRoot = familiesRoot;
-        this._storeFactory = storeFactory;
-        this._objectStore = objectStore;
-        this._reclaimer = reclaimer;
-        this._viewSessionsRoot = viewSessionsRoot;
-        this._objectsRoot = objectsRoot;
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this._subagents = subagents;
-        this._skillCatalog = skillCatalog;
+        _profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
+        _runtimeConfiguration = runtimeConfiguration;
+        _familiesRoot = familiesRoot;
+        _storeFactory = storeFactory;
+        _objectStore = objectStore;
+        _reclaimer = reclaimer;
+        _viewSessionsRoot = viewSessionsRoot;
+        _objectsRoot = objectsRoot;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _subagents = subagents;
+        _skillCatalog = skillCatalog;
         _foreground = CreateLive(AgentSessionId.Create());
     }
 

@@ -107,7 +107,7 @@ internal sealed class PermissionOverrideRegistry
     {
         lock (_gate)
         {
-            return _overrides.TryGetValue(sessionId, out var own) ? own : null;
+            return _overrides.GetValueOrDefault(sessionId);
         }
     }
 

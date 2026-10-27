@@ -48,9 +48,9 @@ internal sealed class ProcessSpawnFunctions
         PermissionPolicyAcquirer acquirer,
         Workspace workspace)
     {
-        this._sandbox = sandbox ?? throw new ArgumentNullException(nameof(sandbox));
-        this._acquirer = acquirer ?? throw new ArgumentNullException(nameof(acquirer));
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _sandbox = sandbox ?? throw new ArgumentNullException(nameof(sandbox));
+        _acquirer = acquirer ?? throw new ArgumentNullException(nameof(acquirer));
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         Functions =
         [
             CreateFunction(

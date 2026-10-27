@@ -50,7 +50,7 @@ internal sealed class PluginHostProcess : IAsyncDisposable
 
     private PluginHostProcess(DenoRunProcess inner)
     {
-        this._inner = inner;
+        _inner = inner;
     }
 
     public int ProcessId => _inner.ProcessId;

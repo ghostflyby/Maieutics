@@ -233,7 +233,7 @@ internal sealed class DenoReplRegistry(
         string sessionId,
         DenoReplSession expected)
     {
-        var ownerHasNoSessions = false;
+        bool ownerHasNoSessions;
         lock (_gate)
         {
             if (!_sessions.TryGetValue(ownerSessionId, out var owned) ||

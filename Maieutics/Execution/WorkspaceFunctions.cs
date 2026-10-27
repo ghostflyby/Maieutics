@@ -53,18 +53,18 @@ internal sealed class WorkspaceFunctions
         IWorkspaceIoBridge? bridge = null,
         PermissionPolicyAcquirer? acquirer = null)
     {
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        this._resources = resources;
-        this._bridge = bridge;
-        this._acquirer = acquirer;
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _resources = resources;
+        _bridge = bridge;
+        _acquirer = acquirer;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumDirectoryEntries);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumFileBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumSearchBytes);
-        this._maximumFiles = maximumFiles;
-        this._maximumDirectoryEntries = maximumDirectoryEntries;
-        this._maximumFileBytes = maximumFileBytes;
-        this._maximumSearchBytes = maximumSearchBytes;
+        _maximumFiles = maximumFiles;
+        _maximumDirectoryEntries = maximumDirectoryEntries;
+        _maximumFileBytes = maximumFileBytes;
+        _maximumSearchBytes = maximumSearchBytes;
 
         Functions =
         [
@@ -1127,7 +1127,7 @@ internal sealed class WorkspaceFunctions
 
         internal TextLineMap(string content)
         {
-            this._content = content;
+            _content = content;
             var starts = new List<int> { 0 };
             for (var index = 0; index < content.Length; index++)
                 if (content[index] == '\n' && index + 1 < content.Length)

@@ -66,15 +66,15 @@ internal sealed class DenoReplExecutionCollector
         IReplDisplayObjectStore? displayObjectStore = null,
         ILogger? logger = null)
     {
-        this._sessionId = sessionId;
-        this._generation = generation;
-        this._options = options;
-        this._presentation = presentation;
-        this._displayIds = displayIds;
-        this._executionId = executionId;
-        this._rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
-        this._displayObjectStore = displayObjectStore;
-        this._logger = logger;
+        _sessionId = sessionId;
+        _generation = generation;
+        _options = options;
+        _presentation = presentation;
+        _displayIds = displayIds;
+        _executionId = executionId;
+        _rateLimiter = rateLimiter ?? new ReplOutputRateLimiter(options);
+        _displayObjectStore = displayObjectStore;
+        _logger = logger;
     }
 
     private readonly IReplDisplayObjectStore? _displayObjectStore;

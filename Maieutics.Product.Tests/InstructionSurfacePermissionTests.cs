@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Commands;
 using Maieutics.DenoExecution;
@@ -204,7 +203,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
     }
 
     [Fact]
-    public void ALinkNamedAGENTSMDIsStillDeniedByTheOverlay()
+    public void ALinkNamedAgentsmdIsStillDeniedByTheOverlay()
     {
         if (OperatingSystem.IsWindows()) Assert.Skip("Creating a symlink needs a privilege on Windows.");
 
@@ -235,7 +234,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Directory.CreateDirectory(locked);
         File.WriteAllText(Path.Combine(locked, "AGENTS.md"), "x\n");
         var original = File.GetUnixFileMode(locked);
-        File.SetUnixFileMode(locked, System.IO.UnixFileMode.None);
+        File.SetUnixFileMode(locked, UnixFileMode.None);
         try
         {
             var withOverlay = DenoReplPolicyBuilder.DeriveInstructionDenyOverlay(
@@ -390,14 +389,14 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
     {
         public PermissionLayer? AppDefaults => null;
 
-        public PermissionLayer? WorkspaceProfile => profile;
+        public PermissionLayer WorkspaceProfile => profile;
 
         public PermissionLayer? GetSessionOverride(AgentSessionId sessionId) => null;
     }
 
     private sealed class FixedLayerSource(PermissionLayer appDefaults) : IPermissionLayerSource
     {
-        public PermissionLayer? AppDefaults => appDefaults;
+        public PermissionLayer AppDefaults => appDefaults;
 
         public PermissionLayer? WorkspaceProfile => null;
 

@@ -711,7 +711,7 @@ internal sealed class FakeTerminalProcess : ITerminalProcess
 
         internal FakePtyStream(int? failOnWrite)
         {
-            this._failOnWrite = failOnWrite;
+            _failOnWrite = failOnWrite;
         }
 
         internal List<byte[]> Writes { get; } = [];

@@ -174,7 +174,7 @@ internal sealed partial class ReplControlHost
 
         internal CommBusConnection(WebSocket socket)
         {
-            this._socket = socket ?? throw new ArgumentNullException(nameof(socket));
+            _socket = socket ?? throw new ArgumentNullException(nameof(socket));
             _outgoing = Channel.CreateBounded<CommOutgoingMessage>(new BoundedChannelOptions(
                 ReplControlLimits.QueueCapacity)
             {

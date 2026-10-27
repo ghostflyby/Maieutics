@@ -33,7 +33,7 @@ public sealed class DenoPermissionBrokerDisposalTests
         // finally re-disposes idempotently if an assertion fails first.
         var broker = DenoPermissionBroker.Create(NullLogger<DenoPermissionBroker>.Instance);
         NamedPipeServerStream? listener;
-        if (broker._pipeListener is { } existing)
+        if (broker.PipeListener is { } existing)
         {
             listener = existing;
         }
@@ -45,7 +45,7 @@ public sealed class DenoPermissionBrokerDisposalTests
                 PipeListenerInstanceLimit,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
-            broker._pipeListener = installed;
+            broker.PipeListener = installed;
             listener = installed;
         }
 

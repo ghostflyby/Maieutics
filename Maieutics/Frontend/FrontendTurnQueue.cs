@@ -22,7 +22,10 @@ namespace Maieutics.Frontend;
 ///     session shutdown or queue disposal; durability across server restarts (SQLite) is
 ///     deferred.
 /// </summary>
-internal sealed class FrontendTurnQueue : IAsyncDisposable
+internal sealed class FrontendTurnQueue(
+    FrontendSessionService service,
+    MaieuticsAgentSessionManager sessionManager,
+    ILogger<FrontendTurnQueue> logger) : IAsyncDisposable
 {
     /// <summary>Bounded FIFO: at most this many items may be queued per session; an
     /// enqueue whose committed total would exceed it is rejected all-or-nothing.</summary>
@@ -41,29 +44,17 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// input cap is the same limit a direct turn submission enforces at run start.</summary>
     private static readonly int MaxItemCharacters = new AgentSessionOptions().MaxInputCharacters;
 
-    private readonly FrontendSessionService _service;
-    private readonly MaieuticsAgentSessionManager _sessionManager;
-    private readonly ILogger _logger;
+    private readonly ILogger _logger = logger;
     private readonly Lock _gate = new();
 
     /// <summary>One queue state per session identifier: two spellings of one session's id
     /// must never own two queues. See <see cref="ParseSessionId" />. Internal as the worker
     /// wakeup tests' seam: they observe one session's worker completion task mid-flight.</summary>
-    internal readonly Dictionary<AgentSessionId, SessionQueue> _sessions = new();
+    internal readonly Dictionary<AgentSessionId, SessionQueue> Sessions = new();
 
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _disposeState;
-
-    public FrontendTurnQueue(
-        FrontendSessionService service,
-        MaieuticsAgentSessionManager sessionManager,
-        ILogger<FrontendTurnQueue> logger)
-    {
-        this._service = service;
-        this._sessionManager = sessionManager;
-        this._logger = logger;
-    }
 
     /// <summary>Enqueues 1..64 turn texts atomically (all or nothing) and starts the
     /// session's worker when one is not already running. Positions in the answer are
@@ -73,7 +64,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     public FrontendQueueEnqueueResponse Enqueue(string sessionId, IReadOnlyList<string> texts)
     {
         ArgumentNullException.ThrowIfNull(texts);
-        _service.EnsureSessionResolved(sessionId);
+        service.EnsureSessionResolved(sessionId);
         if (texts.Count == 0 || texts.Count > MaxBatchItems)
             throw new FrontendFailureException(
                 FrontendErrors.InvalidRequest,
@@ -132,7 +123,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// running (<c>item_running</c>), or no queued item matches the id.</exception>
     public void Remove(string sessionId, string itemId)
     {
-        _service.EnsureSessionResolved(sessionId);
+        service.EnsureSessionResolved(sessionId);
         var state = GetOrAdd(ParseSessionId(sessionId));
         bool removed;
         lock (state.Gate)
@@ -168,7 +159,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     /// normally. Clearing an empty queue is a no-op and publishes nothing.</summary>
     public void Clear(string sessionId)
     {
-        _service.EnsureSessionResolved(sessionId);
+        service.EnsureSessionResolved(sessionId);
         var state = GetOrAdd(ParseSessionId(sessionId));
         bool removed;
         var removedCount = 0;
@@ -271,7 +262,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         SessionQueue[] states;
         lock (_gate)
         {
-            states = _sessions.Values.ToArray();
+            states = Sessions.Values.ToArray();
         }
 
         foreach (var state in states)
@@ -307,7 +298,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 ReleaseLeaseLocked(state);
             }
 
-            _sessions.Clear();
+            Sessions.Clear();
         }
 
         _lifetime.Dispose();
@@ -352,10 +343,10 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     {
         lock (_gate)
         {
-            if (_sessions.TryGetValue(sessionId, out var existing)) return existing;
+            if (Sessions.TryGetValue(sessionId, out var existing)) return existing;
 
             var created = new SessionQueue();
-            _sessions[sessionId] = created;
+            Sessions[sessionId] = created;
             return created;
         }
     }
@@ -407,7 +398,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         // lazy-resume, but queued work is active interest, so the queue holds one lease
         // while the session has queue work and releases it when the queue drains. The
         // addressed identifier is parsed at the public boundary, so it is non-empty here.
-        state.Lease = _sessionManager.TryPinSession(sessionId);
+        state.Lease = sessionManager.TryPinSession(sessionId);
     }
 
     private void ReleaseLeaseLocked(SessionQueue state)
@@ -595,7 +586,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
                 // The service addresses turns by the wire spelling; the typed identifier
                 // renders to that canonical "N" form, so the submission resolves the same
                 // session the queue state is keyed by.
-                var accepted = await _service
+                var accepted = await service
                     .StartTurnAsync(sessionId.ToString(), text, cancellationToken)
                     .ConfigureAwait(false);
                 return accepted.RunId;
@@ -627,14 +618,14 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budget.CancelAfter(BusyWaitBudget);
 
-        if (!_service.TryGetLatestRun(sessionId, out var target) || target is null)
+        if (!service.TryGetLatestRun(sessionId, out var target) || target is null)
         {
             // Nothing has ever been announced on the session, yet the gate is held: the
             // racing submission reserved the gate and announces within moments. Wait for
             // that announcement (a null previous never fast-paths over a later one).
             try
             {
-                target = await _service
+                target = await service
                     .WaitForRunAsync(sessionId, null, budget.Token)
                     .ConfigureAwait(false);
             }
@@ -663,7 +654,7 @@ internal sealed class FrontendTurnQueue : IAsyncDisposable
     {
         // StartTurnAsync registers the run's stream before returning, so the lookup
         // succeeds; a run that already left the bounded registry also already settled.
-        if (!_service.TryGetRun(runId, out var stream) || stream is null) return;
+        if (!service.TryGetRun(runId, out var stream) || stream is null) return;
 
         try
         {

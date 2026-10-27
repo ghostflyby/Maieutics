@@ -289,7 +289,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<Processes.ProcessSpawnFunctions>(static services =>
             new Processes.ProcessSpawnFunctions(
                 services.GetRequiredService<Processes.IProcessSandboxPolicy>(),
-                services.GetRequiredService<Permissions.PermissionPolicyAcquirer>(),
+                services.GetRequiredService<PermissionPolicyAcquirer>(),
                 services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
             services.GetRequiredService<MaieuticsAgentSessionManager>(),

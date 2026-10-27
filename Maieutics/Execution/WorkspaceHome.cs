@@ -96,7 +96,7 @@ internal sealed class WorkspaceHome
     {
         HomePath = homePath;
         ProjectsRoot = projectsRoot;
-        this._registry = registry;
+        _registry = registry;
     }
 
     internal string HomePath { get; }

@@ -19,8 +19,8 @@ internal sealed class TestChildProcess : IAsyncDisposable
 
     private TestChildProcess(Process process, ChildSlotLease slot)
     {
-        this._process = process;
-        this._slot = slot;
+        _process = process;
+        _slot = slot;
     }
 
     internal int Id => _process.Id;

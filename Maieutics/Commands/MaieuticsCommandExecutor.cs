@@ -240,7 +240,7 @@ internal sealed class MaieuticsCommandExecutor(
     {
         if (plugins.Count == 0) return "### Plugins\n\nNo plugins are discovered.";
 
-        var output = new System.Text.StringBuilder("### Plugins\n\n");
+        var output = new StringBuilder("### Plugins\n\n");
         foreach (var plugin in plugins)
         {
             output.Append("- ")
@@ -478,7 +478,7 @@ internal sealed class MaieuticsCommandExecutor(
                 // The passthrough merge validates shape (empty, stray '*', comma); the
                 // acquisition below resolves every token so a bad variable fails here.
                 composed = PermissionLayerStore.Build([current, delta], VariableTable.Expanded);
-                permissionAcquirer.Acquire(new PermissionLayer { Kinds = composed.Kinds }, null);
+                permissionAcquirer.Acquire(new PermissionLayer { Kinds = composed.Kinds });
             }
             catch (PermissionException exception)
             {
@@ -716,7 +716,7 @@ internal sealed class MaieuticsCommandExecutor(
         var sessions = manager.ListStoredSessions();
         if (sessions.Count == 0) return "No stored sessions yet.";
 
-        var builder = new System.Text.StringBuilder();
+        var builder = new StringBuilder();
         builder.AppendLine("| Session | Title | Turns | Created (UTC) | Last activity (UTC) |");
         builder.Append("|---|---|---:|---|---|");
         foreach (var session in sessions)
@@ -814,7 +814,7 @@ internal sealed class MaieuticsCommandExecutor(
 
     private static string RenderWorkspace(WorkspaceSnapshot selection)
     {
-        var output = new System.Text.StringBuilder("### Current workspace\n\n");
+        var output = new StringBuilder("### Current workspace\n\n");
         output.Append("- Root: ")
             .Append(MarkdownText.CodeSpan(selection.RootPath))
             .Append(" (fixed home)")
@@ -860,7 +860,7 @@ internal sealed class MaieuticsCommandExecutor(
     {
         if (servers.Count == 0) return "### MCP servers\n\nNo MCP servers are enabled.";
 
-        var output = new System.Text.StringBuilder("### MCP servers\n\n");
+        var output = new StringBuilder("### MCP servers\n\n");
         foreach (var server in servers)
         {
             output.Append("- ")
@@ -893,7 +893,7 @@ internal sealed class MaieuticsCommandExecutor(
     {
         if (selection.Profiles.Count == 0) return "### Model profiles\n\nNo model profiles are configured.";
 
-        var output = new System.Text.StringBuilder("### Model profiles\n\n");
+        var output = new StringBuilder("### Model profiles\n\n");
         foreach (var profile in selection.Profiles)
         {
             var markers = new List<string>(2);
@@ -930,7 +930,7 @@ internal sealed class MaieuticsCommandExecutor(
             return $"### Available models\n\n{message}";
         }
 
-        var output = new System.Text.StringBuilder("### Available models\n\n");
+        var output = new StringBuilder("### Available models\n\n");
         var configuredModelIds = profiles.Profiles
             .Where(static profile => !profile.IsAutomatic)
             .Select(static p => (p.SourceId, p.Model))

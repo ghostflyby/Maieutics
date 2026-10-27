@@ -88,16 +88,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
         IAgentToolApprovalGate? toolApprovalGate = null,
         AgentToolApprovalMemory? toolApprovalMemory = null)
     {
-        this._configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-        this._configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
-        this._fileErrors = fileErrors ?? throw new ArgumentNullException(nameof(fileErrors));
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this._permissionOverrides = permissionOverrides;
-        this._factories = CreateFactoryRegistry(factories);
-        this._builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
-        this._terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
-        this._ideTools = ideTools;
-        this._toolApproval = toolApprovalGate is null
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _configurationFile = configurationFile ?? throw new ArgumentNullException(nameof(configurationFile));
+        _fileErrors = fileErrors ?? throw new ArgumentNullException(nameof(fileErrors));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _permissionOverrides = permissionOverrides;
+        _factories = CreateFactoryRegistry(factories);
+        _builtInTools = builtInTools ?? throw new ArgumentNullException(nameof(builtInTools));
+        _terminalFunctions = terminalFunctions ?? throw new ArgumentNullException(nameof(terminalFunctions));
+        _ideTools = ideTools;
+        _toolApproval = toolApprovalGate is null
             ? null
             : new AgentToolApprovalOptions
             {

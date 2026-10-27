@@ -104,7 +104,7 @@ internal sealed class HttpBridgeResourceProvider : IResourceProvider
         CustomResourceProviderOptions options)
     {
         options.Validate();
-        this._client = client ?? throw new ArgumentNullException(nameof(client));
+        _client = client ?? throw new ArgumentNullException(nameof(client));
         _endpoint = new Uri(options.Endpoint!);
         _timeout = TimeSpan.FromSeconds(options.TimeoutSeconds ?? 15);
         Id = $"custom:{options.Name}";

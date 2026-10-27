@@ -55,10 +55,10 @@ internal sealed class IdeDebugTools
         FrontendIdeSockets sockets,
         Workspace workspace)
     {
-        this._requests = requests ?? throw new ArgumentNullException(nameof(requests));
-        this._gate = gate ?? throw new ArgumentNullException(nameof(gate));
-        this._sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
-        this._workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _requests = requests ?? throw new ArgumentNullException(nameof(requests));
+        _gate = gate ?? throw new ArgumentNullException(nameof(gate));
+        _sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
+        _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
 
         Functions =
         [

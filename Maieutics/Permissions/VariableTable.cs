@@ -30,10 +30,10 @@ internal sealed class VariableTable
         bool passthrough = false)
     {
         ArgumentNullException.ThrowIfNull(source);
-        this._source = source;
-        this._fixedVariables = fixedVariables ?? new Dictionary<string, string>(StringComparer.Ordinal);
-        this._getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
-        this._passthrough = passthrough;
+        _source = source;
+        _fixedVariables = fixedVariables ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        _getEnvironmentVariable = getEnvironmentVariable ?? Environment.GetEnvironmentVariable;
+        _passthrough = passthrough;
     }
 
     /// <summary>Expands every <c>${...}</c> token in <paramref name="pattern"/>. Patterns without
@@ -94,7 +94,7 @@ internal sealed class VariableTable
         throw Malformed($"The variable '{name}' is not in the env.* or var.* namespace.");
     }
 
-    private sealed class NullVariableSource : Execution.IPermissionVariableSource
+    private sealed class NullVariableSource : IPermissionVariableSource
     {
         public string? GetVariable(string name)
         {

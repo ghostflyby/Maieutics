@@ -51,7 +51,7 @@ internal sealed class ReplOutputRateLimiter
         var ticksPerSecond = frequency ?? Stopwatch.Frequency;
         ArgumentOutOfRangeException.ThrowIfLessThan(ticksPerSecond, 1);
         _windowTicks = checked((long)(options.DisplayRateLimitWindow.TotalSeconds * ticksPerSecond));
-        this._timestampProvider = timestampProvider ?? Stopwatch.GetTimestamp;
+        _timestampProvider = timestampProvider ?? Stopwatch.GetTimestamp;
     }
 
     /// <summary>

@@ -16,8 +16,8 @@ internal sealed class ToolVisibilityChatClient : IChatClient
 
     public ToolVisibilityChatClient(IChatClient inner, IReadOnlySet<string> hiddenToolNames)
     {
-        this._inner = inner ?? throw new ArgumentNullException(nameof(inner));
-        this._hiddenToolNames = hiddenToolNames ?? throw new ArgumentNullException(nameof(hiddenToolNames));
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _hiddenToolNames = hiddenToolNames ?? throw new ArgumentNullException(nameof(hiddenToolNames));
     }
 
     public async Task<ChatResponse> GetResponseAsync(

@@ -43,12 +43,12 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         DenoPermissionBroker? broker,
         ChildSlotLease slot)
     {
-        this._process = process;
-        this._logger = logger;
-        this._stopBudget = stopBudget;
+        _process = process;
+        _logger = logger;
+        _stopBudget = stopBudget;
         _processDescription = Describe(kind);
         _processId = process.Id;
-        this._standardError = standardError;
+        _standardError = standardError;
         var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", null);
         var stderrDrain = DrainAsync(process.StandardError, "stderr", standardError);
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);

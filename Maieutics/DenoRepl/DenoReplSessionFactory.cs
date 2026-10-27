@@ -325,13 +325,13 @@ internal sealed class LocalDenoReplGeneration : IDenoReplGeneration
         ReplControlCredentialRegistry credentialRegistry,
         IReplPolicyRegistrar? replPolicyRegistrar)
     {
-        this._process = process;
+        _process = process;
         Connection = connection;
-        this._sessionId = sessionId;
-        this._shutdownTimeout = shutdownTimeout;
-        this._sessionRegistry = sessionRegistry;
-        this._credentialRegistry = credentialRegistry;
-        this._replPolicyRegistrar = replPolicyRegistrar;
+        _sessionId = sessionId;
+        _shutdownTimeout = shutdownTimeout;
+        _sessionRegistry = sessionRegistry;
+        _credentialRegistry = credentialRegistry;
+        _replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
         OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }
@@ -437,11 +437,11 @@ internal sealed class HostDerivedDenoReplGeneration : IDenoReplGeneration
         ReplControlCredentialRegistry credentialRegistry,
         IReplPolicyRegistrar? replPolicyRegistrar)
     {
-        this._connection = connection;
-        this._sessionId = sessionId;
-        this._shutdownTimeout = shutdownTimeout;
-        this._credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
-        this._replPolicyRegistrar = replPolicyRegistrar;
+        _connection = connection;
+        _sessionId = sessionId;
+        _shutdownTimeout = shutdownTimeout;
+        _credentialRegistry = credentialRegistry ?? throw new ArgumentNullException(nameof(credentialRegistry));
+        _replPolicyRegistrar = replPolicyRegistrar;
         Completion = ObserveCompletionAsync();
         OutputEvents = ReplOutputEvents.MapAsync(outputHost, sessionId, generation);
     }

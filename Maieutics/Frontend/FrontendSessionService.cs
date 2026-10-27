@@ -56,16 +56,16 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         SkillCatalog? skillCatalog = null,
         Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null)
     {
-        this._sessionManager = sessionManager;
-        this._commandExecutor = commandExecutor;
-        this._presentationRouter = presentationRouter;
-        this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        this._runtimeConfiguration = runtimeConfiguration;
-        this._statusProvider = statusProvider;
-        this._workspaceRootAccessor = workspaceRootAccessor;
-        this._subagentEvents = subagentEvents;
-        this._skillCatalog = skillCatalog;
-        this._promptServersAccessor = promptServersAccessor;
+        _sessionManager = sessionManager;
+        _commandExecutor = commandExecutor;
+        _presentationRouter = presentationRouter;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _runtimeConfiguration = runtimeConfiguration;
+        _statusProvider = statusProvider;
+        _workspaceRootAccessor = workspaceRootAccessor;
+        _subagentEvents = subagentEvents;
+        _skillCatalog = skillCatalog;
+        _promptServersAccessor = promptServersAccessor;
     }
 
     /// <summary>Executes a Maieutics command cell and returns its markdown answer plus

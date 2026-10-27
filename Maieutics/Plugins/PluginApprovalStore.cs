@@ -30,7 +30,7 @@ internal sealed class PluginApprovalStore
 
     private PluginApprovalStore(string path)
     {
-        this._path = path;
+        _path = path;
     }
 
     /// <summary>An empty, persisted-nowhere store: the fail-closed stand-in before the first

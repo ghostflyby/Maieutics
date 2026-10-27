@@ -70,23 +70,23 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendIdeSockets? ideSockets = null,
         FrontendToolApprovalPresenter? toolApprovalPresenter = null)
     {
-        this._service = service;
-        this._turnQueue = turnQueue;
-        this._logger = logger;
-        this._ideRequests = ideRequests;
-        this._ideSockets = ideSockets;
-        this._elicitationPresenter = elicitationPresenter
+        _service = service;
+        _turnQueue = turnQueue;
+        _logger = logger;
+        _ideRequests = ideRequests;
+        _ideSockets = ideSockets;
+        _elicitationPresenter = elicitationPresenter
                                      ?? new FrontendElicitationPresenter(
                                          NoFramesPublisher.Instance,
                                          new FrontendFormModelHost(
                                              commRouter ?? new FrontendCommRouter((_, _, _) => ValueTask.CompletedTask),
                                              NoFramesPublisher.Instance));
-        this._toolApprovalPresenter = toolApprovalPresenter;
-        this._objectStore = objectStore;
-        this._commRouter = commRouter;
-        this._pluginSurface = pluginSurface;
-        this._skillCatalog = skillCatalog;
-        this._promptServersAccessor = promptServersAccessor;
+        _toolApprovalPresenter = toolApprovalPresenter;
+        _objectStore = objectStore;
+        _commRouter = commRouter;
+        _pluginSurface = pluginSurface;
+        _skillCatalog = skillCatalog;
+        _promptServersAccessor = promptServersAccessor;
         _expectedToken = Encoding.UTF8.GetBytes(options.Token);
     }
 

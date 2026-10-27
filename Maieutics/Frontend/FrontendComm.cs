@@ -256,7 +256,7 @@ internal sealed class FrontendCommRouter
 
     public FrontendCommRouter(Func<string, ReplCommMessage, CancellationToken, ValueTask> pushToChild)
     {
-        this._pushToChild = pushToChild ?? throw new ArgumentNullException(nameof(pushToChild));
+        _pushToChild = pushToChild ?? throw new ArgumentNullException(nameof(pushToChild));
     }
 
     /// <summary>Downlink: a REPL comm frame arrived for a session. Widget state belongs to

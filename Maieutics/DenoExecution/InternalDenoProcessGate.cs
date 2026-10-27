@@ -67,7 +67,7 @@ internal readonly struct ChildSlotLease : IDisposable
 
     private readonly SemaphoreSlim? _gate;
 
-    private ChildSlotLease(SemaphoreSlim gate) => this._gate = gate;
+    private ChildSlotLease(SemaphoreSlim gate) => _gate = gate;
 
     internal static ChildSlotLease Acquired(SemaphoreSlim gate) => new(gate);
 

@@ -1513,10 +1513,10 @@ public sealed class FrontendApiIntegrationTests
             JsonElement discovery,
             bool hanging)
         {
-            this._host = host;
-            this._provider = provider;
-            this._configurationFile = configurationFile;
-            this._dataRoot = dataRoot;
+            _host = host;
+            _provider = provider;
+            _configurationFile = configurationFile;
+            _dataRoot = dataRoot;
             _hangingProvider = hanging ? (GatedModelProvider)provider : null;
             DiscoveryPath = discoveryPath;
             Discovery = discovery;

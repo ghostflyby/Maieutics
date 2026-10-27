@@ -55,6 +55,6 @@ internal sealed class ReplOwnerPolicyCache
     public EffectivePolicy? TryGet(string ownerSessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerSessionId);
-        return _policies.TryGetValue(ownerSessionId, out var policy) ? policy : null;
+        return _policies.GetValueOrDefault(ownerSessionId);
     }
 }

@@ -37,11 +37,9 @@ internal static class FrontendDiscoveryFile
         try
         {
             var directory = Path.GetDirectoryName(path) ?? ".";
-            using var watcher = new FileSystemWatcher(directory, Path.GetFileName(path))
-            {
-                EnableRaisingEvents = true,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
-            };
+            using var watcher = new FileSystemWatcher(directory, Path.GetFileName(path));
+            watcher.EnableRaisingEvents = true;
+            watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
             // Pre-armed before the first open attempt, so a publication landing between a
             // failed open and the wait below is folded in instead of lost.
             var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

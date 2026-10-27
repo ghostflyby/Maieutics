@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Maieutics.Testing;
 
@@ -40,8 +41,10 @@ public static class ModelStreams
     }
 
     /// <summary>Serves the raw SSE answer stream for the CreateResponsesStream scenario; see the shape below.</summary>
-    public static string CreateResponsesStream(string text)
+    public static string CreateResponsesStream(string text, string? reasoning = null)
     {
+        if (reasoning is not null) return AddReasoningSummary(CreateResponsesStream(text), reasoning);
+
         const string inProgressResponse =
             "{\"id\":\"resp-test\",\"object\":\"response\",\"created_at\":0," +
             "\"status\":\"in_progress\",\"error\":null,\"incomplete_details\":null," +
@@ -97,6 +100,65 @@ public static class ModelStreams
             "\"sequence_number\":6,\"output_index\":0,\"item\":" + completedItem + "}\n\n" +
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":7," +
             "\"response\":" + completedResponse + "}\n\n";
+    }
+
+    private static string AddReasoningSummary(string answerStream, string summary)
+    {
+        var output = new StringBuilder();
+        var sequence = 0;
+        var item = new JsonObject
+        {
+            ["type"] = "reasoning", ["id"] = "rs-test", ["encrypted_content"] = "opaque-replay-state",
+            ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = summary })
+        };
+        void Append(JsonObject frame)
+        {
+            frame["sequence_number"] = sequence++;
+            output.Append("event: ").Append(frame["type"]).Append("\ndata: ")
+                .Append(frame.ToJsonString()).Append("\n\n");
+        }
+        foreach (var chunk in answerStream.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var data = chunk[(chunk.IndexOf("data: ", StringComparison.Ordinal) + 6)..];
+            var frame = JsonNode.Parse(data)?.AsObject() ?? throw new InvalidOperationException("Missing fixture frame.");
+            if (frame.ContainsKey("output_index")) frame["output_index"] = 1;
+            var type = frame["type"]?.GetValue<string>();
+            if (type == "response.completed" && frame["response"]?["output"] is JsonArray items)
+                items.Insert(0, item.DeepClone());
+            Append(frame);
+            if (type != "response.created") continue;
+            Append(new JsonObject
+            {
+                ["type"] = "response.output_item.added", ["output_index"] = 0,
+                ["item"] = new JsonObject { ["type"] = "reasoning", ["id"] = "rs-test", ["summary"] = new JsonArray() }
+            });
+            Append(new JsonObject
+            {
+                ["type"] = "response.reasoning_summary_part.added", ["output_index"] = 0,
+                ["item_id"] = "rs-test", ["summary_index"] = 0,
+                ["part"] = new JsonObject { ["type"] = "summary_text", ["text"] = "" }
+            });
+            Append(new JsonObject
+            {
+                ["type"] = "response.reasoning_text.delta", ["output_index"] = 0,
+                ["item_id"] = "rs-test", ["content_index"] = 0, ["delta"] = "private-response-trace"
+            });
+            Append(new JsonObject
+            {
+                ["type"] = "response.reasoning_summary_text.delta", ["output_index"] = 0,
+                ["item_id"] = "rs-test", ["summary_index"] = 0, ["delta"] = summary
+            });
+            Append(new JsonObject
+            {
+                ["type"] = "response.reasoning_summary_text.done", ["output_index"] = 0,
+                ["item_id"] = "rs-test", ["summary_index"] = 0, ["text"] = summary
+            });
+            Append(new JsonObject
+            {
+                ["type"] = "response.output_item.done", ["output_index"] = 0, ["item"] = item.DeepClone()
+            });
+        }
+        return output.ToString();
     }
 
     /// <summary>A Responses turn where the provider ran a web search: web_search_call items,

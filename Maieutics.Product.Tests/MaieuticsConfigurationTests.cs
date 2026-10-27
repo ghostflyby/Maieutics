@@ -964,6 +964,19 @@ public sealed class MaieuticsConfigurationTests
         Assert.DoesNotContain(rotatedApiKey, rotated.ClientGenerationKey.ToString());
     }
 
+    [Fact]
+    public void ReasoningSummaryConfigurationRetiresTheClientGenerationAndRejectsChatCompletions()
+    {
+        var factory = new OpenAiChatClientFactory();
+        var configuration = CreateProviderSourceConfiguration("OpenAI", "test-key");
+        var original = factory.BindSource("source", configuration);
+        configuration["RequestReasoningSummary"] = "true";
+        var summaries = factory.BindSource("source", configuration);
+        Assert.NotEqual(original.ClientGenerationKey, summaries.ClientGenerationKey);
+        configuration["ApiFlavor"] = "ChatCompletions";
+        Assert.Throws<ArgumentException>(() => factory.BindSource("source", configuration));
+    }
+
     [Theory(Timeout = 30_000)]
     [InlineData("OpenAI", "ApiFlavor", "Responses", "UnexpectedAnthropicField")]
     [InlineData("Anthropic", "ApiKey", "test-key", "UnexpectedOpenAiField")]

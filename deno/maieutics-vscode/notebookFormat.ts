@@ -10,7 +10,7 @@
  * silently corrupting a user's notebook.
  */
 
-import type { SubagentSnapshotView } from "./turnView.ts";
+import type { ReasoningSummaryView, SubagentSnapshotView } from "./turnView.ts";
 
 export const NotebookKind = "maieutics-notebook";
 export const NotebookVersion = 1;
@@ -26,6 +26,7 @@ export interface TurnBinding {
 export interface OutputSnapshot {
   /** Final assistant markdown, when the turn produced text. */
   text?: string;
+  reasoning?: ReasoningSummaryView[];
   truncated?: boolean;
   error?: { code: string; message: string };
   /** Tool activity summaries in call order. */
@@ -188,6 +189,7 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
     : undefined;
   return {
     text: typeof value.text === "string" ? value.text : undefined,
+    ...(Array.isArray(value.reasoning) ? { reasoning: parseReasoning(value.reasoning) } : {}),
     truncated: typeof value.truncated === "boolean" ? value.truncated : undefined,
     error: isRecord(value.error) && typeof value.error.code === "string"
       ? {
@@ -209,6 +211,7 @@ function parseSubagent(value: Record<string, unknown>): SubagentSnapshotView {
     : "running";
   return {
     status,
+    ...(Array.isArray(value.reasoning) ? { reasoning: parseReasoning(value.reasoning) } : {}),
     text: typeof value.text === "string" ? value.text : "",
     tools: Array.isArray(value.tools)
       ? value.tools.filter(isRecord).map((tool) => ({
@@ -225,4 +228,33 @@ const SubagentStatuses: Set<string> = new Set(["running", "ok", "failed", "cance
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Optional additive snapshot member: old files load and malformed summaries are ignored. */
+function parseReasoning(value: unknown): ReasoningSummaryView[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  let room = 20_000;
+  return value.filter(isRecord)
+    .filter((entry) => typeof entry.messageId === "string" && typeof entry.text === "string")
+    .slice(0, 64)
+    .map((entry) => {
+      const text = (entry.text as string).slice(0, room);
+      room -= text.length;
+      return { messageId: entry.messageId as string, text };
+    }).filter((entry) => entry.text.length > 0);
+}
+
+/** Combines independent live display segments when saving a running cell. A final turn
+ * already carries text; partial summary segments use the streamed answer as a fallback. */
+export function mergeOutputSnapshots(
+  snapshots: readonly OutputSnapshot[],
+  streamedText?: string,
+): OutputSnapshot | undefined {
+  if (snapshots.length === 0) return undefined;
+  const merged = snapshots.reduce<OutputSnapshot>(
+    (result, snapshot) => ({ ...result, ...snapshot }),
+    {},
+  );
+  if (merged.text === undefined && streamedText !== undefined) merged.text = streamedText;
+  return merged;
 }

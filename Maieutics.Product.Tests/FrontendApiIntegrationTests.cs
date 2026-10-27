@@ -803,6 +803,52 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task ResponsesSummaryStreamsOnceAndReplaysWithoutExposingProtectedState()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.Responses, ProviderGateMode.Scripted,
+            answer: "public answer", reasoning: "Check the relevant evidence.");
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token, provider, hanging: false,
+            transformConfiguration: configuration => configuration.Replace(
+                "\"ApiFlavor\": \"ChatCompletions\"",
+                "\"ApiFlavor\": \"Responses\", \"RequestReasoningSummary\": true"));
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        await using var events = await harness.OpenEventsAsync(sessionId, deadline.Token);
+        await events.ReceiveFrameAsync(deadline.Token);
+        await harness.SubmitTurnAsync(sessionId, "think", deadline.Token);
+        var frames = await events.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.status" &&
+                     frame.GetProperty("state").GetString() == "idle",
+            deadline.Token);
+        var request = Assert.Single(provider.RequestBodies);
+        Assert.Equal("concise", request.GetProperty("reasoning").GetProperty("summary").GetString());
+        var summary = Assert.Single(frames, frame => frame.GetProperty("type").GetString() == "reasoning.delta");
+        Assert.Equal("Check the relevant evidence.", summary.GetProperty("text").GetString());
+        Assert.False(string.IsNullOrEmpty(summary.GetProperty("messageId").GetString()));
+        var answer = frames.First(frame => frame.GetProperty("type").GetString() == "text.delta");
+        Assert.True(summary.GetProperty("sequence").GetInt64() < answer.GetProperty("sequence").GetInt64());
+        Assert.DoesNotContain("opaque-replay-state", string.Concat(frames.Select(frame => frame.GetRawText())));
+        Assert.DoesNotContain("private-response-trace", string.Concat(frames.Select(frame => frame.GetRawText())));
+        await using var replay = await harness.OpenEventsAsync(
+            sessionId, deadline.Token,
+            sinceSequence: summary.GetProperty("sequence").GetInt64() - 1);
+        await replay.ReceiveFrameAsync(deadline.Token);
+        var replayed = await replay.CollectUntilAsync(
+            frame => frame.GetProperty("type").GetString() == "run.completed",
+            deadline.Token);
+        Assert.Equal(summary.GetRawText(), Assert.Single(replayed,
+            frame => frame.GetProperty("type").GetString() == "reasoning.delta").GetRawText());
+        var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
+        Assert.DoesNotContain("Check the relevant evidence.", transcript.GetRawText());
+        Assert.DoesNotContain("opaque-replay-state", transcript.GetRawText());
+        Assert.Contains("public answer", transcript.GetRawText());
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ReasoningContentStaysOutOfTheFrontendSurface()
     {
         var provider = new GatedModelProvider(

@@ -3,6 +3,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   emptyNotebook,
+  mergeOutputSnapshots,
   NativeViewMime,
   NotebookFormatError,
   type OutputSnapshot,
@@ -199,4 +200,37 @@ Deno.test("malformed turn bindings degrade to absent", () => {
   assertEquals(parsed.cells[0].turn, undefined);
   assertEquals(parsed.cells[1].turn, undefined);
   assertEquals(parsed.cells[2].turn, undefined);
+});
+
+Deno.test("display reasoning round-trips separately from the answer and child report", () => {
+  const notebook = emptyNotebook();
+  notebook.cells[0].output = {
+    text: "Answer",
+    reasoning: [{ messageId: "m1", text: "Review evidence." }],
+    subagents: [{
+      status: "ok",
+      text: "Report",
+      tools: [],
+      reasoning: [{ messageId: "m2", text: "Compare sources." }],
+    }],
+  };
+  const restored = parseNotebook(serializeNotebook(notebook));
+  assertEquals(restored.cells[0].output?.reasoning, notebook.cells[0].output.reasoning);
+  assertEquals(
+    restored.cells[0].output?.subagents?.[0].reasoning,
+    notebook.cells[0].output.subagents?.[0].reasoning,
+  );
+});
+
+Deno.test("saving live summary segments keeps parent, child and partial answer together", () => {
+  const reasoning = [{ messageId: "parent", text: "Checking." }];
+  const subagents = [{ status: "ok" as const, text: "Report", tools: [], reasoning }];
+  const merged = mergeOutputSnapshots([{ reasoning }, { subagents }], "Partial answer");
+  assertEquals(merged, { text: "Partial answer", reasoning, subagents });
+  assertEquals(mergeOutputSnapshots([{ reasoning }, { text: "", tools: [] }], "obsolete"), {
+    reasoning,
+    text: "",
+    tools: [],
+  });
+  assertEquals(mergeOutputSnapshots([], "legacy"), undefined);
 });

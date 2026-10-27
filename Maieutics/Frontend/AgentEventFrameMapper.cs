@@ -17,6 +17,12 @@ internal static class AgentEventFrameMapper
                 Sequence: delta.Sequence,
                 MessageId: delta.MessageId.Value.ToString("N"),
                 Text: delta.Text),
+            AgentReasoningSummaryDelta { Text.Length: > 0 } summary => new FrontendEventFrame(
+                "reasoning.delta",
+                RunId: summary.RunId.Value.ToString("N"),
+                Sequence: summary.Sequence,
+                MessageId: summary.MessageId.Value.ToString("N"),
+                Text: summary.Text),
             AgentMessageCompleted message => new FrontendEventFrame(
                 "message.completed",
                 RunId: message.RunId.Value.ToString("N"),

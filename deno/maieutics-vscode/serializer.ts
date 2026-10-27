@@ -15,6 +15,7 @@ import {
   type CellSnapshot,
   emptyNotebook,
   type MaieuticsNotebook,
+  mergeOutputSnapshots,
   NotebookKind,
   NotebookLanguage,
   type OutputSnapshot,
@@ -121,20 +122,21 @@ function readCellBinding(cell: vscode.NotebookCellData): TurnBinding | undefined
  * component sources are stripped before persistence (untrusted notebook
  * files must not carry executable renderer code — ADR 0038 stage 1b). */
 function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undefined {
+  const snapshots: OutputSnapshot[] = [];
   for (const output of cell.outputs ?? []) {
     for (const item of output.items) {
       if (item.mime !== TurnOutputMime) continue;
       try {
         const snapshot = JSON.parse(new TextDecoder().decode(item.data)) as OutputSnapshot;
         if (typeof snapshot === "object" && snapshot !== null) {
-          return stripBundledDisplaySources(snapshot);
+          snapshots.push(stripBundledDisplaySources(snapshot));
         }
       } catch {
         // Fall through to the markdown render.
       }
     }
   }
-  return undefined;
+  return mergeOutputSnapshots(snapshots, snapshotFromMarkdownOutputs(cell)?.text);
 }
 
 /** Best-effort fallback when only the markdown render survived. */

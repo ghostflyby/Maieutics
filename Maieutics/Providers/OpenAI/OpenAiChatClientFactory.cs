@@ -33,6 +33,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
 
         public object ClientGenerationKey { get; } = new SourceGenerationKey(
             options.ApiFlavor,
+            options.RequestReasoningSummary,
             options.ApiKey,
             options.Endpoint?.AbsoluteUri,
             options.Vendor);
@@ -80,6 +81,8 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
             // them, so a configured endpoint limit is enforced by counting the built-in calls
             // the response surfaces. It wraps the raw mapping so no projection can hide a call.
             client = new BuiltinToolCallLimitChatClient(client);
+            if (options.ApiFlavor == OpenAiApiFlavor.Responses)
+                client = new ResponsesReasoningSummaryChatClient(client);
 
             // The Responses flavor declares OpenAI's built-in apply_patch tool and keeps the
             // same-named local function off the wire; the adapter projects the built-in call onto
@@ -91,6 +94,8 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
 
             client = new ConfigureOptionsChatClient(client, chatOptions =>
             {
+                if (options.RequestReasoningSummary)
+                    chatOptions.Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary };
                 var factory = chatOptions.RawRepresentationFactory;
                 chatOptions.RawRepresentationFactory = chatClient => factory?.Invoke(chatClient) ?? options.ApiFlavor switch
                 {
@@ -151,11 +156,13 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
 
     private sealed class SourceGenerationKey(
         OpenAiApiFlavor apiFlavor,
+        bool requestReasoningSummary,
         string apiKey,
         string? endpoint,
         string? vendor) : IEquatable<SourceGenerationKey>
     {
         private readonly OpenAiApiFlavor _apiFlavor = apiFlavor;
+        private readonly bool _requestReasoningSummary = requestReasoningSummary;
         private readonly string _apiKey = apiKey;
         private readonly string? _endpoint = endpoint;
         private readonly string? _vendor = vendor;
@@ -164,6 +171,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         {
             return other is not null &&
                    _apiFlavor == other._apiFlavor &&
+                   _requestReasoningSummary == other._requestReasoningSummary &&
                    string.Equals(_apiKey, other._apiKey, StringComparison.Ordinal) &&
                    string.Equals(_endpoint, other._endpoint, StringComparison.Ordinal) &&
                    string.Equals(_vendor, other._vendor, StringComparison.Ordinal);
@@ -178,6 +186,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         {
             return HashCode.Combine(
                 _apiFlavor,
+                _requestReasoningSummary,
                 StringComparer.Ordinal.GetHashCode(_apiKey),
                 _endpoint is null ? 0 : StringComparer.Ordinal.GetHashCode(_endpoint),
                 _vendor is null ? 0 : StringComparer.Ordinal.GetHashCode(_vendor));
@@ -186,7 +195,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
         public override string ToString()
         {
             return
-                $"SourceGenerationKey {{ ApiFlavor = {_apiFlavor}, ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"}, Vendor = {_vendor ?? "<none>"} }}";
+                $"SourceGenerationKey {{ ApiFlavor = {_apiFlavor}, RequestReasoningSummary = {_requestReasoningSummary}, ApiKey = <redacted>, Endpoint = {_endpoint ?? "<default>"}, Vendor = {_vendor ?? "<none>"} }}";
         }
     }
 }
@@ -196,6 +205,8 @@ internal sealed class OpenAiSourceOptions
     public string? Provider { get; set; }
 
     public OpenAiApiFlavor ApiFlavor { get; set; } = OpenAiApiFlavor.Responses;
+
+    public bool RequestReasoningSummary { get; set; }
 
     public string ApiKey { get; set; } = string.Empty;
 
@@ -211,6 +222,9 @@ internal sealed class OpenAiSourceOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(ApiKey);
         if (!Enum.IsDefined(ApiFlavor))
             throw new ArgumentOutOfRangeException(nameof(ApiFlavor), ApiFlavor, "Unsupported OpenAI API flavor.");
+
+        if (RequestReasoningSummary && ApiFlavor != OpenAiApiFlavor.Responses)
+            throw new ArgumentException("Reasoning summaries require the Responses API.", nameof(RequestReasoningSummary));
 
         if (Endpoint is not null &&
             (!Endpoint.IsAbsoluteUri || Endpoint.Scheme is not ("http" or "https")))

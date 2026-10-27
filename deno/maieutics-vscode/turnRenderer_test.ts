@@ -240,3 +240,27 @@ Deno.test("markdown fallback view quotes the subagent timeline", () => {
     html,
   );
 });
+
+Deno.test("reasoning renders collapsed before the answer, escapes markup and survives markdown view", () => {
+  const turn = {
+    text: "Answer",
+    reasoning: [{ messageId: 'm"<', text: "<script>alert(1)</script>\n[run](command:evil)" }],
+    subagents: [{
+      status: "ok",
+      text: "Report",
+      tools: [],
+      reasoning: [{ messageId: "c", text: "Child summary" }],
+    }],
+  };
+  const html = render(turn);
+  assert(html.includes('<details class="reasoning"'));
+  assert(!html.includes('<details class="reasoning" open'));
+  assert(html.indexOf("思考摘要") < html.indexOf("Answer"));
+  assert(html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+  assert(!html.includes('<a href="command:evil"'));
+  assert(html.includes("Child summary"));
+  assert(renderMarkdownView(turn).includes("思考摘要"));
+  assert(renderMarkdownView(turn).includes("Child summary"));
+  assert(render({ text: "Answer" }).includes("Answer"));
+  assert(!render({ text: "Answer" }).includes("思考摘要"));
+});

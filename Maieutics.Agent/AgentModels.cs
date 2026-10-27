@@ -364,6 +364,33 @@ public sealed record AgentTextDelta : AgentEvent
     public string Text { get; }
 }
 
+/// <summary>Represents a provider-approved, displayable reasoning summary fragment.</summary>
+public sealed record AgentReasoningSummaryDelta : AgentEvent
+{
+    /// <summary>The update additional-property key adapters use for explicitly displayable summaries.
+    /// Its value is a string fragment, never private reasoning or opaque replay state.</summary>
+    public const string UpdatePropertyName = "maieutics.reasoningSummaryDelta";
+
+    /// <summary>Initializes a summary delta correlated with its assistant message.</summary>
+    public AgentReasoningSummaryDelta(
+        AgentRunId runId,
+        long sequence,
+        AgentMessageId messageId,
+        string text) : base(runId, sequence)
+    {
+        if (messageId.Value == Guid.Empty)
+            throw new ArgumentException("Agent message identifiers cannot be empty.", nameof(messageId));
+        MessageId = messageId;
+        Text = text ?? throw new ArgumentNullException(nameof(text));
+    }
+
+    /// <summary>Gets the assistant message identifier.</summary>
+    public AgentMessageId MessageId { get; }
+
+    /// <summary>Gets the displayable summary fragment.</summary>
+    public string Text { get; }
+}
+
 /// <summary>Represents a fully assembled assistant message.</summary>
 public sealed record AgentMessageCompleted : AgentEvent
 {

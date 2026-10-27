@@ -194,6 +194,14 @@ Source and profile identifiers are case-insensitive and must match `[A-Za-z0-9][
 credentials, endpoint, API flavor, and connection resources. A profile selects one source and one provider model ID.
 Multiple profiles may share a source.
 
+OpenAI Responses sources may set `"RequestReasoningSummary": true` when their model
+supports reasoning summaries. The default is `false`, preserving compatibility with
+models and gateways that reject reasoning options. This requests a concise summary
+without changing reasoning effort. The notebook shows returned summaries in a separate,
+collapsed **思考摘要** area, streams updates, and saves them with the notebook. Raw
+reasoning, encrypted state, and signatures remain private. Chat Completions sources
+reject this option when enabled; their reasoning content is not classified as a summary.
+
 The executable registers OpenAI and Anthropic factories. OpenAI supports `Responses` and `ChatCompletions`; both send
 `store: false`. Anthropic uses the Messages API. Neither provider owns the canonical conversation history.
 

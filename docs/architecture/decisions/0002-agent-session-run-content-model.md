@@ -97,9 +97,12 @@ contract and model-visible JSON result envelopes.
 - History eviction uses the compact canonical message JSON UTF-8 size and operates on complete turns or explicit summary
   checkpoints.
 - Provider checkpoint metadata is committed atomically with the transcript state it describes.
+- Explicitly permitted provider summaries may stream through `AgentReasoningSummaryDelta`
+  as display-only events (frontend `reasoning.delta`). They remain separate from the public
+  transcript and answer; opaque replay state and raw private reasoning never cross this boundary.
 - Canonical private state retains provider reasoning content, including opaque protected reasoning data needed for
-  replay. Public transcript snapshots, run results, events, and Jupyter output remove reasoning and provider-private
-  metadata.
+  replay. Public transcript snapshots and run results remove reasoning and provider-private
+  metadata. Events expose only the explicitly permitted display summaries described above.
 - Public snapshots are decoded into detached objects. Mutating a returned `ChatMessage`, content value, annotation, or
   additional-property collection cannot mutate canonical state.
 - Content that the official Microsoft.Extensions.AI JSON contract cannot serialize rejects the commit and rolls back

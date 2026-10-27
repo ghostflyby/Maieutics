@@ -191,6 +191,7 @@ export type EventFrameType =
   | "run.started"
   | "run.status"
   | "text.delta"
+  | "reasoning.delta"
   | "message.completed"
   | "tool.started"
   | "tool.progress"

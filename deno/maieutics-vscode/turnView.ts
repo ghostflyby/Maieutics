@@ -94,6 +94,7 @@ export type SegmentId =
   | `repl:${string}`
   | `tools:${string}`
   | `subagents:${string}`
+  | `reasoning:${string}`
   | `answer:${string}`;
 
 /** Which output segments a frame touched. */
@@ -112,6 +113,7 @@ export type SubagentStatus = "running" | "ok" | "failed" | "cancelled";
 export interface SubagentSnapshotView {
   status: SubagentStatus;
   text: string;
+  reasoning?: ReasoningSummaryView[];
   tools: ToolSnapshotView[];
   truncated?: boolean;
   /** The terminal frame's code for a failed/cancelled child. */
@@ -135,6 +137,7 @@ interface SubagentEntry {
   /** The child announced turn.truncated (model iteration budget). */
   truncated: boolean;
   code?: string;
+  readonly reasoning: ReasoningSummaryView[];
   readonly tools: Map<string, ToolEntry>;
   readonly toolOrder: string[];
 }
@@ -145,15 +148,44 @@ function newSubagentEntry(runId: string): SubagentEntry {
     status: "running",
     text: "",
     textCapped: false,
+    reasoning: [],
     truncated: false,
     tools: new Map(),
     toolOrder: [],
   };
 }
 
+/** Display-only provider summaries, kept separate from answer text and canonical history. */
+export interface ReasoningSummaryView {
+  messageId: string;
+  text: string;
+}
+
+export const MaximumReasoningCharacters = 20_000;
+const MaximumReasoningMessages = 64;
+
+/** Bounds both text and message count even for malformed or hostile event streams. */
+function foldReasoning(summaries: ReasoningSummaryView[], frame: EventFrame): boolean {
+  if (typeof frame.messageId !== "string" || typeof frame.text !== "string" || !frame.text) {
+    return false;
+  }
+  const room = MaximumReasoningCharacters -
+    summaries.reduce((sum, entry) => sum + entry.text.length, 0);
+  if (room <= 0) return false;
+  let entry = summaries.find((entry) => entry.messageId === frame.messageId);
+  if (entry === undefined) {
+    if (summaries.length >= MaximumReasoningMessages) return false;
+    entry = { messageId: frame.messageId, text: "" };
+    summaries.push(entry);
+  }
+  entry.text += frame.text.slice(0, room);
+  return true;
+}
+
 export class TurnView {
   readonly runId: string;
   private text = "";
+  private readonly reasoning: ReasoningSummaryView[] = [];
   private readonly tools = new Map<string, ToolEntry>();
   private readonly toolOrder: string[] = [];
   private readonly replDisplays = new Map<string, ReplDisplayEntry>();
@@ -252,6 +284,11 @@ export class TurnView {
     }
     if (frame.runId !== this.runId && frame.type !== "run.missing") return false;
     switch (frame.type) {
+      case "reasoning.delta": {
+        if (!foldReasoning(this.reasoning, frame)) return false;
+        this.dirty.add(`reasoning:${this.runId}`);
+        return true;
+      }
       case "text.delta": {
         if (typeof frame.text !== "string" || frame.text.length === 0) return false;
         this.text += frame.text;
@@ -332,6 +369,7 @@ export class TurnView {
     // so content may precede a lost run.started); frame types the child
     // timeline does not render must never conjure a phantom child view.
     switch (frame.type) {
+      case "reasoning.delta":
       case "text.delta":
       case "message.completed":
       case "tool.started":
@@ -354,6 +392,9 @@ export class TurnView {
 
     let changed = false;
     switch (frame.type) {
+      case "reasoning.delta":
+        changed = foldReasoning(child.reasoning, frame);
+        break;
       case "text.delta": {
         if (typeof frame.text === "string" && frame.text.length > 0) {
           const room = MaximumSubagentTextLength - child.text.length;
@@ -461,6 +502,11 @@ export class TurnView {
     }
   }
 
+  /** Returns detached display summaries so renderer snapshots cannot mutate the fold. */
+  reasoningSummaries(): ReasoningSummaryView[] {
+    return this.reasoning.map((entry) => ({ ...entry }));
+  }
+
   /** The final assistant markdown, rendered for the cell output. */
   markdown(): string {
     return this.text;
@@ -482,6 +528,9 @@ export class TurnView {
       snapshots.push({
         status: child.status,
         text: child.textCapped ? `${child.text}\n…` : child.text,
+        ...(child.reasoning.length === 0
+          ? {}
+          : { reasoning: child.reasoning.map((entry) => ({ ...entry })) }),
         tools: toolSnapshotViews(child.toolOrder.map((callId) => child.tools.get(callId))),
         ...(child.truncated ? { truncated: true } : {}),
         ...(child.code === undefined ? {} : { code: child.code }),
@@ -514,9 +563,13 @@ export class TurnView {
    * subagent child activity): a run that streamed children keeps them when
    * the run fails instead of collapsing to the error alone. */
   get hasStreamedContent(): boolean {
-    if (this.text.length > 0 || this.replDisplays.size > 0) return true;
+    if (this.text.length > 0 || this.reasoning.length > 0 || this.replDisplays.size > 0) {
+      return true;
+    }
     for (const child of this.subagents.values()) {
-      if (child.text.length > 0 || child.toolOrder.length > 0) return true;
+      if (child.text.length > 0 || child.reasoning.length > 0 || child.toolOrder.length > 0) {
+        return true;
+      }
     }
     return false;
   }
@@ -538,6 +591,7 @@ export class TurnView {
     runId: string;
     input?: string;
     text: string;
+    reasoning?: ReasoningSummaryView[];
     tools: ToolSnapshotView[];
     truncated: boolean;
     repl: ReplDisplayEntry[];
@@ -551,6 +605,7 @@ export class TurnView {
       runId: this.runId,
       ...(input === undefined ? {} : { input }),
       text: this.text,
+      ...(this.reasoning.length === 0 ? {} : { reasoning: this.reasoningSummaries() }),
       repl: this.replList(),
       tools: toolSnapshotViews(this.orderedEntries()),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
@@ -739,6 +794,7 @@ export interface TurnOutputItemSpec {
  * every structured output must keep carrying it. */
 export function turnOutputItems(snapshot: {
   text?: string;
+  reasoning?: readonly ReasoningSummaryView[];
   tools?: readonly ToolSnapshotView[];
   truncated?: boolean;
   error?: { code: string; message: string };

@@ -326,6 +326,88 @@ public sealed class AgentTranscriptSessionTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task ExplicitSummaryIsAnOrderedDisplayEventAndStillReplaysPrivateState()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var update = new ChatResponseUpdate(ChatRole.Assistant,
+            [new TextReasoningContent("private trace") { ProtectedData = "opaque" }])
+        {
+            MessageId = "response",
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [AgentReasoningSummaryDelta.UpdatePropertyName] = "Reviewing evidence."
+            }
+        };
+        var client = new RecordingClient((_, _) => StreamUpdatesAsync(
+            update, new ChatResponseUpdate(ChatRole.Assistant, "answer") { MessageId = "response" }));
+        var session = new AgentSession(client);
+        var turn = await CompleteTurnAsync(session, "question", deadline.Token);
+        var summary = Assert.Single(turn.Events.OfType<AgentReasoningSummaryDelta>());
+        var text = Assert.Single(turn.Events.OfType<AgentTextDelta>());
+        Assert.Equal("Reviewing evidence.", summary.Text);
+        Assert.Equal(text.MessageId, summary.MessageId);
+        Assert.True(summary.Sequence < text.Sequence);
+        Assert.DoesNotContain(turn.Result.AssistantMessage.Contents, static content => content is TextReasoningContent);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CancellationAfterSummaryKeepsTheEventButRollsBackAndReleasesTheSession()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var parked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async IAsyncEnumerable<ChatResponseUpdate> Paused(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [])
+            {
+                AdditionalProperties = new AdditionalPropertiesDictionary
+                {
+                    [AgentReasoningSummaryDelta.UpdatePropertyName] = "Checking sources."
+                }
+            };
+            await parked.Task.WaitAsync(cancellationToken);
+        }
+        var session = new AgentSession(new RecordingClient(
+            (_, token) => Paused(token), (_, _) => StreamAsync("Recovered")));
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
+        await using var events = run.Events.GetAsyncEnumerator(deadline.Token);
+        Assert.True(await events.MoveNextAsync());
+        Assert.Equal("Checking sources.", Assert.IsType<AgentReasoningSummaryDelta>(events.Current).Text);
+        await run.CancelAsync(deadline.Token);
+        Assert.False(await events.MoveNextAsync());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion);
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
+        Assert.Equal("Recovered", recovered.Result.AssistantMessage.Text);
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("123456", "answer")]
+    [InlineData("123", "456")]
+    public async Task SummaryAndAnswerShareTheResponseBudget(string summary, string answer)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var update = new ChatResponseUpdate(ChatRole.Assistant, [])
+        {
+            MessageId = "response",
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                [AgentReasoningSummaryDelta.UpdatePropertyName] = summary
+            }
+        };
+        var session = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(
+            update, new ChatResponseUpdate(ChatRole.Assistant, answer))),
+            new AgentSessionOptions { MaxResponseCharacters = 5 });
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
+        await ReadEventsAsync(run, deadline.Token);
+        await Assert.ThrowsAnyAsync<AgentResponseLimitExceededException>(() => run.Completion);
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task ReasoningOnlyAndCustomContentRollBackTranscriptVersion()
     {
         var reasoningOnly = new AgentSession(new RecordingClient((_, _) => StreamUpdatesAsync(new ChatResponseUpdate(

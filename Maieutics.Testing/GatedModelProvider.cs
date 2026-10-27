@@ -77,8 +77,8 @@ public sealed class GatedModelProvider : IAsyncDisposable
     /// <param name="mode">How answers are handed out.</param>
     /// <param name="answer">The answer text embedded in the SSE stream.</param>
     /// <param name="model">The model the built-in request check expects.</param>
-    /// <param name="reasoning">Chat-completions only: an optional reasoning-content delta
-    /// before the answer text.</param>
+    /// <param name="reasoning">An optional private chat-completions reasoning delta or displayable
+    /// Responses summary before the answer text.</param>
     /// <param name="requestCount">Scripted mode only: how many requests to serve before
     /// retiring; flow shapes default to their two-request round trip. Other modes serve
     /// until disposal.</param>
@@ -523,7 +523,7 @@ public sealed class GatedModelProvider : IAsyncDisposable
         (ModelApiFlavor.Responses, 0) when _applyPatchFlow && _applyPatchOperationJson is { } operation =>
             ModelStreams.CreateResponsesApplyPatchStream(operation),
         (ModelApiFlavor.Responses, _) =>
-            ModelStreams.CreateResponsesStream(_toolFlow ? "tool-backed answer" : _answer),
+            ModelStreams.CreateResponsesStream(_toolFlow ? "tool-backed answer" : _answer, _reasoning),
         (ModelApiFlavor.ChatCompletions, 0) when _toolFlow =>
             ModelStreams.CreateChatCompletionsToolStream(_toolName, _toolArgumentsJson),
         (ModelApiFlavor.ChatCompletions, _) =>

@@ -15,7 +15,7 @@ public sealed record AgentSessionOptions
     /// <summary>Gets the maximum number of UTF-16 characters accepted in one input.</summary>
     public int MaxInputCharacters { get; init; } = 32_000;
 
-    /// <summary>Gets the maximum number of UTF-16 characters accepted in one response.</summary>
+    /// <summary>Gets the maximum number of UTF-16 characters accepted in answer text and displayable summaries per turn.</summary>
     public int MaxResponseCharacters { get; init; } = 64_000;
 
     /// <summary>Gets the maximum number of model round trips in one turn.</summary>

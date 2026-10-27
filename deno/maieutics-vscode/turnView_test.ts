@@ -675,3 +675,62 @@ Deno.test("subagentSnapshotLines composes blocks with blank-line separators", ()
     "> 🤖 **子代理** · ❌ (`cancelled`)",
   ]);
 });
+
+Deno.test("reasoning stays separate across tool rounds, completion, failure and snapshot mutation", () => {
+  const view = new TurnView("run-1");
+  const delta = (messageId: string, text: string) => ({
+    type: "reasoning.delta" as const,
+    runId: "run-1",
+    messageId,
+    text,
+  });
+  assertEquals(view.apply(delta("m1", "Check ")), true);
+  view.apply(delta("m1", "evidence."));
+  assertEquals([...view.takeDirty()], ["reasoning:run-1"]);
+  assertEquals(view.markdown(), "");
+  assertEquals(view.hasStreamedContent, true);
+  view.apply({ type: "tool.started", runId: "run-1", callId: "c1", tool: "read" });
+  view.apply(delta("m2", "Compare results."));
+  view.apply({
+    type: "message.completed",
+    runId: "run-1",
+    agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Answer" }] },
+  });
+  const snapshot = view.finalOutput();
+  assertEquals(snapshot.reasoning, [
+    { messageId: "m1", text: "Check evidence." },
+    { messageId: "m2", text: "Compare results." },
+  ]);
+  if (snapshot.reasoning) snapshot.reasoning[0].text = "mutated";
+  view.apply({ type: "run.failed", runId: "run-1", code: "cancelled", message: "Cancelled" });
+  assertEquals(view.apply(delta("m1", "late")), false);
+  assertEquals(view.finalOutput().reasoning?.[0].text, "Check evidence.");
+  assertEquals(view.markdown(), "Answer");
+});
+
+Deno.test("reasoning ignores malformed and foreign frames and bounds retention", () => {
+  const view = new TurnView("r");
+  assertEquals(
+    view.apply({ type: "reasoning.delta", runId: "r", text: "missing identity" }),
+    false,
+  );
+  assertEquals(
+    view.apply({ type: "reasoning.delta", runId: "other", messageId: "m", text: "x" }),
+    false,
+  );
+  view.apply({ type: "reasoning.delta", runId: "r", messageId: "m", text: "x".repeat(30_000) });
+  assertEquals(view.finalOutput().reasoning?.[0].text.length, 20_000);
+  assertEquals(
+    view.apply({ type: "reasoning.delta", runId: "r", messageId: "m", text: "overflow" }),
+    false,
+  );
+});
+
+Deno.test("subagent reasoning never becomes parent reasoning or answer", () => {
+  const view = new TurnView("parent");
+  view.applySubagent({ type: "reasoning.delta", runId: "child", messageId: "m", text: "Summary" });
+  assertEquals(view.hasStreamedContent, true);
+  assertEquals(view.finalOutput().reasoning, undefined);
+  assertEquals(view.finalOutput().subagents?.[0].reasoning, [{ messageId: "m", text: "Summary" }]);
+  assertEquals(view.markdown(), "");
+});

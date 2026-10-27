@@ -660,6 +660,7 @@ JSON text:
 ```json
 {"type": "hello", "session": {"id": "…", "turns": 2}, "replayed": false}
 {"type": "run.started", "runId": "…"}
+{"type": "reasoning.delta", "runId": "…", "sequence": 3, "messageId": "…", "text": "Displayable summary fragment"}
 {"type": "text.delta", "runId": "…", "sequence": 4, "messageId": "…", "text": "…"}
 {"type": "message.completed", "runId": "…", "sequence": 5, "messageId": "…",
  "agentMessage": {"role": "assistant", "parts": [{"kind": "text", "text": "…"}]}}
@@ -686,6 +687,24 @@ JSON text:
 {"type": "input.request", "requestId": "elicit-<unique>-1", "prompt": "Pick:", "password": false, "schema": {"type":"object","properties":{…}}, "serverId": "srv"}
 {"type": "input.request", "requestId": "approve-<unique>-1", "prompt": "Allow 'remove_file' to run? It may destroy data.", "password": false, "kind": "approval", "tool": "remove_file", "reason": "…", "schema": {"type":"object","properties":{},"description":"{\"path\":\"/tmp/x\"}"}}
 ```
+
+`reasoning.delta` is an additive v1 display event for explicitly permitted provider
+reasoning summaries. It shares the run-local sequence and replay rules of `text.delta`;
+`messageId` groups fragments from one provider message/iteration. It never contains
+raw private reasoning, signatures, or encrypted replay state. The first adapter is
+OpenAI Responses (`response.reasoning_summary_text.delta`); sources with
+`RequestReasoningSummary: true` request summary output. Other adapters must explicitly classify displayable summaries before
+emitting them. `message.completed` and the public transcript continue to omit reasoning;
+completion does not replace previously streamed summaries. A failed or cancelled run
+keeps partial display summaries without committing its transcript.
+
+The VS Code frontend renders summaries as collapsed, escaped plain text separately
+from the answer, including child runs. Per-run view retention is bounded to 20,000
+UTF-16 characters and 64 summary messages. The optional `output.reasoning` member in
+notebook v1 snapshots stores `{messageId,text}` entries, including under subagent
+reports. Older snapshots remain valid; older readers may ignore this member. These
+are display snapshots, never canonical model history. Server transcript restore alone
+does not reconstruct them; event replay or a saved notebook supplies them.
 
 Rules:
 

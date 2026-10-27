@@ -53,6 +53,9 @@ const STYLE = `
 .maieutics-turn .add { color: var(--vscode-gitDecoration.addedResourceForeground, #81b88b); }
 .maieutics-turn .del { color: var(--vscode-gitDecoration.deletedResourceForeground, #c74e39); }
 .maieutics-turn .hunk { opacity: 0.7; }
+.maieutics-turn .reasoning { margin: 6px 0; color: var(--vscode-descriptionForeground); }
+.maieutics-turn .reasoning summary { cursor: pointer; }
+.maieutics-turn .reasoning pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .maieutics-turn .subagents { margin: 6px 0; }
 .maieutics-turn .subagent {
   margin: 4px 0 10px; padding: 2px 0 2px 10px;
@@ -347,6 +350,24 @@ function toolLi(tool) {
   }${diff !== null ? diffHtml(diff) : ""}</li>`;
 }
 
+/** Summary text is always escaped plain text; it cannot inject HTML or command links. */
+function reasoningHtml(summaries) {
+  if (!Array.isArray(summaries)) return "";
+  const entries = summaries.filter((entry) =>
+    entry !== null && typeof entry === "object" && typeof entry.text === "string" &&
+    entry.text.length > 0
+  );
+  const note = entries.reduce((count, entry) => count + entry.text.length, 0) >= 20_000
+    ? '<div class="note">思考摘要仅显示前 20,000 个字符。</div>'
+    : "";
+  return entries.map((entry) =>
+    `<details class="reasoning" data-message-id="${
+      escapeHtml(entry.messageId)
+    }"><summary>思考摘要</summary><pre>${escapeHtml(entry.text)}</pre></details>`
+  )
+    .join("\n") + note;
+}
+
 function toolListHtml(tools) {
   return `<ul class="tools">${tools.map(toolLi).join("")}</ul>`;
 }
@@ -365,7 +386,7 @@ function subagentMark(child) {
 function subagentsHtml(subagents, overflow = false) {
   const many = subagents.length > 1;
   const sections = subagents.map((child, index) => {
-    const body = [];
+    const body = [reasoningHtml(child.reasoning)];
     if (Array.isArray(child.tools) && child.tools.length > 0) {
       body.push(toolListHtml(child.tools));
     }
@@ -391,6 +412,8 @@ function subagentsHtml(subagents, overflow = false) {
  * terminal model/token metadata. */
 function render(turn) {
   const parts = [];
+  const reasoning = reasoningHtml(turn.reasoning);
+  if (reasoning) parts.push(reasoning);
   if (Array.isArray(turn.tools) && turn.tools.length > 0) {
     parts.push(toolListHtml(turn.tools));
   }
@@ -466,11 +489,18 @@ function render(turn) {
  * old look. */
 function renderMarkdownView(turn) {
   const sections = [];
+  let childReasoning = "";
   if (Array.isArray(turn.tools) && turn.tools.length > 0) {
     sections.push(toolMarkdownLines(turn.tools).join("\n"));
   }
   if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-    sections.push(subagentsMarkdown(turn.subagents, turn.subagentsOverflow === true));
+    if (
+      turn.subagents.some((child) => Array.isArray(child.reasoning) && child.reasoning.length > 0)
+    ) {
+      childReasoning = subagentsHtml(turn.subagents, turn.subagentsOverflow === true);
+    } else {
+      sections.push(subagentsMarkdown(turn.subagents, turn.subagentsOverflow === true));
+    }
   }
   if (typeof turn.text === "string" && turn.text.length > 0) sections.push(turn.text);
   if (turn.truncated) {
@@ -488,8 +518,9 @@ function renderMarkdownView(turn) {
   }
   if (meta.length > 0) sections.push(meta.join(" \u00b7 "));
   return sections.length > 0
-    ? `<div class="md">${markdownToHtml(sections.join("\n\n"))}</div>`
-    : "<em>(empty turn)</em>";
+    ? reasoningHtml(turn.reasoning) + childReasoning +
+      `<div class="md">${markdownToHtml(sections.join("\n\n"))}</div>`
+    : reasoningHtml(turn.reasoning) + childReasoning || "<em>(empty turn)</em>";
 }
 
 /** The in-output view switcher: with no markdown sibling item, VS Code's
@@ -523,6 +554,12 @@ export function activate() {
       // In-memory per render: the timeline is the default view. VS Code may
       // re-render the output (scroll, resize, updates), which resets it.
       let mode = "timeline";
+      const openSummaries = new Set(
+        [...element.querySelectorAll("details.reasoning[open]")].map((node) =>
+          node.dataset.messageId
+        ),
+      );
+      element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
       let content = null;
       const paint = () => {
         if (content !== null) content.remove();
@@ -540,6 +577,13 @@ export function activate() {
             paint();
           }
         });
+        for (const detail of content.querySelectorAll("details.reasoning")) {
+          detail.open = openSummaries.has(detail.dataset.messageId);
+          detail.addEventListener("toggle", () => {
+            if (detail.open) openSummaries.add(detail.dataset.messageId);
+            else openSummaries.delete(detail.dataset.messageId);
+          });
+        }
         element.appendChild(content);
       };
       paint();

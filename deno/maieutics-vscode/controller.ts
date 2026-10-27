@@ -2243,9 +2243,18 @@ class RunExecution {
     }
 
     const streamed = this.view.hasStreamedContent;
-    const error = failureOutputWithRetry(new FrontendError(code, 0, message), this.execution.cell);
+    const snapshot = this.view.finalOutput();
+    const error = failureOutputWithRetry(new FrontendError(code, 0, message), this.execution.cell, {
+      ...(snapshot.reasoning === undefined ? {} : { reasoning: snapshot.reasoning }),
+      ...(snapshot.subagents === undefined ? {} : { subagents: snapshot.subagents }),
+    });
     if (streamed) {
       this.paintChanged();
+      // The failure snapshot owns the summaries so save/reopen retains partial output.
+      for (const key of [`reasoning:${this.view.runId}`, `subagents:${this.view.runId}`]) {
+        const stale = this.segments.get(key);
+        if (stale !== undefined) this.execution.replaceOutputItems([], stale);
+      }
       this.execution.appendOutput([error]);
     } else {
       this.execution.replaceOutput([error]);
@@ -2319,13 +2328,28 @@ class RunExecution {
     if (dirty.has(`subagents:${this.view.runId}`)) {
       const lines = this.view.subagentLines();
       const markdown = lines.length > 0 ? lines.join("\n") : "";
+      const subagents = this.view.finalOutput().subagents;
+      const hasReasoning = subagents?.some((child) => (child.reasoning?.length ?? 0) > 0);
       this.ensureSegment(
         `subagents:${this.view.runId}`,
-        markdown
+        hasReasoning
+          ? new vscode.NotebookCellOutput(turnOutputItems({ subagents }).map(outputItemFromSpec))
+          : markdown
           ? new vscode.NotebookCellOutput([
             vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
           ])
           : undefined,
+      );
+    }
+
+    if (dirty.has(`reasoning:${this.view.runId}`)) {
+      this.ensureSegment(
+        `reasoning:${this.view.runId}`,
+        new vscode.NotebookCellOutput(
+          turnOutputItems({
+            reasoning: this.view.reasoningSummaries(),
+          }).map(outputItemFromSpec),
+        ),
       );
     }
 
@@ -2405,7 +2429,13 @@ class RunExecution {
       );
     }
 
-    for (const key of [`tools:${this.view.runId}`, `subagents:${this.view.runId}`]) {
+    for (
+      const key of [
+        `tools:${this.view.runId}`,
+        `subagents:${this.view.runId}`,
+        `reasoning:${this.view.runId}`,
+      ]
+    ) {
       const stale = this.segments.get(key);
       if (stale !== undefined) {
         this.execution.replaceOutputItems([], stale);
@@ -2461,6 +2491,7 @@ async function fillReplObjectItemsAsync(
 function failureOutputWithRetry(
   error: unknown,
   cell: vscode.NotebookCell,
+  display: Pick<ReturnType<TurnView["finalOutput"]>, "reasoning" | "subagents"> = {},
 ): vscode.NotebookCellOutput {
   const code = error instanceof FrontendError ? error.code : "turn_failed";
   const message = error instanceof Error ? error.message : String(error);
@@ -2470,6 +2501,7 @@ function failureOutputWithRetry(
   const markdown =
     `> \u274c \`${code}\` \u2014 ${message}\n\n[\u21bb Retry turn](command:maieutics.retryTurn?${args})`;
   return structuredOutput({
+    ...display,
     text: markdown,
     tools: [],
     truncated: false,

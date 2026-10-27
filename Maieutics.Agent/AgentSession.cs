@@ -892,6 +892,20 @@ public sealed class AgentSession : IAgentSession
             CancellationToken cancellationToken)
         {
             AccumulateUsage(update);
+            if (update.AdditionalProperties?.TryGetValue(
+                    AgentReasoningSummaryDelta.UpdatePropertyName, out var value) == true &&
+                value is string { Length: > 0 } summary)
+            {
+                _responseCharacters = checked(_responseCharacters + summary.Length);
+                if (_responseCharacters > options.MaxResponseCharacters)
+                    throw new AgentResponseLimitExceededException(options.MaxResponseCharacters);
+
+                await run.WriteEventAsync(
+                    sequence => new AgentReasoningSummaryDelta(
+                        run.Id, sequence, GetMessageId(iteration, update.MessageId), summary),
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var text = update.Text;
             if (string.IsNullOrEmpty(text)) return;
 

@@ -51,6 +51,21 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
     }
 
     [Fact]
+    public void MetadataMembershipIncludesZeroTurnSessionsAndForkHeads()
+    {
+        using var store = new SqliteTranscriptStore(_databasePath);
+        var root = AgentSessionId.Create();
+        var fork = AgentSessionId.Create();
+        Assert.False(store.ContainsSession(root));
+        store.SetTitle(root, "Named before its first turn");
+        store.CreateForkSession(fork, root, 0, null);
+
+        Assert.True(store.ContainsSession(root));
+        Assert.True(store.ContainsSession(fork));
+        Assert.False(store.ContainsSession(AgentSessionId.Create()));
+    }
+
+    [Fact]
     public void MigratesVersionOneDatabasesToTheCurrentSchema()
     {
         Directory.CreateDirectory(_databaseDirectory);

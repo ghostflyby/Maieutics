@@ -715,7 +715,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
         foreach (var (key, touched, id) in candidates)
         {
-            if (LoadStoredTranscript(id) is null) continue; // never lose unresumable state
+            var family = ResolveFamily(id);
+            if (family is null || !RequiredStore(family.Value).ContainsSession(id)) continue;
 
             var evicted = false;
             string? recheckSkipReason = null;
@@ -793,7 +794,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             {
                 if (!Guid.TryParseExact(Path.GetFileName(directory), "N", out var familyId)) continue;
 
-                if (RequiredStore(new AgentSessionId(familyId)).LoadTranscript(sessionId) is not null)
+                if (RequiredStore(new AgentSessionId(familyId)).ContainsSession(sessionId))
                 {
                     return new AgentSessionId(familyId);
                 }

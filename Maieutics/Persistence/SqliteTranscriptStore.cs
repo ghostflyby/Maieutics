@@ -285,6 +285,15 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         }
     }
 
+    /// <summary>Checks stored membership without decoding any transcript messages.</summary>
+    internal bool ContainsSession(AgentSessionId sessionId)
+    {
+        lock (_gate)
+        {
+            return ReadSessionRow(sessionId.Value.ToString("N")) is not null;
+        }
+    }
+
     /// <summary>Reads one session row's lineage link, or <see langword="null" /> when the row
     /// is absent.</summary>
     private (string? Parent, long? ForkPoint)? ReadSessionRow(string id)

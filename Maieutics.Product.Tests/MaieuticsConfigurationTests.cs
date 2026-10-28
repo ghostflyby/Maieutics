@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Maieutics.Agent;
+using Maieutics.Commands;
 using Maieutics.Configuration;
 using Maieutics.Execution;
 using Maieutics.Plugins;
@@ -465,6 +466,124 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
 
             Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+            Assert.False(client.Disposed);
+            await lease.DisposeAsync();
+            Assert.True(client.Disposed);
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task SessionModelOverrideResolvesAutomaticSelectorsBeyondTheDiscoveryCache()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-session-override-auto-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            var sessionManager = host.Services.GetRequiredService<MaieuticsAgentSessionManager>();
+            var sessionId = sessionManager.StartNew();
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+
+            // The session-scoped selection resolves the automatic selector and stores it as the
+            // session's override; the process selection stays untouched (source-only config).
+            sessionManager.SetProfileOverride(sessionId, "@vendor/model-alpha");
+            Assert.Equal("@vendor/model-alpha", sessionManager.GetProfileOverride(sessionId));
+            Assert.Empty(runtime.GetModelProfileSelection().Profiles);
+
+            var lease = await runtime.AcquireProfileAsync("@vendor/model-alpha", deadline.Token);
+            Assert.NotNull(lease);
+            Assert.Equal("model-alpha", lease.Profile.ModelIdentity?.Model);
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+
+            // An unrelated reload (a system prompt lands, the source is unchanged) bumps the
+            // configuration version and invalidates the discovery cache; the registered
+            // override still resolves and reuses its generation.
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateSourceOnlyConfiguration("session prompt", new NamedSource("vendor", "one")),
+                deadline.Token);
+            var reacquired = await runtime.AcquireProfileAsync("@vendor/model-alpha", deadline.Token);
+            Assert.NotNull(reacquired);
+            Assert.Same(client, Assert.IsType<TrackingChatClient>(reacquired.Profile.ChatClient));
+            Assert.Single(factory.Clients);
+            await lease.DisposeAsync();
+            await reacquired.DisposeAsync();
+        }
+        finally
+        {
+            await host.DisposeAsync();
+            Assert.All(factory.Clients, static client => Assert.True(client.Disposed));
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task RegisteredAutomaticOverrideRetiresAfterItsSourceGenerationChanges()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        using var environment = new EnvironmentVariableScope(ClearedProviderEnvironment());
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-registered-auto-reload-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(
+            configurationFile,
+            CreateSourceOnlyConfiguration(new NamedSource("vendor", "one")),
+            deadline.Token);
+
+        var factory = new DiscoveryChatClientFactory();
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        builder.Services.RemoveAll<IConfiguredChatClientFactory>();
+        builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
+        var host = builder.Build();
+
+        try
+        {
+            var configuration = host.Services.GetRequiredService<IConfiguration>();
+            var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
+            await runtime.GetDiscoveredModelsAsync(cancellationToken: deadline.Token);
+            var overrideId = runtime.PrepareProfileOverride("@vendor/model-alpha");
+            Assert.Equal("@vendor/model-alpha", overrideId);
+
+            var lease = await runtime.AcquireProfileAsync(overrideId, deadline.Token);
+            Assert.NotNull(lease);
+            var client = Assert.IsType<TrackingChatClient>(lease.Profile.ChatClient);
+
+            await WriteAndWaitForReloadAsync(
+                configuration,
+                runtime,
+                configurationFile,
+                CreateSourceOnlyConfiguration(new NamedSource("vendor", "two")),
+                deadline.Token);
+
+            // The registered override stops resolving: explicit acquisition falls back to the
+            // process selection instead of failing, and the generation retires only after the
+            // outstanding lease ends.
+            Assert.Null(await runtime.AcquireProfileAsync(overrideId, deadline.Token));
             Assert.False(client.Disposed);
             await lease.DisposeAsync();
             Assert.True(client.Disposed);
@@ -2070,16 +2189,24 @@ public sealed class MaieuticsConfigurationTests
         JsonArray endpoints,
         params NamedSource[] sources)
     {
-        return CreateSourceOnlyConfigurationCore(endpoints, sources);
+        return CreateSourceOnlyConfigurationCore(null, endpoints, sources);
     }
 
     private static string CreateSourceOnlyConfiguration(
         params NamedSource[] sources)
     {
-        return CreateSourceOnlyConfigurationCore(null, sources);
+        return CreateSourceOnlyConfigurationCore(null, null, sources);
+    }
+
+    private static string CreateSourceOnlyConfiguration(
+        string? systemPrompt,
+        params NamedSource[] sources)
+    {
+        return CreateSourceOnlyConfigurationCore(systemPrompt, null, sources);
     }
 
     private static string CreateSourceOnlyConfigurationCore(
+        string? systemPrompt,
         JsonArray? endpoints,
         NamedSource[] sources)
     {
@@ -2099,6 +2226,7 @@ public sealed class MaieuticsConfigurationTests
         {
             ["Sources"] = sourceNodes,
         };
+        if (systemPrompt is not null) maieutics["SystemPrompt"] = systemPrompt;
         if (endpoints is not null) maieutics["Endpoints"] = endpoints;
 
         return new JsonObject { ["Maieutics"] = maieutics }.ToJsonString();

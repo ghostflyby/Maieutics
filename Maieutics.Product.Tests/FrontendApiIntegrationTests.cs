@@ -900,6 +900,75 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task AddressedModelUseAcceptsAutomaticSelectorsAfterDiscovery()
+    {
+        // The default profile names a different model than the provider serves, so a turn
+        // committed with the provider's answer proves the session really switched.
+        var provider = new GatedModelProvider(
+            ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            model: "flash-model", answer: "flash answer");
+        var config = """
+            {
+              "Maieutics": {
+                "DefaultProfile": "default-profile",
+                "Sources": {
+                  "openai": {
+                    "Provider": "OpenAI",
+                    "ApiKey": "test-key",
+                    "ApiFlavor": "ChatCompletions",
+                    "Endpoint": "{{endpoint}}"
+                  }
+                },
+                "Profiles": {
+                  "default-profile": { "Source": "openai", "Model": "default-model" }
+                }
+              }
+            }
+            """.Replace("{{endpoint}}", provider.Endpoint.ToString());
+        await using var harness = await FrontendHarness.StartAsync(
+            TestContext.Current.CancellationToken, provider, hanging: false,
+            transformConfiguration: _ => config);
+        using var client = harness.CreateClient();
+
+        var sessionId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
+
+        // Discovery primes the automatic-profile cache from the source's model listing.
+        var available = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/turns",
+            new { text = "%model available" },
+            TestContext.Current.CancellationToken);
+        var availableMarkdown = available.IsSuccessStatusCode
+            ? await available.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)
+            : $"{available.StatusCode} {await available.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)}";
+
+        // The session-addressed use resolves the automatic @source/model selector (it used to
+        // reject every selector that was not an already-configured profile id).
+        var use = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/turns",
+            new { text = "%model use @openai/flash-model" },
+            TestContext.Current.CancellationToken);
+        Assert.True(
+            use.IsSuccessStatusCode,
+            $"%model use failed: {use.StatusCode} {await use.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)}; " +
+            $"%model available rendered: {availableMarkdown}");
+
+        // The session's next turn runs on the discovered model while the process selection
+        // stays on the configured default.
+        await harness.SubmitTurnAsync(sessionId, "switched turn", TestContext.Current.CancellationToken);
+        await harness.WaitForTurnCommittedAsync(sessionId, TestContext.Current.CancellationToken);
+        var transcript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript",
+            TestContext.Current.CancellationToken);
+        Assert.Equal("flash answer", transcript.GetProperty("turns")[0].GetProperty("messages")[1]
+            .GetProperty("parts")[0].GetProperty("text").GetString());
+
+        var profiles = await client.GetFromJsonAsync<JsonElement>("/v1/model/profiles", TestContext.Current.CancellationToken);
+        Assert.True(profiles.EnumerateArray()
+            .Single(profile => profile.GetProperty("id").GetString() == "default-profile")
+            .GetProperty("selected").GetBoolean());
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task ResponsesSummaryStreamsOnceAndReplaysWithoutExposingProtectedState()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

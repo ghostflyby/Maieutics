@@ -379,6 +379,21 @@ public sealed class GatedModelProvider : IAsyncDisposable
                     return;
                 }
 
+                // Model discovery (the configured source's model listing): answered inline,
+                // never parked, never counted toward the scripted request total, and not
+                // recorded in RequestBodies (it carries no body).
+                if (request.Method == "GET" && (request.Path == "/v1/models" || request.Path == "/models"))
+                {
+                    var body = Encoding.UTF8.GetBytes(
+                        "{\"object\":\"list\",\"data\":[{\"id\":" + JsonSerializer.Serialize(_model) +
+                        ",\"object\":\"model\",\"owned_by\":\"test\"}]}");
+                    var headers = Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\n\r\n");
+                    await stream.WriteAsync(headers, cancellationToken).ConfigureAwait(false);
+                    await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 RequestBodies.Enqueue(request.Body);
                 Task wait;
                 if (_mode == ProviderGateMode.Hanging)
@@ -661,7 +676,11 @@ public static class HttpRequestReader
         }
 
         var bodyBytes = request.GetBuffer().AsMemory(headerLength, contentLength);
-        var body = JsonDocument.Parse(bodyBytes).RootElement.Clone();
+        // A bodyless request (model discovery's GET) has no JSON to parse; its Body is an
+        // undefined element no consumer reads.
+        var body = contentLength == 0
+            ? default
+            : JsonDocument.Parse(bodyBytes).RootElement.Clone();
         return new HttpRequest(requestLineParts[0], requestLineParts[1], headerDictionary, body);
     }
 

@@ -72,7 +72,9 @@ internal sealed class MaieuticsRuntimeConfiguration :
     // Registered automatic profiles referenced by explicit acquisition (session overrides), keyed
     // by selector in registration order. Distinct from _sessionOverride on purpose: process
     // selection changes must not retire an entry a session still references, and an eviction
-    // must not change the process selection. Bounded; the oldest entry evicts.
+    // must not change the process selection. The bound matches the session manager's live
+    // capacity: worst case one distinct selector per live session; beyond it the oldest entry
+    // evicts and its session falls back to the process selection (logged).
     private readonly Dictionary<string, AutomaticProfileOverride> _automaticOverrides =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -575,6 +577,19 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ObserveCompletedRetirements();
     }
 
+    public MaieuticsModelProfileInfo? GetRegisteredAutomaticProfile(string profileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        lock (_gate)
+        {
+            var snapshot = GetCurrent();
+            return _automaticOverrides.TryGetValue(profileId, out var registered) &&
+                   AutomaticOverrideValidLocked(snapshot, registered)
+                ? registered.ToProfileInfo(false)
+                : null;
+        }
+    }
+
     public string PrepareProfileOverride(string profileId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
@@ -588,6 +603,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
 
         var candidate = ResolveAutomaticProfile(profileId);
+        // A bare model name re-issued against a fresh cache resolves to the canonical
+        // selector: reuse the registration before creating a redundant generation.
+        lock (_gate)
+        {
+            var snapshot = GetCurrent();
+            if (_automaticOverrides.TryGetValue(candidate.Selector, out var registered) &&
+                AutomaticOverrideValidLocked(snapshot, registered))
+                return registered.Selector;
+        }
+
         ProfileGeneration generation;
         try
         {
@@ -607,6 +632,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
 
         var registration = new AutomaticProfileOverride(candidate, generation);
         var committed = false;
+        List<string>? evictedSelectors = null;
         try
         {
             lock (_gate)
@@ -635,9 +661,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
                     if (_automaticOverrides.Remove(evictedSelector, out var evicted))
                     {
                         TrackRetirementLocked(evicted.Generation);
-                        _logger.LogWarning(
-                            "The registered automatic model profile {ProfileId} was evicted to bound the automatic profile registry.",
-                            evictedSelector);
+                        (evictedSelectors ??= []).Add(evictedSelector);
                     }
                 }
 
@@ -653,7 +677,16 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 {
                     TrackRetirementLocked(generation);
                 }
+
+            ObserveCompletedRetirements();
         }
+
+        // Eviction logging stays off the gate so a slow sink cannot stall acquisitions.
+        if (evictedSelectors is not null)
+            foreach (var selector in evictedSelectors)
+                _logger.LogWarning(
+                    "The registered automatic model profile {ProfileId} was evicted to bound the automatic profile registry.",
+                    selector);
 
         return registration.Selector;
     }

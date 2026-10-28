@@ -49,6 +49,14 @@ internal interface IMaieuticsModelProfileController
     /// </exception>
     string PrepareProfileOverride(string profileId);
 
+    /// <summary>
+    ///     Gets the registered automatic profile for one selection value, or <see langword="null" />
+    ///     when the value is not a registered (still-valid) automatic selector. Registered entries back
+    ///     session overrides, so surfaces that resolve a stored override id — the
+    ///     <c>%model current</c> render — can describe it.
+    /// </summary>
+    MaieuticsModelProfileInfo? GetRegisteredAutomaticProfile(string profileId);
+
     ValueTask SelectModelProfileAsync(
         string profileId,
         CancellationToken cancellationToken = default);

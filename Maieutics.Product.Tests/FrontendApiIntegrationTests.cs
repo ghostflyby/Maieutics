@@ -952,6 +952,17 @@ public sealed class FrontendApiIntegrationTests
             $"%model use failed: {use.StatusCode} {await use.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)}; " +
             $"%model available rendered: {availableMarkdown}");
 
+        // The session-addressed current render names the registered automatic selector (it
+        // used to fall back to rendering the configured default as if the override vanished).
+        var current = await client.PostAsJsonAsync(
+            $"/v1/agent/sessions/{sessionId}/turns",
+            new { text = "%model current" },
+            TestContext.Current.CancellationToken);
+        Assert.True(current.IsSuccessStatusCode, await current.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var currentMarkdown = await current.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("@openai/flash-model", currentMarkdown);
+        Assert.Contains("automatic session override", currentMarkdown);
+
         // The session's next turn runs on the discovered model while the process selection
         // stays on the configured default.
         await harness.SubmitTurnAsync(sessionId, "switched turn", TestContext.Current.CancellationToken);

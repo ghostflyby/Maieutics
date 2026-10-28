@@ -173,6 +173,11 @@ public static class MaieuticsHost
         processSandboxOptions.Validate();
         // Transcript persistence is opt in and startup only: flipping the flag requires a restart.
         var applicationPaths = ApplicationPaths.Resolve();
+        if (builder.Configuration["Maieutics:DataRoot"] is { } dataRoot &&
+            !string.IsNullOrWhiteSpace(dataRoot))
+        {
+            applicationPaths = applicationPaths with { DataRoot = Path.GetFullPath(dataRoot, startupCurrentDirectory) };
+        }
         // The workspace root is the fixed home; external projects open as managed links
         // under projects/ inside it (ADR 0027).
         var workspaceHome = WorkspaceHome.Ensure(
@@ -412,7 +417,6 @@ public static class MaieuticsHost
             );
 
         builder.Services.AddSingleton<PluginHostModule>();
-        builder.Services.TryAddSingleton(ApplicationPaths.Resolve());
         // MAIEUTICS_PLUGINS_ROOT relocates the plugin workspace and MAIEUTICS_PLUGIN_APPROVALS
         // the approval registry (portable setups and test isolation); the defaults stay under
         // the roaming application-data Maieutics directory.
@@ -426,7 +430,7 @@ public static class MaieuticsHost
         var pluginApprovalsPath = Environment.GetEnvironmentVariable("MAIEUTICS_PLUGIN_APPROVALS") is
             { } configuredApprovals and not { Length: 0 }
             ? Path.GetFullPath(configuredApprovals)
-            : ApplicationPaths.Resolve().PluginApprovalsPath;
+            : applicationPaths.PluginApprovalsPath;
         builder.Services.AddSingleton(services => new PluginHostManager(
             pluginsRoot,
             services.GetRequiredService<ApplicationPaths>().PluginDataRoot,

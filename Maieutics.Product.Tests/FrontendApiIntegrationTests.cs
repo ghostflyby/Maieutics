@@ -1712,11 +1712,7 @@ public sealed class FrontendApiIntegrationTests
                 Path.GetTempPath(),
                 $"maieutics-frontend-discovery-{Guid.NewGuid():N}.json");
 
-            // Isolate persistent data: the composition root registers ApplicationPaths
-            // unconditionally, so without this override the host resolves sessions against
-            // the machine's real agent families root — an unknown-session lookup would
-            // enumerate and open every real family database (slow, and SQLITE_CANTOPEN
-            // under load or stale locks surfaces as an untyped 500).
+            // Select the temporary data root before host construction creates any storage.
             var dataRoot = Path.Combine(
                 Path.GetTempPath(),
                 $"maieutics-frontend-data-{Guid.NewGuid():N}");
@@ -1724,16 +1720,10 @@ public sealed class FrontendApiIntegrationTests
             var host = MaieuticsHost.CreateApplication(
             [
                 "--config", configurationFile,
-                "--frontend-discovery", discoveryPath
+                "--frontend-discovery", discoveryPath,
+                "--Maieutics:DataRoot", dataRoot
             ], builder =>
             {
-                var real = ApplicationPaths.Resolve();
-                builder.Services.RemoveAll<ApplicationPaths>();
-                builder.Services.AddSingleton(new ApplicationPaths(
-                    dataRoot,
-                    real.CacheRoot,
-                    real.RuntimeRoot,
-                    real.TempRoot));
                 configureBuilder?.Invoke(builder);
             });
             await host.StartAsync(cancellationToken);

@@ -533,11 +533,11 @@ public sealed class WorkspaceToolsTests
                    ["Maieutics__Workspace__Root"] = standardRoot
                }))
         {
-            var standardBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var standardBuilder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var standardHost = standardBuilder.Build();
             Assert.Equal(standardRoot, standardHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
 
-            var commandBuilder = MaieuticsHost.CreateApplicationBuilder(
+            var commandBuilder = TestMaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--workspace", commandRoot]);
             using var commandHost = commandBuilder.Build();
             Assert.Equal(commandRoot, commandHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
@@ -554,7 +554,7 @@ public sealed class WorkspaceToolsTests
                    ["Maieutics__Workspace__Root"] = null
                }))
         {
-            var aliasBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var aliasBuilder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             using var aliasHost = aliasBuilder.Build();
             Assert.Equal(aliasRoot, aliasHost.Services.GetRequiredService<Workspace>().Capture().RootPath);
         }
@@ -566,7 +566,7 @@ public sealed class WorkspaceToolsTests
                    ["Maieutics__Workspace__Root"] = null
                }))
         {
-            var frozenBuilder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var frozenBuilder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             WriteWorkspaceConfiguration(configurationFile, reloadRoot);
             ((IConfigurationRoot)frozenBuilder.Configuration).Reload();
             using var frozenHost = frozenBuilder.Build();
@@ -575,7 +575,7 @@ public sealed class WorkspaceToolsTests
 
         var path = workspace.Path;
 
-        Assert.ThrowsAny<DirectoryNotFoundException>(() => MaieuticsHost.CreateApplicationBuilder(
+        Assert.ThrowsAny<DirectoryNotFoundException>(() => TestMaieuticsHost.CreateApplicationBuilder(
             ["--config", configurationFile, "--workspace", Path.Combine(path, "missing")]));
     }
 

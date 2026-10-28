@@ -239,6 +239,10 @@ public sealed class FrontendProcessSmokeTests
         startInfo.ArgumentList.Add(configurationFile);
         startInfo.ArgumentList.Add("--frontend-discovery");
         startInfo.ArgumentList.Add(discoveryPath);
+        startInfo.ArgumentList.Add("--Maieutics:DataRoot");
+        startInfo.ArgumentList.Add(Path.Combine(
+            workspaceRoot ?? throw new InvalidOperationException("The smoke host requires a temporary workspace."),
+            "data"));
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add("test-model");
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";

@@ -565,6 +565,16 @@ single-active servers still rejected a session other than their single
 active one (`409 session_not_active` from turns, `404 session_not_active`
 from events/comms).
 
+The session listing is a persisted catalog, not the live-session registry: a fresh
+zero-turn session may be absent until its first turn is committed or it is renamed.
+Clients must not interpret absence from this listing as `not_found`. The foreground
+session response or the addressed transcript endpoint (which may return an empty
+`turns` array) establishes that a session is usable, with or without persistence.
+Only an addressed `404 not_found` invalidates a multi-session notebook's pin;
+transient or authentication failures must not replace it with another session.
+Virtual notebook files also resolve unknown ids through the addressed transcript
+when VS Code requests `stat` before `readFile`.
+
 `POST /v1/agent/sessions/{sid}/turns` body: `{"text": "..."}`. Empty text is
 `400`. `%`-command text is executed as a command (the same `Maieutics.Commands`
 semantics every frontend shares) and answered with `200 {markdown, sessionId}`
@@ -598,6 +608,13 @@ transcript rendered provider-neutrally:
 `POST /v1/agent/complete` body: `{"text": "...", "cursor": 12}` where `cursor`
 is a UTF-16 code-unit offset (no Jupyter code-point conversion). Response:
 `{"matches": ["…"], "tokenStart": 0, "tokenEnd": 8}`.
+
+Built-in completion and command cells do not require a configured model or a
+working provider credential. The VS Code adapter uses the returned token range
+for replacement, including qualified model selectors. Slash discovery keeps a
+slash-prefixed editor filter while inserting the canonical `%` command; spaces
+explicitly trigger subcommand completion because Markdown disables quick
+suggestions by default.
 
 ## Session display metadata
 
@@ -644,6 +661,33 @@ group them without loading transcripts (schema v4 of the transcript store):
   invalid_request` for a malformed body, an out-of-range `seq`, or
   persistence disabled. The command surface equivalent is
   `%session fork <id-prefix> <runId|seq>`.
+
+Queue snapshots also carry a monotonic `version` and a bounded `outcomes` list (the
+latest 128 admissions, retaining nonterminal admissions). Each outcome has `itemId`,
+`state` (`queued`, `starting`, `running`, `completed`, `failed`, or `cancelled`), an
+optional accepted `runId`, and an optional typed `error: {code,message}`. A dequeued
+`starting` item still counts as outstanding even when `items` and `running` are empty.
+Completed outcomes retain their run id; a startup failure without a run retains its
+safe error. Removing or clearing pending items records `cancelled`. These additive v1
+members are in-memory, bounded display/recovery state, not persisted conversation history.
+
+Clients reconcile with `GET /queue` after registering the enqueue answer's item ids,
+ignore snapshots older than their observed server `version`, and attach outputs through
+`events?runId=<accepted-id>` from sequence zero. Session sockets observe queue/activity;
+run-scoped sockets own run output. This recovers runs that started or finished before the
+HTTP admission response and prevents duplicate rendering. The batch waits for both the
+queue's terminal outcomes and the corresponding run replay/terminal events. An admission
+whose outcome and run association expired is an explicit `queue_item_expired` display
+failure; a failed lookup or stream must never leave an execution silently pending.
+`running` is omitted on the wire when null; clients normalize it before use. A client
+requiring outcome recovery checks for `outcomes` before admitting work; an older
+executable surfaces `queue_recovery_unavailable` with a restart/upgrade instruction,
+instead of silently accepting a turn whose output it cannot recover.
+
+After run-scoped replay (or `run.missing`), the server sends a normal WebSocket
+close frame before cancelling the receive pump. One bounded close-handshake budget
+covers the close write and peer acknowledgement, so terminal output is delivered
+before teardown; a peer that does not acknowledge is aborted when that budget ends.
 
 ## WebSocket event stream (executable → frontend, half-duplex)
 

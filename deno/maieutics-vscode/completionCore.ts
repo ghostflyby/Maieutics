@@ -4,9 +4,14 @@
  * and every failure path degrades to "no completions".
  */
 
+import type { CommandCompletion } from "./protocol.ts";
+
 /** Wire cursor semantics: the text of the whole cell plus the caret offset in
  * UTF-16 code units (the same units as VSCode document positions). */
-export type CompletionRequest = (text: string, cursor: number) => Promise<string[]>;
+export interface CompletionRequest {
+  (text: string, cursor: number): Promise<CommandCompletion | undefined>;
+  cancel(): void;
+}
 
 /**
  * Wraps one client-bound completion call with a single-in-flight gate. VSCode
@@ -17,16 +22,17 @@ export type CompletionRequest = (text: string, cursor: number) => Promise<string
  * to no completions; only unexpected failures leave a log line.
  */
 export function createCompletionGate(
-  start: (text: string, cursor: number, signal: AbortSignal) => Promise<string[]>,
+  start: (text: string, cursor: number, signal: AbortSignal) => Promise<CommandCompletion>,
   log: (message: string) => void,
 ): CompletionRequest {
   let inFlight: AbortController | null = null;
-  return async (text, cursor) => {
+  const request = async (text: string, cursor: number): Promise<CommandCompletion | undefined> => {
     inFlight?.abort();
     const controller = new AbortController();
     inFlight = controller;
     try {
-      return await start(text, cursor, controller.signal);
+      const answer = await start(text, cursor, controller.signal);
+      return controller.signal.aborted ? undefined : answer;
     } catch (error) {
       // A superseded call's abort is expected keystroke churn, not a
       // failure: stay silent; anything else degrades with one log line.
@@ -34,9 +40,10 @@ export function createCompletionGate(
         log(`completion failed: ${error}`);
       }
 
-      return [];
+      return undefined;
     } finally {
       if (inFlight === controller) inFlight = null;
     }
   };
+  return Object.assign(request, { cancel: () => inFlight?.abort() });
 }

@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Maieutics.Agent;
 using Harness = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendHarness;
 using EventsConnection = Maieutics.Product.Tests.FrontendApiIntegrationTests.FrontendEventsConnection;
@@ -15,6 +16,87 @@ namespace Maieutics.Product.Tests;
 public sealed class FrontendTurnQueueIntegrationTests(ITestOutputHelper output)
 {
     private const string Answer = "queued answer";
+
+    [Theory(Timeout = 60_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DrainedQueueRetainsItsRunIdentityOrTypedStartupFailure(bool failBeforeRun)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        var provider = new GatedOpenAiServer(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer);
+        await using var harness = await Harness.StartAsync(deadline.Token, provider, hanging: false,
+            transformConfiguration: body =>
+            {
+                if (!failBeforeRun) return body;
+                var root = JsonNode.Parse(body)?.AsObject() ?? throw new InvalidOperationException("Missing test config.");
+                var product = root["Maieutics"]?.AsObject() ?? throw new InvalidOperationException("Missing product config.");
+                product["Agent"] = new JsonObject { ["MaxInputCharacters"] = 1 };
+                return root.ToJsonString();
+            });
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var ids = await EnqueueAsync(harness, sessionId, deadline.Token, "question");
+        await harness.TurnQueue.WaitUntilIdleAsync(sessionId, deadline.Token);
+        var queue = await GetQueueAsync(harness, sessionId, deadline.Token);
+        var outcome = Assert.Single(queue.GetProperty("outcomes").EnumerateArray());
+        Assert.Equal(ids[0], outcome.GetProperty("itemId").GetString());
+        Assert.Empty(queue.GetProperty("items").EnumerateArray());
+        if (failBeforeRun)
+        {
+            Assert.Equal("failed", outcome.GetProperty("state").GetString());
+            Assert.Equal("agent_input_too_large", outcome.GetProperty("error").GetProperty("code").GetString());
+            Assert.False(outcome.TryGetProperty("runId", out _));
+        }
+        else
+        {
+            Assert.Equal("completed", outcome.GetProperty("state").GetString());
+            var runId = outcome.GetProperty("runId").GetString();
+            Assert.False(string.IsNullOrEmpty(runId));
+            var socket = new System.Net.WebSockets.ClientWebSocket();
+            await using var replay = new EventsConnection(socket);
+            await socket.ConnectAsync(new Uri($"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?runId={runId}&token={harness.Token}"), deadline.Token);
+            var frames = await replay.CollectUntilAsync(
+                frame => frame.GetProperty("type").GetString() == "run.completed", deadline.Token);
+            Assert.Contains(frames, frame => frame.GetProperty("type").GetString() == "text.delta" &&
+                frame.GetProperty("text").GetString() == Answer);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task RetainedOutcomesStayBoundedWithoutEvictingAnActiveAdmission()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        var provider = new GatedOpenAiServer(answer: Answer);
+        await using var harness = await StartHarnessAsync(deadline.Token, provider);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var active = Assert.Single(await EnqueueAsync(harness, sessionId, deadline.Token, "active"));
+        await provider.WaitForParkedAsync(1, deadline.Token);
+        await WaitForQueueAsync(harness, sessionId, queue => HasRunningItem(queue, active), deadline.Token);
+        try
+        {
+            string[] latest = [];
+            for (var index = 0; index < 3; index++)
+            {
+                latest = await EnqueueAsync(harness, sessionId, deadline.Token,
+                    Enumerable.Repeat("waiting", 64).ToArray());
+                harness.TurnQueue.Clear(sessionId);
+            }
+            var snapshot = await GetQueueAsync(harness, sessionId, deadline.Token);
+            var outcomes = snapshot.GetProperty("outcomes").EnumerateArray().ToArray();
+            Assert.Equal(128, outcomes.Length);
+            Assert.Contains(outcomes, value => value.GetProperty("itemId").GetString() == active &&
+                value.GetProperty("state").GetString() == "running");
+            foreach (var id in latest)
+                Assert.Contains(outcomes, value => value.GetProperty("itemId").GetString() == id &&
+                    value.GetProperty("state").GetString() == "cancelled");
+        }
+        finally
+        {
+            await ReleaseOneAsync(provider, deadline.Token);
+            await harness.TurnQueue.WaitUntilIdleAsync(sessionId, deadline.Token);
+        }
+    }
 
     /// <summary>The current test's gated provider, so wait-timeout diagnostics can report
     /// whether the run under test ever reached the provider gate. Null until a test that

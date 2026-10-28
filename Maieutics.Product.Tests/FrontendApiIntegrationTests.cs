@@ -234,6 +234,52 @@ public sealed class FrontendApiIntegrationTests
             .Where(value => value is not null), value => Assert.True(value == runId));
     }
 
+    [Theory(Timeout = 60_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunScopedEventsDeliverTerminalFramesBeforeNormalClose(bool missingRun)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var runId = Guid.NewGuid().ToString("N");
+        if (!missingRun)
+        {
+            runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+            await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId);
+        }
+
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {harness.Token}");
+        await socket.ConnectAsync(new Uri(
+            $"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?runId={runId}"), deadline.Token);
+        var types = new List<string>();
+        using var message = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), deadline.Token);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                Assert.Equal(WebSocketCloseStatus.NormalClosure, result.CloseStatus);
+                Assert.NotEmpty(types);
+                Assert.Equal("hello", types[0]);
+                if (missingRun) Assert.Equal(["hello", "run.missing"], types);
+                else Assert.Equal(["run.completed", "run.status"], types.TakeLast(2));
+                await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "replay received", deadline.Token);
+                break;
+            }
+
+            message.Write(buffer, 0, result.Count);
+            if (!result.EndOfMessage) continue;
+            using var frame = JsonDocument.Parse(message.ToArray());
+            types.Add(frame.RootElement.GetProperty("type").GetString()
+                ?? throw new InvalidOperationException("The replay frame has no type."));
+            message.SetLength(0);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ConcurrentTurnsAreRejectedAsBusy()
     {
@@ -470,6 +516,57 @@ public sealed class FrontendApiIntegrationTests
             $"/v1/agent/sessions/{sessionId}/transcript",
             TestContext.Current.CancellationToken);
         Assert.Equal(0, transcript.GetProperty("turns").GetArrayLength());
+    }
+
+    [Theory(Timeout = 60_000)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BuiltInCompletionAndCommandsDoNotRequireAWorkingModel(bool missingProvider)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(
+            deadline.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: Answer),
+            hanging: false,
+            transformConfiguration: body => missingProvider
+                ? "{\"Maieutics\":{}}"
+                : JsonNode.Parse(body) is { } configuration
+                    ? WithUnreachableProvider(configuration)
+                    : throw new InvalidOperationException("The test configuration is missing."));
+        static string WithUnreachableProvider(JsonNode configuration)
+        {
+            var provider = configuration["Maieutics"]?["Providers"]?["OpenAI"]
+                ?? throw new InvalidOperationException("The test provider is missing.");
+            provider["ApiKey"] = "invalid-key";
+            provider["Endpoint"] = "https://provider.invalid/v1";
+            return configuration.ToJsonString();
+        }
+
+        if (missingProvider) Assert.Empty(harness.RuntimeConfiguration.GetModelProfileSelection().Profiles);
+        using var client = harness.CreateClient();
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        foreach (var text in new[] { "%", "/", "%session ", "%model " })
+        {
+            using var response = await client.PostAsJsonAsync(
+                "/v1/agent/complete", new { text, cursor = text.Length }, deadline.Token);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var completion = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+            Assert.NotEmpty(completion.GetProperty("matches").EnumerateArray());
+        }
+
+        foreach (var text in new[] { "%status", "%model list", "%session current", "%workspace current" })
+        {
+            using var response = await client.PostAsJsonAsync(
+                $"/v1/agent/sessions/{sessionId}/turns", new { text }, deadline.Token);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var answer = await response.Content.ReadFromJsonAsync<JsonElement>(deadline.Token);
+            Assert.False(string.IsNullOrWhiteSpace(answer.GetProperty("markdown").GetString()));
+        }
+
+        var transcript = await client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript", deadline.Token);
+        Assert.Empty(transcript.GetProperty("turns").EnumerateArray());
     }
 
     [Fact(Timeout = 60_000)]

@@ -26,7 +26,13 @@
  */
 
 import type { FrontendClient } from "./client.ts";
-import type { EventFrame, QueueItemState, QueueState } from "./protocol.ts";
+import {
+  type EventFrame,
+  FrontendError,
+  type QueueItemState,
+  type QueueOutcome,
+  type QueueState,
+} from "./protocol.ts";
 
 /** Parses a wire queue snapshot defensively: unknown fields are tolerated,
  * anything that breaks the pinned shape (session id, running pair, item ids,
@@ -58,7 +64,43 @@ export function readQueueState(value: unknown): QueueState | undefined {
       ...(typeof item.enqueuedAt === "string" ? { enqueuedAt: item.enqueuedAt } : {}),
     });
   }
-  return { sessionId: record.sessionId, running, items, capacity: record.capacity };
+  let outcomes: QueueOutcome[] | undefined;
+  if (record.outcomes !== undefined) {
+    if (!Array.isArray(record.outcomes)) return undefined;
+    outcomes = [];
+    for (const value of record.outcomes) {
+      if (typeof value !== "object" || value === null) return undefined;
+      const outcome = value as Record<string, unknown>;
+      if (
+        typeof outcome.itemId !== "string" ||
+        !["queued", "starting", "running", "completed", "failed", "cancelled"].includes(
+          String(outcome.state),
+        )
+      ) return undefined;
+      const error = outcome.error as Record<string, unknown> | undefined;
+      if (outcome.runId !== undefined && typeof outcome.runId !== "string") return undefined;
+      if (
+        error !== undefined && (error === null || typeof error !== "object" ||
+          typeof error.code !== "string" || typeof error.message !== "string")
+      ) return undefined;
+      outcomes.push({
+        itemId: outcome.itemId,
+        state: outcome.state as QueueOutcome["state"],
+        ...(typeof outcome.runId === "string" ? { runId: outcome.runId } : {}),
+        ...(error === undefined
+          ? {}
+          : { error: { code: String(error.code), message: String(error.message) } }),
+      });
+    }
+  }
+  return {
+    sessionId: record.sessionId,
+    running,
+    items,
+    capacity: record.capacity,
+    ...(typeof record.version === "number" ? { version: record.version } : {}),
+    ...(outcomes === undefined ? {} : { outcomes }),
+  };
 }
 
 /** The command tokens the executable executes as `%`-commands (the cell
@@ -166,6 +208,12 @@ export class QueueProjection<C> {
     for (const [itemId, entry] of [...entries]) {
       const position = positions.get(itemId);
       if (position === undefined) {
+        if (
+          snapshot.outcomes?.some((outcome) =>
+            outcome.itemId === itemId &&
+            ["queued", "starting", "running"].includes(outcome.state)
+          )
+        ) continue;
         entries.delete(itemId);
         changed = true;
         continue;
@@ -255,6 +303,7 @@ export class QueueProjection<C> {
 export class QueueWatcher {
   private version = 0;
   private snapshot: QueueState | undefined;
+  private failed = false;
   private readonly waits: {
     version: number;
     ids: Set<string>;
@@ -304,6 +353,7 @@ export class QueueWatcher {
    * a real drain — a pre-enqueue snapshot that predates the POST can never
    * resolve the wait. Resolves to false when the stream fails first. */
   awaitDrainedAsync(version: number, itemIds: readonly string[]): Promise<boolean> {
+    if (this.failed) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       this.waits.push({ version, ids: new Set(itemIds), resolve });
       this.evaluateWaits();
@@ -312,25 +362,41 @@ export class QueueWatcher {
 
   /** Resolves every pending wait with false (stream disposed or failed). */
   failWaits(): void {
+    this.failed = true;
     for (const wait of this.waits) wait.resolve(false);
     this.waits.length = 0;
   }
 
-  private async reconcileAsync(): Promise<void> {
+  async reconcileAsync(signal?: AbortSignal): Promise<void> {
     try {
-      this.apply(await this.client.getQueue(this.sessionId));
+      const snapshot = readQueueState(await this.client.getQueue(this.sessionId, signal));
+      if (snapshot === undefined || snapshot.sessionId !== this.sessionId) {
+        throw new FrontendError(
+          "protocol_error",
+          200,
+          "The queue response is malformed or addresses another session.",
+        );
+      }
+      this.apply(snapshot);
     } catch (error) {
-      // An unreachable or pre-queue server: the next mutation frame or
-      // reconnect snapshot heals the projection.
+      // A failed lookup cannot establish admission state; fail observers explicitly.
+      // A later connection may reconcile without replacing server-owned work.
       this.log(`queue reconcile failed: ${error}`);
+      this.failWaits();
+      throw error;
     }
   }
 
   private apply(snapshot: QueueState): void {
+    if (
+      snapshot.version !== undefined && this.snapshot?.version !== undefined &&
+      snapshot.version < this.snapshot.version
+    ) return;
+    this.failed = false;
     this.version++;
     this.snapshot = snapshot;
-    this.evaluateWaits();
     this.onSnapshot(snapshot);
+    this.evaluateWaits();
   }
 
   private evaluateWaits(): void {
@@ -348,6 +414,12 @@ export class QueueWatcher {
 
   private holdsItem(itemId: string): boolean {
     if (this.snapshot === undefined) return true; // Unknown state: keep waiting.
+    if (
+      this.snapshot.outcomes?.some((outcome) =>
+        outcome.itemId === itemId &&
+        ["queued", "starting", "running"].includes(outcome.state)
+      )
+    ) return true;
     if (this.snapshot.running?.itemId === itemId) return true;
     return this.snapshot.items.some((item) => item.id === itemId);
   }

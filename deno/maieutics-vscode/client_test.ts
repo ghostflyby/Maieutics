@@ -1419,3 +1419,71 @@ Deno.test("an elicitation answer still omits accept to preserve its default", as
     await shutdown();
   }
 });
+
+Deno.test("run-scoped replay includes the accepted run id in the events URL", async () => {
+  let requested: string | null = null;
+  const server = Deno.serve({ hostname: "127.0.0.1", port: 0 }, (request) => {
+    requested = new URL(request.url).searchParams.get("runId");
+    const { socket, response } = Deno.upgradeWebSocket(request);
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "hello" }));
+      socket.send(JSON.stringify({ type: "run.completed", runId: "accepted-run" }));
+    };
+    socket.onmessage = () => {};
+    return response;
+  });
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: `http://127.0.0.1:${server.addr.port}`,
+    token: "t",
+    pid: 0,
+  });
+  const controller = new AbortController();
+  try {
+    for await (
+      const frame of client.events("s", { runId: "accepted-run", signal: controller.signal })
+    ) {
+      if (frame.type === "run.completed") break;
+    }
+    assertEquals(requested, "accepted-run");
+  } finally {
+    controller.abort();
+    await server.shutdown();
+  }
+});
+
+Deno.test("command completion keeps server token ranges and rejects malformed ranges", async () => {
+  const text = "%model use @ven/dra";
+  let reply: unknown = { matches: ["@ven/dragon"], tokenStart: 11, tokenEnd: text.length };
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
+    async (request) => {
+      assertEquals(new URL(request.url).pathname, "/v1/agent/complete");
+      assertEquals(await request.json(), { text, cursor: text.length });
+      return Response.json(reply);
+    },
+  );
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: `http://127.0.0.1:${server.addr.port}`,
+    token: "t",
+    pid: 0,
+  });
+  try {
+    assertEquals(await client.complete(text, text.length), reply);
+    for (
+      const invalid of [
+        { matches: ["@ven/dragon"], tokenStart: -1, tokenEnd: text.length },
+        { matches: ["@ven/dragon"], tokenStart: 11, tokenEnd: text.length + 1 },
+        { matches: ["@ven/dragon"], tokenStart: 11 },
+        { matches: [7], tokenStart: 11, tokenEnd: text.length },
+      ]
+    ) {
+      reply = invalid;
+      const error = await assertRejects(() => client.complete(text, text.length), FrontendError);
+      assertEquals(error.code, "protocol_error");
+    }
+  } finally {
+    await server.shutdown();
+  }
+});

@@ -1,3 +1,5 @@
+/// <reference lib="deno.window" />
+
 import { assert, assertEquals } from "@std/assert";
 import { FrontendClient } from "./client.ts";
 import {
@@ -200,4 +202,108 @@ Deno.test("failWaits resolves pending drain waits as false", async () => {
   const wait = watcher.awaitDrainedAsync(0, ["item-1"]);
   watcher.failWaits();
   assertEquals(await wait, false);
+});
+
+Deno.test("queue GET normalizes an omitted running field before notifying the controller", async () => {
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0 },
+    () => Response.json({ sessionId: "s", items: [], capacity: 64 }),
+  );
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: `http://127.0.0.1:${server.addr.port}`,
+    token: "t",
+    pid: 0,
+  });
+  const snapshots: unknown[] = [];
+  const logs: string[] = [];
+  const watcher = new QueueWatcher(
+    client,
+    "s",
+    (state) => snapshots.push(state),
+    (message) => logs.push(message),
+  );
+  try {
+    await watcher.handleFrame({ type: "hello" });
+    assertEquals(watcher.lastSnapshot?.running, null, "The backend omits null fields on the wire");
+    assertEquals(snapshots, [{ sessionId: "s", running: null, items: [], capacity: 64 }]);
+    assertEquals(logs, []);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("starting outcomes prevent a false drain and stale snapshots cannot overwrite newer state", async () => {
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: "http://127.0.0.1:9",
+    token: "t",
+    pid: 0,
+  });
+  const seen: unknown[] = [];
+  const watcher = new QueueWatcher(client, "s", (state) => seen.push(state.outcomes), () => {});
+  const waiting = watcher.awaitDrainedAsync(0, ["i"]);
+  let drained = false;
+  void waiting.then(() => drained = true);
+  await watcher.handleFrame({
+    type: "queue.updated",
+    queue: {
+      sessionId: "s",
+      running: null,
+      items: [],
+      capacity: 64,
+      version: 7,
+      outcomes: [{ itemId: "i", state: "starting" }],
+    },
+  });
+  assertEquals(drained, false, "A dequeued item still owns its startup handshake");
+  await watcher.handleFrame({
+    type: "queue.updated",
+    queue: {
+      sessionId: "s",
+      running: null,
+      items: [],
+      capacity: 64,
+      version: 6,
+      outcomes: [],
+    },
+  });
+  assertEquals(watcher.lastSnapshot?.version, 7);
+  assertEquals(drained, false);
+  await watcher.handleFrame({
+    type: "queue.updated",
+    queue: {
+      sessionId: "s",
+      running: null,
+      items: [],
+      capacity: 64,
+      version: 8,
+      outcomes: [{ itemId: "i", state: "completed", runId: "r" }],
+    },
+  });
+  assertEquals(await waiting, true);
+  assertEquals(seen.at(-1), [{ itemId: "i", state: "completed", runId: "r" }]);
+});
+
+Deno.test("a stream failure also rejects drain waits registered after admission returns", async () => {
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: "http://127.0.0.1:9",
+    token: "t",
+    pid: 0,
+  });
+  const watcher = new QueueWatcher(client, "s", () => {}, () => {});
+  watcher.failWaits();
+  const budget = AbortSignal.timeout(5_000);
+  const result = await Promise.race([
+    watcher.awaitDrainedAsync(0, ["i"]),
+    new Promise<never>((_, reject) =>
+      budget.addEventListener(
+        "abort",
+        () => reject(new Error("A dead stream stranded a newly registered drain wait")),
+        { once: true },
+      )
+    ),
+  ]);
+  assertEquals(result, false);
 });

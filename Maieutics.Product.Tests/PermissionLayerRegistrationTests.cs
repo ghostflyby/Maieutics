@@ -43,7 +43,7 @@ public sealed class PermissionLayerRegistrationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
             await InitializeRuntimeAsync(host.Services, TestContext.Current.CancellationToken);
 
@@ -84,7 +84,7 @@ public sealed class PermissionLayerRegistrationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
             await InitializeRuntimeAsync(host.Services, TestContext.Current.CancellationToken);
 
@@ -120,7 +120,7 @@ public sealed class PermissionLayerRegistrationTests
         try
         {
             var process = new FakeTerminalProcess();
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<ITerminalProcessFactory>();
             builder.Services.AddSingleton<ITerminalProcessFactory>(new FakeTerminalProcessFactory(process));
             await using var host = builder.Build();
@@ -171,7 +171,7 @@ public sealed class PermissionLayerRegistrationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<ITerminalProcessFactory>();
             builder.Services.AddSingleton<ITerminalProcessFactory>(
                 new FakeTerminalProcessFactory(new FakeTerminalProcess()));

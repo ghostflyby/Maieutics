@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Maieutics.Agent;
 using Maieutics.Configuration;
+using Maieutics.Execution;
 using Maieutics.Plugins;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
@@ -104,13 +105,51 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             var host = builder.Build();
             var provider = host.Services.GetRequiredService<MaieuticsConfigurationFileProvider>();
 
             Assert.False(provider.IsDisposed);
             ((IDisposable)host).Dispose();
             Assert.True(provider.IsDisposed);
+        }
+        finally
+        {
+            await DeleteDirectoryWithRetryAsync(root, TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task DataRootConfigurationRelocatesPersistentStorageAndTheDefaultWorkspaceHome()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"maieutics-data-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var configurationFile = Path.Combine(root, "maieutics.json");
+        await File.WriteAllTextAsync(configurationFile, "{}", TestContext.Current.CancellationToken);
+        var dataRoot = Path.Combine(root, "relocated");
+
+        try
+        {
+            using (new EnvironmentVariableScope(new Dictionary<string, string?>
+                   {
+                       ["MAIEUTICS_CONFIG"] = null,
+                       ["MAIEUTICS_WORKSPACE"] = null,
+                       ["Maieutics__Workspace__Root"] = null
+                   }))
+            {
+                var builder = MaieuticsHost.CreateApplicationBuilder(
+                    ["--config", configurationFile, "--Maieutics:DataRoot", dataRoot]);
+                await using var host = builder.Build();
+
+                var paths = host.Services.GetRequiredService<ApplicationPaths>();
+                var fullDataRoot = Path.GetFullPath(dataRoot);
+                Assert.Equal(fullDataRoot, paths.DataRoot);
+                Assert.Equal(Path.Combine(fullDataRoot, "agent", "families"), paths.AgentFamiliesRoot);
+                Assert.Equal(Path.Combine(fullDataRoot, "plugin-approvals.json"), paths.PluginApprovalsPath);
+                Assert.Equal(
+                    Path.Combine(fullDataRoot, "workspaces"),
+                    host.Services.GetRequiredService<Workspace>().Capture().RootPath);
+            }
         }
         finally
         {
@@ -192,7 +231,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
             var runtime = await InitializeRuntimeAsync(host.Services, deadline.Token);
 
@@ -227,7 +266,7 @@ public sealed class MaieuticsConfigurationTests
             // ReSharper disable once AccessToDisposedClosure
             ClientCreated = _ => cancellation.Cancel()
         };
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -264,7 +303,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -301,7 +340,7 @@ public sealed class MaieuticsConfigurationTests
         var factory = new DiscoveryChatClientFactory();
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<IConfiguredChatClientFactory>();
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
             await using var host = builder.Build();
@@ -356,7 +395,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -404,7 +443,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -460,7 +499,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -517,7 +556,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new CoordinatedAutomaticProfileChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -570,7 +609,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -609,7 +648,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new CoordinatedDiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -663,7 +702,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new CoordinatedDiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -711,7 +750,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -751,7 +790,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new BlockingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -806,7 +845,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new BlockingChatClientFactory("two");
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -870,7 +909,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--model", "command-model"]);
             using var host = (IDisposable)builder.Build();
 
@@ -918,7 +957,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(
                 ["--config", configurationFile, "--profile", "command-profile"]);
             using var host = (IDisposable)builder.Build();
 
@@ -1016,7 +1055,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
             var assertion18 = Assert.ThrowsAny<InvalidOperationException>(() => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>());
@@ -1043,7 +1082,7 @@ public sealed class MaieuticsConfigurationTests
                 maxHistoryCharacters: 123_456),
             TestContext.Current.CancellationToken);
 
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory, TrackingChatClientFactory>();
         var host = builder.Build();
@@ -1081,7 +1120,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             await using var host = builder.Build();
 
             var assertion19 = Assert.ThrowsAny<InvalidOperationException>(() => host.Services.GetRequiredService<MaieuticsRuntimeConfiguration>());
@@ -1109,7 +1148,7 @@ public sealed class MaieuticsConfigurationTests
                 deadline.Token);
 
             var factory = new TrackingChatClientFactory();
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<IConfiguredChatClientFactory>();
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
             var host = builder.Build();
@@ -1149,7 +1188,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -1240,7 +1279,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -1339,7 +1378,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -1442,7 +1481,7 @@ public sealed class MaieuticsConfigurationTests
 
         try
         {
-            var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
             builder.Services.RemoveAll<IConfiguredChatClientFactory>();
             builder.Services.AddSingleton<IConfiguredChatClientFactory>(new TrackingChatClientFactory());
             await using var host = builder.Build();
@@ -1647,7 +1686,7 @@ public sealed class MaieuticsConfigurationTests
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
 
         var factory = new EndpointAwareChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         await using var host = builder.Build();
@@ -1712,7 +1751,7 @@ public sealed class MaieuticsConfigurationTests
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
 
         var factory = new EndpointAwareChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         await using var host = builder.Build();
@@ -1769,7 +1808,7 @@ public sealed class MaieuticsConfigurationTests
         await File.WriteAllTextAsync(configurationFile, document.ToJsonString(), deadline.Token);
 
         var factory = new EndpointAwareChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         await using var host = builder.Build();
@@ -1839,7 +1878,7 @@ public sealed class MaieuticsConfigurationTests
         {
             FormatCapabilities = ["WebSearch", "Shell"]
         };
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         await using var host = builder.Build();
@@ -1864,7 +1903,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -1919,7 +1958,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory { FormatCapabilities = ResponsesFormatCapabilities };
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -2129,7 +2168,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -2174,7 +2213,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new DiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -2219,7 +2258,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new TrackingChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();
@@ -2254,7 +2293,7 @@ public sealed class MaieuticsConfigurationTests
             deadline.Token);
 
         var factory = new FailingDiscoveryChatClientFactory();
-        var builder = MaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+        var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
         builder.Services.RemoveAll<IConfiguredChatClientFactory>();
         builder.Services.AddSingleton<IConfiguredChatClientFactory>(factory);
         var host = builder.Build();

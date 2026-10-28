@@ -969,8 +969,20 @@ public sealed class AgentSession : IAgentSession
             List<ChatMessage> messages = [run.UserMessage, .. _intermediateMessages];
             var iterations = recordingClient.GetIterations();
             for (var index = 0; index < iterations.Count; index++)
-                if (!_publishedIterations.Contains(index + 1))
-                    messages.AddRange(iterations[index].ResponseMessages.Where(static message => message.Contents.Count > 0));
+            {
+                if (_publishedIterations.Contains(index + 1)) continue;
+
+                foreach (var responseMessage in iterations[index].ResponseMessages)
+                {
+                    ValidateAssistantResponse(responseMessage);
+                    var assistant = responseMessage.Clone();
+                    // A stream may stop before a call's identity arrives. That fragment
+                    // cannot be correlated with a result or replayed on the next turn.
+                    assistant.Contents = assistant.Contents.Where(static content =>
+                        content is not FunctionCallContent call || !string.IsNullOrEmpty(call.CallId)).ToArray();
+                    if (assistant.Contents.Count > 0) messages.Add(assistant);
+                }
+            }
 
             // The provider loop is serial: unanswered calls belong to its last tool round.
             // Close those calls explicitly so replay preserves completed results without
@@ -1001,12 +1013,7 @@ public sealed class AgentSession : IAgentSession
                 .Any())
                 EnsureIterationCalls(iteration);
 
-            foreach (var responseMessage in recorded.ResponseMessages)
-            {
-                if (responseMessage.Role != ChatRole.Assistant)
-                    throw new AgentUnsupportedResponseException(
-                        $"The model provider returned an unsupported '{responseMessage.Role}' response message.");
-            }
+            foreach (var responseMessage in recorded.ResponseMessages) ValidateAssistantResponse(responseMessage);
 
             // Stage the whole iteration before any cancellable event write.
             _intermediateMessages.AddRange(recorded.ResponseMessages.Select(static message => message.Clone()));
@@ -1021,6 +1028,13 @@ public sealed class AgentSession : IAgentSession
                         AgentTranscriptCodec.CreatePublicMessage(responseMessage)),
                     cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        private static void ValidateAssistantResponse(ChatMessage message)
+        {
+            if (message.Role != ChatRole.Assistant)
+                throw new AgentUnsupportedResponseException(
+                    $"The model provider returned an unsupported '{message.Role}' response message.");
         }
 
         private AgentMessageId GetMessageId(int iteration, string? providerMessageId)

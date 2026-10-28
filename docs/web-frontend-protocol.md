@@ -684,6 +684,11 @@ requiring outcome recovery checks for `outcomes` before admitting work; an older
 executable surfaces `queue_recovery_unavailable` with a restart/upgrade instruction,
 instead of silently accepting a turn whose output it cannot recover.
 
+After run-scoped replay (or `run.missing`), the server sends a normal WebSocket
+close frame before cancelling the receive pump. One bounded close-handshake budget
+covers the close write and peer acknowledgement, so terminal output is delivered
+before teardown; a peer that does not acknowledge is aborted when that budget ends.
+
 ## WebSocket event stream (executable → frontend, half-duplex)
 
 `GET /v1/agent/sessions/{sid}/events?sinceSequence=<n>` upgrades to a

@@ -234,6 +234,52 @@ public sealed class FrontendApiIntegrationTests
             .Where(value => value is not null), value => Assert.True(value == runId));
     }
 
+    [Theory(Timeout = 60_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunScopedEventsDeliverTerminalFramesBeforeNormalClose(bool missingRun)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var runId = Guid.NewGuid().ToString("N");
+        if (!missingRun)
+        {
+            runId = await harness.SubmitTurnAsync(sessionId, "hello", deadline.Token);
+            await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId);
+        }
+
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {harness.Token}");
+        await socket.ConnectAsync(new Uri(
+            $"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events?runId={runId}"), deadline.Token);
+        var types = new List<string>();
+        using var message = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), deadline.Token);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                Assert.Equal(WebSocketCloseStatus.NormalClosure, result.CloseStatus);
+                Assert.NotEmpty(types);
+                Assert.Equal("hello", types[0]);
+                if (missingRun) Assert.Equal(["hello", "run.missing"], types);
+                else Assert.Equal(["run.completed", "run.status"], types.TakeLast(2));
+                await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "replay received", deadline.Token);
+                break;
+            }
+
+            message.Write(buffer, 0, result.Count);
+            if (!result.EndOfMessage) continue;
+            using var frame = JsonDocument.Parse(message.ToArray());
+            types.Add(frame.RootElement.GetProperty("type").GetString()
+                ?? throw new InvalidOperationException("The replay frame has no type."));
+            message.SetLength(0);
+        }
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ConcurrentTurnsAreRejectedAsBusy()
     {

@@ -15,6 +15,6 @@ public interface IAgentRun : IAsyncDisposable
     /// <summary>Gets the terminal result. Failures and cancellation are surfaced by this task.</summary>
     Task<AgentRunResult> Completion { get; }
 
-    /// <summary>Requests cancellation and waits for the run to terminate.</summary>
+    /// <summary>Requests cancellation and waits for the run to terminate after committing its interrupted context.</summary>
     Task CancelAsync(CancellationToken cancellationToken = default);
 }

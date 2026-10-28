@@ -53,7 +53,7 @@ public sealed class AgentSubagentTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task ParentCancellationCancelsRunningChildAndRollsBackTurn()
+    public async Task ParentCancellationCancelsRunningChildAndPreservesParentContext()
     {
         var childStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,7 +82,13 @@ public sealed class AgentSubagentTests
         var handle = await handleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
         var childResult = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
         Assert.Equal(AgentSubagentStatus.Cancelled, childResult.Status);
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        Assert.Equal("Spawn", turn.Messages[0].Text);
+        var result = Assert.Single(turn.Messages.SelectMany(message => message.Contents).OfType<FunctionResultContent>());
+        Assert.Equal("call", result.CallId);
+        Assert.Equal("cancelled", Assert.IsType<JsonElement>(result.Result).GetProperty("status").GetString());
+        Assert.DoesNotContain(turn.Messages, message => message.Text.Contains("child started", StringComparison.Ordinal));
     }
 
     [Fact(Timeout = 30_000)]

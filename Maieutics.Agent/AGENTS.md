@@ -30,12 +30,14 @@ contract. `FunctionInvokingChatClient` and the recording decorator are internal 
 - `Completion` is the terminal boundary and cannot complete before the session reservation and profile lease are
   released. Cancellation remains `OperationCanceledException`.
 - Active model/tool loops retain their captured client, identity, capabilities, prompt, and limits across reloads.
-- The committed transcript is local, immutable, provider-neutral, and organized by complete turns. Successful turns
+- The committed transcript is local, immutable, provider-neutral, and organized by atomic turns. Successful turns
   record model identity; history replay does not send that identity to providers.
 - Build each provider request from committed canonical messages plus the current user message. Record and commit the
   user message, intermediate assistant function calls, function results, and final assistant response atomically after
-  complete validation. Cancellation, provider errors, unsupported content, limits, and aborting tool errors roll back
-  the entire turn while preserving already emitted events.
+  complete validation. Cancellation commits the submitted user message, completed tool rounds, and received partial
+  assistant content as a truncated turn, with cancelled results for unanswered tool calls; completion remains cancelled.
+  Provider errors, unsupported content, limits, and aborting tool errors roll back the entire turn while preserving
+  already emitted events.
 - History eviction removes complete turns and obeys both turn and canonical UTF-8 byte limits.
 
 ## Provider and tool semantics

@@ -89,7 +89,7 @@ public sealed class AgentSessionTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task CancellationPreservesPartialEventsAndRollsBackTurn()
+    public async Task CancellationPreservesPartialEventsAndCommitsTurn()
     {
         var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var client = new ScriptedChatClient(
@@ -104,11 +104,15 @@ public sealed class AgentSessionTests
 
         Assert.Equal(["partial"], events.OfType<AgentTextDelta>().Select(delta => delta.Text));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.Equal(run.Id, turn.RunId);
+        Assert.True(turn.Truncated);
+        Assert.Equal(new[] { "cancel", "partial" }, turn.Messages.Select(message => message.Text));
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), TestContext.Current.CancellationToken);
         await ReadEventsAsync(next, TestContext.Current.CancellationToken);
         await next.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { "cancel", "partial", "next" }, client.Requests[1].Select(message => message.Text));
     }
 
     [Fact(Timeout = 30_000)]
@@ -204,7 +208,10 @@ public sealed class AgentSessionTests
 
         await run.CancelAsync(TestContext.Current.CancellationToken);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        Assert.Equal(run.Id, turn.RunId);
+        Assert.StartsWith("one", turn.Messages[1].Text);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), TestContext.Current.CancellationToken);
         await ReadEventsAsync(next, TestContext.Current.CancellationToken);
@@ -228,6 +235,9 @@ public sealed class AgentSessionTests
         await run.DisposeAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.Equal("cancel", Assert.Single(turn.Messages).Text);
+        Assert.True(turn.Truncated);
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), TestContext.Current.CancellationToken);
         await ReadEventsAsync(next, TestContext.Current.CancellationToken);
         await next.Completion.WaitAsync(TestContext.Current.CancellationToken);
@@ -301,7 +311,7 @@ public sealed class AgentSessionTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task EarlyEventDisposalFollowedByRunDisposalCancelsAndRollsBack()
+    public async Task EarlyEventDisposalFollowedByRunDisposalPreservesHistory()
     {
         var client = new ScriptedChatClient(
             (_, token) => StreamUntilCanceledAsync(token),
@@ -317,7 +327,9 @@ public sealed class AgentSessionTests
 
         await run.DisposeAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        Assert.Equal(run.Id, turn.RunId);
 
         await using var next = await session.StartTurnAsync(AgentTurn.FromText("next"), TestContext.Current.CancellationToken);
         await ReadEventsAsync(next, TestContext.Current.CancellationToken);
@@ -537,7 +549,7 @@ public sealed class AgentSessionTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task CancellationStopsActiveToolAndRollsBackTurn()
+    public async Task CancellationStopsActiveToolAndPreservesHistory()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -556,9 +568,14 @@ public sealed class AgentSessionTests
                     if (cancellationToken.IsCancellationRequested) canceled.TrySetResult();
                 }
             });
-        var session = new AgentSession(
-            new ScriptedChatClient((_, _) => StreamAsync(ToolCallUpdate("call", "wait"))),
-            tools: [tool]);
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(new ChatResponseUpdate(ChatRole.Assistant,
+                [new FunctionCallContent("completed", "echo"),
+                 new FunctionCallContent("call", "wait"),
+                 new FunctionCallContent("pending", "wait")])),
+            (_, _) => StreamAsync("continued"));
+        var echo = CreateTool("echo", (_, _, _) => ValueTask.FromResult<JsonElement?>(ParseJson("42")));
+        var session = new AgentSession(client, tools: [echo, tool]);
 
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Wait"), TestContext.Current.CancellationToken);
         await started.Task.WaitAsync(TestContext.Current.CancellationToken);
@@ -566,9 +583,57 @@ public sealed class AgentSessionTests
         var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
 
         await canceled.Task.WaitAsync(TestContext.Current.CancellationToken);
-        Assert.Single(events.OfType<AgentToolStarted>());
+        Assert.Equal(2, events.OfType<AgentToolStarted>().Count());
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run.Completion; });
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        var results = turn.Messages.SelectMany(message => message.Contents).OfType<FunctionResultContent>().ToArray();
+        Assert.Equal(new[] { "completed", "call", "pending" }, results.Select(result => result.CallId));
+        Assert.Equal("ok", Assert.IsType<JsonElement>(results[0].Result).GetProperty("status").GetString());
+        Assert.All(results[1..], result =>
+            Assert.Equal("cancelled", Assert.IsType<JsonElement>(result.Result).GetProperty("status").GetString()));
+
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("Continue"), TestContext.Current.CancellationToken);
+        await ReadEventsAsync(next, TestContext.Current.CancellationToken);
+        await next.Completion.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(turn.Messages.Count + 1, client.Requests[1].Count);
+        Assert.Equal(new[] { "completed", "call", "pending" }, client.Requests[1]
+            .SelectMany(message => message.Contents).OfType<FunctionResultContent>().Select(result => result.CallId));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CancellationDuringLaterProviderIterationRetainsCompletedToolRound()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new ScriptedChatClient(
+            (_, _) => StreamAsync(ToolCallUpdate("completed", "echo")),
+            (_, token) => WaitAfterTextAsync("partial answer", waiting, token),
+            (_, _) => StreamAsync("continued"));
+        var tool = CreateTool("echo", (_, _, _) => ValueTask.FromResult<JsonElement?>(ParseJson("42")));
+        var session = new AgentSession(client, tools: [tool]);
+
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
+        var events = ReadEventsAsync(run, deadline.Token);
+        await waiting.Task.WaitAsync(deadline.Token);
+        await run.CancelAsync(deadline.Token);
+        await events;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion);
+
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        Assert.Equal(new[] { ChatRole.User, ChatRole.Assistant, ChatRole.Tool, ChatRole.Assistant },
+            turn.Messages.Select(message => message.Role));
+        Assert.Equal("partial answer", turn.Messages[^1].Text);
+        Assert.Equal("ok", Assert.IsType<JsonElement>(Assert.Single(turn.Messages[2].Contents
+            .OfType<FunctionResultContent>()).Result).GetProperty("status").GetString());
+
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("continue"), deadline.Token);
+        await ReadEventsAsync(next, deadline.Token);
+        await next.Completion.WaitAsync(deadline.Token);
+        Assert.Equal(5, client.Requests[2].Count);
+        Assert.Equal("partial answer", client.Requests[2][3].Text);
     }
 
     [Fact(Timeout = 30_000)]

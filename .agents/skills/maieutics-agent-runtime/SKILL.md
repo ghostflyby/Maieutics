@@ -24,7 +24,8 @@ description: Use when changing Maieutics Agent sessions, runs, events, transcrip
 - The local provider-neutral transcript is canonical. Provider conversation IDs and storage never replace it.
 - Build provider requests from committed canonical messages plus the current user message. Reject non-empty provider conversation IDs.
 - Record every provider iteration and commit one complete `AgentTranscriptTurn` atomically only after the final response passes validation.
-- Cancellation, provider failure, unsupported content, capacity failure, and aborting tool failure discard the prepared turn while retaining already emitted partial events.
+- Cancellation commits the user input, completed tool rounds, and received partial assistant content atomically as a truncated turn; unanswered tool calls receive cancelled results and run completion remains cancelled.
+- Provider failure, unsupported content, capacity failure, and aborting tool failure discard the prepared turn while retaining already emitted partial events.
 - History eviction removes complete turns only.
 
 ## Tools And Providers
@@ -44,7 +45,7 @@ description: Use when changing Maieutics Agent sessions, runs, events, transcrip
 ## Agent-To-Frontend Mapping
 
 - Map semantic Agent events to ordered frontend frames without exposing transport or provider implementation types to Agent code.
-- Preserve partial display output after cancellation or failure, but do not commit the failed turn.
+- Preserve partial display output after cancellation or failure. Commit interrupted context on cancellation; other failures roll back the turn.
 - `%maieutics` control cells do not call a model or enter the transcript.
 - Never emit private chain-of-thought. Only explicitly permitted provider reasoning summaries may be exposed.
 

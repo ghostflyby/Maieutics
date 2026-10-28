@@ -86,12 +86,14 @@ contract and model-visible JSON result envelopes.
 
 - The canonical transcript is compact UTF-8 JSON containing a versioned Maieutics envelope and complete
   `AgentTranscriptTurn` values. The envelope records its schema and Microsoft.Extensions.AI contract/producer version.
-- Every turn begins with the submitted user message and ends with the final assistant message.
+- Every turn begins with the submitted user message. A successful turn ends with the final assistant message;
+  an interrupted turn is marked `truncated` and may end with a user or tool message (ADR 0010).
 - Intermediate assistant tool-call messages and tool-result messages are retained in provider order so a later request
   can be reconstructed without provider-owned conversation state.
 - The complete user, assistant, and tool message sequence is committed only after successful model and tool-loop
   completion.
-- Cancellation, provider failure, tool failure that aborts the turn, output limits, and worker failure do not commit a
+- Cancellation commits interrupted context atomically, including cancelled results for unanswered function calls
+  (ADR 0010). Provider failure, tool failure that aborts the turn, output limits, and worker failure do not commit a
   partial turn.
 - Observable partial events and notebook outputs may remain visible even when the transcript transaction rolls back.
 - History eviction uses the compact canonical message JSON UTF-8 size and operates on complete turns or explicit summary

@@ -739,8 +739,12 @@ raw private reasoning, signatures, or encrypted replay state. The first adapter 
 OpenAI Responses (`response.reasoning_summary_text.delta`); sources with
 `RequestReasoningSummary: true` request summary output. Other adapters must explicitly classify displayable summaries before
 emitting them. `message.completed` and the public transcript continue to omit reasoning;
-completion does not replace previously streamed summaries. A failed or cancelled run
-keeps partial display summaries without committing its transcript.
+completion does not replace previously streamed summaries. A failed run keeps partial
+display summaries without committing its transcript. A cancelled run commits its user input,
+completed tool rounds, and received partial assistant content as a `truncated` transcript turn;
+unanswered function calls receive `{"status":"cancelled"}` results for subsequent model replay.
+Cancellation still terminates with `run.failed` (code `run_cancelled`), after the transcript commit.
+Display summaries remain outside the public transcript.
 
 The VS Code frontend renders summaries as collapsed, escaped plain text separately
 from the answer, including child runs. Per-run view retention is bounded to 20,000

@@ -19,5 +19,5 @@ real-provider integration tests.
   provider failures, output limits, conversation-ID conflicts, and framework upgrade characterization.
 - Cover tool event order, serial invocation, complete intermediate transcript messages, recoverable failures, malformed
   calls, unexpected exceptions, all configured budgets, and rollback.
-- Assert that a failed or partially consumed run leaves committed transcript state unchanged and that the session can be
-  used again.
+- Assert that failures leave committed transcript state unchanged, cancellation (including early event disposal followed
+  by run disposal) retains interrupted context as a truncated turn, and the session can be used again.

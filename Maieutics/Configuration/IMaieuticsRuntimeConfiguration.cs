@@ -34,6 +34,29 @@ internal interface IMaieuticsModelProfileController
 
     IReadOnlyList<string> GetModelSourceIds();
 
+    /// <summary>
+    ///     Resolves one profile-selection value exactly like <see cref="SelectModelProfileAsync" /> — a
+    ///     configured profile id, a model name matching exactly one configured profile, or an automatic
+    ///     <c>@source/model</c> selector from the discovery cache — without changing the process
+    ///     selection. An automatic selector registers a per-selector generation so later explicit
+    ///     acquisitions resolve from the registry instead of the expiring discovery cache.
+    /// </summary>
+    /// <param name="profileId">The selection value a session override stores.</param>
+    /// <returns>The resolved profile id or automatic selector to keep as the override.</returns>
+    /// <exception cref="ArgumentException">
+    ///     The value matches no profile, matches several profiles, or no cached automatic model
+    ///     carries it.
+    /// </exception>
+    string PrepareProfileOverride(string profileId);
+
+    /// <summary>
+    ///     Gets the registered automatic profile for one selection value, or <see langword="null" />
+    ///     when the value is not a registered (still-valid) automatic selector. Registered entries back
+    ///     session overrides, so surfaces that resolve a stored override id — the
+    ///     <c>%model current</c> render — can describe it.
+    /// </summary>
+    MaieuticsModelProfileInfo? GetRegisteredAutomaticProfile(string profileId);
+
     ValueTask SelectModelProfileAsync(
         string profileId,
         CancellationToken cancellationToken = default);

@@ -25,6 +25,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     IAsyncDisposable
 {
     private const string TerminalShellCapability = "Shell";
+    private const int AutomaticOverrideCapacity = 8;
 
     private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ReloadDrainTimeout = TimeSpan.FromSeconds(10);
@@ -67,6 +68,17 @@ internal sealed class MaieuticsRuntimeConfiguration :
     private TaskCompletionSource _reloadCompletionSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private IDisposable? _reloadSubscription;
     private ProfileOverride? _sessionOverride;
+
+    // Registered automatic profiles referenced by explicit acquisition (session overrides), keyed
+    // by selector in registration order. Distinct from _sessionOverride on purpose: process
+    // selection changes must not retire an entry a session still references, and an eviction
+    // must not change the process selection. The bound matches the session manager's live
+    // capacity: worst case one distinct selector per live session; beyond it the oldest entry
+    // evicts and its session falls back to the process selection (logged).
+    private readonly Dictionary<string, AutomaticProfileOverride> _automaticOverrides =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly List<string> _automaticOverrideOrder = [];
 
     private readonly PermissionOverrideRegistry? _permissionOverrides;
 
@@ -167,17 +179,17 @@ internal sealed class MaieuticsRuntimeConfiguration :
         Task[] retired;
         lock (_gate)
         {
-            if (_current is { } snapshot)
-            {
-                var automaticGeneration = _sessionOverride is AutomaticProfileOverride automatic
-                    ? automatic.Generation
-                    : null;
-                generations = snapshot.Profiles.Values
-                    .Select(static profile => profile.Generation)
-                    .Concat(automaticGeneration is null ? [] : [automaticGeneration])
-                    .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
-                    .ToArray();
-            }
+            generations = (_current is { } snapshot
+                    ? snapshot.Profiles.Values.Select(static profile => profile.Generation)
+                        .Concat(_sessionOverride is AutomaticProfileOverride automatic
+                            ? [automatic.Generation]
+                            : [])
+                    : [])
+                .Concat(_automaticOverrides.Values.Select(static registered => registered.Generation))
+                .Distinct<ProfileGeneration>(ReferenceEqualityComparer.Instance)
+                .ToArray();
+            _automaticOverrides.Clear();
+            _automaticOverrideOrder.Clear();
 
             _current = null;
             _sessionOverride = null;
@@ -309,11 +321,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
         }
     }
 
-    /// <summary>Acquires a run profile lease for one explicit configured profile id,
-    /// bypassing the process selection. This is the per-session override path
-    /// (<c>SessionProfileProvider</c>). Returns <see langword="null" /> when the id no
-    /// longer resolves — for example after a reload removed the profile — so the caller
-    /// falls back to the process selection instead of failing the turn.</summary>
+    /// <summary>Acquires a run profile lease for one explicit configured profile id or
+    /// registered automatic selector, bypassing the process selection. This is the
+    /// per-session override path (<c>SessionProfileProvider</c>). Returns <see langword="null" />
+    /// when the id no longer resolves — for example after a reload removed the profile — so the
+    /// caller falls back to the process selection instead of failing the turn.</summary>
     public async Task<IAgentRunProfileLease?> AcquireProfileAsync(
         string profileId,
         CancellationToken cancellationToken = default)
@@ -327,7 +339,8 @@ internal sealed class MaieuticsRuntimeConfiguration :
             lock (_gate)
             {
                 var snapshot = GetCurrent();
-                selection = SelectNamedRuntimeProfile(snapshot, profileId);
+                selection = SelectNamedRuntimeProfile(snapshot, profileId) ??
+                            SelectRegisteredAutomaticProfileLocked(snapshot, profileId);
                 if (selection is null) return null;
                 generationLease = selection.Generation.Acquire();
             }
@@ -564,6 +577,163 @@ internal sealed class MaieuticsRuntimeConfiguration :
         ObserveCompletedRetirements();
     }
 
+    public MaieuticsModelProfileInfo? GetRegisteredAutomaticProfile(string profileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        lock (_gate)
+        {
+            var snapshot = GetCurrent();
+            return _automaticOverrides.TryGetValue(profileId, out var registered) &&
+                   AutomaticOverrideValidLocked(snapshot, registered)
+                ? registered.ToProfileInfo(false)
+                : null;
+        }
+    }
+
+    public string PrepareProfileOverride(string profileId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileId);
+        lock (_gate)
+        {
+            var snapshot = GetCurrent();
+            if (ResolveConfiguredProfileIdLocked(snapshot, profileId) is { } configuredId) return configuredId;
+            if (_automaticOverrides.TryGetValue(profileId, out var registered) &&
+                AutomaticOverrideValidLocked(snapshot, registered))
+                return registered.Selector;
+        }
+
+        var candidate = ResolveAutomaticProfile(profileId);
+        // A bare model name re-issued against a fresh cache resolves to the canonical
+        // selector: reuse the registration before creating a redundant generation.
+        lock (_gate)
+        {
+            var snapshot = GetCurrent();
+            if (_automaticOverrides.TryGetValue(candidate.Selector, out var registered) &&
+                AutomaticOverrideValidLocked(snapshot, registered))
+                return registered.Selector;
+        }
+
+        ProfileGeneration generation;
+        try
+        {
+            generation = new ProfileGeneration(candidate.Source.Create(candidate.Model), _logger);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Could not create automatic model profile {ProfileSelector}.",
+                candidate.Selector);
+            throw new ArgumentException(
+                $"The automatic model profile '{candidate.Selector}' could not be created.",
+                nameof(profileId),
+                exception);
+        }
+
+        var registration = new AutomaticProfileOverride(candidate, generation);
+        var committed = false;
+        List<string>? evictedSelectors = null;
+        try
+        {
+            lock (_gate)
+            {
+                var snapshot = GetCurrent();
+                if (_automaticOverrides.TryGetValue(candidate.Selector, out var existing))
+                {
+                    if (AutomaticOverrideValidLocked(snapshot, existing))
+                        return existing.Selector;
+
+                    RemoveAutomaticOverrideLocked(existing);
+                }
+
+                if (!AutomaticOverrideValidLocked(snapshot, registration))
+                    throw new ArgumentException(
+                        $"The model source '{candidate.SourceId}' changed while the automatic profile was selected. " +
+                        "Run model discovery and try again.",
+                        nameof(profileId));
+
+                _automaticOverrides[candidate.Selector] = registration;
+                _automaticOverrideOrder.Add(candidate.Selector);
+                while (_automaticOverrideOrder.Count > AutomaticOverrideCapacity)
+                {
+                    var evictedSelector = _automaticOverrideOrder[0];
+                    _automaticOverrideOrder.RemoveAt(0);
+                    if (_automaticOverrides.Remove(evictedSelector, out var evicted))
+                    {
+                        TrackRetirementLocked(evicted.Generation);
+                        (evictedSelectors ??= []).Add(evictedSelector);
+                    }
+                }
+
+                committed = true;
+            }
+        }
+        finally
+        {
+            // Covers every non-committed exit, including the reuse return and the
+            // changed-source throw: the redundant generation retires exactly once.
+            if (!committed)
+                lock (_gate)
+                {
+                    TrackRetirementLocked(generation);
+                }
+
+            ObserveCompletedRetirements();
+        }
+
+        // Eviction logging stays off the gate so a slow sink cannot stall acquisitions.
+        if (evictedSelectors is not null)
+            foreach (var selector in evictedSelectors)
+                _logger.LogWarning(
+                    "The registered automatic model profile {ProfileId} was evicted to bound the automatic profile registry.",
+                    selector);
+
+        return registration.Selector;
+    }
+
+    /// <summary>Resolves one registered automatic selector against the registry. Reload prunes
+    /// invalid entries under the same gate, so a present entry is valid and a miss is a plain
+    /// unknown id: the caller falls back to the process selection.</summary>
+    private RuntimeProfileSelection? SelectRegisteredAutomaticProfileLocked(
+        RuntimeSnapshot snapshot,
+        string profileId)
+    {
+        return _automaticOverrides.TryGetValue(profileId, out var automatic)
+            ? new RuntimeProfileSelection(
+                snapshot,
+                automatic.Generation,
+                automatic.Identity,
+                automatic.Capabilities,
+                automatic.HostedCapabilities,
+                automatic.MaxBuiltinToolCalls)
+            : null;
+    }
+
+    /// <summary>Whether one automatic profile still resolves against the snapshot: its source
+    /// must exist with the same provider and client-generation key, and the model must still
+    /// resolve to the same capabilities. The same predicate invalidates the process-level
+    /// automatic override on reload.</summary>
+    private bool AutomaticOverrideValidLocked(RuntimeSnapshot snapshot, AutomaticProfileOverride automatic)
+    {
+        return snapshot.Sources.TryGetValue(automatic.SourceId, out var source) &&
+               string.Equals(source.ProviderName, automatic.Provider, StringComparison.OrdinalIgnoreCase) &&
+               Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) &&
+               AutomaticProfileMatches(
+                   snapshot,
+                   source,
+                   automatic.Model,
+                   automatic.Capabilities,
+                   automatic.HostedCapabilities,
+                   automatic.MaxBuiltinToolCalls);
+    }
+
+    private void RemoveAutomaticOverrideLocked(AutomaticProfileOverride automatic)
+    {
+        _automaticOverrides.Remove(automatic.Selector);
+        _automaticOverrideOrder.Remove(automatic.Selector);
+        TrackRetirementLocked(automatic.Generation);
+    }
+
     public async ValueTask<IReadOnlyList<DiscoveredModelGroup>> GetDiscoveredModelsAsync(
         string? sourceId = null,
         bool refresh = false,
@@ -654,33 +824,37 @@ internal sealed class MaieuticsRuntimeConfiguration :
         lock (_gate)
         {
             var snapshot = GetCurrent();
-            if (snapshot.Profiles.TryGetValue(value, out var profile))
-            {
-                SetConfiguredProfileOverrideLocked(profile.Id);
-                return true;
-            }
+            if (ResolveConfiguredProfileIdLocked(snapshot, value) is not { } profileId) return false;
+            SetConfiguredProfileOverrideLocked(profileId);
+            return true;
+        }
+    }
 
-            var modelMatches = snapshot.Profiles.Values
-                .Where(profileEntry => string.Equals(
-                    profileEntry.Identity.Model,
-                    value,
-                    StringComparison.OrdinalIgnoreCase))
-                .OrderBy(static profileEntry => profileEntry.Id, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            switch (modelMatches.Length)
-            {
-                case 0:
-                    return false;
-                case 1:
-                    SetConfiguredProfileOverrideLocked(modelMatches[0].Id);
-                    return true;
-                default:
-                    throw new ArgumentException(
-                        $"The model '{value}' matches multiple configured model profiles: " +
-                        $"{string.Join(", ", modelMatches.Select(static match => $"'{match.Id}'"))}. " +
-                        "Use a profile ID.",
-                        nameof(value));
-            }
+    /// <summary>Resolves one selection value against the configured profiles: an exact
+    /// profile id, or a model name that matches exactly one configured profile.</summary>
+    private string? ResolveConfiguredProfileIdLocked(RuntimeSnapshot snapshot, string value)
+    {
+        if (snapshot.Profiles.TryGetValue(value, out var exact)) return exact.Id;
+
+        var modelMatches = snapshot.Profiles.Values
+            .Where(profileEntry => string.Equals(
+                profileEntry.Identity.Model,
+                value,
+                StringComparison.OrdinalIgnoreCase))
+            .OrderBy(static profileEntry => profileEntry.Id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        switch (modelMatches.Length)
+        {
+            case 0:
+                return null;
+            case 1:
+                return modelMatches[0].Id;
+            default:
+                throw new ArgumentException(
+                    $"The model '{value}' matches multiple configured model profiles: " +
+                    $"{string.Join(", ", modelMatches.Select(static match => $"'{match.Id}'"))}. " +
+                    "Use a profile ID.",
+                    nameof(value));
         }
     }
 
@@ -993,6 +1167,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         var candidate = CreateCandidate();
 
         RuntimeSnapshot previous;
+        List<string>? removedRegistered = null;
         lock (_gate)
         {
             previous = GetCurrent();
@@ -1028,21 +1203,24 @@ internal sealed class MaieuticsRuntimeConfiguration :
                         _sessionOverride = null;
                         break;
                     case AutomaticProfileOverride automatic
-                        when !replacement.Sources.TryGetValue(automatic.SourceId, out var source) ||
-                             !string.Equals(source.ProviderName, automatic.Provider,
-                                 StringComparison.OrdinalIgnoreCase) ||
-                             !Equals(source.ClientGenerationKey, automatic.ClientGenerationKey) ||
-                             !AutomaticProfileMatches(
-                                 replacement,
-                                 source,
-                                 automatic.Model,
-                                 automatic.Capabilities,
-                                 automatic.HostedCapabilities,
-                                 automatic.MaxBuiltinToolCalls):
+                        when !AutomaticOverrideValidLocked(replacement, automatic):
                         removedOverride = automatic.Selector;
                         _sessionOverride = null;
                         TrackRetirementLocked(automatic.Generation);
                         break;
+                }
+
+                // Registered automatic profiles (session overrides) follow the same
+                // invalidation rule as the process-level automatic override: an entry whose
+                // source or resolved capabilities changed stops resolving, and its session
+                // falls back to the process selection on the next acquisition.
+                foreach (var selector in _automaticOverrideOrder.ToArray())
+                {
+                    if (!_automaticOverrides.TryGetValue(selector, out var registered) ||
+                        AutomaticOverrideValidLocked(replacement, registered)) continue;
+                    RemoveAutomaticOverrideLocked(registered);
+                    removedRegistered ??= [];
+                    removedRegistered.Add(selector);
                 }
 
                 var retained = replacement.Profiles.Values
@@ -1071,6 +1249,11 @@ internal sealed class MaieuticsRuntimeConfiguration :
                 "The selected model profile {ProfileId} is no longer available; subsequent runs will use default profile {DefaultProfileId}.",
                 removedOverride,
                 replacement.DefaultProfileId);
+
+        foreach (var selector in removedRegistered ?? [])
+            _logger.LogWarning(
+                "The registered automatic model profile {ProfileId} is no longer available; sessions overriding to it fall back to the process selection.",
+                selector);
 
         _logger.LogInformation("Applied Maieutics configuration version {ConfigurationVersion}.", replacement.Version);
         return true;

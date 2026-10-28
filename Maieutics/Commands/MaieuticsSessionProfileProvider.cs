@@ -30,7 +30,9 @@ internal sealed class MaieuticsSessionProfileProvider(IMaieuticsRuntimeConfigura
         }
     }
 
-    /// <summary>Sets or clears the session's profile override (a configured profile id).</summary>
+    /// <summary>Sets or clears the session's profile override (a configured profile id or a
+    /// registered automatic <c>@source/model</c> selector, resolved by the runtime before it is
+    /// stored).</summary>
     public void SetOverride(string? profileId)
     {
         lock (_gate)

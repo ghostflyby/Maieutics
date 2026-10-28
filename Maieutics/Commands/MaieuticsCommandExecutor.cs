@@ -785,23 +785,28 @@ internal sealed class MaieuticsCommandExecutor(
         }
 
         var selected = selection.Profiles.Single(profile => profile.IsSelected);
-        var profile = sessionOverride is null
+        // A session override may reference a registered automatic @source/model selector,
+        // which the process-level selection view does not list; the runtime describes it.
+        MaieuticsModelProfileInfo? profile = sessionOverride is null
             ? selected
             : selection.Profiles.FirstOrDefault(candidate =>
-                string.Equals(candidate.Id, sessionOverride, StringComparison.OrdinalIgnoreCase));
+                  string.Equals(candidate.Id, sessionOverride, StringComparison.OrdinalIgnoreCase)) ??
+              runtimeConfiguration?.GetRegisteredAutomaticProfile(sessionOverride);
         if (profile is null)
         {
             profile = selected;
             sessionOverride = null;
         }
 
-        var selectionSource = sessionOverride is not null
-            ? "session override"
-            : profile.IsAutomatic
-                ? "automatic session override"
-                : selection.HasSessionOverride
-                    ? "foreground override"
-                    : "configured default";
+        var selectionSource = profile.IsAutomatic && sessionOverride is not null
+            ? "automatic session override"
+            : sessionOverride is not null
+                ? "session override"
+                : profile.IsAutomatic
+                    ? "automatic session override"
+                    : selection.HasSessionOverride
+                        ? "foreground override"
+                        : "configured default";
         return $"""
                 ### Current model
 

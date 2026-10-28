@@ -280,10 +280,13 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return forkId;
     }
 
-    /// <summary>Sets the addressed session's model-profile override (a configured profile
-    /// id), so its next turn runs on that profile regardless of the process selection.
-    /// Clears the override when <paramref name="profileId" /> is <see langword="null" />.
-    /// A stored-but-not-live session is lazily resumed first.</summary>
+    /// <summary>Sets the addressed session's model-profile override, so its next turn runs on
+    /// that profile regardless of the process selection. The id resolves exactly like the
+    /// process-level selection: a configured profile id, a model name matching exactly one
+    /// configured profile, or an automatic <c>@source/model</c> selector (registered at resolve
+    /// time, so it keeps resolving after the discovery cache expires). Clears the override when
+    /// <paramref name="profileId" /> is <see langword="null" />. A stored-but-not-live session is
+    /// lazily resumed first.</summary>
     /// <exception cref="ArgumentException">No runtime configuration is available or the
     /// profile is unknown.</exception>
     public void SetProfileOverride(AgentSessionId sessionId, string? profileId)
@@ -295,15 +298,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             return;
         }
 
-        var selection = _runtimeConfiguration!.GetModelProfileSelection();
-        var match = selection.Profiles.FirstOrDefault(profile =>
-            string.Equals(profile.Id, profileId, StringComparison.OrdinalIgnoreCase));
-        if (match is null)
-        {
-            throw new ArgumentException($"No model profile matches '{profileId}'.");
-        }
+        if (_runtimeConfiguration is not { } runtime)
+            throw new ArgumentException("Model profiles are not available in this host.");
 
-        wrapper.SetOverride(match.Id);
+        wrapper.SetOverride(runtime.PrepareProfileOverride(profileId));
     }
 
     /// <summary>Gets the addressed session's profile override, or

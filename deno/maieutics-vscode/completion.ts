@@ -10,7 +10,9 @@ import { createCompletionGate } from "./completionCore.ts";
 import type { FrontendClient } from "./client.ts";
 import { NotebookType } from "./serializer.ts";
 
-const TriggerCharacters = ["%", "/"];
+// Markdown disables quick suggestions by default. Spaces must trigger the
+// command's next argument explicitly, without changing all Markdown editors.
+const TriggerCharacters = ["%", "/", " "];
 
 export function registerCommandCompletion(
   clientOf: () => Promise<FrontendClient>,
@@ -20,7 +22,7 @@ export function registerCommandCompletion(
     (text, cursor, signal) => clientOf().then((client) => client.complete(text, cursor, signal)),
     log,
   );
-  return vscode.languages.registerCompletionItemProvider(
+  const registration = vscode.languages.registerCompletionItemProvider(
     // Cell documents of this extension's notebook type. Notebook-type scoping
     // is the selector that actually fires for notebook cells: a plain
     // `{ scheme: "untitled" }` selector never matches cell documents, which
@@ -29,20 +31,29 @@ export function registerCommandCompletion(
     { language: "markdown", notebookType: NotebookType },
     {
       async provideCompletionItems(document, position): Promise<vscode.CompletionItem[]> {
-        const wordRange = document.getWordRangeAtPosition(
-          position,
-          /[%\/][^\s]*/,
+        const text = document.getText();
+        // A space in prose must not start the kernel just to ask for commands.
+        if (!/^\s*[%/]/.test(text) && text.trim().length > 0) {
+          gate.cancel();
+          return [];
+        }
+        const completion = await gate(text, document.offsetAt(position));
+        if (completion === undefined) return [];
+        const range = new vscode.Range(
+          document.positionAt(completion.tokenStart),
+          document.positionAt(completion.tokenEnd),
         );
-        const matches = await gate(document.getText(), document.offsetAt(position));
-        return matches.map((match) => {
+        const slash = text[completion.tokenStart] === "/";
+        return completion.matches.map((match) => {
           const item = new vscode.CompletionItem(
             match,
             vscode.CompletionItemKind.Keyword,
           );
-          // Replace the whole partial command token, not just the word under
-          // the cursor (a command token contains no whitespace).
-          if (wordRange) {
-            item.range = wordRange;
+          item.range = range;
+          // Slash discovery inserts the canonical % command. VS Code filters
+          // against what was typed, so its filter must keep the slash leader.
+          if (slash && match.startsWith("%")) {
+            item.filterText = `/${match.slice(1)}`;
           }
 
           return item;
@@ -51,4 +62,10 @@ export function registerCommandCompletion(
     },
     ...TriggerCharacters,
   );
+  return {
+    dispose: () => {
+      gate.cancel();
+      registration.dispose();
+    },
+  };
 }

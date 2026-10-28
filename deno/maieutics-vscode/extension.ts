@@ -401,7 +401,7 @@ export function activate(context: vscode.ExtensionContext): void {
       connection = undefined;
       connecting = undefined;
       fsProvider?.reset();
-      controller?.resetConnections();
+      await controller?.resetConnections();
       treeProvider.refresh();
       await clientOf();
       await vscode.window.showInformationMessage("Maieutics: server restarted.");
@@ -691,6 +691,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  await controller?.dispose();
   if (connection) await connection.dispose();
   connection = undefined;
 }
@@ -1214,11 +1215,8 @@ function pickDescription(session: SessionLike): string {
 }
 
 async function openSessionNotebookForUser(sessionId: string): Promise<void> {
-  // The open path reads through the VFS, which needs the session in its
-  // descriptor cache before it can materialize the notebook on first read.
-  await fsProvider?.refresh().catch((error: unknown) =>
-    output?.appendLine(`Descriptor refresh failed: ${error}`)
-  );
+  // VFS stat resolves the addressed session itself. Refreshing the stored-session
+  // catalog cannot establish whether a fresh zero-turn session exists.
   const uri = vscode.Uri.from({
     scheme: VfsScheme,
     path: sessionNotebookPath(sessionId),

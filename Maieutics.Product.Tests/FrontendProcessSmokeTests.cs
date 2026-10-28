@@ -67,12 +67,14 @@ public sealed class FrontendProcessSmokeTests
                 Assert.Contains("### Maieutics status", body.GetProperty("markdown").GetString());
 
                 var turn = await client.PostAsJsonAsync(
-                    $"/v1/agent/sessions/{sessionId}/turns",
-                    new { text = "write the smoke file" },
+                    $"/v1/agent/sessions/{sessionId}/queue",
+                    new { items = new[] { new { text = "write the smoke file" } } },
                     TestContext.Current.CancellationToken);
                 Assert.Equal(HttpStatusCode.Accepted, turn.StatusCode);
-                var runId = (await turn.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
-                    .GetProperty("runId").GetString()!;
+                var item = Assert.Single((await turn.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
+                    .GetProperty("items").EnumerateArray());
+                var itemId = item.GetProperty("id").GetString() ?? throw new InvalidOperationException("Missing queued item id.");
+                var runId = await WaitForQueuedRunAsync(client, sessionId, itemId, token, TestContext.Current.CancellationToken);
 
                 var transcript = await WaitForTranscriptTurnAsync(
                     client,
@@ -114,6 +116,32 @@ public sealed class FrontendProcessSmokeTests
         }
     }
 
+    private static async Task<string> WaitForQueuedRunAsync(
+        HttpClient client, string sessionId, string itemId, string token, CancellationToken cancellationToken)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(45));
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        var httpBase = client.BaseAddress ?? throw new InvalidOperationException("Missing smoke base URL.");
+        await socket.ConnectAsync(new Uri($"ws://{httpBase.Authority}/v1/agent/sessions/{sessionId}/events"), budget.Token);
+        try
+        {
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, budget.Token);
+                if (frame.GetProperty("type").GetString() != "queue.updated") continue;
+                foreach (var outcome in frame.GetProperty("queue").GetProperty("outcomes").EnumerateArray())
+                {
+                    if (outcome.GetProperty("itemId").GetString() != itemId) continue;
+                    Assert.False(outcome.TryGetProperty("error", out _), "The published queue failed before starting its run.");
+                    if (outcome.TryGetProperty("runId", out var run) && run.GetString() is { } runId) return runId;
+                }
+            }
+        }
+        finally { socket.Abort(); }
+    }
+
     /// <summary>Awaits the run's terminal frame on the session's events socket — the
     /// protocol's completion signal — then reads the transcript once: the turn is
     /// committed before the terminal frame is published, so no retry backs the read.</summary>
@@ -132,7 +160,7 @@ public sealed class FrontendProcessSmokeTests
         var httpBase = client.BaseAddress ?? throw new InvalidOperationException("The smoke client has no base address.");
         var socketUri = new Uri(
             new Uri($"ws://{httpBase.Authority}{httpBase.AbsolutePath}"),
-            $"/v1/agent/sessions/{sessionId}/events");
+            $"/v1/agent/sessions/{sessionId}/events?runId={runId}");
         await socket.ConnectAsync(socketUri, wait.Token).ConfigureAwait(false);
         try
         {

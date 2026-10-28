@@ -24,6 +24,7 @@
  */
 
 import * as vscode from "vscode";
+import { FrontendError } from "./protocol.ts";
 import { type MaieuticsNotebook, serializeNotebook } from "./notebookFormat.ts";
 import type { StoredSession } from "./protocol.ts";
 import {
@@ -89,13 +90,14 @@ export class MaieuticsFileSystemProvider implements vscode.FileSystemProvider {
     return { dispose: () => {} };
   }
 
-  stat(uri: vscode.Uri): vscode.FileStat {
+  async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     if (isLensDirectory(uri.path)) return directoryStat();
 
     const entry = parseSessionEntry(uri.path);
-    if (entry === null || !this.sessions.has(entry.sessionId)) {
-      throw vscode.FileSystemError.FileNotFound(uri);
-    }
+    if (entry === null) throw vscode.FileSystemError.FileNotFound(uri);
+    // VS Code stats before reading. A missing persisted descriptor does not mean the
+    // session is absent: materialize its addressed transcript before returning metadata.
+    if (!this.sessions.has(entry.sessionId)) await this.readFile(uri);
     const descriptor = this.sessions.get(entry.sessionId);
     const written = this.writtenAt.get(entry.sessionId);
     return {
@@ -154,10 +156,12 @@ export class MaieuticsFileSystemProvider implements vscode.FileSystemProvider {
       }
       return bytes;
     } catch (error) {
-      // Fetch failures (unknown session, unreachable server) surface as the
-      // filesystem's own not-found error, keeping the cause in the message.
       const cause = error instanceof Error ? error.message : String(error);
-      throw vscode.FileSystemError.FileNotFound(`${uri.path} (${cause})`);
+      const message = `${uri.path} (${cause})`;
+      if (error instanceof FrontendError && error.status === 404 && error.code === "not_found") {
+        throw vscode.FileSystemError.FileNotFound(message);
+      }
+      throw vscode.FileSystemError.Unavailable(message);
     }
   }
 
@@ -212,8 +216,7 @@ export class MaieuticsFileSystemProvider implements vscode.FileSystemProvider {
     );
   }
 
-  /** Refreshes the descriptor cache without firing lens events; the open path
-   * awaits this so readFile finds the session even before any mount synced. */
+  /** Refreshes the descriptor cache without firing lens events or discarding live views. */
   async refresh(): Promise<void> {
     this.sessions = this.mergeDescriptors(await this.host.listSessions());
   }

@@ -124,7 +124,17 @@ internal sealed record FrontendQueueSnapshot(
     FrontendQueueRunningItem? Running = null,
     [property: JsonPropertyName("items")] IReadOnlyList<FrontendQueueItem>? Items = null,
     [property: JsonPropertyName("capacity")]
-    int Capacity = FrontendTurnQueue.Capacity);
+    int Capacity = FrontendTurnQueue.Capacity,
+    [property: JsonPropertyName("version")] long? Version = null,
+    [property: JsonPropertyName("outcomes")] IReadOnlyList<FrontendQueueOutcome>? Outcomes = null);
+
+/// <summary>Retained admission state for one queue item. Run identity survives queue drain;
+/// failures before a run exists stay typed and visible to a reconnecting client.</summary>
+internal sealed record FrontendQueueOutcome(
+    [property: JsonPropertyName("itemId")] string ItemId,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("runId")] string? RunId = null,
+    [property: JsonPropertyName("error")] FrontendError? Error = null);
 
 /// <summary>A queue enqueue request body: 1..64 turn texts to run serially after the
 /// session's current work. Command cells are rejected.</summary>

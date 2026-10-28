@@ -17,7 +17,15 @@
  */
 
 import * as vscode from "vscode";
-import { executeIdeMethod } from "../../controller.ts";
+import { executeIdeMethod, MaieuticsNotebookController } from "../../controller.ts";
+import { QueueProjection } from "../../queueProjection.ts";
+import { FrontendClient } from "../../client.ts";
+import { readTurnBinding } from "../../cellHistory.ts";
+import { MaieuticsFileSystemProvider } from "../../vfs.ts";
+import { emptyNotebook } from "../../notebookFormat.ts";
+import { readStoredSessionId } from "../../serializer.ts";
+import { FrontendError } from "../../protocol.ts";
+import { registerCommandCompletion } from "../../completion.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -82,6 +90,237 @@ async function testSerializerAsync(): Promise<void> {
     notebook.cellAt(0).document.getText() === "hello",
     "the agent cell's text round-trips through the serializer",
   );
+}
+
+/** VS Code stats a session notebook before its first read. Empty sessions are live
+ * but absent from the stored-session listing, so stat must consult the session itself. */
+async function testFreshSessionVfsAsync(): Promise<void> {
+  const sessionId = "e".repeat(32);
+  let fetched = 0;
+  const provider = new MaieuticsFileSystemProvider({
+    listSessions: () => Promise.resolve([]),
+    fetchTranscript: (id) => {
+      assert(id === sessionId, "stat resolves the addressed session");
+      fetched++;
+      const notebook = emptyNotebook();
+      notebook.session = { serverSessionId: id };
+      return Promise.resolve(notebook);
+    },
+    currentWorkspace: () => ({ caseInsensitive: false }),
+  });
+  const registration = vscode.workspace.registerFileSystemProvider(
+    "maieutics-session-test",
+    provider,
+  );
+  try {
+    await provider.refresh();
+    const uri = vscode.Uri.from({
+      scheme: "maieutics-session-test",
+      path: `/sessions/${sessionId}.maieuticsnb`,
+    });
+    const stat = await vscode.workspace.fs.stat(uri);
+    assert(stat.type === vscode.FileType.File, "a fresh zero-turn session exists before readFile");
+    const notebook = await vscode.workspace.openNotebookDocument(uri);
+    assert(
+      readStoredSessionId(notebook.metadata) === sessionId,
+      "the opened notebook keeps the fresh session id",
+    );
+    assert(fetched === 1, "stat and notebook read share the materialized transcript");
+    provider.syncSessions([]);
+    assert(
+      (await vscode.workspace.fs.stat(uri)).type === vscode.FileType.File,
+      "a stored-list refresh cannot hide a live view",
+    );
+  } finally {
+    registration.dispose();
+  }
+}
+
+/** An unreachable server must not be presented as a nonexistent notebook. */
+async function testVfsLookupFailureAsync(): Promise<void> {
+  for (
+    const [status, code, expected] of [
+      [404, "not_found", "FileNotFound"],
+      [503, "unavailable", "Unavailable"],
+    ] as const
+  ) {
+    const provider = new MaieuticsFileSystemProvider({
+      listSessions: () => Promise.resolve([]),
+      fetchTranscript: () => Promise.reject(new FrontendError(code, status, "Lookup failed")),
+      currentWorkspace: () => ({ caseInsensitive: false }),
+    });
+    const uri = vscode.Uri.from({
+      scheme: "maieutics",
+      path: `/sessions/${"f".repeat(32)}.maieuticsnb`,
+    });
+    let observed: unknown;
+    try {
+      await provider.stat(uri);
+    } catch (error) {
+      observed = error;
+    }
+    assert(
+      observed instanceof vscode.FileSystemError && observed.code === expected,
+      `VFS preserves the difference between missing and unavailable sessions (${status})`,
+    );
+  }
+}
+
+/** Runs real notebook cell executions against a controlled protocol peer. Admission
+ * completes after its run has finished, matching a fast provider / delayed HTTP response. */
+async function testQueueExecutionAsync(
+  failBeforeRun: boolean,
+  supportsRecovery = true,
+  missingReplay = false,
+): Promise<void> {
+  const sessionId = "a".repeat(32);
+  const runId = "b".repeat(32);
+  const itemId = "queued-item";
+  let admitted = false;
+  let scopedReplay = false;
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: "http://127.0.0.1:9",
+    token: "test",
+    pid: 0,
+  });
+  client.capabilities = () =>
+    Promise.resolve({
+      protocolVersion: 1,
+      serverVersion: "test",
+      multiSession: true,
+      session: { id: sessionId, turns: 0, persistenceEnabled: true },
+    });
+  client.session = () => Promise.resolve({ id: sessionId, turns: 0, persistenceEnabled: true });
+  client.enqueueTurns = () => {
+    admitted = true;
+    return Promise.resolve([{ id: itemId, position: 1 }]);
+  };
+  client.getQueue = () =>
+    Promise.resolve(JSON.parse(JSON.stringify({
+      sessionId,
+      items: [],
+      capacity: 64,
+      version: admitted ? 2 : 0,
+      outcomes: !supportsRecovery ? undefined : !admitted ? [] : failBeforeRun
+        ? [{
+          itemId,
+          state: "failed",
+          error: { code: "configuration_error", message: "No model configured." },
+        }]
+        : [{ itemId, state: "completed", runId }],
+    })));
+  client.events = async function* (_sessionId, options = {}) {
+    yield { type: "hello" };
+    if (options.runId !== undefined) {
+      assert(options.runId === runId, "replay targets the retained run identity");
+      scopedReplay = true;
+      if (missingReplay) {
+        yield { type: "run.missing", runId };
+        return;
+      }
+      yield { type: "run.started", runId };
+      yield { type: "text.delta", runId, sequence: 1, messageId: "m", text: "Recovered reply" };
+      yield { type: "run.completed", runId };
+      return;
+    }
+    if (options.signal?.aborted) return;
+    await new Promise<void>((resolve) =>
+      options.signal?.addEventListener("abort", () => resolve(), { once: true })
+    );
+  };
+  const id = missingReplay
+    ? "queue-missing-test"
+    : !supportsRecovery
+    ? "queue-upgrade-test"
+    : failBeforeRun
+    ? "queue-failure-test"
+    : "queue-replay-test";
+  const output = vscode.window.createOutputChannel(id);
+  const owner = new MaieuticsNotebookController(
+    {
+      client: () => Promise.resolve(client),
+      session: () => client.session(),
+      fetchObject: () => Promise.resolve(new Uint8Array()),
+    },
+    output,
+    new QueueProjection(),
+    id,
+  );
+  try {
+    const data = new vscode.NotebookData([
+      new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "Question", "maieutics"),
+    ]);
+    data.metadata = { maieuticsSessionId: sessionId };
+    const notebook = await vscode.workspace.openNotebookDocument("maieutics-notebook", data);
+    await vscode.window.showNotebookDocument(notebook);
+    await vscode.commands.executeCommand("notebook.selectKernel", { id, extension: ExtensionId });
+    const budget = AbortSignal.timeout(15_000);
+    let outputChanged: vscode.Disposable | undefined;
+    const visibleOutput = new Promise<void>((resolve) => {
+      outputChanged = vscode.workspace.onDidChangeNotebookDocument((event) => {
+        if (event.notebook !== notebook) return;
+        const text = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
+          .map((item) => new TextDecoder().decode(item.data)).join("\n");
+        if (
+          text.includes(
+            missingReplay
+              ? "run_missing"
+              : !supportsRecovery
+              ? "queue_recovery_unavailable"
+              : failBeforeRun
+              ? "configuration_error"
+              : "Recovered reply",
+          )
+        ) resolve();
+      });
+    });
+    try {
+      await Promise.race([
+        (async () => {
+          await owner.runAsync([notebook.cellAt(0)], notebook);
+          await visibleOutput;
+        })(),
+        new Promise<never>((_, reject) =>
+          budget.addEventListener(
+            "abort",
+            () => reject(new Error("The queue item did not reach a visible terminal output.")),
+            { once: true },
+          )
+        ),
+      ]);
+      const text = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
+        .map((item) => new TextDecoder().decode(item.data)).join("\n");
+      if (missingReplay) {
+        assert(text.includes("run_missing"), "expired run replay is an explicit cell failure");
+      } else if (!supportsRecovery) {
+        assert(
+          !admitted && text.includes("queue_recovery_unavailable"),
+          "an old kernel must fail visibly before admitting work",
+        );
+      } else if (failBeforeRun) {
+        assert(
+          text.includes("configuration_error") && text.includes("No model configured."),
+          "a failure before run creation is visible in the cell",
+        );
+      } else {
+        assert(
+          scopedReplay && text.includes("Recovered reply"),
+          "a completed early run replays into its cell",
+        );
+        assert(
+          readTurnBinding({ metadata: notebook.cellAt(0).metadata, text: "Question" })?.runId ===
+            runId,
+          "the execution commits the accepted run identity",
+        );
+      }
+    } finally {
+      outputChanged?.dispose();
+    }
+  } finally {
+    await owner.dispose();
+    output.dispose();
+  }
 }
 
 /** The IDE executor dispatches into the real language services: hover over
@@ -217,9 +456,100 @@ function describeProblems(): string {
     .join("; ");
 }
 
+async function testCommandCompletionAsync(): Promise<void> {
+  const cases = [
+    { text: "/se", match: "%session", start: 0, filter: "/session", trigger: "/" },
+    { text: "%session ", match: "current", start: 9, filter: "current", trigger: " " },
+    {
+      text: "%model use @ven/dra",
+      match: "@ven/dragon",
+      start: 11,
+      filter: "@ven/dragon",
+      trigger: "/",
+    },
+  ];
+  for (const entry of cases) {
+    let calls = 0;
+    const logs: string[] = [];
+    const registration = registerCommandCompletion(
+      () =>
+        Promise.resolve({
+          complete: (text: string, cursor: number) => {
+            calls++;
+            assert(
+              text === entry.text && cursor === text.length,
+              "the complete cell and UTF-16 cursor reach the server",
+            );
+            return Promise.resolve({
+              matches: [entry.match],
+              tokenStart: entry.start,
+              tokenEnd: text.length,
+            });
+          },
+        } as unknown as FrontendClient),
+      (message) => logs.push(message),
+    );
+    try {
+      const notebook = await vscode.workspace.openNotebookDocument(
+        "maieutics-notebook",
+        new vscode.NotebookData([
+          new vscode.NotebookCellData(vscode.NotebookCellKind.Code, entry.text, "markdown"),
+        ]),
+      );
+      const cell = notebook.cellAt(0);
+      const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
+        "vscode.executeCompletionItemProvider",
+        cell.document.uri,
+        new vscode.Position(0, entry.text.length),
+        entry.trigger,
+      );
+      assert(
+        calls > 0,
+        `the notebook command provider is invoked for ${JSON.stringify(entry.trigger)}`,
+      );
+      const item = completions?.items.find((item) =>
+        item.label === entry.match && item.range instanceof vscode.Range &&
+        item.range.start.character === entry.start
+      );
+      assert(
+        item !== undefined,
+        `the candidate replaces the server's complete command token (${logs.join("; ")})`,
+      );
+      assert(
+        (item.filterText ?? item.label) === entry.filter,
+        "slash discovery remains visible to the editor's prefix filter",
+      );
+    } finally {
+      registration.dispose();
+    }
+  }
+}
+
 const tests: HostTest[] = [
   { name: "extension is installed and activates", run: testActivationAsync },
   { name: "the .maieuticsnb serializer round-trips the fixture", run: testSerializerAsync },
+  { name: "notebook command completion reaches its provider", run: testCommandCompletionAsync },
+  { name: "a fresh session notebook survives stat before read", run: testFreshSessionVfsAsync },
+  {
+    name: "VFS distinguishes missing sessions from unavailable servers",
+    run: testVfsLookupFailureAsync,
+  },
+  {
+    name: "a run finished before admission still replies in the cell",
+    run: () => testQueueExecutionAsync(false),
+  },
+  {
+    name: "a pre-run queue failure is visible in the cell",
+    run: () => testQueueExecutionAsync(true),
+  },
+  {
+    name: "an older kernel requests an upgrade before accepting queued work",
+    run: () => testQueueExecutionAsync(true, false),
+  },
+  {
+    name: "expired run replay fails visibly instead of painting an empty success",
+    run: () => testQueueExecutionAsync(false, true, true),
+  },
   { name: "the IDE executor reaches the real language services", run: testIdeExecutorAsync },
 ];
 

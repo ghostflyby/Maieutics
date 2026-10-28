@@ -34,6 +34,10 @@ internal sealed class FrontendTurnQueue(
     /// <summary>One POST carries at most one full queue's worth of items.</summary>
     internal const int MaxBatchItems = Capacity;
 
+    /// <summary>Bounded recent outcomes, including active admissions. Expired correlations
+    /// are explicit client failures, just like expired run replay.</summary>
+    internal const int OutcomeRetention = 128;
+
     /// <summary>Submission retries after the first busy failure when a direct turn raced
     /// the dequeue; the session's in-flight run is waited out between attempts.</summary>
     private const int BusyRetryLimit = 3;
@@ -101,6 +105,7 @@ internal sealed class FrontendTurnQueue(
             foreach (var item in items)
             {
                 state.Items.Add(item);
+                SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "queued"));
                 response.Add(new FrontendQueueEnqueuedItem(item.Id, state.Items.Count));
             }
 
@@ -132,6 +137,7 @@ internal sealed class FrontendTurnQueue(
             if (index >= 0)
             {
                 state.Items.RemoveAt(index);
+                SetOutcomeLocked(state, new FrontendQueueOutcome(itemId, "cancelled"));
                 ReleaseLeaseWhenDrainedLocked(state);
                 removed = true;
             }
@@ -169,6 +175,8 @@ internal sealed class FrontendTurnQueue(
             if (removed)
             {
                 removedCount = state.Items.Count;
+                foreach (var item in state.Items)
+                    SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "cancelled"));
                 state.Items.Clear();
                 ReleaseLeaseWhenDrainedLocked(state);
             }
@@ -368,7 +376,9 @@ internal sealed class FrontendTurnQueue(
                 state.Running is { } running
                     ? new FrontendQueueRunningItem(running.ItemId, running.RunId)
                     : null,
-                items);
+                items,
+                Version: state.Version,
+                Outcomes: state.Outcomes.ToArray());
             return (snapshot, state.Version);
         }
     }
@@ -461,6 +471,7 @@ internal sealed class FrontendTurnQueue(
                         item = state.Items[0];
                         state.Items.RemoveAt(0);
                         state.DequeueInFlight = true;
+                        SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "starting"));
                     }
                 }
 
@@ -496,6 +507,7 @@ internal sealed class FrontendTurnQueue(
                     lock (state.Gate)
                     {
                         state.Running = new RunningItem(item.Id, runId);
+                        SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "running", runId));
                         state.DequeueInFlight = false;
                     }
 
@@ -513,6 +525,11 @@ internal sealed class FrontendTurnQueue(
                 }
                 catch (Exception failure)
                 {
+                    var error = failure is FrontendFailureException typed
+                        ? new FrontendError(typed.Code, typed.Message.Length <= 4096 ? typed.Message : typed.Message[..4096] + "…")
+                        : new FrontendError("queue_item_failed", "The queued turn could not be started.");
+                    lock (state.Gate)
+                        SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "failed", Error: error));
                     // Expected per-item failure (busy retries exhausted, rejected input,
                     // provider or configuration error): typed, recoverable, and surfaced as
                     // the item's removal in the next frame; the queue keeps draining.
@@ -526,7 +543,15 @@ internal sealed class FrontendTurnQueue(
                 {
                     lock (state.Gate)
                     {
-                        if (state.Running is { } running && running.ItemId == item.Id) state.Running = null;
+                        if (state.Running is { } running && running.ItemId == item.Id)
+                        {
+                            SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "completed", running.RunId));
+                            state.Running = null;
+                        }
+                        else if (state.Outcomes.FirstOrDefault(value => value.ItemId == item.Id) is { State: "starting" })
+                        {
+                            SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "cancelled"));
+                        }
                         state.DequeueInFlight = false;
 
                         ReleaseLeaseWhenDrainedLocked(state);
@@ -558,10 +583,25 @@ internal sealed class FrontendTurnQueue(
         }
     }
 
+    private static void SetOutcomeLocked(SessionQueue state, FrontendQueueOutcome outcome)
+    {
+        var existing = state.Outcomes.FindIndex(value => value.ItemId == outcome.ItemId);
+        if (existing >= 0) state.Outcomes[existing] = outcome;
+        else state.Outcomes.Add(outcome);
+        while (state.Outcomes.Count > OutcomeRetention)
+        {
+            var expired = state.Outcomes.FindIndex(static value => value.State is "completed" or "failed" or "cancelled");
+            if (expired < 0) return;
+            state.Outcomes.RemoveAt(expired);
+        }
+    }
+
     private void DrainLocked(SessionQueue state)
     {
         lock (state.Gate)
         {
+            foreach (var item in state.Items)
+                SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "cancelled"));
             state.Items.Clear();
             state.Running = null;
             state.DequeueInFlight = false;
@@ -684,6 +724,8 @@ internal sealed class FrontendTurnQueue(
         public bool DequeueInFlight;
 
         public List<QueuedItem> Items { get; } = [];
+
+        public List<FrontendQueueOutcome> Outcomes { get; } = [];
 
         public RunningItem? Running { get; set; }
 

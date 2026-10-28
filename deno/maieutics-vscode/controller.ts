@@ -154,6 +154,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   /** Run ids of each notebook's in-flight turn — inline or started from the
    * queue — for the interrupt handler. */
   private readonly activeRuns = new Map<string, string>();
+  private readonly queuedRuns = new Map<string, Promise<void>>();
   /** Notebooks closed with work queued or running: their remaining cells must
    * not submit and their streams must not be silently recreated. Cleared when
    * the document is submitted again (reopened). */
@@ -168,9 +169,10 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     /** The itemId ↔ cell projection of the server-owned queue, for the
      * "queued" cell status markers and run following. */
     private readonly projection: QueueProjection<vscode.NotebookCell>,
+    controllerId = "maieutics",
   ) {
     this.controller = vscode.notebooks.createNotebookController(
-      "maieutics",
+      controllerId,
       NotebookType,
       "Maieutics",
     );
@@ -185,16 +187,17 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     this.controller.interruptHandler = (notebook) => this.interruptAsync(notebook);
   }
 
-  dispose(): void {
-    this.resetConnections();
+  async dispose(): Promise<void> {
+    await this.resetConnections();
     this.controller.dispose();
   }
 
   /** Drops live event streams after a server restart; the next execution in
    * each notebook reconnects against the new process. */
-  resetConnections(): void {
-    for (const stream of this.streams.values()) stream.dispose();
+  async resetConnections(): Promise<void> {
+    const streams = [...this.streams.values()];
     this.streams.clear();
+    await Promise.all(streams.map((stream) => stream.dispose()));
   }
 
   /** Cancels the notebook's in-flight runs and removes its queued items from
@@ -225,7 +228,9 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     const stream = this.streams.get(sessionId);
     if (stream === undefined) return;
     stream.cancelAll();
-    stream.dispose();
+    void stream.dispose().catch((error: unknown) =>
+      this.output.appendLine(`stream disposal failed: ${error}`)
+    );
     this.streams.delete(sessionId);
   }
 
@@ -323,8 +328,13 @@ export class MaieuticsNotebookController implements vscode.Disposable {
         }
       }
     });
-    this.orchestrations.set(queueKey, run.then(() => {}, () => {}));
-    await run;
+    const visible = run.catch((error: unknown) => {
+      this.output.appendLine(`execution failed: ${error}`);
+      for (const cell of cells) this.paintUnstartedFailure(cell, error);
+    });
+    this.orchestrations.set(queueKey, visible);
+    await visible;
+    return;
   }
 
   /**
@@ -345,6 +355,14 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     const stream = await this.ensureStreamAsync(sessionId);
     const texts = cells.map((entry) => entry.text);
     try {
+      await stream.reconcileQueueAsync();
+      if (!stream.queueRecoveryAvailable) {
+        throw new FrontendError(
+          "queue_recovery_unavailable",
+          0,
+          "Restart the Maieutics server with the updated executable before submitting queued turns.",
+        );
+      }
       // Captured before the POST so the drain wait can ignore snapshots that
       // predate the enqueue (the enqueue frame itself always postdates it).
       const version = stream.queueSnapshotVersion;
@@ -366,7 +384,14 @@ export class MaieuticsNotebookController implements vscode.Disposable {
         })),
       );
 
+      // HTTP admission can finish after queue/run events. The retained outcomes recover
+      // their run ids; each run's own socket then replays output from sequence zero.
+      await stream.reconcileQueueAsync();
       const drained = await stream.awaitQueueDrainedAsync(version, items.map((item) => item.id));
+      for (const item of items) {
+        await this.queuedRuns.get(item.id);
+        this.queuedRuns.delete(item.id);
+      }
       if (!drained && !this.closedNotebooks.has(queueKey)) {
         const failure = new FrontendError(
           "events_disconnected",
@@ -398,10 +423,51 @@ export class MaieuticsNotebookController implements vscode.Disposable {
    * refresh. */
   private applyQueueState(sessionId: string, snapshot: QueueState): void {
     if (snapshot.sessionId !== sessionId) return;
+    for (const outcome of snapshot.outcomes ?? []) {
+      if (outcome.runId !== undefined) {
+        const tracked = this.projection.take(sessionId, outcome.itemId);
+        if (tracked !== undefined) {
+          this.followRun(sessionId, outcome.runId, tracked, outcome.itemId);
+        }
+      } else if (outcome.state === "failed" || outcome.state === "cancelled") {
+        const tracked = this.projection.take(sessionId, outcome.itemId);
+        if (tracked !== undefined) {
+          this.paintUnstartedFailure(
+            tracked.cell,
+            new FrontendError(
+              outcome.error?.code ?? "queue_cancelled",
+              0,
+              outcome.error?.message ?? "The queued turn was cancelled before it started.",
+            ),
+          );
+        }
+      }
+    }
     const running = snapshot.running;
     if (running !== null) {
       const tracked = this.projection.take(sessionId, running.itemId);
-      if (tracked !== undefined) this.followRun(sessionId, running.runId, tracked);
+      if (tracked !== undefined) this.followRun(sessionId, running.runId, tracked, running.itemId);
+    }
+    if (snapshot.outcomes !== undefined) {
+      const known = new Set([
+        ...snapshot.items.map((item) => item.id),
+        ...snapshot.outcomes.map((outcome) => outcome.itemId),
+        ...(snapshot.running === null ? [] : [snapshot.running.itemId]),
+      ]);
+      for (const entry of this.projection.entriesWhere(() => true)) {
+        if (entry.sessionId === sessionId && !known.has(entry.itemId)) {
+          const tracked = this.projection.take(sessionId, entry.itemId);
+          if (tracked === undefined) continue;
+          this.paintUnstartedFailure(
+            tracked.cell,
+            new FrontendError(
+              "queue_item_expired",
+              0,
+              "The queued turn's retained outcome expired; its output cannot be recovered.",
+            ),
+          );
+        }
+      }
     }
     this.projection.apply(sessionId, snapshot);
   }
@@ -414,6 +480,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     sessionId: string,
     runId: string,
     tracked: TrackedQueueItem<vscode.NotebookCell>,
+    itemId: string,
   ): void {
     const stream = this.streams.get(sessionId);
     if (stream === undefined) return; // The stream died; its waits already failed.
@@ -426,7 +493,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
     const runKey = tracked.cell.notebook.uri.toString();
     this.activeRuns.set(runKey, runId);
     const settled = stream.awaitRunAsync(runId, execution, tracked.text);
-    void (async () => {
+    const followed = (async () => {
       try {
         const committed = await settled;
         // Only a successfully completed run becomes part of history: failed
@@ -443,6 +510,8 @@ export class MaieuticsNotebookController implements vscode.Disposable {
         if (this.activeRuns.get(runKey) === runId) this.activeRuns.delete(runKey);
       }
     })();
+    this.queuedRuns.set(itemId, followed);
+    void followed.then(() => this.queuedRuns.delete(itemId));
   }
 
   /** Removes the cell's queued item from the server queue: the marker clears
@@ -757,11 +826,17 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 
   private async ensureStreamAsync(sessionId: string): Promise<NotebookStream> {
-    const existing = this.streams.get(sessionId);
+    const client = await this.bridge.client();
+    let existing = this.streams.get(sessionId);
+    if (existing?.isClosed) {
+      await existing.dispose();
+      if (this.streams.get(sessionId) === existing) this.streams.delete(sessionId);
+      existing = this.streams.get(sessionId);
+    }
     if (existing) return existing;
 
     const stream = new NotebookStream(
-      await this.bridge.client(),
+      client,
       sessionId,
       (runId) => this.output.appendLine(`run ${runId} finished`),
       (message) => this.output.appendLine(message),
@@ -774,7 +849,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 }
 
-/** Consumes the session event stream and routes frames to in-flight runs. */
+/** Owns the session queue/activity stream and each accepted run's replay pump. */
 class NotebookStream {
   private readonly runs = new Map<string, RunExecution>();
   /** Subagent child run ids (ADR 0030) folded into their parent run's cell:
@@ -783,6 +858,8 @@ class NotebookStream {
   private readonly childRuns = new Map<string, string>();
   private readonly queue: QueueWatcher;
   private controller: AbortController | null = null;
+  private completion: Promise<void> = Promise.resolve();
+  private readonly runPumps = new Map<string, Promise<void>>();
 
   constructor(
     private readonly client: FrontendClient,
@@ -800,7 +877,7 @@ class NotebookStream {
     this.queue = new QueueWatcher(client, sessionId, onQueue, log);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     // Settle in-flight runs BEFORE aborting: a settled run ends its cell
     // execution and resolves the notebook's execution queue, so nothing is
     // left spinning behind a connection that no longer exists. Queue drain
@@ -813,11 +890,12 @@ class NotebookStream {
     this.queue.failWaits();
     this.controller?.abort();
     this.controller = null;
+    await Promise.all([this.completion, ...this.runPumps.values()]);
   }
 
   start(): void {
     this.controller = new AbortController();
-    void this.pumpAsync(this.controller.signal);
+    this.completion = this.pumpAsync(this.controller.signal);
   }
 
   /** Cancels every in-flight run (notebook closing / window unloading).
@@ -849,7 +927,21 @@ class NotebookStream {
     execution: vscode.NotebookCellExecution,
     input: string,
   ): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+    const signal = this.controller?.signal;
+    if (signal === undefined || signal.aborted) {
+      execution.replaceOutput([
+        errorOutput(
+          new FrontendError(
+            "events_disconnected",
+            0,
+            "The server connection closed before the run could be attached.",
+          ),
+        ),
+      ]);
+      execution.end(false, Date.now());
+      return Promise.resolve(false);
+    }
+    const settled = new Promise<boolean>((resolve) => {
       const run = new RunExecution(runId, execution, input, this.client, resolve);
       this.runs.set(runId, run);
       run.begin();
@@ -857,6 +949,9 @@ class NotebookStream {
         void this.client.cancelRun(runId).catch((error) => this.log(`cancel failed: ${error}`));
       });
     });
+    const pump = this.pumpRunAsync(runId, signal);
+    this.runPumps.set(runId, pump);
+    return pump.then(() => settled).finally(() => this.runPumps.delete(runId));
   }
 
   /** The queue watcher's snapshot version: captured before an enqueue so the
@@ -869,6 +964,51 @@ class NotebookStream {
    * gone; false when the stream fails first. */
   awaitQueueDrainedAsync(version: number, itemIds: readonly string[]): Promise<boolean> {
     return this.queue.awaitDrainedAsync(version, itemIds);
+  }
+
+  get isClosed(): boolean {
+    return this.controller?.signal.aborted ?? false;
+  }
+
+  get queueRecoveryAvailable(): boolean {
+    return this.queue.lastSnapshot?.outcomes !== undefined;
+  }
+
+  async reconcileQueueAsync(): Promise<void> {
+    await this.queue.reconcileAsync(this.controller?.signal);
+  }
+
+  private async pumpRunAsync(runId: string, signal: AbortSignal): Promise<void> {
+    try {
+      for await (const frame of this.client.events(this.sessionId, { signal, runId })) {
+        if (frame.type === "hello") continue;
+        if (frame.type === "run.missing") {
+          this.runs.get(runId)?.fail(
+            "run_missing",
+            "The retained run output expired and cannot be replayed.",
+          );
+          break;
+        }
+        this.route(frame, runId);
+        if (
+          frame.runId === runId &&
+          ["run.completed", "run.failed", "run.missing"].includes(frame.type)
+        ) {
+          this.onRunFinished(runId);
+          break;
+        }
+      }
+    } catch (error) {
+      this.runs.get(runId)?.fail("events_disconnected", String(error));
+    } finally {
+      this.runs.get(runId)?.fail(
+        "events_disconnected",
+        "The run event stream ended before completion.",
+      );
+      this.runs.delete(runId);
+      for (const child of childRunsOfParent(this.childRuns, runId)) this.childRuns.delete(child);
+      if (this.runs.size === 0) this.activity.markIdle(this.sessionId);
+    }
   }
 
   private async pumpAsync(signal: AbortSignal): Promise<void> {
@@ -889,26 +1029,7 @@ class NotebookStream {
           continue;
         }
 
-        this.route(frame);
-        // Any terminal view outcome retires the run: a settled run must not
-        // stay here catching run-less frames (repl displays, input requests).
-        // Only a TOP-LEVEL terminal frame retires and flips idle — a child's
-        // terminal frame carries the child's runId, which `runs` never held,
-        // and the session busy/idle stays bound to the top-level run: a
-        // child finishing must not extinguish the busy badge while its
-        // parent is still running (ADR 0030 decision 6).
-        const runId = frame.runId ?? "";
-        if (
-          (frame.type === "run.completed" || frame.type === "run.failed" ||
-            frame.type === "run.missing") && this.runs.delete(runId)
-        ) {
-          // The retiring run's children go with it, so a late frame of an
-          // old child can never be adopted by the NEXT run.
-          for (const child of childRunsOfParent(this.childRuns, runId)) {
-            this.childRuns.delete(child);
-          }
-          this.activity.markIdle(this.sessionId);
-        }
+        // Session sockets observe queue/activity only; accepted runs replay on their own socket.
       }
     } catch (error) {
       if (!signal.aborted) {
@@ -921,16 +1042,18 @@ class NotebookStream {
       // Whether the stream ended by error, abort, or server close, no batch
       // may keep waiting on its queue state.
       this.queue.failWaits();
+      this.controller?.abort();
     }
   }
 
-  private route(frame: EventFrame): void {
-    const owner = resolveFrameOwner(frame.runId, this.runs, this.childRuns);
+  private route(frame: EventFrame, parentRunId: string): void {
+    const owned = new Map([...this.runs].filter(([id]) => id === parentRunId));
+    const owner = resolveFrameOwner(frame.runId, owned, this.childRuns);
     switch (owner.kind) {
       case "session": {
         // REPL presentation frames carry no runId; the session gate keeps at
         // most one run in flight, so they belong to it.
-        for (const run of this.runs.values()) {
+        for (const run of owned.values()) {
           run.apply(frame);
           return;
         }

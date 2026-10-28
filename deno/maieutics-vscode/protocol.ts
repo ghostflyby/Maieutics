@@ -74,6 +74,13 @@ export interface Transcript {
   turns: TranscriptTurn[];
 }
 
+/** Command candidates and their replacement token in UTF-16 code units. */
+export interface CommandCompletion {
+  matches: string[];
+  tokenStart: number;
+  tokenEnd: number;
+}
+
 /** Token usage a provider reported for one run. */
 export interface UsageSummary {
   inputTokens: number;
@@ -106,6 +113,16 @@ export interface QueueState {
   running: { itemId: string; runId: string } | null;
   items: QueueItemState[];
   capacity: number;
+  version?: number;
+  outcomes?: QueueOutcome[];
+}
+
+/** Bounded server-retained correlation, including failures before a run starts. */
+export interface QueueOutcome {
+  itemId: string;
+  state: "queued" | "starting" | "running" | "completed" | "failed" | "cancelled";
+  runId?: string;
+  error?: { code: string; message: string };
 }
 
 /** The fixed task lifecycle vocabulary (ADR 0028 decision 2, the MCP tasks

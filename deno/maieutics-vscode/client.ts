@@ -16,6 +16,7 @@ import { decodeCommEnvelope, encodeCommEnvelope } from "../shared/comm_codec.ts"
 import type { SkillInfo } from "./skillsCatalog.ts";
 import type {
   Capabilities,
+  CommandCompletion,
   CommFrame,
   CommHello,
   CommMessage,
@@ -85,8 +86,9 @@ export interface CommSocket {
 }
 
 export interface EventsOptions {
-  sinceSequence?: number;
+  /** Scope replay to an accepted run, including a run that already completed. */
   runId?: string;
+  sinceSequence?: number;
   signal?: AbortSignal;
 }
 
@@ -514,11 +516,23 @@ export class FrontendClient {
     return typeof body.markdown === "string" ? body.markdown : "";
   }
 
-  async complete(text: string, cursor: number, signal?: AbortSignal): Promise<string[]> {
+  async complete(text: string, cursor: number, signal?: AbortSignal): Promise<CommandCompletion> {
     const response = await this.fetchJson("POST", "/v1/agent/complete", { text, cursor }, signal);
     if (!response.ok) throw await this.errorOf(response);
-    const body = await response.json() as { matches?: string[] };
-    return Array.isArray(body.matches) ? body.matches : [];
+    const body = await response.json() as CommandCompletion;
+    if (
+      !Array.isArray(body.matches) || !body.matches.every((match) => typeof match === "string") ||
+      !Number.isInteger(body.tokenStart) || !Number.isInteger(body.tokenEnd) ||
+      body.tokenStart < 0 || body.tokenStart > cursor || body.tokenEnd < cursor ||
+      body.tokenEnd > text.length
+    ) {
+      throw new FrontendError(
+        "protocol_error",
+        response.status,
+        "Invalid command completion range.",
+      );
+    }
+    return body;
   }
 
   /**
@@ -574,7 +588,7 @@ export class FrontendClient {
         : resumeOffset(lastSeenByRun, childRuns);
       firstConnect = false;
       const connectedAt = Date.now();
-      const handle = this.openSocket(sessionId, sinceSequence, options.signal);
+      const handle = this.openSocket(sessionId, sinceSequence, options.signal, options.runId);
 
       // Open failures are consumed here: reconnect is driven by the message
       // loop ending (onclose/onerror), not by the open promise.
@@ -602,7 +616,7 @@ export class FrontendClient {
         backoffMs = InitialBackoffMs;
       }
       if (options.signal?.aborted) return;
-      await sleep(backoffMs);
+      await sleep(backoffMs, options.signal);
       backoffMs = Math.min(backoffMs * 2, MaxBackoffMs);
     }
   }
@@ -722,6 +736,7 @@ export class FrontendClient {
     sessionId: string,
     sinceSequence: number,
     signal?: AbortSignal,
+    runId?: string,
   ): {
     socket: WebSocket;
     opened: Promise<void>;
@@ -733,7 +748,8 @@ export class FrontendClient {
     // socket a recipient of ide.request payloads and lapses with the connection.
     const url = `${this.baseUrl}/v1/agent/sessions/${sessionId}/events` +
       `?sinceSequence=${sinceSequence}&token=${encodeURIComponent(this.token)}` +
-      `&ide=${IdeCapabilityVersion}`;
+      `&ide=${IdeCapabilityVersion}` +
+      (runId === undefined ? "" : `&runId=${encodeURIComponent(runId)}`);
     const socket = new WebSocket(url.replace("http://", "ws://"));
 
     // Frames can arrive in the same network turn as the handshake response, so every
@@ -930,6 +946,15 @@ function liveTopLevelRun(
   return undefined;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }

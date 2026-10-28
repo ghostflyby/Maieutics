@@ -526,7 +526,7 @@ internal sealed class FrontendTurnQueue(
                 catch (Exception failure)
                 {
                     var error = failure is FrontendFailureException typed
-                        ? new FrontendError(typed.Code, typed.Message.Length <= 4096 ? typed.Message : typed.Message[..4096] + "…")
+                        ? new FrontendError(typed.Code, BoundWireMessage(typed.Message))
                         : new FrontendError("queue_item_failed", "The queued turn could not be started.");
                     lock (state.Gate)
                         SetOutcomeLocked(state, new FrontendQueueOutcome(item.Id, "failed", Error: error));
@@ -581,6 +581,16 @@ internal sealed class FrontendTurnQueue(
             _logger.LogDebug("Turn queue worker stopped for session {SessionId}.", sessionId);
             cancellation.Dispose();
         }
+    }
+
+    /// <summary>Bounds a wire failure message, trimming at a UTF-16 character boundary so a
+    /// split surrogate pair is never serialized.</summary>
+    private static string BoundWireMessage(string message)
+    {
+        const int limit = 4096;
+        if (message.Length <= limit) return message;
+        var end = char.IsHighSurrogate(message[limit - 1]) ? limit - 1 : limit;
+        return message[..end] + "…";
     }
 
     private static void SetOutcomeLocked(SessionQueue state, FrontendQueueOutcome outcome)

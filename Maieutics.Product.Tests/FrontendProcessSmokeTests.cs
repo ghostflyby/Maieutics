@@ -209,7 +209,7 @@ public sealed class FrontendProcessSmokeTests
 
     private static SmokeHostProcess StartHostProcess(
         Uri endpoint,
-        string? workspaceRoot = null)
+        string workspaceRoot)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -240,9 +240,7 @@ public sealed class FrontendProcessSmokeTests
         startInfo.ArgumentList.Add("--frontend-discovery");
         startInfo.ArgumentList.Add(discoveryPath);
         startInfo.ArgumentList.Add("--Maieutics:DataRoot");
-        startInfo.ArgumentList.Add(Path.Combine(
-            workspaceRoot ?? throw new InvalidOperationException("The smoke host requires a temporary workspace."),
-            "data"));
+        startInfo.ArgumentList.Add(Path.Combine(workspaceRoot, "data"));
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add("test-model");
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";
@@ -250,7 +248,7 @@ public sealed class FrontendProcessSmokeTests
         startInfo.Environment["Maieutics__Providers__OpenAI__Endpoint"] = endpoint.ToString();
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
             nameof(OpenAiApiFlavor.ChatCompletions);
-        if (workspaceRoot is not null) startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
+        startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
         startInfo.Environment.Remove("MAIEUTICS_PROVIDER");

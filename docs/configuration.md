@@ -41,8 +41,9 @@ For example, `Maieutics__DefaultProfile` overrides `MAIEUTICS_PROFILE`, while `-
 
 `Maieutics:DataRoot` relocates machine-local persistent data, including Agent session families,
 objects, plugin data, the default plugin approval registry, and the default workspace home.
-It defaults to the platform application-data directory described in ADR 0022. Set it with
-`Maieutics__DataRoot` or `--Maieutics:DataRoot <path>`; relative paths resolve against the
+Only the data root moves: the cache, runtime, and temporary roots keep their ADR 0022 platform
+locations. It defaults to the platform application-data directory described in ADR 0022. Set it
+with `Maieutics__DataRoot` or `--Maieutics:DataRoot <path>`; relative paths resolve against the
 startup working directory. The value is captured before storage is created and requires a
 restart to change. Tests select a temporary root before creating a host and delete it after
 the host is disposed. Configuration discovery and the plugin code root retain their own paths.

@@ -6,6 +6,11 @@ namespace Maieutics.Product.Tests;
 /// whose existing teardown deletes it after the host has been disposed.</summary>
 internal static class TestMaieuticsHost
 {
+    /// <summary>Builds a host builder whose persistent data root sits inside the temporary
+    /// directory holding the given configuration file, so the caller's existing teardown
+    /// deletes the data after the host has been disposed.</summary>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="args" /> carries no
+    /// <c>--config</c> pair, or the configuration file has no parent directory.</exception>
     public static WebApplicationBuilder CreateApplicationBuilder(string[] args)
     {
         var configIndex = Array.IndexOf(args, "--config");

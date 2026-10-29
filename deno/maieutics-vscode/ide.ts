@@ -56,9 +56,106 @@ export const ideMethodCommands: Readonly<Record<string, string>> = {
   "textDocument/formatting": "vscode.executeFormatDocumentProvider",
 };
 
-/** Whether the method dispatches without the special-cased Problems path. */
+/** Whether a method belongs to the fixed language or filesystem catalog. */
 export function isIdeMethodSupported(method: string): boolean {
-  return method === "maieutics/problems" || method in ideMethodCommands;
+  return ideSpecialMethods.has(method) || Object.hasOwn(ideMethodCommands, method);
+}
+
+/** Fixed non-LSP methods implemented by the editor executor. The kernel owns
+ * permission gates; this table never accepts arbitrary editor commands. */
+const ideSpecialMethods: ReadonlySet<string> = new Set([
+  "maieutics/problems",
+  "maieutics/dirty",
+  "maieutics/fs/list",
+  "maieutics/fs/read",
+  "maieutics/fs/search",
+  "maieutics/fs/local/list",
+  "maieutics/fs/local/read",
+  "maieutics/fs/local/search",
+  "maieutics/fs/local/write",
+  "maieutics/fs/local/delete",
+]);
+
+/** One typed answer sent to the kernel's IDE request endpoint. */
+export interface IdeRequestAnswer {
+  value?: unknown;
+  error?: { code: string; message: string };
+}
+
+/** Executes and answers an IDE request within one total budget and the owning
+ * stream's lifetime. Diagnostics carry correlation metadata only. */
+export async function respondToIdeRequest(
+  request: IdeRequestPayload,
+  host: {
+    execute(method: string, params: Record<string, unknown>): Promise<unknown>;
+    submit(requestId: string, answer: IdeRequestAnswer, signal: AbortSignal): Promise<boolean>;
+    log(message: string): void;
+  },
+  lifetime: AbortSignal,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const label = `IDE request ${request.requestId} (${request.method})`;
+  host.log(`${label} received`);
+  const budget = new AbortController();
+  const timer = setTimeout(() => budget.abort(), timeoutMs);
+  const signal = AbortSignal.any([lifetime, budget.signal]);
+  try {
+    signal.throwIfAborted();
+    let answer: IdeRequestAnswer;
+    if (!isIdeMethodSupported(request.method)) {
+      answer = {
+        error: {
+          code: "ide_method_unsupported",
+          message: "The requested IDE method is not supported.",
+        },
+      };
+    } else {
+      try {
+        answer = {
+          value: await awaitIdeOperation(host.execute(request.method, request.params), signal),
+        };
+      } catch (error) {
+        signal.throwIfAborted();
+        const code = typeof error === "object" && error !== null && "code" in error &&
+            typeof error.code === "string"
+          ? error.code
+          : "ide_provider_error";
+        answer = { error: { code, message: String(error) } };
+      }
+    }
+    signal.throwIfAborted();
+    const accepted = await awaitIdeOperation(
+      host.submit(request.requestId, answer, signal),
+      signal,
+    );
+    host.log(
+      `${label} ${accepted ? "answered" : "answer expired"} (${answer.error?.code ?? "ok"})`,
+    );
+  } catch {
+    host.log(
+      `${label} ${
+        budget.signal.aborted ? "timed out" : signal.aborted ? "cancelled" : "answer failed"
+      }`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Editor provider APIs do not all accept cancellation. Stop awaiting on owner
+ * shutdown while keeping a rejection observer on any late provider completion. */
+async function awaitIdeOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort = () => {};
+  const stopped = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, stopped]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 /** Builds one provider command's argument list from the LSP-shaped params.

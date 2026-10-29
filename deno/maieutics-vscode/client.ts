@@ -487,8 +487,9 @@ export class FrontendClient {
   async submitIdeAnswer(
     requestId: string,
     answer: { value?: unknown; error?: { code: string; message: string } },
+    signal?: AbortSignal,
   ): Promise<boolean> {
-    const response = await this.fetchJson("POST", `/v1/agent/ide/${requestId}`, answer);
+    const response = await this.fetchJson("POST", `/v1/agent/ide/${requestId}`, answer, signal);
     if (response.status === 404) {
       await response.body?.cancel();
       return false;

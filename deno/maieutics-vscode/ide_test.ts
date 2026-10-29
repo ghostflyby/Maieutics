@@ -19,11 +19,122 @@ import {
   parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
+  respondToIdeRequest,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
   transitionDebugSession,
 } from "./ide.ts";
+
+Deno.test("IDE dispatch admits the implemented filesystem methods only", () => {
+  for (
+    const method of [
+      "maieutics/fs/list",
+      "maieutics/fs/read",
+      "maieutics/fs/search",
+      "maieutics/fs/local/list",
+      "maieutics/fs/local/read",
+      "maieutics/fs/local/search",
+      "maieutics/fs/local/write",
+      "maieutics/fs/local/delete",
+      "maieutics/dirty",
+    ]
+  ) {
+    assert(isIdeMethodSupported(method), method);
+  }
+  for (const method of ["workspace/executeCommand", "maieutics/fs/local/execute", "toString"]) {
+    assert(!isIdeMethodSupported(method), method);
+  }
+});
+
+Deno.test("IDE request diagnostics correlate answers without arguments or results", async () => {
+  const logs: string[] = [];
+  const answers: unknown[] = [];
+  await respondToIdeRequest({
+    requestId: "ide-correlation",
+    method: "maieutics/fs/local/read",
+    params: { uri: "private-argument" },
+  }, {
+    execute: () => Promise.resolve({ content: "private-result" }),
+    submit: (_id, answer) => {
+      answers.push(answer);
+      return Promise.resolve(true);
+    },
+    log: (message) => logs.push(message),
+  }, new AbortController().signal);
+  assertEquals(answers, [{ value: { content: "private-result" } }]);
+  assert(logs.some((line) => line.includes("received")));
+  assert(logs.some((line) => line.includes("answered")));
+  assert(logs.every((line) => line.includes("ide-correlation") && !line.includes("private-")));
+});
+
+Deno.test("IDE responses preserve typed errors and expose expired or failed answer delivery", async () => {
+  for (const outcome of ["answered", "answer expired", "answer failed"]) {
+    const logs: string[] = [];
+    await respondToIdeRequest({
+      requestId: "ide-error",
+      method: "maieutics/fs/local/read",
+      params: {},
+    }, {
+      execute: () =>
+        Promise.reject(Object.assign(new Error("private-error"), { code: "fs_not_found" })),
+      submit: (_id, answer) => {
+        assertEquals(answer.error?.code, "fs_not_found");
+        return outcome === "answer failed"
+          ? Promise.reject(new Error("private-transport"))
+          : Promise.resolve(outcome === "answered");
+      },
+      log: (message) => logs.push(message),
+    }, new AbortController().signal);
+    assert(logs.some((line) => line.includes(outcome)));
+    assert(logs.every((line) => !line.includes("private-")));
+  }
+});
+
+Deno.test("IDE owner cancellation settles a stalled provider without posting a late answer", async () => {
+  const lifetime = new AbortController();
+  const logs: string[] = [];
+  let finish = (_value: unknown) => {};
+  const operation = new Promise<unknown>((resolve) => finish = resolve);
+  let submitted = false;
+  const pending = respondToIdeRequest({
+    requestId: "ide-cancel",
+    method: "maieutics/fs/list",
+    params: {},
+  }, {
+    execute: () => operation,
+    submit: () => {
+      submitted = true;
+      return Promise.resolve(true);
+    },
+    log: (message) => logs.push(message),
+  }, lifetime.signal);
+  lifetime.abort();
+  await pending;
+  finish({ folders: [] });
+  assert(!submitted);
+  assert(logs.some((line) => line.includes("cancelled")));
+});
+
+Deno.test("IDE total budget bounds a stalled answer submission and logs timeout", async () => {
+  const logs: string[] = [];
+  let submittedSignal: AbortSignal | undefined;
+  await respondToIdeRequest(
+    { requestId: "ide-timeout", method: "maieutics/fs/list", params: {} },
+    {
+      execute: () => Promise.resolve({ folders: [] }),
+      submit: (_id, _answer, signal) => {
+        submittedSignal = signal;
+        return new Promise<boolean>(() => {});
+      },
+      log: (message) => logs.push(message),
+    },
+    new AbortController().signal,
+    0,
+  );
+  assert(submittedSignal?.aborted);
+  assert(logs.some((line) => line.includes("ide-timeout") && line.includes("timed out")));
+});
 
 const progressFrame = (value: unknown) => ({
   type: "tool.progress",

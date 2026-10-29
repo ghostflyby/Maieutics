@@ -7,6 +7,7 @@ using Maieutics.Execution;
 using Maieutics.Frontend;
 using Maieutics.Permissions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
 
@@ -90,6 +91,74 @@ public sealed class FrontendWorkspaceBridgeTests
     }
 
     // ---------- bridge channel round trips ----------
+
+    [Fact(Timeout = 30_000)]
+    public async Task BridgeLogsCorrelatedRequestsAndAnswersWithoutPayloads()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = BridgeHarness.Create();
+        var logger = new BridgeLogger();
+        harness.DiskFrontend.AnswerText["private-file"] = "private-result-content";
+        var bridge = new FrontendWorkspaceBridge(harness.Sockets, harness.Registry, harness.Workspace, logger);
+        var channel = bridge.Acquire(BridgeHarness.SessionId)
+                      ?? throw new InvalidOperationException("The test frontend did not acquire the bridge.");
+
+        Assert.Equal("private-result-content", await channel.ReadTextAsync(["private-file"], 100, deadline.Token));
+        Assert.Contains(logger.Records, record => record.Level == LogLevel.Debug &&
+            record.Message.Contains("Sending", StringComparison.Ordinal) &&
+            record.Message.Contains("maieutics/fs/local/read", StringComparison.Ordinal));
+        Assert.Contains(logger.Records, record => record.Message.Contains("answered with ok", StringComparison.Ordinal));
+        Assert.All(logger.Records, record =>
+        {
+            Assert.Contains("ide-", record.Message);
+            Assert.Contains(BridgeHarness.SessionId, record.Message);
+            Assert.DoesNotContain("private-file", record.Message);
+            Assert.DoesNotContain("private-result-content", record.Message);
+            Assert.DoesNotContain(harness.Root, record.Message);
+        });
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task BridgeTimeoutLogsRequestIdentityAndAbandonsItsPendingAnswer()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        await using var harness = BridgeHarness.Create();
+        var logger = new BridgeLogger();
+        var sockets = new FrontendIdeSockets();
+        var registry = new IdeRequestRegistry();
+        var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authority = sockets.Announce(BridgeHarness.SessionId, (frame, _) =>
+        {
+            if (frame.Data is not { } data || data.GetProperty("requestId").GetString() is not { } requestId)
+                throw new InvalidOperationException("The bridge request has no correlation identity.");
+            received.SetResult(requestId);
+            return Task.CompletedTask;
+        });
+        try
+        {
+            var bridge = new FrontendWorkspaceBridge(sockets, registry, harness.Workspace, logger)
+            {
+                RequestTimeout = TimeSpan.Zero
+            };
+            var channel = bridge.Acquire(BridgeHarness.SessionId)
+                          ?? throw new InvalidOperationException("The test frontend did not acquire the bridge.");
+            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(
+                () => channel.ListAsync([], 10, deadline.Token).AsTask());
+            Assert.Equal("ide_timeout", failure.Code);
+            var requestId = await received.Task.WaitAsync(deadline.Token);
+            Assert.Contains(logger.Records, record => record.Level == LogLevel.Warning &&
+                record.Message.Contains(requestId, StringComparison.Ordinal) &&
+                record.Message.Contains("maieutics/fs/list", StringComparison.Ordinal) &&
+                record.Message.Contains("timed out", StringComparison.Ordinal));
+            Assert.False(registry.TryComplete(requestId, IdeRequestAnswer.FromError("late", "Late answer")));
+        }
+        finally
+        {
+            sockets.Withdraw(BridgeHarness.SessionId, authority);
+        }
+    }
 
     [Fact(Timeout = 60_000)]
     public async Task BridgedReadAnswersTheFrontendTextStateThroughTheRealWireShapes()
@@ -615,6 +684,25 @@ public sealed class FrontendWorkspaceBridgeTests
     }
 
     // ---------- harness ----------
+
+    private sealed class BridgeLogger : ILogger<FrontendWorkspaceBridge>
+    {
+        private readonly Lock _gate = new();
+        private readonly List<(LogLevel Level, string Message)> _records = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Records
+        {
+            get { lock (_gate) return _records.ToArray(); }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_gate) _records.Add((logLevel, formatter(state, exception)));
+        }
+    }
 
     /// <summary>The composed kernel side (real sockets, registry, bridge, workspace)
     /// plus the answering side: a local-disk stand-in for the extension host's local fs

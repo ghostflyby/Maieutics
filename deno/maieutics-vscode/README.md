@@ -91,3 +91,9 @@ file). The renderer module regression tests also need `allow-write` for temporar
 gate rejects them. Temporary bundles are removed after the test. The packaged extension talks to the
 executable over loopback HTTP/WS only; spawning the executable uses the Node child-process API, not
 Deno permissions.
+
+The IDE file-system bridge receives standalone requests on the session socket even when no Agent
+turn is active, and serves them through the editor's workspace APIs under the kernel's existing
+permission gates. Replies use the authenticated loopback IDE endpoint; this requires no additional
+Deno grants. The Maieutics output channel logs request ids, methods, and outcomes, without file
+paths, request arguments, or file contents.

@@ -10,6 +10,7 @@
  */
 
 import * as vscode from "vscode";
+import { transcriptOutput } from "./transcriptView.ts";
 import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
 import { registerCommandCompletion } from "./completion.ts";
@@ -85,10 +86,7 @@ export function activate(context: vscode.ExtensionContext): void {
           notebook.cells.push({
             kind: "agent",
             text: input,
-            output: {
-              text: turn.messages.at(-1)?.parts.find((part) => part.kind === "text")?.text ?? "",
-              truncated: turn.truncated,
-            },
+            output: transcriptOutput(turn),
             // Every stored turn was committed: the materialized view opens as
             // committed history with the frontier at its end.
             turn: turn.runId === "" ? undefined : { runId: turn.runId, input },

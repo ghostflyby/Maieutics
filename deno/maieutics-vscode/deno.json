@@ -1,6 +1,7 @@
 {
   "imports": {
     "acorn": "npm:acorn@8.18.0",
+    "markdown-it": "npm:markdown-it@14.3.1",
     "@vscode/test-electron": "npm:@vscode/test-electron@3.1.0",
     "vscode": "npm:@types/vscode@1.99.1"
   },

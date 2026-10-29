@@ -1,11 +1,10 @@
 /**
  * `.maieuticsnb` serializer: bridges the frontend-owned snapshot format onto
  * the VSCode notebook model. Deserialization only reads the file; live session
- * state is never touched (invariant 13). Structured turn results restore as
- * the single turn+json output item — the timeline renderer's default view and
- * the save round-trip's source (findTurnSnapshot); the markdown fallback view
- * lives inside the renderer. Markdown-only outputs from older files keep the
- * markdown fallback (snapshotFromMarkdownOutputs). The per-cell turn binding
+ * state is never touched (invariant 13). Each timeline node restores as an
+ * independent structured output. Saving joins those fragments into one portable
+ * turn snapshot; legacy whole-turn and Markdown-only outputs remain readable.
+ * The per-cell turn binding
  * (runId + submitted input) round-trips through cell metadata so
  * committed/stale history states survive save/reopen.
  */
@@ -26,6 +25,7 @@ import {
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
 import { turnOutputItems, type TurnOutputItemSpec, TurnOutputMime } from "./turnView.ts";
+import { timelineOutputSnapshots } from "./timelineOutputs.ts";
 
 export const NotebookType = "maieutics-notebook";
 
@@ -151,18 +151,15 @@ function snapshotFromMarkdownOutputs(cell: vscode.NotebookCellData): OutputSnaps
   return { text: "" };
 }
 
-/** Restores one snapshot as cell outputs: REPL displays first, then the
- * turn+json item — the ONLY render item, so the timeline renderer is picked
- * automatically (a sibling text/markdown item would always win VS Code's
- * mime display order). The same item is what serializeNotebook round-trips
- * from (findTurnSnapshot). Cells whose outputs carry no turn+json item are
- * older saves; they keep the markdown fallback view. */
+/** Restores native rich values and one structured output per timeline node. */
 export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCellOutput[] {
   const outputs = (output.repl ?? []).map((display) =>
     new vscode.NotebookCellOutput(bundleItems(display.data))
   );
   outputs.push(
-    new vscode.NotebookCellOutput(turnOutputItems(output).map(outputItemFromSpec)),
+    ...timelineOutputSnapshots(output).map((node) =>
+      new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec))
+    ),
   );
   return outputs;
 }

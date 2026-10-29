@@ -31,10 +31,9 @@
  * (regenerate, or edit-and-continue when the text drifted) so history stays
  * immutable while the mainstream agent UX — continue from here — still works.
  *
- * Streaming: text deltas fold into a TurnView and repaint the cell's markdown
- * output at most every PaintIntervalMs (mirroring the kernel adapter's flush
- * cadence). Tool activity renders as status lines above the answer; REPL
- * presentation frames attach to their display id in a later renderer pass.
+ * Streaming: frames fold into a TurnView and repaint stable, independently
+ * expandable timeline outputs at most every PaintIntervalMs. Native rich values
+ * keep their own display outputs.
  * Subagent child runs (ADR 0030) share the parent run's session stream under
  * the child's own runId and fold into one indented 子代理 timeline segment of
  * the parent cell — no child ever gets a cell or execution of its own.
@@ -68,13 +67,14 @@ import {
   StoredSessionMetadataKey,
 } from "./serializer.ts";
 import {
-  type ReasoningSummaryView,
   type ReplDisplayEntry,
   type SubagentSnapshotView,
   type ToolSnapshotView,
   turnOutputItems,
   TurnView,
 } from "./turnView.ts";
+import { timelineOutputSnapshots } from "./timelineOutputs.ts";
+import type { OutputSnapshot } from "./notebookFormat.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
 import {
@@ -2109,8 +2109,8 @@ class RunExecution {
   private settled = false;
   /** Stable output handles keyed by segment id: created once, updated in place. */
   private readonly segments = new Map<string, vscode.NotebookCellOutput>();
-  /** True once the first answer paint ran (the answer output object exists). */
-  private answerCreated = false;
+  private readonly segmentJson = new Map<string, string>();
+  private outputKeys: string[] = [];
 
   constructor(
     runId: string,
@@ -2308,7 +2308,7 @@ class RunExecution {
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */
   begin(): void {
-    this.paintAnswer();
+    this.paintTimeline(this.view.finalOutput(this.input), true);
   }
 
   apply(frame: EventFrame): void {
@@ -2357,23 +2357,15 @@ class RunExecution {
       this.paintTimer = null;
     }
 
-    const streamed = this.view.hasStreamedContent;
-    const snapshot = this.view.finalOutput();
-    const error = failureOutputWithRetry(new FrontendError(code, 0, message), this.execution.cell, {
-      ...(snapshot.reasoning === undefined ? {} : { reasoning: snapshot.reasoning }),
-      ...(snapshot.subagents === undefined ? {} : { subagents: snapshot.subagents }),
-    });
-    if (streamed) {
-      this.paintChanged();
-      // The failure snapshot owns the summaries so save/reopen retains partial output.
-      for (const key of [`reasoning:${this.view.runId}`, `subagents:${this.view.runId}`]) {
-        const stale = this.segments.get(key);
-        if (stale !== undefined) this.execution.replaceOutputItems([], stale);
-      }
-      this.execution.appendOutput([error]);
-    } else {
-      this.execution.replaceOutput([error]);
-    }
+    this.paintChanged();
+    this.paintTimeline(
+      failureSnapshotWithRetry(
+        new FrontendError(code, 0, message),
+        this.execution.cell,
+        this.view.finalOutput(this.input),
+      ),
+      false,
+    );
 
     this.execution.end(false, Date.now());
     notifyBackgroundSettled(this.execution.cell, "failed");
@@ -2402,162 +2394,98 @@ class RunExecution {
     }, PaintIntervalMs - elapsed);
   }
 
-  /** Creates or updates only the segments the view marked dirty since the last
-   * paint. Segment outputs are stable objects: a REPL display is created once
-   * and its items replaced in place on updateDisplay; the tools timeline and
-   * the answer markdown are the only other mutable segments. */
+  /** REPL values keep their own native outputs; every Agent timeline node is
+   * a stable structured output throughout streaming, completion and cancellation. */
   private paintChanged(): void {
     const dirty = this.view.takeDirty();
     if (dirty.size === 0) return;
-
+    const changed = new Set<string>();
+    const fills: {
+      attached: vscode.NotebookCellOutput;
+      items: readonly vscode.NotebookCellOutputItem[];
+    }[] = [];
     for (const entry of this.view.replList()) {
       const key = this.view.replSegmentId(entry);
       if (!dirty.has(key)) continue;
       const output = replOutputSync(entry, this.client);
-      const hadObjectRefs = Object.values(entry.data).some((value) =>
-        typeof value === "object" && value !== null &&
-        "$object" in (value as Record<string, unknown>)
-      );
-      // The async fill must target the ATTACHED segment output: a fresh
-      // NotebookCellOutput that ensureSegment did not keep is an orphan, and
-      // replacing its items paints nothing (the binary items would be lost).
-      const attached = this.ensureSegment(key, output);
-      if (hadObjectRefs && attached !== undefined) {
-        void fillReplObjectItemsAsync(this.execution, attached, output.items).catch(() => {});
+      const attached = this.cacheSegment(key, output);
+      changed.add(key);
+      if (
+        Object.values(entry.data).some((value) =>
+          typeof value === "object" && value !== null && "$object" in value
+        )
+      ) {
+        fills.push({ attached, items: output.items });
       }
     }
-
-    if (dirty.has(`tools:${this.view.runId}`)) {
-      const lines = this.view.toolLines();
-      const markdown = lines.length > 0 ? lines.join("\n") : "";
-      this.ensureSegment(
-        `tools:${this.view.runId}`,
-        markdown
-          ? new vscode.NotebookCellOutput([
-            vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
-          ])
-          : undefined,
-      );
+    this.paintTimeline(this.view.finalOutput(this.input), !this.view.isTerminal, changed);
+    for (const fill of fills) {
+      void fillReplObjectItemsAsync(this.execution, fill.attached, fill.items).catch(() => {});
     }
-
-    if (dirty.has(`subagents:${this.view.runId}`)) {
-      const lines = this.view.subagentLines();
-      const markdown = lines.length > 0 ? lines.join("\n") : "";
-      const subagents = this.view.finalOutput().subagents;
-      const hasReasoning = subagents?.some((child) => (child.reasoning?.length ?? 0) > 0);
-      this.ensureSegment(
-        `subagents:${this.view.runId}`,
-        hasReasoning
-          ? new vscode.NotebookCellOutput(turnOutputItems({ subagents }).map(outputItemFromSpec))
-          : markdown
-          ? new vscode.NotebookCellOutput([
-            vscode.NotebookCellOutputItem.text(markdown, "text/markdown"),
-          ])
-          : undefined,
-      );
-    }
-
-    if (dirty.has(`reasoning:${this.view.runId}`)) {
-      this.ensureSegment(
-        `reasoning:${this.view.runId}`,
-        new vscode.NotebookCellOutput(
-          turnOutputItems({
-            reasoning: this.view.reasoningSummaries(),
-          }).map(outputItemFromSpec),
-        ),
-      );
-    }
-
-    if (dirty.has(`answer:${this.view.runId}`)) this.paintAnswer();
   }
 
-  /** Creates the segment output when absent (appended after the existing
-   * outputs so segment order is REPL displays, tools, answer) or replaces its
-   * items in place. Passing no items removes the segment (empty tools).
-   * Returns the output that is attached to the cell after the call — the
-   * stable segment when one already existed — or undefined when the segment
-   * was removed. */
-  private ensureSegment(
-    key: string,
-    output: vscode.NotebookCellOutput | undefined,
-  ): vscode.NotebookCellOutput | undefined {
+  /** Cache the newest items on the stable output object, including before a reorder. */
+  private cacheSegment(key: string, output: vscode.NotebookCellOutput): vscode.NotebookCellOutput {
     const existing = this.segments.get(key);
-    if (output === undefined) {
-      if (existing) {
-        this.execution.replaceOutputItems([], existing);
-      }
-
-      return undefined;
-    }
-
-    if (existing) {
-      this.execution.replaceOutputItems(output.items, existing);
+    if (existing !== undefined) {
+      existing.items = output.items;
       return existing;
     }
-
     this.segments.set(key, output);
-    this.execution.appendOutput([output]);
     return output;
   }
 
-  /** Paints (or repaints) the answer markdown; creates its output once. */
-  private paintAnswer(): void {
-    const text = this.view.markdown();
-    const markdown = text.length > 0 ? text : "…";
-    const items = [vscode.NotebookCellOutputItem.text(markdown, "text/markdown")];
-    if (!this.answerCreated) {
-      this.answerCreated = true;
-      const output = new vscode.NotebookCellOutput(items);
-      this.segments.set(`answer:${this.view.runId}`, output);
-      this.execution.appendOutput([output]);
-      return;
+  private paintTimeline(
+    snapshot: OutputSnapshot,
+    streaming: boolean,
+    changed = new Set<string>(),
+  ): void {
+    const keys = this.view.replList().map((entry) => this.view.replSegmentId(entry));
+    const nodes = timelineOutputSnapshots(snapshot, streaming);
+    const orderedKeys: string[] = [...keys];
+    for (const node of nodes) {
+      const key = `node:${node.nodeId}`;
+      orderedKeys.push(key);
+      const json = JSON.stringify(node);
+      if (this.segmentJson.get(key) === json) continue;
+      this.segmentJson.set(key, json);
+      this.cacheSegment(
+        key,
+        new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec)),
+      );
+      changed.add(key);
     }
-
-    const output = this.segments.get(`answer:${this.view.runId}`);
-    if (output) this.execution.replaceOutputItems(items, output);
+    const ordered = orderedKeys.map((key) => this.segments.get(key)).filter((output) =>
+      output !== undefined
+    );
+    if (
+      orderedKeys.length !== this.outputKeys.length ||
+      orderedKeys.some((key, i) => key !== this.outputKeys[i])
+    ) {
+      this.execution.replaceOutput(ordered);
+      this.outputKeys = orderedKeys;
+      for (const key of this.segments.keys()) {
+        if (!orderedKeys.includes(key)) {
+          this.segments.delete(key);
+          this.segmentJson.delete(key);
+        }
+      }
+    } else {
+      for (const key of changed) {
+        const output = this.segments.get(key);
+        if (output !== undefined) this.execution.replaceOutputItems(output.items, output);
+      }
+    }
   }
 
-  /** Freezes the segments: final tool statuses, and the streamed markdown
-   * answer output REPLACED by the structured turn snapshot (carrying the
-   * runId + input binding) — the timeline renderer takes the output over as
-   * the default view. */
   private paintFinal(): void {
     const terminal = this.view.terminalState;
-    const final = this.view.finalOutput(this.input);
-
     if (terminal?.kind === "failed") {
       this.paintFailure(terminal.code, terminal.message);
       return;
     }
-
-    // The freeze REPLACES every streamed segment with the single structured
-    // turn+json item: its default renderer view covers tools, subagents, and
-    // the answer (with the overflow hint carried through), so keeping the
-    // streamed markdown siblings would render those timelines twice. The
-    // renderer provides the markdown fallback view for the frozen snapshot.
-    this.paintAnswer();
-    const answerOutput = this.segments.get(`answer:${this.view.runId}`);
-    if (answerOutput) {
-      this.execution.replaceOutputItems(
-        turnOutputItems(final).map(outputItemFromSpec),
-        answerOutput,
-      );
-    }
-
-    for (
-      const key of [
-        `tools:${this.view.runId}`,
-        `subagents:${this.view.runId}`,
-        `reasoning:${this.view.runId}`,
-      ]
-    ) {
-      const stale = this.segments.get(key);
-      if (stale !== undefined) {
-        this.execution.replaceOutputItems([], stale);
-        this.segments.delete(key);
-      }
-    }
-
+    this.paintChanged();
+    this.paintTimeline(this.view.finalOutput(this.input), false);
     this.execution.end(true, Date.now());
   }
 }
@@ -2598,16 +2526,17 @@ async function fillReplObjectItemsAsync(
   const pending = await drainPendingObjectItems();
   if (pending.length === 0) return;
 
-  execution.replaceOutputItems([...pending, ...items], output);
+  output.items = [...pending, ...items];
+  execution.replaceOutputItems(output.items, output);
 }
 
 /** A run failure's error output with an in-output Retry affordance: the
  * failed cell stayed pending, so re-running it re-submits the same turn. */
-function failureOutputWithRetry(
+function failureSnapshotWithRetry(
   error: unknown,
   cell: vscode.NotebookCell,
-  display: Pick<ReturnType<TurnView["finalOutput"]>, "reasoning" | "subagents"> = {},
-): vscode.NotebookCellOutput {
+  display: OutputSnapshot = {},
+): OutputSnapshot {
   const code = error instanceof FrontendError ? error.code : "turn_failed";
   const message = error instanceof Error ? error.message : String(error);
   const args = encodeURIComponent(
@@ -2615,13 +2544,13 @@ function failureOutputWithRetry(
   );
   const markdown =
     `> \u274c \`${code}\` \u2014 ${message}\n\n[\u21bb Retry turn](command:maieutics.retryTurn?${args})`;
-  return structuredOutput({
+  return {
     ...display,
     text: markdown,
-    tools: [],
+    tools: display.tools ?? [],
     truncated: false,
     error: { code, message },
-  });
+  };
 }
 
 /** Notifies when a run settles in a notebook no editor is showing: background
@@ -2662,17 +2591,7 @@ function isNotFound(error: unknown): boolean {
   return error instanceof FrontendError && error.status === 404;
 }
 
-/** A structured turn output carries exactly the single turn+json item
- * (turnOutputItems): the timeline renderer is the default view, and the
- * markdown fallback lives inside that renderer as a per-output view toggle. */
-function structuredOutput(snapshot: {
-  text: string;
-  reasoning?: ReasoningSummaryView[];
-  tools: ToolSnapshotView[];
-  truncated: boolean;
-  repl?: ReplDisplayEntry[];
-  subagents?: SubagentSnapshotView[];
-  error?: { code: string; message: string };
-}): vscode.NotebookCellOutput {
+/** Commands and immediate errors may use one whole-turn item of the same renderer. */
+function structuredOutput(snapshot: OutputSnapshot): vscode.NotebookCellOutput {
   return new vscode.NotebookCellOutput(turnOutputItems(snapshot).map(outputItemFromSpec));
 }

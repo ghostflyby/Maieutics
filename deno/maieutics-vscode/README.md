@@ -33,9 +33,16 @@ Jupyter kernel involved (ADR 0023).
   materializes when a file is opened (opening — or full-text searching — a stored session's view
   lazily resumes it on the server, since transcripts are served per session), and deleting a file
   there only discards the local view until the next sync re-materializes it.
-- Turn timeline renderer: outputs carrying the structured turn snapshot offer a "Maieutics Turn
-  Timeline" view (tools with argument previews and durations, truncation, errors, answering model,
-  token usage) via the output's mimetype picker; markdown remains the default view.
+- Agent output uses one **Timeline** renderer. Every message, permitted reasoning summary, tool
+  invocation and child run is a separate notebook output block, compact and collapsed by default.
+  Click a node to expand its original content; the expanded state survives streaming updates. Answer
+  Markdown uses VS Code's native renderer (including tables, nested lists, code and Markdown
+  extensions); model-supplied HTML stays escaped. Tool nodes retain structured arguments, latest
+  progress and results, capped at 20,000 characters per detail with an explicit truncation note.
+  Saving rejoins blocks into one portable turn snapshot; reopening restores the individual collapsed
+  nodes. Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
+  server-history restoration reconstructs model/tool order, but display-only reasoning summaries
+  require saved notebook output or event replay.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the
   session's server-owned turn queue behind anything already queued or running (queued cells show
   `queued #N` markers with per-cell dequeue and clear-queue); a status-bar badge totals the provider

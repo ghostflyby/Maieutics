@@ -22,10 +22,11 @@ import { QueueProjection } from "../../queueProjection.ts";
 import { FrontendClient } from "../../client.ts";
 import { readTurnBinding } from "../../cellHistory.ts";
 import { MaieuticsFileSystemProvider } from "../../vfs.ts";
-import { emptyNotebook } from "../../notebookFormat.ts";
-import { readStoredSessionId } from "../../serializer.ts";
+import { emptyNotebook, mergeOutputSnapshots, parseNotebook } from "../../notebookFormat.ts";
+import { MaieuticsNotebookSerializer, readStoredSessionId } from "../../serializer.ts";
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
+import { testTurnRendererAsync } from "./turnRenderer.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -172,6 +173,7 @@ async function testQueueExecutionAsync(
   failBeforeRun: boolean,
   supportsRecovery = true,
   missingReplay = false,
+  interrupted = false,
 ): Promise<void> {
   const sessionId = "a".repeat(32);
   const runId = "b".repeat(32);
@@ -220,8 +222,26 @@ async function testQueueExecutionAsync(
         return;
       }
       yield { type: "run.started", runId };
-      yield { type: "text.delta", runId, sequence: 1, messageId: "m", text: "Recovered reply" };
-      yield { type: "run.completed", runId };
+      yield { type: "reasoning.delta", runId, messageId: "m0", text: "Check evidence" };
+      yield { type: "text.delta", runId, messageId: "m0", text: "Checking files" };
+      yield {
+        type: "message.completed",
+        runId,
+        messageId: "m0",
+        agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Checking files" }] },
+      };
+      yield { type: "tool.started", runId, callId: "c", tool: "list_directory" };
+      yield { type: "tool.finished", runId, callId: "c", result: { status: "ok" } };
+      yield { type: "text.delta", runId, messageId: "m", text: "Recovered reply" };
+      yield {
+        type: "message.completed",
+        runId,
+        messageId: "m",
+        agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Recovered reply" }] },
+      };
+      yield interrupted
+        ? { type: "run.failed", runId, code: "run_cancelled", message: "Cancelled" }
+        : { type: "run.completed", runId };
       return;
     }
     if (options.signal?.aborted) return;
@@ -229,7 +249,9 @@ async function testQueueExecutionAsync(
       options.signal?.addEventListener("abort", () => resolve(), { once: true })
     );
   };
-  const id = missingReplay
+  const id = interrupted
+    ? "queue-interrupt-test"
+    : missingReplay
     ? "queue-missing-test"
     : !supportsRecovery
     ? "queue-upgrade-test"
@@ -260,11 +282,19 @@ async function testQueueExecutionAsync(
     const visibleOutput = new Promise<void>((resolve) => {
       outputChanged = vscode.workspace.onDidChangeNotebookDocument((event) => {
         if (event.notebook !== notebook) return;
-        const text = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
-          .map((item) => new TextDecoder().decode(item.data)).join("\n");
+        const frames = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
+          .filter((item) => item.mime === "application/vnd.maieutics.turn+json")
+          .map((item) => JSON.parse(new TextDecoder().decode(item.data)));
+        const text = frames.filter((frame) =>
+          frame.nodeId === undefined ||
+          (frame.nodeId === "header" && frame.streaming === false)
+        )
+          .map((frame) => JSON.stringify(frame)).join("\n");
         if (
           text.includes(
-            missingReplay
+            interrupted
+              ? "run_cancelled"
+              : missingReplay
               ? "run_missing"
               : !supportsRecovery
               ? "queue_recovery_unavailable"
@@ -291,7 +321,9 @@ async function testQueueExecutionAsync(
       ]);
       const text = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
         .map((item) => new TextDecoder().decode(item.data)).join("\n");
-      if (missingReplay) {
+      if (interrupted) {
+        assert(text.includes("run_cancelled"), "cancellation preserves a visible error");
+      } else if (missingReplay) {
         assert(text.includes("run_missing"), "expired run replay is an explicit cell failure");
       } else if (!supportsRecovery) {
         assert(
@@ -313,6 +345,58 @@ async function testQueueExecutionAsync(
             runId,
           "the execution commits the accepted run identity",
         );
+      }
+      if (supportsRecovery && !missingReplay && !failBeforeRun) {
+        const items = notebook.cellAt(0).outputs.flatMap((entry) => entry.items);
+        const snapshots = items.filter((item) =>
+          item.mime === "application/vnd.maieutics.turn+json"
+        );
+        assert(
+          snapshots.length === 5,
+          "turn status and all four timeline nodes are separate notebook outputs",
+        );
+        assert(
+          !items.some((item) => item.mime === "text/markdown"),
+          "streamed Markdown siblings are removed at freeze",
+        );
+        const fragments = snapshots.map((item) => JSON.parse(new TextDecoder().decode(item.data)));
+        assert(
+          new Set(fragments.map((fragment) => fragment.nodeId)).size === 5,
+          "each output has its own stable node identity",
+        );
+        const snapshot = mergeOutputSnapshots(fragments);
+        assert(
+          snapshot?.timeline?.length === 4 && snapshot.reasoning?.length === 1 &&
+            snapshot.tools?.length === 1,
+          "frozen success and cancellation preserve model rounds, summary and tool",
+        );
+        const data = new vscode.NotebookData([
+          new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "Question", "markdown"),
+        ]);
+        data.cells[0].outputs = [...notebook.cellAt(0).outputs];
+        const serializer = new MaieuticsNotebookSerializer();
+        const cancellation = new vscode.CancellationTokenSource();
+        try {
+          const saved = serializer.serializeNotebook(
+            data,
+            cancellation.token,
+          );
+          const restored = parseNotebook(saved).cells[0].output;
+          assert(
+            restored?.timeline?.length === 4 && restored.tools?.length === 1,
+            "saving separate output blocks rejoins every node without loss or duplication",
+          );
+          const reopened = serializer.deserializeNotebook(
+            saved,
+            cancellation.token,
+          );
+          assert(
+            reopened.cells[0].outputs?.length === 5,
+            "reopening restores one notebook output per timeline node",
+          );
+        } finally {
+          cancellation.dispose();
+        }
       }
     } finally {
       outputChanged?.dispose();
@@ -714,6 +798,10 @@ async function testCommandCompletionAsync(): Promise<void> {
 
 const tests: HostTest[] = [
   { name: "extension is installed and activates", run: testActivationAsync },
+  {
+    name: "Timeline and Markdown use native rendering without losing ordered activity",
+    run: testTurnRendererAsync,
+  },
   { name: "the .maieuticsnb serializer round-trips the fixture", run: testSerializerAsync },
   { name: "notebook command completion reaches its provider", run: testCommandCompletionAsync },
   { name: "a fresh session notebook survives stat before read", run: testFreshSessionVfsAsync },
@@ -728,6 +816,10 @@ const tests: HostTest[] = [
   {
     name: "a pre-run queue failure is visible in the cell",
     run: () => testQueueExecutionAsync(true),
+  },
+  {
+    name: "cancellation freezes partial ordered activity into one snapshot",
+    run: () => testQueueExecutionAsync(false, true, false, true),
   },
   {
     name: "an older kernel requests an upgrade before accepting queued work",

@@ -12,22 +12,29 @@ const STYLE = `
 .maieutics-turn { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); color: var(--vscode-foreground); }
 .maieutics-turn ul.tools { list-style: none; margin: 0 0 8px; padding: 0; }
 .maieutics-turn ul.tools li { padding: 1px 0; }
-.maieutics-turn .ok::before { content: "✅ "; }
-.maieutics-turn .error::before { content: "❌ "; }
-.maieutics-turn .running::before { content: "⏳ "; }
+.maieutics-turn ul.tools > .ok::before { content: "✅ "; }
+.maieutics-turn ul.tools > .error::before { content: "❌ "; }
+.maieutics-turn ul.tools > .running::before { content: "⏳ "; }
 .maieutics-turn ol.timeline { list-style: none; margin: 0 0 8px 5px; padding: 0 0 0 16px; border-left: 2px solid var(--vscode-panel-border, #8885); }
 .maieutics-turn .timeline-entry { position: relative; margin: 0 0 12px; }
 .maieutics-turn .timeline-entry::before { content: ""; position: absolute; left: -21px; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
 .maieutics-turn .markdown-unavailable { white-space: pre-wrap; }
-.maieutics-turn details.timeline-node { margin: 0 0 0 5px; padding: 3px 0 3px 15px; border-left: 2px solid var(--vscode-panel-border, #8885); }
-.maieutics-turn details.timeline-node > summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; list-style: none; line-height: 1.6; }
+.maieutics-turn details.timeline-node { margin: 0; padding: 0; min-width: 0; }
+.maieutics-turn details.timeline-node > summary { cursor: pointer; display: grid; grid-template-columns: 14px 14px max-content minmax(0, 1fr); align-items: center; column-gap: 8px; min-height: 28px; padding: 2px 4px; border-radius: 4px; list-style: none; line-height: 1.5; }
+.maieutics-turn details.timeline-node > summary:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
+.maieutics-turn details.timeline-node > summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .maieutics-turn details.timeline-node > summary::-webkit-details-marker { display: none; }
-.maieutics-turn details.timeline-node > summary::before { content: "▸"; color: var(--vscode-descriptionForeground); margin-left: -22px; }
-.maieutics-turn details.timeline-node[open] > summary::before { content: "▾"; }
-.maieutics-turn .node-title { flex-shrink: 0; }
-.maieutics-turn .preview { color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.maieutics-turn .disclosure { display: flex; align-items: center; justify-content: center; color: var(--vscode-descriptionForeground); }
+.maieutics-turn .disclosure svg { width: 14px; height: 14px; }
+.maieutics-turn details.timeline-node[open] > summary .disclosure { transform: rotate(90deg); }
+.maieutics-turn .status-icon { font-size: 13px; line-height: 1; text-align: center; color: var(--vscode-descriptionForeground); }
+.maieutics-turn .status-icon.ok { color: var(--vscode-testing-iconPassed, #388a34); }
+.maieutics-turn .status-icon.error { color: var(--vscode-testing-iconFailed, #c74e39); }
+.maieutics-turn .status-icon.warning { color: var(--vscode-editorWarning-foreground, #9a6700); }
+.maieutics-turn .node-title { font-weight: 500; max-width: min(40vw, 320px); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.maieutics-turn .preview { min-width: 0; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .maieutics-turn details.timeline-node[open] > summary > .preview { display: none; }
-.maieutics-turn .node-body { margin: 8px 0; line-height: 1.5; }
+.maieutics-turn .node-body { margin: 6px 0 8px 11px; padding-left: 17px; border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25)); line-height: 1.5; }
 .maieutics-turn pre.json, .maieutics-turn pre.original { white-space: pre-wrap; overflow-wrap: anywhere; }
 .maieutics-turn .detail-label { opacity: 0.75; margin-top: 8px; }
 .maieutics-turn .text { margin-top: 4px; line-height: 1.5; }
@@ -394,11 +401,37 @@ function compact(value) {
 }
 
 function collapsedNode(id, title, preview, body, kind = "text") {
+  const icons = {
+    "✅": ["✓", "ok", "成功"],
+    "❌": ["×", "error", "失败"],
+    "⏳": ["◌", "running", "运行中"],
+    "🚫": ["−", "cancelled", "已中断"],
+    "⚠️": ["!", "warning", "注意"],
+    "🤖": ["◇", "agent", "子代理"],
+  };
+  const mark = Object.keys(icons).find((mark) => title.startsWith(mark));
+  const [glyph, status, label] = mark
+    ? icons[mark]
+    : ["·", "neutral", kind === "reasoning" ? "思考摘要" : "活动"];
+  const name = mark ? title.slice(mark.length).trim() : title;
   return `<details class="timeline-node ${escapeHtml(kind)}" data-node-id="${
     escapeHtml(id)
-  }"><summary><span class="node-title">${escapeHtml(title)}</span><span class="preview">${
+  }"><summary><span class="disclosure" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="status-icon ${status}" role="img" aria-label="${label}">${glyph}</span><span class="node-title">${
+    escapeHtml(name)
+  }</span><span class="preview">${
     escapeHtml(compact(preview))
   }</span></summary><div class="node-body">${body}</div></details>`;
+}
+
+/** Show the target itself instead of JSON punctuation in the collapsed tool row. */
+function toolPreview(tool) {
+  const args = tool.arguments;
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    for (const key of ["uri", "path", "command", "query", "pattern"]) {
+      if (typeof args[key] === "string" && args[key]) return args[key];
+    }
+  }
+  return tool.argsSummary;
 }
 
 /** The sole Agent rendering: compact nodes which reveal their original content on demand. */
@@ -473,7 +506,7 @@ function render(turn, markdownToHtml = plainMarkdown) {
         tool.status === "running" ? "⏳" : tool.status === "error" ? "❌" : "✅"
       } ${tool.tool}`;
       preview = [
-        tool.argsSummary,
+        toolPreview(tool),
         typeof tool.durationMs === "number" ? formatDuration(tool.durationMs) : "",
       ].filter(Boolean).join(" · ");
     } else if (entry.kind === "subagent" && turn.subagents?.[entry.index]) {

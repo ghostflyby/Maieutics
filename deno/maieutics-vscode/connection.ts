@@ -16,6 +16,8 @@ import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FrontendClient } from "./client.ts";
+import { ProjectMounts } from "./projectMounts.ts";
+import type { Capabilities } from "./protocol.ts";
 
 const LaunchTimeoutMs = 20_000;
 const PollIntervalMs = 50;
@@ -26,7 +28,6 @@ const StopGraceMs = 3_000;
 
 export interface ConnectionOptions {
   executablePath: string;
-  workspaceRoot?: string;
   /** Attach to an externally launched executable through this discovery file. */
   discoveryFile?: string;
   signal?: AbortSignal;
@@ -34,6 +35,9 @@ export interface ConnectionOptions {
 
 export interface Connection {
   client: FrontendClient;
+  readonly isDisposed: boolean;
+  capabilities(signal?: AbortSignal): Promise<Capabilities>;
+  syncProjects(paths: readonly string[]): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -42,7 +46,7 @@ export async function connect(options: ConnectionOptions): Promise<Connection> {
 
   const discoveryPath = join(tmpdir(), `maieutics-vscode-discovery-${randomUUID()}.json`);
   const args = ["--frontend-discovery", discoveryPath];
-  if (options.workspaceRoot) args.push("--workspace", options.workspaceRoot);
+  // --workspace selects the fixed Agent home, never the editor's project folder.
   const child = spawn(options.executablePath, args, {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
@@ -59,10 +63,10 @@ export async function connect(options: ConnectionOptions): Promise<Connection> {
     const discovery = await waitForDiscovery(discoveryPath, child, () => spawnError, stderrTail, {
       executablePath: options.executablePath,
     }, options.signal);
-    return {
-      client: FrontendClient.fromDiscovery(discovery),
-      dispose: () => disposeOwned(child, discoveryPath),
-    };
+    return ownConnection(
+      FrontendClient.fromDiscovery(discovery),
+      () => disposeOwned(child, discoveryPath),
+    );
   } catch (error) {
     await stopChild(child);
     throw error;
@@ -71,9 +75,33 @@ export async function connect(options: ConnectionOptions): Promise<Connection> {
 
 async function attach(discoveryPath: string, signal?: AbortSignal): Promise<Connection> {
   const discovery = await readDiscovery(discoveryPath, signal);
+  return ownConnection(FrontendClient.fromDiscovery(discovery), () => Promise.resolve());
+}
+
+function ownConnection(client: FrontendClient, disposeTransport: () => Promise<void>): Connection {
+  let capabilities: Promise<Capabilities> | undefined;
+  const getCapabilities = (signal?: AbortSignal): Promise<Capabilities> =>
+    capabilities ??= client.capabilities(signal).catch((error) => {
+      capabilities = undefined;
+      throw error;
+    });
+  const projects = new ProjectMounts({
+    capabilities: getCapabilities,
+    executeCommand: (text, signal) => client.executeCommand(text, signal),
+  });
+  let disposal: Promise<void> | undefined;
   return {
-    client: FrontendClient.fromDiscovery(discovery),
-    dispose: async () => {},
+    client,
+    get isDisposed() {
+      return disposal !== undefined;
+    },
+    capabilities: getCapabilities,
+    syncProjects: (paths) => projects.sync(paths),
+    dispose: () =>
+      disposal ??= (async () => {
+        await projects.dispose();
+        await disposeTransport();
+      })(),
   };
 }
 

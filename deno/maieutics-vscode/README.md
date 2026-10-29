@@ -33,16 +33,16 @@ Jupyter kernel involved (ADR 0023).
   materializes when a file is opened (opening — or full-text searching — a stored session's view
   lazily resumes it on the server, since transcripts are served per session), and deleting a file
   there only discards the local view until the next sync re-materializes it.
-- Agent output follows one **Timeline**. Every message, permitted reasoning summary, tool
-  invocation and child run is a separate notebook output block, in first-appearance order. Assistant
-  replies fill their output block and use VS Code’s default Markdown renderer directly, always
-  expanded. Activity nodes remain compact and collapsed by default. Click a node to expand its
-  original content; the expanded state survives streaming updates. Answer Markdown uses VS Code's
-  native renderer (including tables, nested lists, code and Markdown extensions); model-supplied
-  HTML stays escaped. Tool nodes retain structured arguments, latest progress and results, capped at
-  20,000 characters per detail and 256 tools per run, with an explicit truncation note. Saving
-  rejoins blocks into one portable turn snapshot; reopening restores the individual collapsed nodes.
-  Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
+- Agent output follows one **Timeline**. Every message, permitted reasoning summary, tool invocation
+  and child run is a separate notebook output block, in first-appearance order. Assistant replies
+  fill their output block and use VS Code’s default Markdown renderer directly, always expanded.
+  Activity nodes remain compact and collapsed by default. Click a node to expand its original
+  content; the expanded state survives streaming updates. Answer Markdown uses VS Code's native
+  renderer (including tables, nested lists, code and Markdown extensions); model-supplied HTML stays
+  escaped. Tool nodes retain structured arguments, latest progress and results, capped at 20,000
+  characters per detail and 256 tools per run, with an explicit truncation note. Saving rejoins
+  blocks into one portable turn snapshot; reopening restores expanded replies and collapsed activity
+  nodes. Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
   server-history restoration reconstructs model/tool order, but display-only reasoning summaries
   require saved notebook output or event replay.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the

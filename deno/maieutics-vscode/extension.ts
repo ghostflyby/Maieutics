@@ -10,6 +10,7 @@
  */
 
 import * as vscode from "vscode";
+import { localProjectPaths } from "./projectMounts.ts";
 import { transcriptOutput } from "./transcriptView.ts";
 import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
@@ -170,6 +171,16 @@ export function activate(context: vscode.ExtensionContext): void {
     controller?.handleNotebookClosed(document);
   });
   context.subscriptions.push(notebooksClosed);
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    // Registration work is serialized and owned by the connection; folder changes
+    // do not start an otherwise-unused kernel or close persisted project links.
+    if (connection !== undefined) {
+      const handle = connection;
+      void syncEditorProjects(handle).catch((error) => {
+        if (!handle.isDisposed) output?.appendLine(`IDE project registration warning: ${error}`);
+      });
+    }
+  }));
 
   context.subscriptions.push(
     registerCommandCompletion(
@@ -1250,54 +1261,51 @@ async function clientOf(): Promise<FrontendClient> {
     connecting = undefined;
     throw error;
   }));
-  void warnWorkspaceMismatchAsync(connection.client);
+  await syncEditorProjects(connection);
   return connection.client;
 }
 
-/** Warns once per connection when the server serves a different workspace
- * than this window: the protocol exposes `workspaceRoot` exactly so frontends
- * can catch a stale executable started elsewhere. */
-async function warnWorkspaceMismatchAsync(client: FrontendClient): Promise<void> {
-  if (workspaceMismatchWarned) return;
-  workspaceMismatchWarned = true;
+const projectWarnings = new WeakMap<Connection, string>();
+
+/** Project availability is advisory; a broken editor root must not disable the kernel. */
+async function syncEditorProjects(handle: Connection): Promise<void> {
   try {
-    const capabilities = await client.capabilities();
-    const serverRoot = capabilities.workspaceRoot;
-    const windowRoot = vscode.workspace.workspaceFolders?.find((folder) =>
-      folder.uri.scheme === "file"
-    )?.uri.fsPath;
-    if (serverRoot === undefined || windowRoot === undefined) return;
-    const server = vscode.Uri.file(serverRoot).fsPath.replace(/\/$/, "");
-    const window_ = vscode.Uri.file(windowRoot).fsPath.replace(/\/$/, "");
-    if (server !== window_) {
-      await vscode.window.showWarningMessage(
-        `Maieutics: the server serves workspace \`${server}\` but this window is \`${window_}\`. ` +
-          "File tools follow the server's workspace; restart the server here if that is not intended.",
-      );
+    await handle.syncProjects(editorProjectPaths());
+    projectWarnings.delete(handle);
+  } catch (error) {
+    if (handle.isDisposed) throw error;
+    const warning = String(error);
+    if (projectWarnings.get(handle) !== warning) {
+      projectWarnings.set(handle, warning);
+      output?.appendLine(`IDE project registration warning (kernel remains available): ${warning}`);
     }
-  } catch {
-    // Capability probing is advisory; the first real command surfaces errors.
   }
 }
 
-let workspaceMismatchWarned = false;
+function editorProjectPaths(): string[] {
+  return localProjectPaths(vscode.workspace.workspaceFolders ?? []);
+}
 
 async function openConnection(): Promise<Connection> {
   const settings = vscode.workspace.getConfiguration();
   const discoveryFile = settings.get<string>(DiscoveryFileSetting);
   const executablePath = settings.get<string>(ExecutablePathSetting) ?? "maieutics";
-  // Only a local folder is a meaningful workspace root for the executable;
-  // the mounted sessions folder is virtual.
-  const workspaceRoot = vscode.workspace.workspaceFolders?.find((folder) =>
-    folder.uri.scheme === "file"
-  )?.uri.fsPath;
-  treeEnvironment.workspaceRoot = workspaceRoot;
+  // Editor folders are project targets, while capabilities.workspaceRoot is the fixed Agent home.
+  // They normally differ and must never be compared as a connection mismatch.
   treeEnvironment.caseInsensitive = platform() === "win32" || platform() === "darwin";
+  const signal = AbortSignal.timeout(20_000);
   const handle = await connect({
     executablePath,
-    workspaceRoot,
     discoveryFile: discoveryFile || undefined,
+    signal,
   });
-  output?.appendLine(`Connected to ${handle.client.baseUrl}.`);
-  return handle;
+  try {
+    const capabilities = await handle.capabilities(signal);
+    treeEnvironment.workspaceRoot = capabilities.workspaceRoot;
+    output?.appendLine(`Connected to ${handle.client.baseUrl}.`);
+    return handle;
+  } catch (error) {
+    await handle.dispose();
+    throw error;
+  }
 }

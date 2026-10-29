@@ -6,7 +6,7 @@
  * Ubuntu and local development is macOS/Linux.
  */
 
-import { assert, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { connect } from "./connection.ts";
 
 /** Writes a self-contained fixture executable (a POSIX shell script). */
@@ -18,6 +18,31 @@ async function makeExecutable(script: string): Promise<string> {
 }
 
 const fakeDiscovery = '{"version":1,"url":"http://127.0.0.1:9","token":"t","pid":1}';
+
+Deno.test("launch never promotes a VS Code project directory to the Agent home", async () => {
+  const project = await Deno.makeTempDir({ prefix: "maieutics-project-" });
+  const exe = await makeExecutable(`
+if [ "$#" -ne 2 ] || [ "$1" != "--frontend-discovery" ]; then
+  echo 'Unexpected project-to-home startup override' >&2
+  exit 27
+fi
+printf '${fakeDiscovery}' > "$2"
+exec sleep 5`);
+  try {
+    // Stale structural callers may still carry this property; it must never become --workspace.
+    const options = { executablePath: exe, workspaceRoot: project };
+    const connection = await connect(options);
+    try {
+      assert(connection.client !== undefined);
+      assertEquals(await Array.fromAsync(Deno.readDir(project)), []);
+    } finally {
+      await connection.dispose();
+    }
+  } finally {
+    await Deno.remove(exe).catch(() => {});
+    await Deno.remove(project, { recursive: true });
+  }
+});
 
 Deno.test("connect launches, reads discovery from a healthy child, and owns it", async () => {
   // `$2` is the --frontend-discovery path connect() passes.

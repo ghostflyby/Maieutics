@@ -94,6 +94,26 @@ Debug: open this folder in VS Code and use "Run Extension" (F5) after `deno task
 
 ## Permissions
 
+The extension does not turn an editor folder into the Agent home. Launched kernels select their
+fixed home from explicit kernel configuration or `<DataRoot>/workspaces`; attached kernels keep
+their own home. Multi-root IDE workspaces register all local project folders individually. On
+connection and when local editor folders are added, the extension registers each `file:` project
+through the kernel's existing `%workspace open` command, yielding
+`workspace://local/projects/<name>/...`. The kernel registry owns naming, collisions, identity
+validation and physical links. Registration is serialized and joined on connection disposal, without
+adding Agent turns or changing permission grants. One failed project does not prevent later projects
+from registering. Failures are aggregated as warnings in the Maieutics output channel; they do not
+prevent commands or notebook cells from using the kernel. Identical warnings are deduplicated.
+Failed projects are retried on later client access or folder changes; successfully registered
+projects are not repeated. Connection shutdown still cancels pending registration.
+
+The session tree's current-workspace filter uses the root reported by the kernel. Remote and virtual
+folders stay on the IDE filesystem plane; they are not passed off as local disk projects. Closing an
+editor folder or disconnecting leaves persisted links intact; use `%workspace close <name>` to
+retire one explicitly. Opening a project in VS Code does not create `projects/`, `scratch/` or
+`.maieutics/` inside that project. `%workspace current` shows the actual home and registered project
+links.
+
 Development runtime needs `allow-net` (loopback mock server tests) and `allow-read` (discovery
 file). The renderer module regression tests also need `allow-write` for temporary bundles and
 `allow-run` for the Deno executable: they bundle the renderer sources as CJS and verify that the ESM

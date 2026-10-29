@@ -32,6 +32,8 @@ import {
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
+import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
+import { testProjectRegistrationAsync } from "./projectRegistration.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -45,6 +47,69 @@ const ExtensionId = "ghostflyby.maieutics-vscode";
 interface HostTest {
   name: string;
   run: () => Promise<void> | void;
+}
+
+async function testMultiRootProjectMountsAsync(): Promise<void> {
+  const original = vscode.workspace.workspaceFolders ?? [];
+  const first = vscode.Uri.joinPath(workspaceRoot(), "first", "api");
+  const second = vscode.Uri.joinPath(workspaceRoot(), "second", "api");
+  await vscode.workspace.fs.createDirectory(first);
+  await vscode.workspace.fs.createDirectory(second);
+  const commands: string[] = [];
+  const mounts = new ProjectMounts({
+    capabilities: () =>
+      Promise.resolve({
+        workspaceRoot: vscode.Uri.joinPath(workspaceRoot(), "..", "agent-home").fsPath,
+      }),
+    executeCommand: (text: string) => {
+      commands.push(text);
+      return Promise.resolve("");
+    },
+  } as Pick<FrontendClient, "capabilities" | "executeCommand">);
+  let added = false;
+  const update = async (remove: number, folders: { uri: vscode.Uri; name: string }[]) => {
+    let listener: vscode.Disposable | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        listener = vscode.workspace.onDidChangeWorkspaceFolders(() => resolve());
+        timer = setTimeout(
+          () => reject(new Error("Workspace folder change was not delivered")),
+          10_000,
+        );
+        if (!vscode.workspace.updateWorkspaceFolders(original.length, remove, ...folders)) {
+          reject(new Error("Workspace folder update was rejected"));
+        }
+      });
+    } finally {
+      listener?.dispose();
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+  try {
+    await update(0, [{ uri: first, name: "API one" }, { uri: second, name: "API two" }]);
+    added = true;
+    const paths = localProjectPaths(vscode.workspace.workspaceFolders ?? []);
+    assert(
+      paths.length === localProjectPaths(original).length + 2,
+      "every local project is enumerated, not just the first root",
+    );
+    await mounts.sync(paths);
+    assert(
+      commands.length === paths.length,
+      "each IDE project gets a separate kernel registration",
+    );
+    assert(
+      commands.includes(`%workspace open ${first.fsPath}`) &&
+        commands.includes(`%workspace open ${second.fsPath}`),
+      "same-name projects are both passed to the kernel registry",
+    );
+    await mounts.sync(paths);
+    assert(commands.length === paths.length, "subsequent requests do not duplicate registrations");
+  } finally {
+    await mounts.dispose();
+    if (added) await update(2, []);
+  }
 }
 
 function assert(condition: unknown, label: string): asserts condition {
@@ -73,6 +138,13 @@ const notebookFixture = {
 
 /** The extension is installed in the host's registry and activates. */
 async function testActivationAsync(): Promise<void> {
+  // The host suite supplies controlled protocol peers. Incidental completion calls
+  // must never launch a real kernel against the developer's persistent home.
+  await vscode.workspace.getConfiguration("maieutics").update(
+    "executablePath",
+    vscode.Uri.joinPath(workspaceRoot(), "not-a-real-kernel").fsPath,
+    vscode.ConfigurationTarget.Workspace,
+  );
   const extension = vscode.extensions.getExtension(ExtensionId);
   assert(extension !== undefined, "the maieutics-vscode extension is installed");
   if (!extension.isActive) await extension.activate();
@@ -865,6 +937,14 @@ async function testCommandCompletionAsync(): Promise<void> {
 
 const tests: HostTest[] = [
   { name: "extension is installed and activates", run: testActivationAsync },
+  {
+    name: "the actual extension tolerates broken projects and registers folder changes",
+    run: () => testProjectRegistrationAsync(workspaceRoot()),
+  },
+  {
+    name: "all projects in a real VS Code multi-root workspace register individually",
+    run: testMultiRootProjectMountsAsync,
+  },
   {
     name: "Timeline and Markdown use native rendering without losing ordered activity",
     run: testTurnRendererAsync,

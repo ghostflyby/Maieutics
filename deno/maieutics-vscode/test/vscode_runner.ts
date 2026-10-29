@@ -391,6 +391,16 @@ async function mainAsync(): Promise<number> {
   for (const dir of [userDataDir, extensionsDir, workspaceDir]) {
     await Deno.mkdir(dir, { recursive: true });
   }
+  // Start in workspace-file mode so adding a second root does not require an
+  // interactive folder-to-workspace transition in the hidden test window.
+  const workspaceFile = join(scratch, "test.code-workspace");
+  await Deno.writeTextFile(
+    workspaceFile,
+    JSON.stringify({
+      folders: [{ path: workspaceDir }],
+      settings: { "maieutics.executablePath": join(scratch, "not-a-real-kernel") },
+    }),
+  );
 
   console.log(`VS Code: ${install.target} (${install.source})`);
   console.log(`scratch: ${scratch}`);
@@ -400,7 +410,7 @@ async function mainAsync(): Promise<number> {
     const launch = await launchAsync(
       install,
       launchFlags(extensionRoot, testsPath, userDataDir, extensionsDir),
-      workspaceDir,
+      workspaceFile,
     );
     const verdict = await waitForVerdictAsync(
       join(workspaceDir, SentinelFileName),

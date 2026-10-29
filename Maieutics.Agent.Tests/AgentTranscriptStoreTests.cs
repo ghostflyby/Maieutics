@@ -61,6 +61,39 @@ public sealed class AgentTranscriptStoreTests
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task InterruptedTurnStoreFailureDoesNotAdvanceMemoryAndReleasesSession()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async IAsyncEnumerable<ChatResponseUpdate> WaitAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "partial");
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        var store = new RecordingTranscriptStore { FailOnAppend = true };
+        var session = new AgentSession(new ScriptedChatClient(
+            (_, token) => WaitAsync(token), (_, _) => StreamAsync("recovered")), transcriptStore: store);
+        await using var run = await session.StartTurnAsync(AgentTurn.FromText("question"), deadline.Token);
+        var events = ReadEventsAsync(run, deadline.Token);
+        await started.Task.WaitAsync(deadline.Token);
+        await run.CancelAsync(deadline.Token);
+        await events;
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(() => run.Completion);
+        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        Assert.Empty(store.Turns);
+
+        store.FailOnAppend = false;
+        await using var next = await session.StartTurnAsync(AgentTurn.FromText("retry"), deadline.Token);
+        await ReadEventsAsync(next, deadline.Token);
+        await next.Completion.WaitAsync(deadline.Token);
+        Assert.Equal(next.Id, Assert.Single(store.Turns).RunId);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task SessionReusesAnInjectedIdentityForTheStore()
     {
         var store = new RecordingTranscriptStore();

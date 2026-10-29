@@ -298,6 +298,7 @@ public sealed class AgentSession : IAgentSession
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            run.InterruptedTurnMessages = toolState.BuildInterruptedMessages();
             throw;
         }
         catch (AgentException)
@@ -309,14 +310,23 @@ public sealed class AgentSession : IAgentSession
             throw new AgentProviderException(exception);
         }
 
-        var (turnMessages, truncated) = await toolState.BuildCompletedMessagesAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (truncated)
-            await run.WriteEventAsync(
-                sequence => new AgentTurnTruncated(run.Id, sequence),
-                cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (turnMessages, truncated) = await toolState.BuildCompletedMessagesAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (truncated)
+                await run.WriteEventAsync(
+                    sequence => new AgentTurnTruncated(run.Id, sequence),
+                    cancellationToken).ConfigureAwait(false);
 
-        return new PreparedRunResult(turnMessages, turnMessages[^1], truncated, toolState.BuildUsage());
+            return new PreparedRunResult(turnMessages, turnMessages[^1], truncated, toolState.BuildUsage());
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            run.InterruptedTurnMessages = toolState.BuildInterruptedMessages();
+            throw;
+        }
     }
 
     private AgentTranscript CommitTurn(
@@ -954,6 +964,44 @@ public sealed class AgentSession : IAgentSession
             throw new AgentUnsupportedResponseException("The model provider returned no final assistant text.");
         }
 
+        internal IReadOnlyList<ChatMessage> BuildInterruptedMessages()
+        {
+            List<ChatMessage> messages = [run.UserMessage, .. _intermediateMessages];
+            var iterations = recordingClient.GetIterations();
+            for (var index = 0; index < iterations.Count; index++)
+            {
+                if (_publishedIterations.Contains(index + 1)) continue;
+
+                foreach (var responseMessage in iterations[index].ResponseMessages)
+                {
+                    ValidateAssistantResponse(responseMessage);
+                    var assistant = responseMessage.Clone();
+                    // A stream may stop before a call's identity arrives. That fragment
+                    // cannot be correlated with a result or replayed on the next turn.
+                    assistant.Contents = assistant.Contents.Where(static content =>
+                        content is not FunctionCallContent call || !string.IsNullOrEmpty(call.CallId)).ToArray();
+                    if (assistant.Contents.Count > 0) messages.Add(assistant);
+                }
+            }
+
+            // The provider loop is serial: unanswered calls belong to its last tool round.
+            // Close those calls explicitly so replay preserves completed results without
+            // asking the next provider to execute stale work.
+            var answered = messages.SelectMany(static message => message.Contents)
+                .OfType<FunctionResultContent>()
+                .Select(static result => result.CallId)
+                .ToHashSet(StringComparer.Ordinal);
+            var pending = messages.SelectMany(static message => message.Contents)
+                .OfType<FunctionCallContent>()
+                .Where(call => !answered.Contains(call.CallId))
+                .ToArray();
+            if (pending.Length > 0)
+                messages.Add(new ChatMessage(ChatRole.Tool, pending.Select(static call =>
+                    (AIContent)new FunctionResultContent(call.CallId, ToolJson.CreateCancelledEnvelope())).ToArray()));
+
+            return messages;
+        }
+
         private async Task PublishIterationMessagesAsync(int iteration, CancellationToken cancellationToken)
         {
             if (!_publishedIterations.Add(iteration)) return;
@@ -965,23 +1013,28 @@ public sealed class AgentSession : IAgentSession
                 .Any())
                 EnsureIterationCalls(iteration);
 
+            foreach (var responseMessage in recorded.ResponseMessages) ValidateAssistantResponse(responseMessage);
+
+            // Stage the whole iteration before any cancellable event write.
+            _intermediateMessages.AddRange(recorded.ResponseMessages.Select(static message => message.Clone()));
             foreach (var responseMessage in recorded.ResponseMessages)
             {
-                if (responseMessage.Role != ChatRole.Assistant)
-                    throw new AgentUnsupportedResponseException(
-                        $"The model provider returned an unsupported '{responseMessage.Role}' response message.");
-
-                var assistant = responseMessage.Clone();
-                _intermediateMessages.Add(assistant);
                 var messageId = GetMessageId(iteration, responseMessage.MessageId);
                 await run.WriteEventAsync(
                     sequence => new AgentMessageCompleted(
                         run.Id,
                         sequence,
                         messageId,
-                        AgentTranscriptCodec.CreatePublicMessage(assistant)),
+                        AgentTranscriptCodec.CreatePublicMessage(responseMessage)),
                     cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        private static void ValidateAssistantResponse(ChatMessage message)
+        {
+            if (message.Role != ChatRole.Assistant)
+                throw new AgentUnsupportedResponseException(
+                    $"The model provider returned an unsupported '{message.Role}' response message.");
         }
 
         private AgentMessageId GetMessageId(int iteration, string? providerMessageId)
@@ -1125,19 +1178,34 @@ public sealed class AgentSession : IAgentSession
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var updates = new List<ChatResponseUpdate>();
-            await foreach (var update in innerClient
-                               .GetStreamingResponseAsync(request, options, cancellationToken)
-                               .ConfigureAwait(false))
+            var recorded = false;
+            try
             {
-                ValidateConversationId(update.ConversationId);
-                updates.Add(update.Clone());
-                var observer = _updateObserver;
-                if (observer is not null) await observer(iteration, update, cancellationToken).ConfigureAwait(false);
+                await foreach (var update in innerClient
+                                   .GetStreamingResponseAsync(request, options, cancellationToken)
+                                   .ConfigureAwait(false))
+                {
+                    ValidateConversationId(update.ConversationId);
+                    updates.Add(update.Clone());
+                    var observer = _updateObserver;
+                    if (observer is not null) await observer(iteration, update, cancellationToken).ConfigureAwait(false);
 
-                yield return update;
+                    yield return update;
+                }
+            }
+            finally
+            {
+                // Cancellation disposes the stream before its normal recording boundary.
+                // Keep received deltas for the interrupted turn without publishing more events.
+                if (cancellationToken.IsCancellationRequested && updates.Count > 0)
+                {
+                    AddIteration(iteration, request, updates.ToChatResponse().Messages);
+                    recorded = true;
+                }
             }
 
-            AddIteration(iteration, request, updates.ToChatResponse().Messages);
+            if (!recorded)
+                AddIteration(iteration, request, updates.ToChatResponse().Messages);
         }
 
         private static void ValidateConversationId(string? conversationId)
@@ -1222,6 +1290,8 @@ public sealed class AgentSession : IAgentSession
         private readonly SemaphoreSlim _writeGate = new(1, 1);
 
         internal ChatMessage UserMessage { get; } = userMessage;
+
+        internal IReadOnlyList<ChatMessage> InterruptedTurnMessages { get; set; } = [userMessage];
 
         internal AgentRunProfile Profile { get; } = profile;
 
@@ -1355,6 +1425,17 @@ public sealed class AgentSession : IAgentSession
                             this,
                             prepared ?? throw new InvalidOperationException(
                                 "The Agent run completed without a prepared result."));
+                    }
+                    catch (Exception exception)
+                    {
+                        failure = exception;
+                    }
+
+                if (failure is null && canceled)
+                    try
+                    {
+                        owner.CommitTurn(Id, InterruptedTurnMessages, Profile.Options, Profile.ModelIdentity,
+                            truncated: true);
                     }
                     catch (Exception exception)
                     {

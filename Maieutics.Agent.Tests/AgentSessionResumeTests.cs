@@ -42,6 +42,54 @@ public sealed class AgentSessionResumeTests
         Assert.Equal("two", persisted.Turns[1].Messages[0].Text);
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InterruptedTurnIsPersistedRestoredAndReplayed(bool hasPartialResponse)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new InMemoryTranscriptStore();
+        var original = new AgentSession(new ScriptedChatClient(
+            (_, token) => InterruptedResponseAsync(hasPartialResponse, waiting, token)), transcriptStore: store);
+
+        await using var run = await original.StartTurnAsync(AgentTurn.FromText("interrupted question"), deadline.Token);
+        var events = ReadEventsAsync(run, deadline.Token);
+        await waiting.Task.WaitAsync(deadline.Token);
+        await run.CancelAsync(deadline.Token);
+        await events;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion);
+
+        var client = new ScriptedChatClient((_, _) => StreamAsync("continued"));
+        var resumed = AgentSession.Resume(new FixedProfileProvider(client), store, original.Id);
+        var turn = Assert.Single(resumed.GetTranscriptSnapshot().Turns);
+        Assert.Equal(run.Id, turn.RunId);
+        Assert.True(turn.Truncated);
+        Assert.Equal(hasPartialResponse ? 2 : 1, turn.Messages.Count);
+        Assert.Equal("interrupted question", turn.Messages[0].Text);
+        Assert.Equal(1, resumed.GetTranscriptSnapshot().Version);
+
+        await using var next = await resumed.StartTurnAsync(AgentTurn.FromText("continue"), deadline.Token);
+        await ReadEventsAsync(next, deadline.Token);
+        await next.Completion.WaitAsync(deadline.Token);
+        Assert.Equal(hasPartialResponse
+                ? new[] { "interrupted question", "partial", "continue" }
+                : new[] { "interrupted question", "continue" },
+            Assert.Single(client.Requests).Select(message => message.Text));
+        Assert.Equal(2, store.LoadTranscript(original.Id)?.Version);
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> InterruptedResponseAsync(
+        bool hasPartialResponse,
+        TaskCompletionSource waiting,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (hasPartialResponse) yield return new ChatResponseUpdate(ChatRole.Assistant, "partial");
+        waiting.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
     [Fact]
     public void ResumeUnknownSessionThrowsTyped()
     {

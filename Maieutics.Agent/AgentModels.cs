@@ -225,14 +225,14 @@ public sealed record AgentTranscript
     /// <summary>Gets the committed transcript version.</summary>
     public long Version { get; }
 
-    /// <summary>Gets the committed complete turns.</summary>
+    /// <summary>Gets the committed turns, including interrupted turns marked as truncated.</summary>
     public ImmutableArray<AgentTranscriptTurn> Turns { get; }
 }
 
-/// <summary>Represents one complete committed Agent turn.</summary>
+/// <summary>Represents one atomically committed Agent turn.</summary>
 public sealed record AgentTranscriptTurn
 {
-    /// <summary>Initializes a complete transcript turn with its model identity.</summary>
+    /// <summary>Initializes a transcript turn with its model identity.</summary>
     public AgentTranscriptTurn(
         AgentRunId runId,
         IReadOnlyList<ChatMessage> messages,
@@ -247,9 +247,9 @@ public sealed record AgentTranscriptTurn
             throw new ArgumentException("Transcript turn messages must be initialized and non-empty.",
                 nameof(messages));
 
-        if (messages[0].Role != ChatRole.User || messages[^1].Role != ChatRole.Assistant)
+        if (messages[0].Role != ChatRole.User || (!truncated && messages[^1].Role != ChatRole.Assistant))
             throw new ArgumentException(
-                "A transcript turn must begin with a user message and end with an assistant message.",
+                "A transcript turn must begin with a user message; an untruncated turn must end with an assistant message.",
                 nameof(messages));
 
         RunId = runId;
@@ -267,7 +267,7 @@ public sealed record AgentTranscriptTurn
     /// <summary>Gets the configured model identity that produced the turn, when known.</summary>
     public AgentModelIdentity? ModelIdentity { get; }
 
-    /// <summary>Gets whether the turn exhausted its budget before a validated final answer.</summary>
+    /// <summary>Gets whether the turn was interrupted or exhausted its budget before a validated final answer.</summary>
     public bool Truncated { get; }
 }
 

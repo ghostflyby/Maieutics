@@ -54,7 +54,15 @@ The existing run ownership remains unchanged:
 - the event stream remains bounded and single-consumer;
 - cancellation, backpressure, limit enforcement, and disposal remain structured and deterministic;
 - a complete turn commits atomically only after the final response passes validation;
-- cancellation, provider failure, malformed calls, aborting tool failure, and validation failure roll back the turn.
+- cancellation commits the user input, completed tool rounds, and received partial assistant content atomically as a
+  truncated turn; unanswered function calls receive `{"status":"cancelled"}` results, and run completion remains cancelled;
+- provider failure, malformed calls, aborting tool failure, and validation failure roll back the turn.
+
+Interrupted turns can end with a user or tool message. The existing `truncated` field covers this case as well as
+iteration-budget exhaustion; message encoding and stored columns do not change. Existing histories need no migration.
+Older runtimes that require every turn to end with an assistant message cannot reopen newly interrupted histories that
+end with a user or tool message; upgrade the reader before reopening them. Interrupted context uses the same history
+limits, durable-before-memory commit, restore, fork, and provider replay paths as successful turns.
 
 ## Function contract and invocation
 

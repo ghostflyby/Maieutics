@@ -15,10 +15,10 @@ namespace Maieutics.Agent;
 /// </remarks>
 public interface IAgentTranscriptStore
 {
-    /// <summary>Appends one complete committed turn, its object references, and advances the
+    /// <summary>Appends one atomically committed turn, its object references, and advances the
     /// session's stored head. References feed reachability tracking for object garbage collection.</summary>
     /// <param name="sessionId">The session that committed the turn. The first append creates the session.</param>
-    /// <param name="turn">The complete committed turn, from the submitted user message to the final assistant message.</param>
+    /// <param name="turn">The committed turn, including partial context when marked as truncated.</param>
     /// <param name="objectReferences">The distinct object addresses referenced by the turn's content.</param>
     /// <exception cref="InvalidOperationException">The turn could not be committed durably.</exception>
     void AppendTurn(AgentSessionId sessionId, AgentTranscriptTurn turn, IReadOnlyList<string> objectReferences);
@@ -69,7 +69,7 @@ public sealed record AgentSessionDescriptor
     /// <summary>Gets when the session stored its most recent turn.</summary>
     public DateTimeOffset LastActivityAt { get; }
 
-    /// <summary>Gets the number of complete turns stored for the session.</summary>
+    /// <summary>Gets the number of committed turns stored for the session.</summary>
     public int TurnCount { get; }
 
     /// <summary>Gets the user-set session title, or <see langword="null" /> when the session

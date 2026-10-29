@@ -30,6 +30,36 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         await TempArea.DeleteAsync(_databaseDirectory, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedTurnRoundTripsAcrossReopen(bool hasToolResult)
+    {
+        var sessionId = AgentSessionId.Create();
+        List<ChatMessage> messages = [new(ChatRole.User, "interrupted question")];
+        if (hasToolResult)
+        {
+            messages.Add(new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("pending", "wait")]));
+            messages.Add(new ChatMessage(ChatRole.Tool,
+                [new FunctionResultContent("pending", ToolJson.CreateCancelledEnvelope())]));
+        }
+        var turn = new AgentTranscriptTurn(AgentRunId.Create(), messages, truncated: true);
+        using (var store = new SqliteTranscriptStore(_databasePath))
+            store.AppendTurn(sessionId, turn, []);
+
+        using var reopened = new SqliteTranscriptStore(_databasePath);
+        var transcript = Assert.IsType<AgentTranscript>(reopened.LoadTranscript(sessionId));
+        var restored = Assert.Single(transcript.Turns);
+        Assert.Equal(turn.RunId, restored.RunId);
+        Assert.True(restored.Truncated);
+        Assert.Equal(messages.Select(message => message.Role), restored.Messages.Select(message => message.Role));
+        Assert.Equal("interrupted question", restored.Messages[0].Text);
+        if (hasToolResult)
+            Assert.Equal("cancelled", Assert.IsType<System.Text.Json.JsonElement>(Assert.Single(
+                restored.Messages[^1].Contents.OfType<FunctionResultContent>()).Result)
+                .GetProperty("status").GetString());
+    }
+
     [Fact]
     public void AppendedObjectReferencesFeedGarbageCollection()
     {

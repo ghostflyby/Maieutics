@@ -352,7 +352,7 @@ public sealed class AgentTranscriptSessionTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task CancellationAfterSummaryKeepsTheEventButRollsBackAndReleasesTheSession()
+    public async Task CancellationAfterSummaryCommitsContextWithoutSummaryAndReleasesTheSession()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
@@ -378,7 +378,11 @@ public sealed class AgentTranscriptSessionTests
         await run.CancelAsync(deadline.Token);
         Assert.False(await events.MoveNextAsync());
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.Completion);
-        Assert.Empty(session.GetTranscriptSnapshot().Turns);
+        var turn = Assert.Single(session.GetTranscriptSnapshot().Turns);
+        Assert.True(turn.Truncated);
+        Assert.Equal("question", turn.Messages[0].Text);
+        Assert.DoesNotContain(turn.Messages.SelectMany(message => message.Contents),
+            content => content is TextContent text && text.Text.Contains("Checking sources.", StringComparison.Ordinal));
         var recovered = await CompleteTurnAsync(session, "retry", deadline.Token);
         Assert.Equal("Recovered", recovered.Result.AssistantMessage.Text);
     }

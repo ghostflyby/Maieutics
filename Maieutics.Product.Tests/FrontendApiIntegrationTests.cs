@@ -337,6 +337,13 @@ public sealed class FrontendApiIntegrationTests
         Assert.Equal(runId, failure.GetProperty("runId").GetString());
         Assert.Equal(["run.failed", "run.status"], frames.Select(frame => frame.GetProperty("type").GetString()).TakeLast(2));
 
+        var transcript = await harness.Client.GetFromJsonAsync<JsonElement>(
+            $"/v1/agent/sessions/{sessionId}/transcript", TestContext.Current.CancellationToken);
+        var turn = Assert.Single(transcript.GetProperty("turns").EnumerateArray());
+        Assert.Equal(runId, turn.GetProperty("runId").GetString());
+        Assert.True(turn.GetProperty("truncated").GetBoolean());
+        Assert.Equal("first", turn.GetProperty("messages")[0].GetProperty("parts")[0].GetProperty("text").GetString());
+
         var missing = await harness.Client.PostAsync(
             $"/v1/agent/runs/{Guid.NewGuid():N}/cancel",
             content: null,

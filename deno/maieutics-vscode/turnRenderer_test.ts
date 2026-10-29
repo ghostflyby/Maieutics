@@ -83,7 +83,11 @@ Deno.test("tool nodes expose structured original arguments, progress, results an
       diff: { unified: "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n", additions: 1, deletions: 1 },
     }],
   });
-  assert(html.includes("❌ edit_file") && html.includes("900ms"), html);
+  assert(
+    html.includes('aria-label="失败"') && html.includes('class="node-title">edit_file') &&
+      html.includes("900ms"),
+    html,
+  );
   assert(html.includes("参数") && html.includes("结果") && html.includes("Checking file"), html);
   assert(html.includes("&lt;new&gt;") && html.includes("denied"), html);
   assert(html.includes('class="diffline add"') && html.includes('class="diffline del"'), html);
@@ -156,6 +160,10 @@ Deno.test("a fragment renders only its own timeline node", () => {
     tools: [{ tool: "read_file", status: "running" }],
   });
   assertEquals(html.match(/<details /g)?.length, 1);
-  assert(html.includes('data-node-id="entry:2"') && html.includes("⏳ read_file"), html);
+  assert(
+    html.includes('data-node-id="entry:2"') && html.includes('aria-label="运行中"') &&
+      html.includes('class="node-title">read_file'),
+    html,
+  );
   assertEquals(render({}), "<em>(empty turn)</em>");
 });

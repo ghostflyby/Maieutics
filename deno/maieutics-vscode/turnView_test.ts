@@ -10,6 +10,36 @@ import {
   TurnOutputMime,
   TurnView,
 } from "./turnView.ts";
+import { MaximumDisplayTools } from "./turnTimeline.ts";
+
+Deno.test("repl.clear marks removals dirty even with no subsequent frame", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "repl.display", displayId: "d", data: { "text/plain": "old" } });
+  view.takeDirty();
+  view.apply({ type: "repl.clear" });
+  assertEquals([...view.takeDirty()], ["repl:d"]);
+  assertEquals(view.replList(), []);
+  view.apply({ type: "repl.error", data: { "text/plain": "new anonymous display" } });
+  assertEquals([...view.takeDirty()], [view.replSegmentId(view.replList()[0])]);
+});
+
+Deno.test("tool retention is bounded for parent and child, with explicit truncation", () => {
+  const view = new TurnView("r");
+  for (let i = 0; i <= MaximumDisplayTools; i++) {
+    view.apply({ type: "tool.started", runId: "r", callId: `p${i}`, tool: "read_file" });
+    view.applySubagent({
+      type: "tool.started",
+      runId: "child",
+      callId: `c${i}`,
+      tool: "read_file",
+    });
+  }
+  const snapshot = view.finalOutput();
+  assertEquals(snapshot.tools.length, MaximumDisplayTools);
+  assertEquals(snapshot.timelineTruncated, true);
+  assertEquals(snapshot.subagents?.[0].tools.length, MaximumDisplayTools);
+  assertEquals(snapshot.subagents?.[0].truncated, true);
+});
 
 Deno.test("text deltas fold in order", () => {
   const view = new TurnView("run-1");
@@ -18,6 +48,77 @@ Deno.test("text deltas fold in order", () => {
   view.apply({ type: "text.delta", runId: "run-1", sequence: 2, text: "lo" });
   assertEquals(view.markdown(), "hello");
   assertEquals(view.isTerminal, false);
+});
+
+Deno.test("timeline keeps earlier messages and interleaves summaries, tools and children", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "reasoning.delta", runId: "r", messageId: "m1", text: "Check files" });
+  view.apply({ type: "text.delta", runId: "r", messageId: "m1", text: "Checking…" });
+  view.apply({
+    type: "message.completed",
+    runId: "r",
+    messageId: "m1",
+    agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Checking files." }] },
+  });
+  view.apply({ type: "tool.started", runId: "r", callId: "c", tool: "list_directory" });
+  view.applySubagent({ type: "run.started", runId: "child" });
+  view.apply({ type: "tool.finished", runId: "r", callId: "c", result: { status: "ok" } });
+  view.apply({ type: "reasoning.delta", runId: "r", messageId: "m2", text: "Compare results" });
+  view.apply({ type: "text.delta", runId: "r", messageId: "m2", text: "Answer" });
+  view.apply({
+    type: "message.completed",
+    runId: "r",
+    messageId: "m2",
+    agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Final answer" }] },
+  });
+  view.apply({ type: "run.completed", runId: "r" });
+  const snapshot = view.finalOutput();
+  assertEquals(snapshot.text, "Final answer");
+  assertEquals(snapshot.timeline, [
+    { kind: "reasoning", messageId: "m1" },
+    { kind: "text", messageId: "m1", text: "Checking files." },
+    { kind: "tool", index: 0 },
+    { kind: "subagent", index: 0 },
+    { kind: "reasoning", messageId: "m2" },
+    { kind: "text", messageId: "m2", text: "Final answer" },
+  ]);
+  const entry = snapshot.timeline?.[1];
+  if (entry?.kind === "text") entry.text = "mutated";
+  assertEquals(view.finalOutput().timeline?.[1], {
+    kind: "text",
+    messageId: "m1",
+    text: "Checking files.",
+  });
+});
+
+Deno.test("timeline reconciles legacy deltas without ids and bounds retained display text", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "text.delta", runId: "r", text: "partial" });
+  view.apply({
+    type: "message.completed",
+    runId: "r",
+    messageId: "m",
+    agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Complete" }] },
+  });
+  view.apply({ type: "text.delta", runId: "r", messageId: "large", text: "x".repeat(200_000) });
+  const snapshot = view.finalOutput();
+  assertEquals(snapshot.timeline?.length, 2);
+  assertEquals(snapshot.timeline?.[0], { kind: "text", messageId: "m", text: "Complete" });
+  assertEquals(snapshot.timelineTruncated, true);
+  assertEquals(
+    snapshot.timeline?.reduce(
+      (sum, entry) => sum + (entry.kind === "text" ? entry.text.length : 0),
+      0,
+    ),
+    200_000,
+  );
+});
+
+Deno.test("freezing an interrupted tool never turns its running status into success", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "tool.started", runId: "r", callId: "c", tool: "read_file" });
+  view.apply({ type: "run.failed", runId: "r", code: "run_cancelled", message: "Cancelled" });
+  assertEquals(view.finalOutput().tools[0].status, "running");
 });
 
 Deno.test("tool lifecycle renders statuses in call order", () => {

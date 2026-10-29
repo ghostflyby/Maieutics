@@ -1,11 +1,10 @@
 /**
  * `.maieuticsnb` serializer: bridges the frontend-owned snapshot format onto
  * the VSCode notebook model. Deserialization only reads the file; live session
- * state is never touched (invariant 13). Structured turn results restore as
- * the single turn+json output item — the timeline renderer's default view and
- * the save round-trip's source (findTurnSnapshot); the markdown fallback view
- * lives inside the renderer. Markdown-only outputs from older files keep the
- * markdown fallback (snapshotFromMarkdownOutputs). The per-cell turn binding
+ * state is never touched (invariant 13). Each timeline node restores as an
+ * independent structured output. Saving joins those fragments into one portable
+ * turn snapshot; legacy whole-turn and Markdown-only outputs remain readable.
+ * The per-cell turn binding
  * (runId + submitted input) round-trips through cell metadata so
  * committed/stale history states survive save/reopen.
  */
@@ -26,11 +25,43 @@ import {
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
 import { turnOutputItems, type TurnOutputItemSpec, TurnOutputMime } from "./turnView.ts";
+import { timelineOutputSnapshots } from "./timelineOutputs.ts";
 
 export const NotebookType = "maieutics-notebook";
 
 /** Notebook metadata key carrying the server session the file last ran against. */
 export const StoredSessionMetadataKey = "maieuticsSessionId";
+/** Rich display snapshot data stays on its owning output, outside timeline headers. */
+export const ReplDisplayMetadataKey = "maieuticsRepl";
+export const TimelineSnapshotMetadataKey = "maieuticsTimelineNode";
+
+/** Assistant text goes directly to VS Code's default Markdown renderer. */
+export function timelineNotebookOutput(node: OutputSnapshot): vscode.NotebookCellOutput {
+  const entry = node.timeline?.length === 1 ? node.timeline[0] : undefined;
+  if (entry?.kind === "text") {
+    return new vscode.NotebookCellOutput([
+      vscode.NotebookCellOutputItem.text(entry.text, "text/markdown"),
+    ], {
+      [TimelineSnapshotMetadataKey]: { nodeId: node.nodeId, timeline: [{ ...entry, text: "" }] },
+      maieuticsSafeMarkdown: true,
+    });
+  }
+  return new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec));
+}
+
+/** Read current Markdown bytes, since item updates do not replace output metadata. */
+export function timelineSnapshotFromOutput(
+  output: vscode.NotebookCellOutput,
+): OutputSnapshot | undefined {
+  const node = output.metadata?.[TimelineSnapshotMetadataKey] as OutputSnapshot | undefined;
+  const entry = node?.timeline?.[0];
+  const item = output.items.find((item) => item.mime === "text/markdown");
+  if (entry?.kind !== "text" || item === undefined) return undefined;
+  return {
+    nodeId: node?.nodeId,
+    timeline: [{ ...entry, text: new TextDecoder().decode(item.data) }],
+  };
+}
 
 /** Reads the pinned server session id from notebook metadata. */
 export function readStoredSessionId(
@@ -123,7 +154,17 @@ function readCellBinding(cell: vscode.NotebookCellData): TurnBinding | undefined
  * files must not carry executable renderer code — ADR 0038 stage 1b). */
 function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undefined {
   const snapshots: OutputSnapshot[] = [];
+  const repl: NonNullable<OutputSnapshot["repl"]> = [];
   for (const output of cell.outputs ?? []) {
+    const node = timelineSnapshotFromOutput(output);
+    if (typeof node === "object" && node !== null) snapshots.push(node);
+    const display = output.metadata?.[ReplDisplayMetadataKey];
+    if (
+      typeof display === "object" && display !== null && typeof display.displayId === "string" &&
+      typeof display.data === "object" && display.data !== null
+    ) {
+      repl.push({ displayId: display.displayId, data: display.data });
+    }
     for (const item of output.items) {
       if (item.mime !== TurnOutputMime) continue;
       try {
@@ -136,7 +177,9 @@ function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undef
       }
     }
   }
-  return mergeOutputSnapshots(snapshots, snapshotFromMarkdownOutputs(cell)?.text);
+  if (repl.length) snapshots.push({ repl });
+  const merged = mergeOutputSnapshots(snapshots, snapshotFromMarkdownOutputs(cell)?.text);
+  return merged === undefined ? undefined : stripBundledDisplaySources(merged);
 }
 
 /** Best-effort fallback when only the markdown render survived. */
@@ -151,18 +194,13 @@ function snapshotFromMarkdownOutputs(cell: vscode.NotebookCellData): OutputSnaps
   return { text: "" };
 }
 
-/** Restores one snapshot as cell outputs: REPL displays first, then the
- * turn+json item — the ONLY render item, so the timeline renderer is picked
- * automatically (a sibling text/markdown item would always win VS Code's
- * mime display order). The same item is what serializeNotebook round-trips
- * from (findTurnSnapshot). Cells whose outputs carry no turn+json item are
- * older saves; they keep the markdown fallback view. */
+/** Restores native rich values and one structured output per timeline node. */
 export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCellOutput[] {
   const outputs = (output.repl ?? []).map((display) =>
-    new vscode.NotebookCellOutput(bundleItems(display.data))
+    new vscode.NotebookCellOutput(bundleItems(display.data), { [ReplDisplayMetadataKey]: display })
   );
   outputs.push(
-    new vscode.NotebookCellOutput(turnOutputItems(output).map(outputItemFromSpec)),
+    ...timelineOutputSnapshots(output).map(timelineNotebookOutput),
   );
   return outputs;
 }

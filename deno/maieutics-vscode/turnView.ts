@@ -9,6 +9,7 @@
  */
 
 import type { EventFrame, ModelIdentity, UsageSummary } from "./protocol.ts";
+import { MaximumDisplayTools, type TimelineEntry, TurnTimeline } from "./turnTimeline.ts";
 
 /** Renders compactly: JSON collapsed to one line and truncated for the tool
  * activity line. */
@@ -29,6 +30,7 @@ function summarize(value: unknown, limit = 48): string | undefined {
 }
 
 export interface ToolEntry {
+  version: number;
   callId: string;
   tool: string;
   status: "running" | "ok" | "error";
@@ -37,12 +39,16 @@ export interface ToolEntry {
   /** Latest progress text captured from tool.progress (last wins, so the
    * line stays bounded however chatty the tool is). */
   progress?: string;
+  progressDetail?: string;
   /** Structured edit diff captured from tool.finished (workspace edit tools). */
   diff?: EditDiffSummary;
   /** Wall-clock duration measured between the start and finish frames
    * (receipt time, so replayed streams under-report). */
   startedAt?: number;
   durationMs?: number;
+  arguments?: unknown;
+  result?: unknown;
+  detailsTruncated?: boolean;
 }
 
 /** A bounded unified diff carried by a structured edit-tool result. */
@@ -129,9 +135,12 @@ export const MaximumSubagentTextLength = 20_000;
 
 /** One in-flight subagent child view inside the parent turn. */
 interface SubagentEntry {
+  version: number;
   runId: string;
   status: SubagentStatus;
   text: string;
+  textMessageId?: string;
+  textCompleted: boolean;
   /** The fold hit the view-layer text cap (the report may be longer). */
   textCapped: boolean;
   /** The child announced turn.truncated (model iteration budget). */
@@ -145,8 +154,10 @@ interface SubagentEntry {
 function newSubagentEntry(runId: string): SubagentEntry {
   return {
     runId,
+    version: 0,
     status: "running",
     text: "",
+    textCompleted: false,
     textCapped: false,
     reasoning: [],
     truncated: false,
@@ -182,9 +193,30 @@ function foldReasoning(summaries: ReasoningSummaryView[], frame: EventFrame): bo
   return true;
 }
 
+/** Detached public snapshots and shared immutable render snapshots have the same shape. */
+export interface TurnOutputSnapshot {
+  runId: string;
+  input?: string;
+  text: string;
+  timeline?: TimelineEntry[];
+  timelineTruncated?: boolean;
+  reasoning?: ReasoningSummaryView[];
+  tools: ToolSnapshotView[];
+  truncated: boolean;
+  repl: ReplDisplayEntry[];
+  subagents?: SubagentSnapshotView[];
+  subagentsOverflow?: boolean;
+  usage?: UsageSummary;
+  model?: ModelIdentity;
+  error?: { code: string; message: string };
+}
+
 export class TurnView {
   readonly runId: string;
   private text = "";
+  private textMessageId: string | undefined;
+  private textCompleted = false;
+  private readonly timeline = new TurnTimeline();
   private readonly reasoning: ReasoningSummaryView[] = [];
   private readonly tools = new Map<string, ToolEntry>();
   private readonly toolOrder: string[] = [];
@@ -199,6 +231,15 @@ export class TurnView {
   private usage: UsageSummary | undefined;
   private model: ModelIdentity | undefined;
   private readonly dirty = new Set<SegmentId>();
+  private readonly renderedTools = new WeakMap<
+    ToolEntry,
+    { version: number; value: ToolSnapshotView }
+  >();
+  private readonly renderedReasoning = new WeakMap<ReasoningSummaryView, ReasoningSummaryView>();
+  private readonly renderedChildren = new WeakMap<
+    SubagentEntry,
+    { version: number; value: SubagentSnapshotView }
+  >();
 
   constructor(runId: string) {
     this.runId = runId;
@@ -269,7 +310,9 @@ export class TurnView {
         return true;
       }
       case "repl.clear": {
+        for (const entry of this.replList()) this.dirty.add(this.replSegmentId(entry));
         this.replDisplays.clear();
+        this.anonymousDisplays = 0;
         return true;
       }
       case "repl.error": {
@@ -285,20 +328,44 @@ export class TurnView {
     if (frame.runId !== this.runId && frame.type !== "run.missing") return false;
     switch (frame.type) {
       case "reasoning.delta": {
+        const existed = this.reasoning.some((entry) => entry.messageId === frame.messageId);
         if (!foldReasoning(this.reasoning, frame)) return false;
+        if (!existed && typeof frame.messageId === "string") {
+          this.timeline.add({ kind: "reasoning", messageId: frame.messageId });
+        }
         this.dirty.add(`reasoning:${this.runId}`);
         return true;
       }
       case "text.delta": {
         if (typeof frame.text !== "string" || frame.text.length === 0) return false;
+        if (
+          this.textCompleted ||
+          (frame.messageId !== undefined && frame.messageId !== this.textMessageId)
+        ) this.text = "";
+        this.textMessageId = frame.messageId;
+        this.textCompleted = false;
         this.text += frame.text;
+        this.timeline.text(frame);
         this.dirty.add(`answer:${this.runId}`);
         return true;
       }
       case "tool.started":
       case "tool.progress":
       case "tool.finished": {
+        if (
+          frame.type === "tool.started" && typeof frame.callId === "string" &&
+          !this.tools.has(frame.callId) && this.toolOrder.length >= MaximumDisplayTools
+        ) {
+          this.timeline.truncated = true;
+          this.dirty.add(`tools:${this.runId}`);
+          return true;
+        }
+        const index = this.toolOrder.length;
+        const existed = frame.callId !== undefined && this.tools.has(frame.callId);
         if (this.foldToolFrame(this.tools, this.toolOrder, frame)) {
+          if (!existed && this.toolOrder.length > index) {
+            this.timeline.add({ kind: "tool", index });
+          }
           this.dirty.add(`tools:${this.runId}`);
         }
         return true;
@@ -313,6 +380,9 @@ export class TurnView {
             .filter((part) => part.kind === "text")
             .map((part) => part.text ?? "")
             .join("");
+          this.timeline.text(frame, this.text);
+          this.textMessageId = frame.messageId;
+          this.textCompleted = true;
           this.dirty.add(`answer:${this.runId}`);
         }
         return true;
@@ -361,6 +431,7 @@ export class TurnView {
       if (this.subagents.has(frame.runId)) return false; // idempotent replay
       if (this.subagents.size >= MaximumSubagents) return this.subagentsOverflowChanged();
       this.subagents.set(frame.runId, newSubagentEntry(frame.runId));
+      this.timeline.add({ kind: "subagent", index: this.subagents.size - 1 });
       this.dirty.add(`subagents:${this.runId}`);
       return true;
     }
@@ -388,6 +459,7 @@ export class TurnView {
       if (this.subagents.size >= MaximumSubagents) return this.subagentsOverflowChanged();
       child = newSubagentEntry(frame.runId);
       this.subagents.set(frame.runId, child);
+      this.timeline.add({ kind: "subagent", index: this.subagents.size - 1 });
     }
 
     let changed = false;
@@ -397,6 +469,12 @@ export class TurnView {
         break;
       case "text.delta": {
         if (typeof frame.text === "string" && frame.text.length > 0) {
+          if (
+            child.textCompleted ||
+            (frame.messageId !== undefined && frame.messageId !== child.textMessageId)
+          ) child.text = "";
+          child.textMessageId = frame.messageId;
+          child.textCompleted = false;
           const room = MaximumSubagentTextLength - child.text.length;
           if (room > 0) {
             child.text += frame.text.slice(0, room);
@@ -417,6 +495,8 @@ export class TurnView {
             .join("");
           child.textCapped = child.textCapped || joined.length > MaximumSubagentTextLength;
           child.text = joined.slice(0, MaximumSubagentTextLength);
+          child.textMessageId = frame.messageId;
+          child.textCompleted = true;
           changed = true;
         }
         break;
@@ -424,7 +504,13 @@ export class TurnView {
       case "tool.started":
       case "tool.progress":
       case "tool.finished":
-        changed = this.foldToolFrame(child.tools, child.toolOrder, frame);
+        if (
+          frame.type === "tool.started" && typeof frame.callId === "string" &&
+          !child.tools.has(frame.callId) && child.toolOrder.length >= MaximumDisplayTools
+        ) {
+          child.truncated = true;
+          changed = true;
+        } else changed = this.foldToolFrame(child.tools, child.toolOrder, frame);
         break;
       case "turn.truncated":
         child.truncated = true;
@@ -442,7 +528,10 @@ export class TurnView {
         break;
       }
     }
-    if (changed) this.dirty.add(`subagents:${this.runId}`);
+    if (changed) {
+      child.version++;
+      this.dirty.add(`subagents:${this.runId}`);
+    }
     return changed;
   }
 
@@ -468,11 +557,16 @@ export class TurnView {
     if (typeof frame.callId !== "string") return false;
     switch (frame.type) {
       case "tool.started": {
+        if (tools.has(frame.callId) || order.length >= MaximumDisplayTools) return false;
+        const detail = retainToolDetail(frame.arguments);
         tools.set(frame.callId, {
           callId: frame.callId,
+          version: 0,
           tool: typeof frame.tool === "string" ? frame.tool : "unknown",
           status: "running",
           args: summarize(frame.arguments),
+          ...(detail.value === undefined ? {} : { arguments: detail.value }),
+          ...(detail.truncated ? { detailsTruncated: true } : {}),
           startedAt: Date.now(),
         });
         order.push(frame.callId);
@@ -482,6 +576,10 @@ export class TurnView {
         const entry = tools.get(frame.callId);
         const failed = isFailureResult(frame.result);
         if (entry) {
+          entry.version++;
+          const detail = retainToolDetail(frame.result);
+          entry.result = detail.value;
+          entry.detailsTruncated ||= detail.truncated;
           entry.status = failed ? "error" : "ok";
           if (!failed) entry.diff = readEditDiff(frame.result);
           if (entry.startedAt !== undefined) entry.durationMs = Date.now() - entry.startedAt;
@@ -492,7 +590,10 @@ export class TurnView {
         const entry = tools.get(frame.callId);
         const text = frame.content?.text;
         if (entry && typeof text === "string" && text.length > 0) {
+          entry.version++;
           entry.progress = summarize(text);
+          entry.progressDetail = text.slice(0, MaximumToolDetailCharacters);
+          entry.detailsTruncated ||= text.length > MaximumToolDetailCharacters;
           return true;
         }
         return false;
@@ -587,30 +688,25 @@ export class TurnView {
   /** Renders the complete cell output for a finished run. `input` is the
    * submitted cell text; together with `runId` it forms the turn binding that
    * travels inside the structured snapshot (and round-trips through save). */
-  finalOutput(input?: string): {
-    runId: string;
-    input?: string;
-    text: string;
-    reasoning?: ReasoningSummaryView[];
-    tools: ToolSnapshotView[];
-    truncated: boolean;
-    repl: ReplDisplayEntry[];
-    subagents?: SubagentSnapshotView[];
-    subagentsOverflow?: boolean;
-    usage?: UsageSummary;
-    model?: ModelIdentity;
-    error?: { code: string; message: string };
-  } {
+  finalOutput(input?: string): TurnOutputSnapshot {
+    return structuredClone(this.renderOutput(input));
+  }
+
+  /** Internal render projection: callers must not mutate shared node values. */
+  renderOutput(input?: string): TurnOutputSnapshot {
+    const timeline = this.timeline.renderEntries();
     return {
       runId: this.runId,
       ...(input === undefined ? {} : { input }),
       text: this.text,
-      ...(this.reasoning.length === 0 ? {} : { reasoning: this.reasoningSummaries() }),
+      ...(timeline.length === 0 ? {} : { timeline }),
+      ...(this.timeline.truncated ? { timelineTruncated: true } : {}),
+      ...(this.reasoning.length === 0 ? {} : { reasoning: this.renderReasoning(this.reasoning) }),
       repl: this.replList(),
-      tools: toolSnapshotViews(this.orderedEntries()),
+      tools: this.renderTools(this.orderedEntries()),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
       ...(this.subagents.size === 0 ? {} : {
-        subagents: this.subagentSnapshots(),
+        subagents: this.renderChildren(),
         subagentsOverflow: this.subagentsOverflow,
       }),
       ...(this.usage === undefined ? {} : { usage: this.usage }),
@@ -619,6 +715,43 @@ export class TurnView {
         ? { code: this.terminal.code, message: this.terminal.message }
         : undefined,
     };
+  }
+  private renderReasoning(entries: ReasoningSummaryView[]): ReasoningSummaryView[] {
+    return entries.map((entry) => {
+      let value = this.renderedReasoning.get(entry);
+      if (value?.text !== entry.text) {
+        value = { ...entry };
+        this.renderedReasoning.set(entry, value);
+      }
+      return value;
+    });
+  }
+
+  private renderTools(entries: (ToolEntry | undefined)[]): ToolSnapshotView[] {
+    return entries.filter((entry) => entry !== undefined).map((entry) => {
+      const cached = this.renderedTools.get(entry);
+      if (cached?.version === entry.version) return cached.value;
+      const value = toolSnapshotViews([entry])[0];
+      this.renderedTools.set(entry, { version: entry.version, value });
+      return value;
+    });
+  }
+
+  private renderChildren(): SubagentSnapshotView[] {
+    return [...this.subagents.values()].map((child) => {
+      const cached = this.renderedChildren.get(child);
+      if (cached?.version === child.version) return cached.value;
+      const value: SubagentSnapshotView = {
+        status: child.status,
+        text: child.textCapped ? `${child.text}\n…` : child.text,
+        ...(child.reasoning.length ? { reasoning: this.renderReasoning(child.reasoning) } : {}),
+        tools: this.renderTools(child.toolOrder.map((id) => child.tools.get(id))),
+        ...(child.truncated ? { truncated: true } : {}),
+        ...(child.code === undefined ? {} : { code: child.code }),
+      };
+      this.renderedChildren.set(child, { version: child.version, value });
+      return value;
+    });
   }
 }
 
@@ -629,10 +762,14 @@ function toolSnapshotViews(entries: readonly (ToolEntry | undefined)[]): ToolSna
     .filter((entry) => entry !== undefined)
     .map((entry) => ({
       tool: entry.tool,
-      status: entry.status === "error" ? "error" as const : "ok" as const,
+      status: entry.status,
       ...(entry.args === undefined ? {} : { argsSummary: entry.args }),
       ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
       ...(entry.diff === undefined ? {} : { diff: entry.diff }),
+      ...(entry.arguments === undefined ? {} : { arguments: structuredClone(entry.arguments) }),
+      ...(entry.result === undefined ? {} : { result: structuredClone(entry.result) }),
+      ...(entry.progressDetail === undefined ? {} : { progress: entry.progressDetail }),
+      ...(entry.detailsTruncated ? { detailsTruncated: true } : {}),
     }));
 }
 
@@ -686,10 +823,30 @@ export function subagentSnapshotLines(
 
 export interface ToolSnapshotView {
   tool: string;
-  status: "ok" | "error";
+  status: "running" | "ok" | "error";
   argsSummary?: string;
   durationMs?: number;
   diff?: EditDiffSummary;
+  arguments?: unknown;
+  result?: unknown;
+  progress?: string;
+  detailsTruncated?: boolean;
+}
+
+const MaximumToolDetailCharacters = 20_000;
+
+/** Keep ordinary results structured; oversized details become an explicitly marked preview. */
+function retainToolDetail(value: unknown): { value?: unknown; truncated: boolean } {
+  if (value === undefined) return { truncated: false };
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) return { truncated: false };
+    return json.length > MaximumToolDetailCharacters
+      ? { value: json.slice(0, MaximumToolDetailCharacters), truncated: true }
+      : { value: JSON.parse(json), truncated: false };
+  } catch {
+    return { value: "(detail unavailable)", truncated: true };
+  }
 }
 
 /** Renders tool snapshot entries as markdown bullets with a capped ```diff
@@ -764,10 +921,8 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
-/** Output item mimes: the turn+json item is the ONLY render item of a
- * structured turn output (the timeline renderer is the default view and
- * carries the markdown fallback view itself); markdown remains the streamed
- * answer's item and the legacy snapshot restore fallback. */
+/** Structured timeline nodes use one renderer throughout streaming and completion.
+ * text/markdown is retained as a legacy snapshot compatibility constant. */
 export const AgentOutputMime = "text/markdown";
 export const ToolOutputMime = "application/vnd.maieutics.tool+json";
 export const TurnOutputMime = "application/vnd.maieutics.turn+json";
@@ -784,14 +939,8 @@ export interface TurnOutputItemSpec {
   readonly value: unknown;
 }
 
-/** The items a structured turn result renders as: exactly the single
- * turn+json item. The timeline renderer is the DEFAULT view — VS Code picks
- * the first mime with an available renderer by display order, and
- * text/markdown always wins that race when it shares the output — so the
- * markdown fallback moved inside the renderer (a per-output view toggle)
- * instead of riding a sibling item. The turn+json payload is also what the
- * serializer round-trips (findTurnSnapshot) and the usage badge scans, so
- * every structured output must keep carrying it. */
+/** Each timeline output block carries one structured item; the serializer joins
+ * node fragments back into the portable turn snapshot. Whole-turn items remain readable. */
 export function turnOutputItems(snapshot: {
   text?: string;
   reasoning?: readonly ReasoningSummaryView[];

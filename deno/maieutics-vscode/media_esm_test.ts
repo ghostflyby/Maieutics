@@ -86,11 +86,10 @@ Deno.test("notebook renderer entrypoints are ESM modules, not CJS bundles", asyn
   assert(renderers.length > 0, "package.json contributes at least one notebookRenderer");
 
   for (const renderer of renderers) {
-    assert(
-      typeof renderer.entrypoint === "string",
-      `${renderer.id} declares a string entrypoint`,
-    );
-    const entrypoint = renderer.entrypoint as string;
+    const entrypoint = typeof renderer.entrypoint === "string"
+      ? renderer.entrypoint
+      : (renderer.entrypoint as { path?: string })?.path;
+    assert(typeof entrypoint === "string", `${renderer.id} declares an entrypoint path`);
     const source = await Deno.readTextFile(new URL(entrypoint, moduleRoot));
     assertRendererModule(source, `${renderer.id} (${entrypoint})`);
   }

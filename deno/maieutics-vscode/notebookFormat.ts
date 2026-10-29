@@ -11,6 +11,14 @@
  */
 
 import type { ReasoningSummaryView, SubagentSnapshotView } from "./turnView.ts";
+import type { ModelIdentity, UsageSummary } from "./protocol.ts";
+import { mergeTimelineOutputSnapshots } from "./timelineOutputs.ts";
+import {
+  MaximumDisplayTools,
+  MaximumTimelineCharacters,
+  MaximumTimelineEntries,
+  type TimelineEntry,
+} from "./turnTimeline.ts";
 
 export const NotebookKind = "maieutics-notebook";
 export const NotebookVersion = 1;
@@ -24,8 +32,18 @@ export interface TurnBinding {
 }
 
 export interface OutputSnapshot {
+  /** Live node identity; consumed when joining outputs, never persisted as a node wrapper. */
+  nodeId?: string;
+  streaming?: boolean;
+  runId?: string;
+  input?: string;
+  model?: ModelIdentity;
+  usage?: UsageSummary;
   /** Final assistant markdown, when the turn produced text. */
   text?: string;
+  /** First-appearance order of model messages, summaries, tools and child runs. */
+  timeline?: TimelineEntry[];
+  timelineTruncated?: boolean;
   reasoning?: ReasoningSummaryView[];
   truncated?: boolean;
   error?: { code: string; message: string };
@@ -37,6 +55,7 @@ export interface OutputSnapshot {
    * child transcript itself is never persisted ("carry reports, never live
    * child state"). */
   subagents?: SubagentSnapshotView[];
+  subagentsOverflow?: boolean;
 }
 
 export interface ReplDisplaySnapshot {
@@ -47,7 +66,13 @@ export interface ReplDisplaySnapshot {
 
 export interface ToolSnapshot {
   tool: string;
-  status: "ok" | "error";
+  status: "running" | "ok" | "error";
+  argsSummary?: string;
+  durationMs?: number;
+  arguments?: unknown;
+  result?: unknown;
+  progress?: string;
+  detailsTruncated?: boolean;
   /** Bounded unified diff captured from a structured edit-tool result;
    * optional so older snapshots keep loading. */
   diff?: ToolDiffSnapshot;
@@ -173,10 +198,7 @@ function parseCell(value: unknown): CellSnapshot {
 
 function parseOutput(value: Record<string, unknown>): OutputSnapshot {
   const tools = Array.isArray(value.tools)
-    ? value.tools.filter(isRecord).map((tool) => ({
-      tool: typeof tool.tool === "string" ? tool.tool : "unknown",
-      status: tool.status === "error" ? "error" as const : "ok" as const,
-    }))
+    ? value.tools.slice(0, MaximumDisplayTools).filter(isRecord).map(parseTool)
     : undefined;
   const repl = Array.isArray(value.repl)
     ? value.repl.filter(isRecord).map((display) => ({
@@ -187,8 +209,38 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
   const subagents = Array.isArray(value.subagents)
     ? value.subagents.filter(isRecord).map(parseSubagent)
     : undefined;
+  const timeline = Array.isArray(value.timeline) ? parseTimeline(value.timeline) : undefined;
   return {
+    ...(typeof value.runId === "string" ? { runId: value.runId } : {}),
+    ...(typeof value.input === "string" ? { input: value.input } : {}),
+    ...(isRecord(value.model) && typeof value.model.profileId === "string" &&
+        typeof value.model.provider === "string" && typeof value.model.model === "string"
+      ? {
+        model: {
+          profileId: value.model.profileId,
+          provider: value.model.provider,
+          model: value.model.model,
+        },
+      }
+      : {}),
+    ...(isRecord(value.usage) && typeof value.usage.inputTokens === "number" &&
+        typeof value.usage.outputTokens === "number"
+      ? {
+        usage: {
+          inputTokens: value.usage.inputTokens,
+          outputTokens: value.usage.outputTokens,
+          ...(typeof value.usage.totalTokens === "number"
+            ? { totalTokens: value.usage.totalTokens }
+            : {}),
+        },
+      }
+      : {}),
     text: typeof value.text === "string" ? value.text : undefined,
+    ...(timeline === undefined ? {} : { timeline: timeline.entries }),
+    ...(value.timelineTruncated === true || timeline?.truncated ||
+        (Array.isArray(value.tools) && value.tools.length > MaximumDisplayTools)
+      ? { timelineTruncated: true }
+      : {}),
     ...(Array.isArray(value.reasoning) ? { reasoning: parseReasoning(value.reasoning) } : {}),
     truncated: typeof value.truncated === "boolean" ? value.truncated : undefined,
     error: isRecord(value.error) && typeof value.error.code === "string"
@@ -200,6 +252,7 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
     tools,
     repl,
     subagents,
+    ...(value.subagentsOverflow === true ? { subagentsOverflow: true } : {}),
   };
 }
 
@@ -214,14 +267,67 @@ function parseSubagent(value: Record<string, unknown>): SubagentSnapshotView {
     ...(Array.isArray(value.reasoning) ? { reasoning: parseReasoning(value.reasoning) } : {}),
     text: typeof value.text === "string" ? value.text : "",
     tools: Array.isArray(value.tools)
-      ? value.tools.filter(isRecord).map((tool) => ({
-        tool: typeof tool.tool === "string" ? tool.tool : "unknown",
-        status: tool.status === "error" ? "error" as const : "ok" as const,
-      }))
+      ? value.tools.slice(0, MaximumDisplayTools).filter(isRecord).map(parseTool)
       : [],
-    ...(value.truncated === true ? { truncated: true } : {}),
+    ...(value.truncated === true ||
+        (Array.isArray(value.tools) && value.tools.length > MaximumDisplayTools)
+      ? { truncated: true }
+      : {}),
     ...(typeof value.code === "string" ? { code: value.code } : {}),
   };
+}
+
+function parseTool(tool: Record<string, unknown>): ToolSnapshot {
+  const diff = tool.diff;
+  return {
+    tool: typeof tool.tool === "string" ? tool.tool : "unknown",
+    status: tool.status === "error" ? "error" : tool.status === "running" ? "running" : "ok",
+    ...(typeof tool.argsSummary === "string" ? { argsSummary: tool.argsSummary } : {}),
+    ...(typeof tool.durationMs === "number" ? { durationMs: tool.durationMs } : {}),
+    ...(tool.arguments === undefined ? {} : { arguments: tool.arguments }),
+    ...(tool.result === undefined ? {} : { result: tool.result }),
+    ...(typeof tool.progress === "string" ? { progress: tool.progress } : {}),
+    ...(tool.detailsTruncated === true ? { detailsTruncated: true } : {}),
+    ...(isRecord(diff) && typeof diff.unified === "string" &&
+        typeof diff.additions === "number" && typeof diff.deletions === "number"
+      ? {
+        diff: {
+          unified: diff.unified,
+          additions: diff.additions,
+          deletions: diff.deletions,
+          truncated: diff.truncated === true,
+        },
+      }
+      : {}),
+  };
+}
+
+/** Additive v1 field: old snapshots retain the category-based fallback. */
+function parseTimeline(value: unknown[]): { entries: TimelineEntry[]; truncated: boolean } {
+  const entries: TimelineEntry[] = [];
+  let truncated = value.length > MaximumTimelineEntries;
+  let room = MaximumTimelineCharacters;
+  for (const entry of value.slice(0, MaximumTimelineEntries)) {
+    if (!isRecord(entry)) continue;
+    if (entry.kind === "text" && typeof entry.text === "string") {
+      const text = entry.text.slice(0, room);
+      truncated ||= text.length < entry.text.length;
+      room -= text.length;
+      entries.push({
+        kind: "text",
+        messageId: typeof entry.messageId === "string" ? entry.messageId : "",
+        text,
+      });
+    } else if (entry.kind === "reasoning" && typeof entry.messageId === "string") {
+      entries.push({ kind: "reasoning", messageId: entry.messageId });
+    } else if (
+      (entry.kind === "tool" || entry.kind === "subagent") &&
+      typeof entry.index === "number" && Number.isSafeInteger(entry.index) && entry.index >= 0
+    ) {
+      entries.push({ kind: entry.kind, index: entry.index });
+    }
+  }
+  return { entries, truncated };
 }
 
 const SubagentStatuses: Set<string> = new Set(["running", "ok", "failed", "cancelled"]);
@@ -251,10 +357,12 @@ export function mergeOutputSnapshots(
   streamedText?: string,
 ): OutputSnapshot | undefined {
   if (snapshots.length === 0) return undefined;
-  const merged = snapshots.reduce<OutputSnapshot>(
-    (result, snapshot) => ({ ...result, ...snapshot }),
-    {},
-  );
+  const merged = snapshots.some((snapshot) => typeof snapshot.nodeId === "string")
+    ? mergeTimelineOutputSnapshots(snapshots)
+    : snapshots.reduce<OutputSnapshot>(
+      (result, snapshot) => ({ ...result, ...snapshot }),
+      {},
+    );
   if (merged.text === undefined && streamedText !== undefined) merged.text = streamedText;
   return merged;
 }

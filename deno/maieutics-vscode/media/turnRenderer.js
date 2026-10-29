@@ -3,13 +3,8 @@
 // it is an ES module — VS Code loads renderer entrypoints with a native
 // dynamic import(), so exports must be real export statements.
 //
-// The structured timeline is the DEFAULT view: a structured turn output
-// carries only the turn+json item, because a sibling text/markdown item
-// would always win VS Code's mime display order. The markdown view — the
-// legacy fallback rendering — stays reachable through the in-output toggle.
-// Answers and diffs render through a small escape-first markdown pass: the
-// output text is untrusted model content, so nothing reaches the DOM
-// unescaped.
+// Each node is one collapsed output. Expanded Markdown delegates to VS Code's
+// native renderer, with model HTML escaped even in trusted workspaces.
 
 "use strict";
 
@@ -19,19 +14,28 @@ const STYLE = `
 .maieutics-turn ul.tools li { padding: 1px 0; }
 .maieutics-turn .ok::before { content: "✅ "; }
 .maieutics-turn .error::before { content: "❌ "; }
+.maieutics-turn .running::before { content: "⏳ "; }
+.maieutics-turn ol.timeline { list-style: none; margin: 0 0 8px 5px; padding: 0 0 0 16px; border-left: 2px solid var(--vscode-panel-border, #8885); }
+.maieutics-turn .timeline-entry { position: relative; margin: 0 0 12px; }
+.maieutics-turn .timeline-entry::before { content: ""; position: absolute; left: -21px; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--vscode-descriptionForeground); }
+.maieutics-turn .markdown-unavailable { white-space: pre-wrap; }
+.maieutics-turn details.timeline-node { margin: 0 0 0 5px; padding: 3px 0 3px 15px; border-left: 2px solid var(--vscode-panel-border, #8885); }
+.maieutics-turn details.timeline-node > summary { cursor: pointer; display: flex; align-items: baseline; gap: 10px; list-style: none; line-height: 1.6; }
+.maieutics-turn details.timeline-node > summary::-webkit-details-marker { display: none; }
+.maieutics-turn details.timeline-node > summary::before { content: "▸"; color: var(--vscode-descriptionForeground); margin-left: -22px; }
+.maieutics-turn details.timeline-node[open] > summary::before { content: "▾"; }
+.maieutics-turn .node-title { flex-shrink: 0; }
+.maieutics-turn .preview { color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.maieutics-turn details.timeline-node[open] > summary > .preview { display: none; }
+.maieutics-turn .node-body { margin: 8px 0; line-height: 1.5; }
+.maieutics-turn pre.json, .maieutics-turn pre.original { white-space: pre-wrap; overflow-wrap: anywhere; }
+.maieutics-turn .detail-label { opacity: 0.75; margin-top: 8px; }
 .maieutics-turn .text { margin-top: 4px; line-height: 1.5; }
 .maieutics-turn .note { opacity: 0.8; margin-top: 8px; }
 .maieutics-turn .detail { opacity: 0.75; }
 .maieutics-turn .meta { opacity: 0.8; margin-top: 8px; }
 .maieutics-turn .actions { margin-top: 8px; }
 .maieutics-turn .actions a { color: var(--vscode-textLink-foreground); }
-.maieutics-turn .viewtoggle { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 6px; }
-.maieutics-turn .viewtoggle button {
-  font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px);
-  color: var(--vscode-descriptionForeground); background: transparent; border: none;
-  padding: 0 2px; cursor: pointer;
-}
-.maieutics-turn .viewtoggle button[aria-pressed="true"] { color: var(--vscode-foreground); text-decoration: underline; }
 .maieutics-turn .md { line-height: 1.5; }
 .maieutics-turn .md h1, .maieutics-turn .md h2, .maieutics-turn .md h3,
 .maieutics-turn .md h4, .maieutics-turn .md h5, .maieutics-turn .md h6 { margin: 10px 0 4px; }
@@ -63,8 +67,6 @@ const STYLE = `
 }
 .maieutics-turn .subagent-head { opacity: 0.85; margin-bottom: 2px; }
 `;
-
-const vscodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
 
 function escapeHtml(value) {
   return String(value)
@@ -124,142 +126,55 @@ function diffHtml(diff) {
   return `<pre class="diff">${rows}</pre>`;
 }
 
-// ---- light markdown (escape-first: model output is untrusted) ----
-
-/** Inline transforms over already-escaped text; code spans are tokenized
- * first so no other transform can match inside them. Only http(s) and
- * command: links become anchors — any other target stays plain text. */
-function inlineHtml(escaped) {
-  return escaped
-    .split(/(`[^`]*`)/)
-    .map((part) => {
-      if (part.length >= 2 && part.startsWith("`") && part.endsWith("`")) {
-        return `<code>${part.slice(1, -1)}</code>`;
-      }
-      return part
-        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-        .replace(
-          /\[([^\]]+)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)/g,
-          (match, label, href) =>
-            /^(https?:|command:)/i.test(href) ? `<a href="${href}">${label}</a>` : match,
-        );
-    })
-    .join("");
+/** Safe fallback for hosts without a Markdown renderer (never a partial parser). */
+function plainMarkdown(text) {
+  return `<pre class="markdown-unavailable">${escapeHtml(text)}</pre>`;
 }
 
-/** A fenced block as HTML; the raw fence lines are escaped here. */
-function fenceHtml(fence) {
-  if (fence.lang === "diff") {
-    const rows = fence.lines
-      .map((line) => `<div class="diffline ${diffLineClass(line)}">${escapeHtml(line)}</div>`)
-      .join("");
-    return `<pre class="diff">${rows}</pre>`;
+/** Scope the HTML guard to our synthetic output items, leaving ordinary notebook
+ * Markdown and renderer extensions untouched. Executable links stay inert. */
+function protectMarkdownHtml(markdownIt) {
+  for (const name of ["html_inline", "html_block"]) {
+    const original = markdownIt.renderer.rules[name];
+    if (original?.maieuticsGuard) continue;
+    const guarded = (tokens, index, options, env, renderer) =>
+      (env?.outputItem?.maieuticsSafeMarkdown === true ||
+          env?.outputItem?.metadata?.maieuticsSafeMarkdown === true)
+        ? escapeHtml(tokens[index].content)
+        : original(tokens, index, options, env, renderer);
+    guarded.maieuticsGuard = true;
+    markdownIt.renderer.rules[name] = guarded;
   }
-  return `<pre class="code"><code>${fence.lines.map(escapeHtml).join("\n")}</code></pre>`;
+  const originalLink = markdownIt.renderer.rules.link_open;
+  if (originalLink?.maieuticsGuard) return;
+  const guardedLink = (tokens, index, options, env, renderer) => {
+    const token = tokens[index];
+    if (
+      (env?.outputItem?.maieuticsSafeMarkdown === true ||
+        env?.outputItem?.metadata?.maieuticsSafeMarkdown === true) &&
+      /^(command|javascript|vbscript|data):/i.test(token.attrGet("href") ?? "")
+    ) {
+      token.attrSet("href", "#");
+    }
+    return originalLink
+      ? originalLink(tokens, index, options, env, renderer)
+      : renderer.renderToken(tokens, index, options);
+  };
+  guardedLink.maieuticsGuard = true;
+  markdownIt.renderer.rules.link_open = guardedLink;
 }
 
-/** A small markdown subset: headings, fenced code (```diff colorized),
- * blockquote notes, lists, hr, paragraphs, and the inline transforms above.
- * Everything renders from escaped text, so unknown constructs degrade to
- * plain text instead of injecting HTML. */
-function markdownToHtml(markdown) {
-  const lines = String(markdown).split("\n");
-  const blocks = [];
-  let paragraph = [];
-  let list = null;
-  let quote = [];
-  let fence = null;
-
-  const flushParagraph = () => {
-    if (paragraph.length > 0) {
-      blocks.push(
-        `<p>${paragraph.map((line) => inlineHtml(escapeHtml(line))).join("<br>")}</p>`,
-      );
-      paragraph = [];
-    }
+function markdownOutputItem(output, text, index) {
+  return {
+    id: `${output.id}:markdown:${index}`,
+    mime: "text/markdown",
+    metadata: output.metadata ?? {},
+    maieuticsSafeMarkdown: true,
+    text: () => text,
+    data: () => new TextEncoder().encode(text),
+    blob: () => new Blob([text], { type: "text/markdown" }),
+    json: () => JSON.parse(text),
   };
-  const flushList = () => {
-    if (list !== null) {
-      blocks.push(`</${list}>`);
-      list = null;
-    }
-  };
-  const flushQuote = () => {
-    if (quote.length > 0) {
-      blocks.push(
-        `<div class="note">${quote.map((line) => inlineHtml(escapeHtml(line))).join("<br>")}</div>`,
-      );
-      quote = [];
-    }
-  };
-  const flushAll = () => {
-    flushParagraph();
-    flushList();
-    flushQuote();
-  };
-
-  for (const line of lines) {
-    if (fence !== null) {
-      if (/^```/.test(line)) {
-        blocks.push(fenceHtml(fence));
-        fence = null;
-      } else {
-        fence.lines.push(line);
-      }
-      continue;
-    }
-    const open = line.match(/^```(.*)$/);
-    if (open !== null) {
-      flushAll();
-      fence = { lang: open[1].trim(), lines: [] };
-      continue;
-    }
-    if (line.trim().length === 0) {
-      flushAll();
-      continue;
-    }
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading !== null) {
-      flushAll();
-      const level = heading[1].length;
-      blocks.push(`<h${level}>${inlineHtml(escapeHtml(heading[2]))}</h${level}>`);
-      continue;
-    }
-    const bullet = line.match(/^[-*+]\s+(.*)$/);
-    const ordered = line.match(/^\d+[.)]\s+(.*)$/);
-    if (bullet !== null || ordered !== null) {
-      flushParagraph();
-      flushQuote();
-      const kind = bullet !== null ? "ul" : "ol";
-      const content = bullet !== null ? bullet[1] : ordered[1];
-      if (list !== kind) {
-        flushList();
-        blocks.push(`<${kind}>`);
-        list = kind;
-      }
-      blocks.push(`<li>${inlineHtml(escapeHtml(content))}</li>`);
-      continue;
-    }
-    const quoteLine = line.match(/^>\s?(.*)$/);
-    if (quoteLine !== null) {
-      flushParagraph();
-      flushList();
-      quote.push(quoteLine[1]);
-      continue;
-    }
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
-      flushAll();
-      blocks.push("<hr>");
-      continue;
-    }
-    flushList();
-    flushQuote();
-    paragraph.push(line);
-  }
-  if (fence !== null) blocks.push(fenceHtml(fence)); // an unterminated fence still renders
-  flushAll();
-  return blocks.join("\n");
 }
 
 /** Command affordances ([label](command:...)) inside a snapshot's markdown
@@ -273,58 +188,15 @@ function commandLinks(text) {
   return links;
 }
 
-/** Tool entries as legacy markdown bullets with a capped ```diff fence under
- * each structured edit result (the removed markdown item's composition). */
-function toolMarkdownLines(tools) {
-  const lines = [];
-  for (const tool of tools) {
-    const detail = [
-      typeof tool.argsSummary === "string" && tool.argsSummary.length > 0
-        ? `\`${tool.argsSummary}\``
-        : "",
-      tool.diff && typeof tool.diff === "object"
-        ? `\`+${tool.diff.additions} −${tool.diff.deletions}\``
-        : "",
-      typeof tool.durationMs === "number" ? formatDuration(tool.durationMs) : "",
-    ].filter((part) => part !== "").join(" · ");
-    const mark = tool.status === "error" ? "❌" : "✅";
-    lines.push(`- ${mark} \`${tool.tool}\`${detail === "" ? "" : ` · ${detail}`}`);
-    if (tool.diff && typeof tool.diff === "object") {
-      lines.push("", "```diff", ...diffBodyLines(tool.diff), "```");
-    }
-  }
-  return lines;
-}
-
-/** The subagent timeline as markdown: one quoted block per child, every line
- * carrying the `> ` prefix so the child's own markdown cannot escape the
- * indentation level (bare `>` keeps the quote continuous across blank
- * lines). Mirrors the live segment composition of turnView.ts. */
-function subagentsMarkdown(subagents, overflow = false) {
-  const blocks = [];
-  const many = subagents.length > 1;
-  const quoted = (line) => (line.length === 0 ? ">" : `> ${line}`);
-  for (const [index, child] of subagents.entries()) {
-    const lines = [`> 🤖 子代理${many ? ` ${index + 1}` : ""} · ${subagentMark(child)}`];
-    for (const line of toolMarkdownLines(Array.isArray(child.tools) ? child.tools : [])) {
-      lines.push(quoted(line));
-    }
-    if (typeof child.text === "string" && child.text.length > 0) {
-      for (const line of child.text.split("\n")) lines.push(quoted(line));
-    }
-    if (child.truncated) lines.push(quoted("> ⚠️ 子代理输出被截断。"));
-    while (lines.length > 0 && lines.at(-1) === ">") lines.pop();
-    blocks.push(lines);
-  }
-  if (overflow) {
-    blocks.push(["> ⚠️ 子代理过多，仅显示前 16 个。"]);
-  }
-  const out = [];
-  for (const block of blocks) {
-    if (out.length > 0) out.push("");
-    out.push(...block);
-  }
-  return out.join("\n");
+function retryHtml(text) {
+  const retry = commandLinks(text).find((link) =>
+    link.href.startsWith("command:maieutics.retryTurn?")
+  );
+  return retry === undefined
+    ? ""
+    : `<div class="actions"><a href="${escapeHtml(retry.href)}" data-retry="1">${
+      escapeHtml(retry.label)
+    }</a></div>`;
 }
 
 /** One tool row of a timeline (parent or subagent): status mark, name,
@@ -347,7 +219,29 @@ function toolLi(tool) {
   ].filter((part) => part !== "").join(" · ");
   return `<li class="${escapeHtml(tool.status)}">${escapeHtml(tool.tool)}${
     detail === "" ? "" : ` · ${detail}`
-  }${diff !== null ? diffHtml(diff) : ""}</li>`;
+  }${
+    tool.arguments !== undefined
+      ? `<div class="detail-label">参数</div><pre class="json">${
+        escapeHtml(JSON.stringify(tool.arguments, null, 2))
+      }</pre>`
+      : ""
+  }${
+    tool.progress
+      ? `<div class="detail-label">进度</div><pre class="original">${
+        escapeHtml(tool.progress)
+      }</pre>`
+      : ""
+  }${
+    tool.result !== undefined
+      ? `<div class="detail-label">结果</div><pre class="json">${
+        escapeHtml(JSON.stringify(tool.result, null, 2))
+      }</pre>`
+      : ""
+  }${diff !== null ? diffHtml(diff) : ""}${
+    tool.detailsTruncated
+      ? '<div class="note">工具详情超过显示上限，仅保留前 20,000 个字符。</div>'
+      : ""
+  }</li>`;
 }
 
 /** Summary text is always escaped plain text; it cannot inject HTML or command links. */
@@ -360,12 +254,9 @@ function reasoningHtml(summaries) {
   const note = entries.reduce((count, entry) => count + entry.text.length, 0) >= 20_000
     ? '<div class="note">思考摘要仅显示前 20,000 个字符。</div>'
     : "";
-  return entries.map((entry) =>
-    `<details class="reasoning" data-message-id="${
-      escapeHtml(entry.messageId)
-    }"><summary>思考摘要</summary><pre>${escapeHtml(entry.text)}</pre></details>`
-  )
-    .join("\n") + note;
+  return entries.map((entry) => `<pre class="original">${escapeHtml(entry.text)}</pre>`).join(
+    "\n",
+  ) + note;
 }
 
 function toolListHtml(tools) {
@@ -383,7 +274,7 @@ function subagentMark(child) {
 /** The folded subagent child runs as indented sections inside the timeline:
  * a status heading, the child's tool rows, then its report text (rendered
  * through the same escape-first markdown pass as the answer). */
-function subagentsHtml(subagents, overflow = false) {
+function subagentsHtml(subagents, overflow = false, markdownToHtml = plainMarkdown) {
   const many = subagents.length > 1;
   const sections = subagents.map((child, index) => {
     const body = [reasoningHtml(child.reasoning)];
@@ -410,15 +301,19 @@ function subagentsHtml(subagents, overflow = false) {
 /** The structured timeline (the default view): tool rows with diffs, the
  * subagent child timeline, the answer, truncation/error notes, and the
  * terminal model/token metadata. */
-function render(turn) {
+function renderExpanded(turn, markdownToHtml = plainMarkdown) {
   const parts = [];
-  const reasoning = reasoningHtml(turn.reasoning);
-  if (reasoning) parts.push(reasoning);
-  if (Array.isArray(turn.tools) && turn.tools.length > 0) {
-    parts.push(toolListHtml(turn.tools));
-  }
-  if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-    parts.push(subagentsHtml(turn.subagents, turn.subagentsOverflow === true));
+  if (Array.isArray(turn.timeline) && turn.timeline.length > 0) {
+    parts.push(timelineHtml(turn, markdownToHtml));
+  } else {
+    const reasoning = reasoningHtml(turn.reasoning);
+    if (reasoning) parts.push(reasoning);
+    if (Array.isArray(turn.tools) && turn.tools.length > 0) {
+      parts.push(toolListHtml(turn.tools));
+    }
+    if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
+      parts.push(subagentsHtml(turn.subagents, turn.subagentsOverflow === true, markdownToHtml));
+    }
   }
   if (typeof turn.text === "string" && turn.text.length > 0) {
     // A failed turn's text duplicates the structured error note below in two
@@ -427,39 +322,20 @@ function render(turn) {
     // failure text renders a second time in the default timeline view. Keep
     // only the Retry affordance (through the messaging bridge, which alone
     // can execute commands from a renderer) and drop the duplicated text.
-    const links = turn.error ? commandLinks(turn.text) : [];
-    const retry = links.find((link) => link.href.startsWith("command:maieutics.retryTurn"));
-    if (retry !== undefined) {
-      // The anchor always renders (the affordance is the point); only the
-      // click handler needs the messaging bridge. In a bridge-less context
-      // (unit tests) the anchor is inert but visible.
-      const args = (retry.href.split("?")[1] ?? "").split("&").map((pair) =>
-        decodeURIComponent(pair.split("=").slice(1).join("="))
-      );
-      parts.push(
-        `<div class="actions"><a href="#" data-retry="1">${escapeHtml(retry.label)}</a></div>`,
-      );
-      queueMicrotask(() => {
-        // A Deno-side render (unit tests) has no DOM: the anchor renders inert.
-        if (typeof document === "undefined") return;
-        const action = document.querySelector('[data-retry="1"]');
-        action?.addEventListener("click", (event) => {
-          event.preventDefault();
-          vscodeApi.postMessage({
-            source: "maieutics-turn",
-            type: "retry",
-            notebookUri: args[0] ?? "",
-            cellIndex: Number.parseInt(args[1] ?? "-1", 10),
-          });
-        });
-      });
-    } else if (!turn.error) {
+    const retry = turn.error ? retryHtml(turn.text) : "";
+    if (retry) {
+      parts.push(retry);
+    } else if (
+      !turn.error &&
+      !(Array.isArray(turn.timeline) &&
+        turn.timeline.some((entry) => entry?.kind === "text" && entry.text === turn.text))
+    ) {
       parts.push(`<div class="text">${markdownToHtml(turn.text)}</div>`);
     }
   }
   if (turn.truncated) {
     parts.push(
-      '<div class="note">⚠️ The agent turn was truncated after exhausting its model iteration budget.</div>',
+      '<div class="note">⚠️ 输出已截断。</div>',
     );
   }
   if (turn.error) {
@@ -483,64 +359,167 @@ function render(turn) {
   return parts.length > 0 ? parts.join("\n") : "<em>(empty turn)</em>";
 }
 
-/** The legacy markdown view (what the removed text/markdown item showed):
- * tool bullets with diff fences, the subagent child timeline, the answer,
- * and the notes, through the same markdown pass so the fallback keeps its
- * old look. */
-function renderMarkdownView(turn) {
-  const sections = [];
-  let childReasoning = "";
-  if (Array.isArray(turn.tools) && turn.tools.length > 0) {
-    sections.push(toolMarkdownLines(turn.tools).join("\n"));
-  }
-  if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-    if (
-      turn.subagents.some((child) => Array.isArray(child.reasoning) && child.reasoning.length > 0)
-    ) {
-      childReasoning = subagentsHtml(turn.subagents, turn.subagentsOverflow === true);
-    } else {
-      sections.push(subagentsMarkdown(turn.subagents, turn.subagentsOverflow === true));
+/** Ordered display entries reference the folded summaries, tools and children, so
+ * status updates replace one row without losing the earlier model rounds. */
+function timelineHtml(turn, markdownToHtml) {
+  const rows = [];
+  for (const entry of turn.timeline) {
+    if (entry === null || typeof entry !== "object") continue;
+    let body = "";
+    if (entry.kind === "text" && typeof entry.text === "string" && entry.text) {
+      body = `<div class="text">${markdownToHtml(entry.text)}</div>`;
+    } else if (entry.kind === "reasoning") {
+      body = reasoningHtml(
+        (Array.isArray(turn.reasoning) ? turn.reasoning : []).filter((summary) =>
+          summary?.messageId === entry.messageId
+        ),
+      );
+    } else if (entry.kind === "tool" && turn.tools?.[entry.index]) {
+      body = toolListHtml([turn.tools[entry.index]]);
+    } else if (entry.kind === "subagent" && turn.subagents?.[entry.index]) {
+      body = subagentsHtml([turn.subagents[entry.index]], false, markdownToHtml);
     }
+    if (body) rows.push(body);
   }
-  if (typeof turn.text === "string" && turn.text.length > 0) sections.push(turn.text);
-  if (turn.truncated) {
-    sections.push("> ⚠️ The agent turn was truncated after exhausting its model iteration budget.");
+  if (turn.timelineTruncated) {
+    rows.push('<li class="note">⚠️ 时间线预览已截断。</li>');
   }
-  if (turn.error) sections.push(`> ❌ \`${turn.error.code}\` — ${turn.error.message}`);
-  const meta = [];
-  if (turn.model && typeof turn.model === "object") {
-    meta.push(`${turn.model.provider}/${turn.model.model}`);
-  }
-  if (turn.usage && typeof turn.usage === "object") {
-    const input = formatTokens(turn.usage.inputTokens);
-    const output = formatTokens(turn.usage.outputTokens);
-    if (input !== "" || output !== "") meta.push(`${input}\u2191 ${output}\u2193 tokens`);
-  }
-  if (meta.length > 0) sections.push(meta.join(" \u00b7 "));
-  return sections.length > 0
-    ? reasoningHtml(turn.reasoning) + childReasoning +
-      `<div class="md">${markdownToHtml(sections.join("\n\n"))}</div>`
-    : reasoningHtml(turn.reasoning) + childReasoning || "<em>(empty turn)</em>";
+  if (turn.subagentsOverflow) rows.push('<li class="note">⚠️ 子代理过多，仅显示前 16 个。</li>');
+  return rows.join("\n");
 }
 
-/** The in-output view switcher: with no markdown sibling item, VS Code's
- * "change mimetype" picker has nothing to switch to, so the markdown
- * fallback lives here instead. */
-function viewToggleHtml(mode) {
-  const button = (id, label) =>
-    `<button type="button" data-maieutics-view="${id}" aria-pressed="${
-      mode === id
-    }">${label}</button>`;
-  return `<div class="viewtoggle" role="group" aria-label="Turn view">${
-    button("timeline", "Timeline")
-  }${button("markdown", "Markdown")}</div>`;
+function compact(value) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > 110 ? `${text.slice(0, 110)}…` : text;
+}
+
+function collapsedNode(id, title, preview, body, kind = "text") {
+  return `<details class="timeline-node ${escapeHtml(kind)}" data-node-id="${
+    escapeHtml(id)
+  }"><summary><span class="node-title">${escapeHtml(title)}</span><span class="preview">${
+    escapeHtml(compact(preview))
+  }</span></summary><div class="node-body">${body}</div></details>`;
+}
+
+/** The sole Agent rendering: compact nodes which reveal their original content on demand. */
+function render(turn, markdownToHtml = plainMarkdown) {
+  const parts = [];
+  if (
+    turn.nodeId === "header" ||
+    (!turn.nodeId && (turn.runId || turn.error || turn.model || turn.usage || turn.truncated))
+  ) {
+    const title = turn.streaming
+      ? "⏳ 运行中"
+      : turn.error?.code === "run_cancelled"
+      ? "🚫 已中断"
+      : turn.error
+      ? "❌ 失败"
+      : turn.truncated
+      ? "⚠️ 已截断"
+      : "✅ 已完成";
+    const meta = [];
+    if (turn.model) meta.push(`${turn.model.provider}/${turn.model.model}`);
+    if (turn.usage) {
+      meta.push(
+        `${formatTokens(turn.usage.inputTokens)}↑ ${formatTokens(turn.usage.outputTokens)}↓ tokens`,
+      );
+    }
+    if (turn.timelineTruncated) meta.push("⚠️ 时间线预览已截断");
+    if (turn.subagentsOverflow) meta.push("⚠️ 子代理过多，仅显示前 16 个");
+    const body = (turn.input
+      ? `<div class="detail-label">输入</div><pre class="original">${escapeHtml(turn.input)}</pre>`
+      : "") +
+      renderExpanded({
+        ...turn,
+        text: turn.error ? turn.text : "",
+        timeline: [],
+        tools: [],
+        reasoning: [],
+        subagents: [],
+      }, markdownToHtml);
+    parts.push(
+      collapsedNode("header", title, turn.error?.message ?? meta.join(" · "), body, "status"),
+    );
+    if (turn.nodeId === "header") {
+      return parts.join("\n");
+    }
+  }
+  const entries = Array.isArray(turn.timeline) ? turn.timeline : [
+    ...(Array.isArray(turn.reasoning) ? turn.reasoning : []).map((entry) => ({
+      kind: "reasoning",
+      messageId: entry.messageId,
+    })),
+    ...(Array.isArray(turn.tools) ? turn.tools : []).map((_, index) => ({ kind: "tool", index })),
+    ...(Array.isArray(turn.subagents) ? turn.subagents : []).map((_, index) => ({
+      kind: "subagent",
+      index,
+    })),
+  ];
+  for (const [index, entry] of entries.entries()) {
+    if (!entry || typeof entry !== "object") continue;
+    let title = "", preview = "";
+    if (entry.kind === "text" && typeof entry.text === "string" && entry.text) {
+      title = "助手回复";
+      preview = entry.text;
+    } else if (entry.kind === "reasoning" && Array.isArray(turn.reasoning)) {
+      const summary = turn.reasoning.find((item) => item?.messageId === entry.messageId);
+      if (summary?.text) {
+        title = "思考摘要";
+        preview = summary.text;
+      }
+    } else if (entry.kind === "tool" && turn.tools?.[entry.index]) {
+      const tool = turn.tools[entry.index];
+      title = `${
+        tool.status === "running" ? "⏳" : tool.status === "error" ? "❌" : "✅"
+      } ${tool.tool}`;
+      preview = [
+        tool.argsSummary,
+        typeof tool.durationMs === "number" ? formatDuration(tool.durationMs) : "",
+      ].filter(Boolean).join(" · ");
+    } else if (entry.kind === "subagent" && turn.subagents?.[entry.index]) {
+      const child = turn.subagents[entry.index];
+      title = `🤖 子代理 · ${subagentMark(child)}`;
+      preview = child.text ?? "";
+    }
+    if (title) {
+      if (entry.kind === "text") {
+        parts.push(`<div class="assistant-reply">${markdownToHtml(entry.text)}</div>`);
+        continue;
+      }
+      parts.push(
+        collapsedNode(
+          turn.nodeId ?? `entry:${index}`,
+          title,
+          preview,
+          renderExpanded({
+            timeline: [entry],
+            tools: turn.tools,
+            reasoning: turn.reasoning,
+            subagents: turn.subagents,
+          }, markdownToHtml),
+          entry.kind,
+        ),
+      );
+    }
+  }
+  if (
+    !turn.error && typeof turn.text === "string" && turn.text &&
+    !entries.some((entry) => entry?.kind === "text" && entry.text === turn.text)
+  ) {
+    parts.push(`<div class="assistant-reply">${markdownToHtml(turn.text)}</div>`);
+  }
+  return parts.join("\n") || "<em>(empty turn)</em>";
 }
 
 // ES module: VS Code loads notebook renderer entrypoints with a native
 // dynamic import(), so the entry must use real export statements (a classic
 // script assigning to a bare `exports` global throws ReferenceError there —
 // the webview provides no such global).
-export function activate() {
+export async function activate(context) {
+  const markdown = await context.getRenderer("vscode.markdown-it-renderer");
+  if (markdown === undefined) throw new Error("VS Code Markdown renderer is unavailable.");
+  markdown.extendMarkdownIt(protectMarkdownHtml);
+  const states = new Map();
   return {
     renderOutputItem(output, element) {
       if (element.querySelector("style") === null) {
@@ -550,49 +529,81 @@ export function activate() {
       }
 
       const turn = output.json();
-      const views = { timeline: render(turn), markdown: renderMarkdownView(turn) };
-      // In-memory per render: the timeline is the default view. VS Code may
-      // re-render the output (scroll, resize, updates), which resets it.
-      let mode = "timeline";
-      const openSummaries = new Set(
-        [...element.querySelectorAll("details.reasoning[open]")].map((node) =>
-          node.dataset.messageId
-        ),
-      );
+      const state = states.get(output.id) ?? { openNodes: new Set() };
+      states.set(output.id, state);
+      for (const detail of element.querySelectorAll("details.timeline-node")) {
+        if (detail.open) state.openNodes.add(detail.dataset.nodeId);
+        else state.openNodes.delete(detail.dataset.nodeId);
+      }
       element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
-      let content = null;
-      const paint = () => {
-        if (content !== null) content.remove();
-        content = document.createElement("div");
-        content.className = "maieutics-turn";
-        content.innerHTML = viewToggleHtml(mode) +
-          (mode === "markdown" ? views.markdown : views.timeline);
-        content.addEventListener("click", (event) => {
-          const target = event.target instanceof Element
-            ? event.target.closest("[data-maieutics-view]")
-            : null;
-          const requested = target === null ? null : target.getAttribute("data-maieutics-view");
-          if (requested === "timeline" || requested === "markdown") {
-            mode = requested;
-            paint();
-          }
-        });
-        for (const detail of content.querySelectorAll("details.reasoning")) {
-          detail.open = openSummaries.has(detail.dataset.messageId);
-          detail.addEventListener("toggle", () => {
-            if (detail.open) openSummaries.add(detail.dataset.messageId);
-            else openSummaries.delete(detail.dataset.messageId);
-          });
-        }
-        element.appendChild(content);
+      const blocks = [];
+      const markdownToHtml = (text) => {
+        const index = blocks.push(text) - 1;
+        return `<div data-markdown-index="${index}"></div>`;
       };
-      paint();
+      const content = document.createElement("div");
+      content.className = "maieutics-turn";
+      content.innerHTML = render(turn, markdownToHtml);
+      const hydrate = (root) => {
+        for (const node of root.querySelectorAll("[data-markdown-index]")) {
+          if (node.dataset.rendered) continue;
+          let hidden = false;
+          for (
+            let detail = node.closest("details");
+            detail !== null;
+            detail = detail.parentElement?.closest("details") ?? null
+          ) {
+            if (!detail.open) {
+              hidden = true;
+              break;
+            }
+          }
+          if (hidden) continue;
+          const index = Number(node.getAttribute("data-markdown-index"));
+          markdown.renderOutputItem(markdownOutputItem(output, blocks[index], index), node);
+          node.dataset.rendered = "true";
+        }
+      };
+      for (const detail of content.querySelectorAll("details.timeline-node")) {
+        detail.open = state.openNodes.has(detail.dataset.nodeId);
+        detail.addEventListener("toggle", () => {
+          if (!detail.isConnected) return;
+          if (detail.open) {
+            state.openNodes.add(detail.dataset.nodeId);
+            hydrate(detail);
+          } else state.openNodes.delete(detail.dataset.nodeId);
+        });
+      }
+      content.addEventListener("click", (event) => {
+        const action = event.target instanceof Element
+          ? event.target.closest("[data-retry]")
+          : null;
+        if (action === null) return;
+        event.preventDefault();
+        try {
+          const args = JSON.parse(decodeURIComponent(action.getAttribute("href").split("?")[1]));
+          if (!Array.isArray(args) || typeof args[0] !== "string" || !Number.isInteger(args[1])) {
+            return;
+          }
+          context.postMessage({
+            source: "maieutics-turn",
+            type: "retry",
+            notebookUri: args[0],
+            cellIndex: args[1],
+          });
+        } catch { /* Malformed notebook retry links are inert. */ }
+      });
+      element.appendChild(content);
+      hydrate(content);
     },
-    disposeOutputItem() {},
+    disposeOutputItem(id) {
+      if (id === undefined) states.clear();
+      else states.delete(id);
+    },
   };
 }
 
 // Test seam: the notebook renderer contract reads only `activate`; the pure
 // view functions are exported so the rendering stays unit-testable without a
 // webview.
-export { render, renderMarkdownView, subagentsHtml, viewToggleHtml };
+export { markdownOutputItem, protectMarkdownHtml, render, subagentsHtml };

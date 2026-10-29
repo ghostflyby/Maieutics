@@ -754,6 +754,19 @@ reports. Older snapshots remain valid; older readers may ignore this member. The
 are display snapshots, never canonical model history. Server transcript restore alone
 does not reconstruct them; event replay or a saved notebook supplies them.
 
+VS Code keeps one ordered timeline throughout streaming and completion. Each assistant
+message, permitted summary, tool invocation and child run gets an independent notebook
+output block in first-appearance order. Assistant reply blocks are always expanded and use VS Code’s default Markdown renderer directly. Activity nodes default to collapsed summaries; expanding one reveals the original content. Expansion
+survives output updates. Saving joins node fragments into one portable snapshot; reopening
+restores separate collapsed outputs. Tool parameters, latest progress and results retain
+up to 20,000 characters per detail and mark truncation explicitly. Notebook v1 snapshots
+may also carry `output.timeline`: entries `{kind:"text",messageId,text}`,
+`{kind:"reasoning",messageId}`, `{kind:"tool",index}` and `{kind:"subagent",index}`.
+Indexes reference the corresponding output arrays. Retention is bounded to 2,048 entries
+and 200,000 text characters, plus 256 tool records per run; `timelineTruncated` marks a capped preview. Old files remain
+valid and use grouped activity. Public transcript restoration reconstructs message/tool
+order without inventing missing display summaries. This adds no frontend wire fields.
+
 Rules:
 
 - `sinceSequence` is per run; a reconnecting client passes the last sequence

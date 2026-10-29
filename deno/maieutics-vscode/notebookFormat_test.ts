@@ -222,6 +222,47 @@ Deno.test("display reasoning round-trips separately from the answer and child re
   );
 });
 
+Deno.test("ordered timeline and tool detail survive notebook save and reopen", () => {
+  const notebook = emptyNotebook();
+  notebook.cells[0].output = {
+    text: "Final answer",
+    timeline: [
+      { kind: "text", messageId: "m1", text: "Checking files" },
+      { kind: "tool", index: 0 },
+      { kind: "reasoning", messageId: "m2" },
+      { kind: "text", messageId: "m2", text: "Final answer" },
+    ],
+    timelineTruncated: true,
+    reasoning: [{ messageId: "m2", text: "Compare results" }],
+    tools: [{
+      tool: "edit_file",
+      status: "ok",
+      argsSummary: "a.ts",
+      durationMs: 12,
+      diff: { unified: "+new\n", additions: 1, deletions: 0, truncated: false },
+    }],
+  };
+  const restored = parseNotebook(serializeNotebook(notebook)).cells[0].output;
+  assertEquals(restored?.timeline, notebook.cells[0].output.timeline);
+  assertEquals(restored?.timelineTruncated, true);
+  assertEquals(restored?.tools, notebook.cells[0].output.tools);
+});
+
+Deno.test("reading oversized timeline entries or text preserves a truncation marker on resave", () => {
+  for (
+    const timeline of [
+      Array.from({ length: 2049 }, (_, index) => ({ kind: "tool" as const, index })),
+      [{ kind: "text" as const, messageId: "m", text: "x".repeat(200_001) }],
+    ]
+  ) {
+    const notebook = emptyNotebook();
+    notebook.cells[0].output = { timeline };
+    const parsed = parseNotebook(serializeNotebook(notebook));
+    assertEquals(parsed.cells[0].output?.timelineTruncated, true);
+    assertEquals(parseNotebook(serializeNotebook(parsed)).cells[0].output?.timelineTruncated, true);
+  }
+});
+
 Deno.test("saving live summary segments keeps parent, child and partial answer together", () => {
   const reasoning = [{ messageId: "parent", text: "Checking." }];
   const subagents = [{ status: "ok" as const, text: "Report", tools: [], reasoning }];

@@ -79,6 +79,14 @@
           "application/vnd.maieutics.view+json"
         ],
         "requiresMessaging": "always"
+      },
+      {
+        "id": "maieutics-markdown-safety",
+        "displayName": "Maieutics Markdown safety",
+        "entrypoint": {
+          "extends": "vscode.markdown-it-renderer",
+          "path": "./media/markdownSafety.js"
+        }
       }
     ],
     "commands": [

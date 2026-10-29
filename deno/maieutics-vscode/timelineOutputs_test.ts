@@ -5,8 +5,76 @@ import {
   parseNotebook,
   serializeNotebook,
 } from "./notebookFormat.ts";
-import { timelineOutputSnapshots } from "./timelineOutputs.ts";
+import { TimelineOutputCache, timelineOutputSnapshots } from "./timelineOutputs.ts";
 import { TurnView } from "./turnView.ts";
+
+Deno.test("streaming headers do not serialize answer or rich display payloads", () => {
+  const snapshot = {
+    text: "Answer",
+    repl: [{ displayId: "d", data: { "text/plain": "rich value" } }],
+    timeline: [{ kind: "text" as const, messageId: "m", text: "Answer" }],
+  };
+  const nodes = timelineOutputSnapshots(snapshot, true);
+  assertEquals(nodes[0].text, undefined);
+  assertEquals(nodes[0].repl, undefined);
+  assertEquals(mergeOutputSnapshots(nodes)?.text, "Answer");
+});
+
+Deno.test("text paints reuse headers, tools, reasoning and child nodes without traversing old tool payloads", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "reasoning.delta", runId: "r", messageId: "m", text: "Summary" });
+  view.apply({ type: "tool.started", runId: "r", callId: "c", tool: "read_file" });
+  view.apply({
+    type: "tool.finished",
+    runId: "r",
+    callId: "c",
+    result: { status: "ok", value: "x".repeat(19000) },
+  });
+  view.applySubagent({ type: "text.delta", runId: "child", messageId: "c", text: "Child report" });
+  view.apply({ type: "text.delta", runId: "r", messageId: "m", text: "First" });
+  const cache = new TimelineOutputCache();
+  const snapshot = view.renderOutput("Question");
+  const before = cache.update(snapshot, true);
+  let reads = 0;
+  const result = snapshot.tools[0].result;
+  Object.defineProperty(snapshot.tools[0], "result", {
+    get: () => {
+      reads++;
+      return result;
+    },
+    configurable: true,
+  });
+  view.apply({ type: "text.delta", runId: "r", messageId: "m", text: " second" });
+  const after = cache.update(view.renderOutput("Question"), true);
+  const changed = after.filter((node, index) => node !== before[index]);
+  assertEquals(changed.map((node) => node.nodeId), ["entry:3"]);
+  for (const node of changed) JSON.stringify(node);
+  assertEquals(
+    reads,
+    0,
+    "A text paint must neither clone nor stringify previously retained tool details",
+  );
+  view.apply({
+    type: "tool.progress",
+    runId: "r",
+    callId: "c",
+    content: { kind: "text", text: "Changed" },
+  });
+  const third = cache.update(view.renderOutput("Question"), true);
+  assertEquals(third.filter((node, index) => node !== after[index]).map((node) => node.nodeId), [
+    "entry:1",
+  ]);
+});
+
+Deno.test("joining text nodes preserves an explicit empty final message and error retry text", () => {
+  const timeline = [{ kind: "text" as const, messageId: "m", text: "Earlier message" }];
+  assertEquals(mergeOutputSnapshots(timelineOutputSnapshots({ text: "", timeline }))?.text, "");
+  const error = { code: "cancelled", message: "Cancelled" };
+  assertEquals(
+    mergeOutputSnapshots(timelineOutputSnapshots({ text: "Retry action", error, timeline }))?.text,
+    "Retry action",
+  );
+});
 
 Deno.test("each timeline node is a self-contained output with stable identity and no duplicated whole-turn arrays", () => {
   const view = new TurnView("r");

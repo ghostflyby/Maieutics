@@ -64,7 +64,9 @@ import {
   NotebookType,
   outputItemFromSpec,
   readStoredSessionId,
+  ReplDisplayMetadataKey,
   StoredSessionMetadataKey,
+  timelineNotebookOutput,
 } from "./serializer.ts";
 import {
   type ReplDisplayEntry,
@@ -73,7 +75,7 @@ import {
   turnOutputItems,
   TurnView,
 } from "./turnView.ts";
-import { timelineOutputSnapshots } from "./timelineOutputs.ts";
+import { TimelineOutputCache, type TimelineOutputSnapshot } from "./timelineOutputs.ts";
 import type { OutputSnapshot } from "./notebookFormat.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
@@ -2109,7 +2111,8 @@ class RunExecution {
   private settled = false;
   /** Stable output handles keyed by segment id: created once, updated in place. */
   private readonly segments = new Map<string, vscode.NotebookCellOutput>();
-  private readonly segmentJson = new Map<string, string>();
+  private readonly segmentNodes = new Map<string, TimelineOutputSnapshot>();
+  private readonly timelineOutputs = new TimelineOutputCache();
   private outputKeys: string[] = [];
 
   constructor(
@@ -2308,7 +2311,7 @@ class RunExecution {
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */
   begin(): void {
-    this.paintTimeline(this.view.finalOutput(this.input), true);
+    this.paintTimeline(this.view.renderOutput(this.input), true);
   }
 
   apply(frame: EventFrame): void {
@@ -2362,7 +2365,7 @@ class RunExecution {
       failureSnapshotWithRetry(
         new FrontendError(code, 0, message),
         this.execution.cell,
-        this.view.finalOutput(this.input),
+        this.view.renderOutput(this.input),
       ),
       false,
     );
@@ -2418,7 +2421,7 @@ class RunExecution {
         fills.push({ attached, items: output.items });
       }
     }
-    this.paintTimeline(this.view.finalOutput(this.input), !this.view.isTerminal, changed);
+    this.paintTimeline(this.view.renderOutput(this.input), !this.view.isTerminal, changed);
     for (const fill of fills) {
       void fillReplObjectItemsAsync(this.execution, fill.attached, fill.items).catch(() => {});
     }
@@ -2429,6 +2432,7 @@ class RunExecution {
     const existing = this.segments.get(key);
     if (existing !== undefined) {
       existing.items = output.items;
+      existing.metadata = output.metadata;
       return existing;
     }
     this.segments.set(key, output);
@@ -2441,17 +2445,16 @@ class RunExecution {
     changed = new Set<string>(),
   ): void {
     const keys = this.view.replList().map((entry) => this.view.replSegmentId(entry));
-    const nodes = timelineOutputSnapshots(snapshot, streaming);
+    const nodes = this.timelineOutputs.update(snapshot, streaming);
     const orderedKeys: string[] = [...keys];
     for (const node of nodes) {
       const key = `node:${node.nodeId}`;
       orderedKeys.push(key);
-      const json = JSON.stringify(node);
-      if (this.segmentJson.get(key) === json) continue;
-      this.segmentJson.set(key, json);
+      if (this.segmentNodes.get(key) === node) continue;
+      this.segmentNodes.set(key, node);
       this.cacheSegment(
         key,
-        new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec)),
+        timelineNotebookOutput(node),
       );
       changed.add(key);
     }
@@ -2460,6 +2463,7 @@ class RunExecution {
     );
     if (
       orderedKeys.length !== this.outputKeys.length ||
+      [...changed].some((key) => key.startsWith("repl:")) ||
       orderedKeys.some((key, i) => key !== this.outputKeys[i])
     ) {
       this.execution.replaceOutput(ordered);
@@ -2467,7 +2471,7 @@ class RunExecution {
       for (const key of this.segments.keys()) {
         if (!orderedKeys.includes(key)) {
           this.segments.delete(key);
-          this.segmentJson.delete(key);
+          this.segmentNodes.delete(key);
         }
       }
     } else {
@@ -2485,7 +2489,7 @@ class RunExecution {
       return;
     }
     this.paintChanged();
-    this.paintTimeline(this.view.finalOutput(this.input), false);
+    this.paintTimeline(this.view.renderOutput(this.input), false);
     this.execution.end(true, Date.now());
   }
 }
@@ -2512,7 +2516,7 @@ function replOutputSync(
   client: FrontendClient,
 ): vscode.NotebookCellOutput {
   const items = bundleItems(entry.data, (sha) => client.fetchObject(sha));
-  return new vscode.NotebookCellOutput(items);
+  return new vscode.NotebookCellOutput(items, { [ReplDisplayMetadataKey]: entry });
 }
 
 /** Awaits the async binary fills and replaces the attached segment's items in

@@ -138,7 +138,8 @@ function protectMarkdownHtml(markdownIt) {
     const original = markdownIt.renderer.rules[name];
     if (original?.maieuticsGuard) continue;
     const guarded = (tokens, index, options, env, renderer) =>
-      env?.outputItem?.maieuticsSafeMarkdown === true
+      (env?.outputItem?.maieuticsSafeMarkdown === true ||
+          env?.outputItem?.metadata?.maieuticsSafeMarkdown === true)
         ? escapeHtml(tokens[index].content)
         : original(tokens, index, options, env, renderer);
     guarded.maieuticsGuard = true;
@@ -149,7 +150,8 @@ function protectMarkdownHtml(markdownIt) {
   const guardedLink = (tokens, index, options, env, renderer) => {
     const token = tokens[index];
     if (
-      env?.outputItem?.maieuticsSafeMarkdown === true &&
+      (env?.outputItem?.maieuticsSafeMarkdown === true ||
+        env?.outputItem?.metadata?.maieuticsSafeMarkdown === true) &&
       /^(command|javascript|vbscript|data):/i.test(token.attrGet("href") ?? "")
     ) {
       token.attrSet("href", "#");
@@ -480,6 +482,10 @@ function render(turn, markdownToHtml = plainMarkdown) {
       preview = child.text ?? "";
     }
     if (title) {
+      if (entry.kind === "text") {
+        parts.push(`<div class="assistant-reply">${markdownToHtml(entry.text)}</div>`);
+        continue;
+      }
       parts.push(
         collapsedNode(
           turn.nodeId ?? `entry:${index}`,
@@ -500,7 +506,7 @@ function render(turn, markdownToHtml = plainMarkdown) {
     !turn.error && typeof turn.text === "string" && turn.text &&
     !entries.some((entry) => entry?.kind === "text" && entry.text === turn.text)
   ) {
-    parts.push(collapsedNode("answer", "助手回复", turn.text, markdownToHtml(turn.text)));
+    parts.push(`<div class="assistant-reply">${markdownToHtml(turn.text)}</div>`);
   }
   return parts.join("\n") || "<em>(empty turn)</em>";
 }

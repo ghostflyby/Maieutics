@@ -248,6 +248,21 @@ Deno.test("ordered timeline and tool detail survive notebook save and reopen", (
   assertEquals(restored?.tools, notebook.cells[0].output.tools);
 });
 
+Deno.test("reading oversized timeline entries or text preserves a truncation marker on resave", () => {
+  for (
+    const timeline of [
+      Array.from({ length: 2049 }, (_, index) => ({ kind: "tool" as const, index })),
+      [{ kind: "text" as const, messageId: "m", text: "x".repeat(200_001) }],
+    ]
+  ) {
+    const notebook = emptyNotebook();
+    notebook.cells[0].output = { timeline };
+    const parsed = parseNotebook(serializeNotebook(notebook));
+    assertEquals(parsed.cells[0].output?.timelineTruncated, true);
+    assertEquals(parseNotebook(serializeNotebook(parsed)).cells[0].output?.timelineTruncated, true);
+  }
+});
+
 Deno.test("saving live summary segments keeps parent, child and partial answer together", () => {
   const reasoning = [{ messageId: "parent", text: "Checking." }];
   const subagents = [{ status: "ok" as const, text: "Report", tools: [], reasoning }];

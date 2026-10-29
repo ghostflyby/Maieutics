@@ -10,17 +10,17 @@ const markdownHtml = (text: string): string =>
   });
 const render = (turn: unknown) => renderer.render(turn, markdownHtml);
 
-Deno.test("the only view is a compact timeline with every node initially collapsed", () => {
+Deno.test("activity nodes collapse while assistant replies remain expanded", () => {
   const html = render({
     text: "Answer",
     tools: [{ tool: "read_file", status: "ok" }],
     reasoning: [{ messageId: "m", text: "Review evidence" }],
   });
-  assertEquals(html.match(/<details /g)?.length, 3);
+  assertEquals(html.match(/<details /g)?.length, 2);
   assert(!html.includes(" open"), html);
   assert(!html.includes("data-maieutics-view") && !html.includes("viewtoggle"), html);
   assert(
-    html.includes("思考摘要") && html.includes("read_file") && html.includes("助手回复"),
+    html.includes("思考摘要") && html.includes("read_file") && html.includes("Answer"),
     html,
   );
 });
@@ -32,10 +32,10 @@ Deno.test("expanded answer keeps full native Markdown including tables, nested l
   assert(html.includes("<table>") && html.includes("<strong>b</strong>"), html);
   assert(html.includes("<ul>\n<li>nested</li>"), html);
   assert(html.includes('href="https://example.com"'), html);
-  assert(html.includes('class="node-body"'), html);
+  assert(html.includes('class="assistant-reply"'), html);
 });
 
-Deno.test("node summaries are short and escaped while the expanded body retains all text", () => {
+Deno.test("assistant replies retain their full escaped content without collapse", () => {
   const html = render({ text: "<script>" + "x".repeat(300) });
   const summary = html.split("</summary>")[0];
   assert(!summary.includes("<script>"), summary);
@@ -67,7 +67,7 @@ Deno.test("timeline retains model rounds, summaries and tools in arrival order",
     "Final answer",
   ].map((text) => html.indexOf(text));
   assert(positions.every((pos, i) => pos >= 0 && (i === 0 || pos > positions[i - 1])), html);
-  assertEquals(html.match(/class="timeline-node /g)?.length, 5);
+  assertEquals(html.match(/class="timeline-node /g)?.length, 3);
 });
 
 Deno.test("tool nodes expose structured original arguments, progress, results and edit diffs", () => {

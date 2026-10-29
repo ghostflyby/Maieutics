@@ -10,6 +10,36 @@ import {
   TurnOutputMime,
   TurnView,
 } from "./turnView.ts";
+import { MaximumDisplayTools } from "./turnTimeline.ts";
+
+Deno.test("repl.clear marks removals dirty even with no subsequent frame", () => {
+  const view = new TurnView("r");
+  view.apply({ type: "repl.display", displayId: "d", data: { "text/plain": "old" } });
+  view.takeDirty();
+  view.apply({ type: "repl.clear" });
+  assertEquals([...view.takeDirty()], ["repl:d"]);
+  assertEquals(view.replList(), []);
+  view.apply({ type: "repl.error", data: { "text/plain": "new anonymous display" } });
+  assertEquals([...view.takeDirty()], [view.replSegmentId(view.replList()[0])]);
+});
+
+Deno.test("tool retention is bounded for parent and child, with explicit truncation", () => {
+  const view = new TurnView("r");
+  for (let i = 0; i <= MaximumDisplayTools; i++) {
+    view.apply({ type: "tool.started", runId: "r", callId: `p${i}`, tool: "read_file" });
+    view.applySubagent({
+      type: "tool.started",
+      runId: "child",
+      callId: `c${i}`,
+      tool: "read_file",
+    });
+  }
+  const snapshot = view.finalOutput();
+  assertEquals(snapshot.tools.length, MaximumDisplayTools);
+  assertEquals(snapshot.timelineTruncated, true);
+  assertEquals(snapshot.subagents?.[0].tools.length, MaximumDisplayTools);
+  assertEquals(snapshot.subagents?.[0].truncated, true);
+});
 
 Deno.test("text deltas fold in order", () => {
   const view = new TurnView("run-1");

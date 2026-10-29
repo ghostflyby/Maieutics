@@ -9,7 +9,7 @@
  */
 
 import type { EventFrame, ModelIdentity, UsageSummary } from "./protocol.ts";
-import { type TimelineEntry, TurnTimeline } from "./turnTimeline.ts";
+import { MaximumDisplayTools, type TimelineEntry, TurnTimeline } from "./turnTimeline.ts";
 
 /** Renders compactly: JSON collapsed to one line and truncated for the tool
  * activity line. */
@@ -30,6 +30,7 @@ function summarize(value: unknown, limit = 48): string | undefined {
 }
 
 export interface ToolEntry {
+  version: number;
   callId: string;
   tool: string;
   status: "running" | "ok" | "error";
@@ -134,6 +135,7 @@ export const MaximumSubagentTextLength = 20_000;
 
 /** One in-flight subagent child view inside the parent turn. */
 interface SubagentEntry {
+  version: number;
   runId: string;
   status: SubagentStatus;
   text: string;
@@ -152,6 +154,7 @@ interface SubagentEntry {
 function newSubagentEntry(runId: string): SubagentEntry {
   return {
     runId,
+    version: 0,
     status: "running",
     text: "",
     textCompleted: false,
@@ -190,6 +193,24 @@ function foldReasoning(summaries: ReasoningSummaryView[], frame: EventFrame): bo
   return true;
 }
 
+/** Detached public snapshots and shared immutable render snapshots have the same shape. */
+export interface TurnOutputSnapshot {
+  runId: string;
+  input?: string;
+  text: string;
+  timeline?: TimelineEntry[];
+  timelineTruncated?: boolean;
+  reasoning?: ReasoningSummaryView[];
+  tools: ToolSnapshotView[];
+  truncated: boolean;
+  repl: ReplDisplayEntry[];
+  subagents?: SubagentSnapshotView[];
+  subagentsOverflow?: boolean;
+  usage?: UsageSummary;
+  model?: ModelIdentity;
+  error?: { code: string; message: string };
+}
+
 export class TurnView {
   readonly runId: string;
   private text = "";
@@ -210,6 +231,15 @@ export class TurnView {
   private usage: UsageSummary | undefined;
   private model: ModelIdentity | undefined;
   private readonly dirty = new Set<SegmentId>();
+  private readonly renderedTools = new WeakMap<
+    ToolEntry,
+    { version: number; value: ToolSnapshotView }
+  >();
+  private readonly renderedReasoning = new WeakMap<ReasoningSummaryView, ReasoningSummaryView>();
+  private readonly renderedChildren = new WeakMap<
+    SubagentEntry,
+    { version: number; value: SubagentSnapshotView }
+  >();
 
   constructor(runId: string) {
     this.runId = runId;
@@ -280,7 +310,9 @@ export class TurnView {
         return true;
       }
       case "repl.clear": {
+        for (const entry of this.replList()) this.dirty.add(this.replSegmentId(entry));
         this.replDisplays.clear();
+        this.anonymousDisplays = 0;
         return true;
       }
       case "repl.error": {
@@ -320,6 +352,14 @@ export class TurnView {
       case "tool.started":
       case "tool.progress":
       case "tool.finished": {
+        if (
+          frame.type === "tool.started" && typeof frame.callId === "string" &&
+          !this.tools.has(frame.callId) && this.toolOrder.length >= MaximumDisplayTools
+        ) {
+          this.timeline.truncated = true;
+          this.dirty.add(`tools:${this.runId}`);
+          return true;
+        }
         const index = this.toolOrder.length;
         const existed = frame.callId !== undefined && this.tools.has(frame.callId);
         if (this.foldToolFrame(this.tools, this.toolOrder, frame)) {
@@ -464,7 +504,13 @@ export class TurnView {
       case "tool.started":
       case "tool.progress":
       case "tool.finished":
-        changed = this.foldToolFrame(child.tools, child.toolOrder, frame);
+        if (
+          frame.type === "tool.started" && typeof frame.callId === "string" &&
+          !child.tools.has(frame.callId) && child.toolOrder.length >= MaximumDisplayTools
+        ) {
+          child.truncated = true;
+          changed = true;
+        } else changed = this.foldToolFrame(child.tools, child.toolOrder, frame);
         break;
       case "turn.truncated":
         child.truncated = true;
@@ -482,7 +528,10 @@ export class TurnView {
         break;
       }
     }
-    if (changed) this.dirty.add(`subagents:${this.runId}`);
+    if (changed) {
+      child.version++;
+      this.dirty.add(`subagents:${this.runId}`);
+    }
     return changed;
   }
 
@@ -508,9 +557,11 @@ export class TurnView {
     if (typeof frame.callId !== "string") return false;
     switch (frame.type) {
       case "tool.started": {
+        if (tools.has(frame.callId) || order.length >= MaximumDisplayTools) return false;
         const detail = retainToolDetail(frame.arguments);
         tools.set(frame.callId, {
           callId: frame.callId,
+          version: 0,
           tool: typeof frame.tool === "string" ? frame.tool : "unknown",
           status: "running",
           args: summarize(frame.arguments),
@@ -525,6 +576,7 @@ export class TurnView {
         const entry = tools.get(frame.callId);
         const failed = isFailureResult(frame.result);
         if (entry) {
+          entry.version++;
           const detail = retainToolDetail(frame.result);
           entry.result = detail.value;
           entry.detailsTruncated ||= detail.truncated;
@@ -538,6 +590,7 @@ export class TurnView {
         const entry = tools.get(frame.callId);
         const text = frame.content?.text;
         if (entry && typeof text === "string" && text.length > 0) {
+          entry.version++;
           entry.progress = summarize(text);
           entry.progressDetail = text.slice(0, MaximumToolDetailCharacters);
           entry.detailsTruncated ||= text.length > MaximumToolDetailCharacters;
@@ -635,35 +688,25 @@ export class TurnView {
   /** Renders the complete cell output for a finished run. `input` is the
    * submitted cell text; together with `runId` it forms the turn binding that
    * travels inside the structured snapshot (and round-trips through save). */
-  finalOutput(input?: string): {
-    runId: string;
-    input?: string;
-    text: string;
-    timeline?: TimelineEntry[];
-    timelineTruncated?: boolean;
-    reasoning?: ReasoningSummaryView[];
-    tools: ToolSnapshotView[];
-    truncated: boolean;
-    repl: ReplDisplayEntry[];
-    subagents?: SubagentSnapshotView[];
-    subagentsOverflow?: boolean;
-    usage?: UsageSummary;
-    model?: ModelIdentity;
-    error?: { code: string; message: string };
-  } {
-    const timeline = this.timeline.snapshot();
+  finalOutput(input?: string): TurnOutputSnapshot {
+    return structuredClone(this.renderOutput(input));
+  }
+
+  /** Internal render projection: callers must not mutate shared node values. */
+  renderOutput(input?: string): TurnOutputSnapshot {
+    const timeline = this.timeline.renderEntries();
     return {
       runId: this.runId,
       ...(input === undefined ? {} : { input }),
       text: this.text,
       ...(timeline.length === 0 ? {} : { timeline }),
       ...(this.timeline.truncated ? { timelineTruncated: true } : {}),
-      ...(this.reasoning.length === 0 ? {} : { reasoning: this.reasoningSummaries() }),
+      ...(this.reasoning.length === 0 ? {} : { reasoning: this.renderReasoning(this.reasoning) }),
       repl: this.replList(),
-      tools: toolSnapshotViews(this.orderedEntries()),
+      tools: this.renderTools(this.orderedEntries()),
       truncated: this.truncated || this.terminal?.kind === "completed" && this.terminal.truncated,
       ...(this.subagents.size === 0 ? {} : {
-        subagents: this.subagentSnapshots(),
+        subagents: this.renderChildren(),
         subagentsOverflow: this.subagentsOverflow,
       }),
       ...(this.usage === undefined ? {} : { usage: this.usage }),
@@ -672,6 +715,43 @@ export class TurnView {
         ? { code: this.terminal.code, message: this.terminal.message }
         : undefined,
     };
+  }
+  private renderReasoning(entries: ReasoningSummaryView[]): ReasoningSummaryView[] {
+    return entries.map((entry) => {
+      let value = this.renderedReasoning.get(entry);
+      if (value?.text !== entry.text) {
+        value = { ...entry };
+        this.renderedReasoning.set(entry, value);
+      }
+      return value;
+    });
+  }
+
+  private renderTools(entries: (ToolEntry | undefined)[]): ToolSnapshotView[] {
+    return entries.filter((entry) => entry !== undefined).map((entry) => {
+      const cached = this.renderedTools.get(entry);
+      if (cached?.version === entry.version) return cached.value;
+      const value = toolSnapshotViews([entry])[0];
+      this.renderedTools.set(entry, { version: entry.version, value });
+      return value;
+    });
+  }
+
+  private renderChildren(): SubagentSnapshotView[] {
+    return [...this.subagents.values()].map((child) => {
+      const cached = this.renderedChildren.get(child);
+      if (cached?.version === child.version) return cached.value;
+      const value: SubagentSnapshotView = {
+        status: child.status,
+        text: child.textCapped ? `${child.text}\n…` : child.text,
+        ...(child.reasoning.length ? { reasoning: this.renderReasoning(child.reasoning) } : {}),
+        tools: this.renderTools(child.toolOrder.map((id) => child.tools.get(id))),
+        ...(child.truncated ? { truncated: true } : {}),
+        ...(child.code === undefined ? {} : { code: child.code }),
+      };
+      this.renderedChildren.set(child, { version: child.version, value });
+      return value;
+    });
   }
 }
 

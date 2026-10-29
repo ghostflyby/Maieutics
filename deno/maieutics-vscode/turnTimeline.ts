@@ -9,11 +9,12 @@ export type TimelineEntry =
 
 export const MaximumTimelineEntries = 2048;
 export const MaximumTimelineCharacters = 200_000;
+export const MaximumDisplayTools = 256;
 
 /** Retains message boundaries rather than overwriting earlier model/tool rounds. */
 export class TurnTimeline {
   private readonly entries: TimelineEntry[] = [];
-  private pending: Extract<TimelineEntry, { kind: "text" }> | undefined;
+  private pending: number | undefined;
   private characters = 0;
   truncated = false;
 
@@ -28,25 +29,31 @@ export class TurnTimeline {
 
   text(frame: EventFrame, authoritative?: string): void {
     const id = frame.messageId;
-    let entry = id === undefined
-      ? this.pending
-      : this.entries.find((entry) => entry.kind === "text" && entry.messageId === id);
-    if (entry === undefined) {
-      // Legacy streams can omit message ids on deltas, then supply one at completion.
-      entry = this.pending?.messageId === "" ? this.pending : undefined;
+    let index = id === undefined
+      ? this.pending ?? -1
+      : this.entries.findIndex((entry) => entry.kind === "text" && entry.messageId === id);
+    if (index < 0 && this.pending !== undefined) {
+      const pending = this.entries[this.pending];
+      if (pending?.kind === "text" && pending.messageId === "") index = this.pending;
     }
-    if (entry === undefined) {
-      entry = { kind: "text", messageId: id ?? "", text: "" };
-      if (!this.add(entry)) return;
+    if (index < 0) {
+      if (!this.add({ kind: "text", messageId: id ?? "", text: "" })) return;
+      index = this.entries.length - 1;
     }
-    if (entry.kind !== "text") return;
-    if (id !== undefined) entry.messageId = id;
+    const entry = this.entries[index];
+    if (entry?.kind !== "text") return;
     this.characters -= entry.text.length;
     const text = authoritative ?? entry.text + (frame.text ?? "");
-    entry.text = text.slice(0, Math.max(0, MaximumTimelineCharacters - this.characters));
-    this.characters += entry.text.length;
-    this.truncated ||= entry.text.length < text.length;
-    this.pending = authoritative === undefined ? entry : undefined;
+    const retained = text.slice(0, Math.max(0, MaximumTimelineCharacters - this.characters));
+    this.entries[index] = { kind: "text", messageId: id ?? entry.messageId, text: retained };
+    this.characters += retained.length;
+    this.truncated ||= retained.length < text.length;
+    this.pending = authoritative === undefined ? index : undefined;
+  }
+
+  /** Entries are replaced on update, so unchanged entries keep render-cache identity. */
+  renderEntries(): TimelineEntry[] {
+    return this.entries.slice();
   }
 
   snapshot(): TimelineEntry[] {

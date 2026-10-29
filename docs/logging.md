@@ -68,3 +68,20 @@ frame, and the frontend logs every rejected request:
 
 Run and session identifiers are correlation ids, never secrets; no record on this path carries a
 request body, prompt text, or the bearer token.
+
+## Workspace IDE bridge
+
+`FrontendWorkspaceBridge` logs request sends and typed answers at Debug, and lost authorities or
+timeouts at Warning. Records carry the IDE request id, method, session id, and the elected authority
+id. Enable the Debug category through the configuration above to correlate the entire round trip.
+
+The VS Code **Maieutics** output channel records IDE request receipt, answers, expired answers,
+delivery failures, cancellation, and timeout with the same request id and method. It handles both
+standalone `ide.request` frames and requests carried by `tool.progress`, including requests outside
+an Agent run. Each answer has one 30-second budget across editor execution and HTTP submission;
+stream disposal cancels and joins outstanding answers. A bounded set of owned requests lets queue
+and activity frames continue while editor providers are busy.
+
+These records omit request parameters, file contents, results, error details, and authentication
+credentials. A recoverable tool error may otherwise exist only in the persisted structured tool
+result, since a successfully completed Agent run does not log each recoverable tool failure.

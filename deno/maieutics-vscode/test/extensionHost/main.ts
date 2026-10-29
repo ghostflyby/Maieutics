@@ -323,6 +323,193 @@ async function testQueueExecutionAsync(
   }
 }
 
+/** Standalone requests belong to the session even when no Agent run exists.
+ * The generator's next frame pins dispatch; completion follows the answer log. */
+async function testStandaloneIdeRequestsAsync(): Promise<void> {
+  const sessionId = "d".repeat(32);
+  const file = vscode.Uri.joinPath(workspaceRoot(), "ide-bridge-fixture.txt");
+  const privateText = "private-ide-content";
+  await vscode.workspace.fs.writeFile(file, new TextEncoder().encode(privateText));
+  const requests = [
+    { requestId: "ide-roots", method: "maieutics/fs/list", params: {} },
+    {
+      requestId: "ide-list",
+      method: "maieutics/fs/local/list",
+      params: { uri: workspaceRoot().toString(), maximumEntries: 100 },
+    },
+    { requestId: "ide-read", method: "maieutics/fs/local/read", params: { uri: file.toString() } },
+    {
+      requestId: "ide-missing",
+      method: "maieutics/fs/local/read",
+      params: { uri: vscode.Uri.joinPath(workspaceRoot(), "absent-ide-file").toString() },
+    },
+    { requestId: "ide-unsupported", method: "workspace/executeCommand", params: {} },
+  ];
+  const answers = new Map<string, { value?: unknown; error?: { code: string; message: string } }>();
+  const dispatchedBeforeNextFrame: boolean[] = [];
+  let releaseRoots = () => {};
+  const rootsReleased = new Promise<void>((resolve) => releaseRoots = resolve);
+  let statusHandledWhilePending = false;
+  let completed = () => {};
+  const allAnswersLogged = new Promise<void>((resolve) => completed = resolve);
+  const loggedAnswers = new Set<string>();
+  let startStall = () => {};
+  const stallAllowed = new Promise<void>((resolve) => startStall = resolve);
+  let submittedStall = () => {};
+  const stallSubmitted = new Promise<void>((resolve) => submittedStall = resolve);
+  let reached = () => {};
+  const allRequestsConsumed = new Promise<void>((resolve) => reached = resolve);
+  const client = FrontendClient.fromDiscovery({
+    version: 1,
+    url: "http://127.0.0.1:9",
+    token: "test",
+    pid: 0,
+  });
+  client.capabilities = () =>
+    Promise.resolve({
+      protocolVersion: 1,
+      serverVersion: "test",
+      multiSession: true,
+      session: { id: sessionId, turns: 0, persistenceEnabled: true },
+    });
+  client.session = () => Promise.resolve({ id: sessionId, turns: 0, persistenceEnabled: true });
+  client.getQueue = () =>
+    Promise.resolve({ sessionId, running: null, items: [], capacity: 64, outcomes: [] });
+  client.submitIdeAnswer = async (id, answer) => {
+    if (id === "ide-stalled") {
+      submittedStall();
+      return await new Promise<boolean>(() => {});
+    }
+    answers.set(id, answer);
+    if (id === "ide-roots") await rootsReleased;
+    return true;
+  };
+  client.events = async function* (_sessionId, options = {}) {
+    assert(options.runId === undefined, "the bridge uses the session stream without an Agent run");
+    yield { type: "hello" };
+    for (const request of requests) {
+      yield { type: "ide.request", data: request };
+      dispatchedBeforeNextFrame.push(
+        logs.some((line) => line.includes(request.requestId) && line.includes("received")),
+      );
+      if (request.requestId === "ide-roots") {
+        yield { type: "run.status", state: "busy" };
+        statusHandledWhilePending = owner.activity.isBusy(sessionId);
+        releaseRoots();
+      }
+    }
+    reached();
+    await stallAllowed;
+    if (options.signal?.aborted) return;
+    yield {
+      type: "ide.request",
+      data: { requestId: "ide-stalled", method: "maieutics/fs/list", params: {} },
+    };
+    if (options.signal?.aborted) return;
+    await new Promise<void>((resolve) =>
+      options.signal?.addEventListener("abort", () => resolve(), { once: true })
+    );
+  };
+  const output = vscode.window.createOutputChannel("standalone-ide-test");
+  const logs: string[] = [];
+  const append = output.appendLine.bind(output);
+  output.appendLine = (message) => {
+    logs.push(message);
+    append(message);
+    for (const request of requests) {
+      if (message.includes(request.requestId) && message.includes("answered")) {
+        loggedAnswers.add(request.requestId);
+      }
+    }
+    if (loggedAnswers.size === requests.length) completed();
+  };
+  const owner = new MaieuticsNotebookController(
+    {
+      client: () => Promise.resolve(client),
+      session: () => client.session(),
+      fetchObject: () => Promise.resolve(new Uint8Array()),
+    },
+    output,
+    new QueueProjection(),
+    "standalone-ide-test",
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const data = new vscode.NotebookData([
+      new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "", "maieutics"),
+    ]);
+    data.metadata = { maieuticsSessionId: sessionId };
+    const notebook = await vscode.workspace.openNotebookDocument("maieutics-notebook", data);
+    await vscode.window.showNotebookDocument(notebook);
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "standalone-ide-test",
+      extension: ExtensionId,
+    });
+    await owner.runAsync([notebook.cellAt(0)], notebook);
+    await Promise.race([
+      (async () => {
+        await allRequestsConsumed;
+        assert(
+          dispatchedBeforeNextFrame.every(Boolean),
+          "each standalone IDE request is dispatched before its strict successor",
+        );
+        assert(statusHandledWhilePending, "a pending IDE reply cannot block session status frames");
+        await allAnswersLogged;
+        startStall();
+        await stallSubmitted;
+        await owner.resetConnections();
+        assert(
+          logs.some((line) => line.includes("ide-stalled") && line.includes("cancelled")),
+          "stream disposal cancels and joins a stalled IDE submission",
+        );
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("The IDE request stream did not advance.")),
+          20_000,
+        );
+      }),
+    ]);
+    const roots = answers.get("ide-roots")?.value as { folders?: unknown[] } | undefined;
+    assert((roots?.folders?.length ?? 0) > 0, "the roots query uses the actual editor workspace");
+    const listing = answers.get("ide-list")?.value as { entries?: { name: string }[] } | undefined;
+    assert(
+      listing?.entries?.some((entry) => entry.name === "ide-bridge-fixture.txt"),
+      "the directory is listed through workspace.fs",
+    );
+    assert(
+      (answers.get("ide-read")?.value as { content?: string })?.content === privateText,
+      "the read returns the file content",
+    );
+    assert(
+      answers.get("ide-missing")?.error?.code === "fs_not_found",
+      "filesystem failures retain their typed code",
+    );
+    assert(
+      answers.get("ide-unsupported")?.error?.code === "ide_method_unsupported",
+      "arbitrary editor commands remain rejected",
+    );
+    assert(
+      logs.some((line) => line.includes("ide-roots") && line.includes("received")),
+      "request reception is logged with its identity",
+    );
+    assert(
+      logs.some((line) => line.includes("ide-read") && line.includes("answered")),
+      "the answer is logged with its identity",
+    );
+    assert(
+      logs.every((line) => !line.includes(privateText) && !line.includes(file.toString())),
+      "IDE logs omit arguments and results",
+    );
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    releaseRoots();
+    startStall();
+    await owner.dispose();
+    output.dispose();
+  }
+}
+
 /** The IDE executor dispatches into the real language services: hover over
  * `answer` comes from the built-in TypeScript extension, and Problems
  * carries the file's diagnostics once the TS server analyzed it. */
@@ -551,6 +738,10 @@ const tests: HostTest[] = [
     run: () => testQueueExecutionAsync(false, true, true),
   },
   { name: "the IDE executor reaches the real language services", run: testIdeExecutorAsync },
+  {
+    name: "standalone IDE requests answer outside an Agent run",
+    run: testStandaloneIdeRequestsAsync,
+  },
 ];
 
 /** VS Code's extension-tests contract: the host calls exports.run() and a

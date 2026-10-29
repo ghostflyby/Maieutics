@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Frontend;
 
@@ -24,6 +26,7 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
     private readonly FrontendIdeSockets _sockets;
     private readonly IdeRequestRegistry _requests;
     private readonly Workspace _workspace;
+    private readonly ILogger<FrontendWorkspaceBridge> _logger;
 
     /// <summary>The elected authority's coverage: the physical directory prefixes of
     /// the workspace folders it answered at election time (ADR 0042 decision 12's
@@ -36,11 +39,16 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 
     private volatile bool _cohortPredates;
 
-    public FrontendWorkspaceBridge(FrontendIdeSockets sockets, IdeRequestRegistry requests, Workspace workspace)
+    public FrontendWorkspaceBridge(
+        FrontendIdeSockets sockets,
+        IdeRequestRegistry requests,
+        Workspace workspace,
+        ILogger<FrontendWorkspaceBridge>? logger = null)
     {
         _sockets = sockets ?? throw new ArgumentNullException(nameof(sockets));
         _requests = requests ?? throw new ArgumentNullException(nameof(requests));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _logger = logger ?? NullLogger<FrontendWorkspaceBridge>.Instance;
     }
 
     /// <summary>How long one bridge request waits for the frontend's answer before the
@@ -378,6 +386,9 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
         var registration = _requests.Begin();
         try
         {
+            _logger.LogDebug(
+                "Sending workspace IDE request {RequestId} ({Method}) to authority {AuthorityId} for session {SessionId}.",
+                registration.RequestId, method, authority.RegistrationId, authority.SessionId);
             var envelope = JsonSerializer.SerializeToElement(
                 new IdeRequestEnvelope(
                     new IdeRequestPayload(registration.RequestId, method, parameters)),
@@ -389,10 +400,15 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
                     cancellationToken)
                 .ConfigureAwait(false);
             if (!sent)
+            {
+                _logger.LogWarning(
+                    "Workspace IDE request {RequestId} ({Method}) lost authority {AuthorityId} for session {SessionId}.",
+                    registration.RequestId, method, authority.RegistrationId, authority.SessionId);
                 throw new AgentToolException(
                     "ide_unavailable",
                     "The elected IDE frontend serving the workspace file system is gone. Retry the call; " +
                     "a remaining announcer takes over as the authority.");
+            }
 
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             budget.CancelAfter(RequestTimeout);
@@ -403,11 +419,18 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                _logger.LogWarning(
+                    "Workspace IDE request {RequestId} ({Method}) timed out after {TimeoutSeconds} seconds waiting for authority {AuthorityId} in session {SessionId}.",
+                    registration.RequestId, method, RequestTimeout.TotalSeconds,
+                    authority.RegistrationId, authority.SessionId);
                 throw new AgentToolException(
                     "ide_timeout",
                     $"The IDE frontend did not answer '{method}' within {RequestTimeout.TotalSeconds:N0} seconds.");
             }
 
+            _logger.LogDebug(
+                "Workspace IDE request {RequestId} ({Method}) answered with {Code} for session {SessionId}.",
+                registration.RequestId, method, answer.ErrorCode ?? "ok", authority.SessionId);
             if (answer.ErrorCode is { } code)
             {
                 if (code == "fs_not_covered")
@@ -447,6 +470,13 @@ internal sealed class FrontendWorkspaceBridge : IWorkspaceIoBridge
 
             return answer.Value ??
                    throw new AgentToolException("ide_result_invalid", "The IDE frontend answered without a value.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(
+                "Workspace IDE request {RequestId} ({Method}) cancelled for session {SessionId}.",
+                registration.RequestId, method, authority.SessionId);
+            throw;
         }
         finally
         {

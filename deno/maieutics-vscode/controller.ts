@@ -100,9 +100,7 @@ import {
   ideCommandArgs,
   IdeFolderRegistry,
   ideMethodCommands,
-  type IdeRequestPayload,
   isCoveredLocalTarget,
-  isIdeMethodSupported,
   isValidIdeFsSegment,
   type LaunchConfiguration,
   localFsEntriesAnswer,
@@ -111,6 +109,7 @@ import {
   parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
+  respondToIdeRequest,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
@@ -849,7 +848,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
   }
 }
 
-/** Owns the session queue/activity stream and each accepted run's replay pump. */
+/** Owns session activity, IDE answers, and each accepted run's replay pump. */
 class NotebookStream {
   private readonly runs = new Map<string, RunExecution>();
   /** Subagent child run ids (ADR 0030) folded into their parent run's cell:
@@ -860,6 +859,7 @@ class NotebookStream {
   private controller: AbortController | null = null;
   private completion: Promise<void> = Promise.resolve();
   private readonly runPumps = new Map<string, Promise<void>>();
+  private readonly ideRequests = new Map<string, Promise<void>>();
 
   constructor(
     private readonly client: FrontendClient,
@@ -890,7 +890,7 @@ class NotebookStream {
     this.queue.failWaits();
     this.controller?.abort();
     this.controller = null;
-    await Promise.all([this.completion, ...this.runPumps.values()]);
+    await Promise.all([this.completion, ...this.runPumps.values(), ...this.ideRequests.values()]);
   }
 
   start(): void {
@@ -982,6 +982,10 @@ class NotebookStream {
     try {
       for await (const frame of this.client.events(this.sessionId, { signal, runId })) {
         if (frame.type === "hello") continue;
+        if (
+          (frame.type === "ide.request" || frame.type === "tool.progress") &&
+          await this.answerIdeFrame(frame, signal)
+        ) continue;
         if (frame.type === "run.missing") {
           this.runs.get(runId)?.fail(
             "run_missing",
@@ -1014,6 +1018,7 @@ class NotebookStream {
   private async pumpAsync(signal: AbortSignal): Promise<void> {
     try {
       for await (const frame of this.client.events(this.sessionId, { signal })) {
+        if (frame.type === "ide.request" && await this.answerIdeFrame(frame, signal)) continue;
         // Queue frames and the connect hello belong to the queue watcher; the
         // hello blocks until the reconnect snapshot applied, so an item that
         // started while the socket was away attaches before its run's
@@ -1029,7 +1034,7 @@ class NotebookStream {
           continue;
         }
 
-        // Session sockets observe queue/activity only; accepted runs replay on their own socket.
+        // Session sockets serve IDE requests and queue/activity; accepted runs replay separately.
       }
     } catch (error) {
       if (!signal.aborted) {
@@ -1043,7 +1048,27 @@ class NotebookStream {
       // may keep waiting on its queue state.
       this.queue.failWaits();
       this.controller?.abort();
+      await Promise.all(this.ideRequests.values());
     }
+  }
+
+  private async answerIdeFrame(frame: EventFrame, signal: AbortSignal): Promise<boolean> {
+    const request = extractIdeRequest(frame);
+    if (request === undefined) return false;
+    if (this.ideRequests.has(request.requestId)) return true;
+    // Keep queue/status and run frames moving while an editor provider is busy.
+    // Outstanding work is bounded, observed, and cancelled/joined by this stream.
+    while (this.ideRequests.size >= 64) await Promise.race(this.ideRequests.values());
+    if (signal.aborted || this.ideRequests.has(request.requestId)) return true;
+    const pending = respondToIdeRequest(request, {
+      execute: executeIdeMethod,
+      submit: (id, answer, cancellation) => this.client.submitIdeAnswer(id, answer, cancellation),
+      log: this.log,
+    }, signal).catch(() => {
+      this.log(`IDE request ${request.requestId} (${request.method}) dispatcher failed`);
+    }).finally(() => this.ideRequests.delete(request.requestId));
+    this.ideRequests.set(request.requestId, pending);
+    return true;
   }
 
   private route(frame: EventFrame, parentRunId: string): void {
@@ -2012,7 +2037,10 @@ export async function executeIdeMethod(
     return { entries: collectDirty(documents, wanted, (uri) => vscode.Uri.parse(uri).fsPath) };
   }
 
-  if (method === "maieutics/fs/list" || method === "maieutics/fs/read") {
+  if (
+    method === "maieutics/fs/list" || method === "maieutics/fs/read" ||
+    method === "maieutics/fs/search"
+  ) {
     return await executeIdeFs(method, params, ideFolders);
   }
 
@@ -2021,6 +2049,11 @@ export async function executeIdeMethod(
   }
 
   const command = ideMethodCommands[method];
+  if (!Object.hasOwn(ideMethodCommands, method)) {
+    throw Object.assign(new Error("The requested IDE method is not supported."), {
+      code: "ide_method_unsupported",
+    });
+  }
   const args = ideCommandArgs(method, params).map(materializeIdeArg);
   const result = await vscode.commands.executeCommand(command, ...args);
   if (method === "textDocument/hover") {
@@ -2284,15 +2317,6 @@ class RunExecution {
       void this.answerInputRequest(frame);
       return;
     }
-    // An `ide.request` payload rides tool.progress (ADR 0042 stage A): answer it
-    // and never paint the raw JSON progress item into the cell.
-    if (frame.type === "tool.progress") {
-      const request = extractIdeRequest(frame);
-      if (request !== undefined) {
-        void this.answerIdeRequest(request);
-        return;
-      }
-    }
     if (!this.view.apply(frame)) return;
     if (this.view.isTerminal) {
       if (this.paintTimer !== null) {
@@ -2314,41 +2338,8 @@ class RunExecution {
    * settles the PARENT run and ends its cell execution. */
   applyChild(frame: EventFrame): void {
     if (this.settled) return;
-    // A child run may have been narrowed onto the ide tools; its requests
-    // answer exactly like a parent's (and paint nothing).
-    if (frame.type === "tool.progress") {
-      const request = extractIdeRequest(frame);
-      if (request !== undefined) {
-        void this.answerIdeRequest(request);
-        return;
-      }
-    }
     if (!this.view.applySubagent(frame)) return;
     this.paint();
-  }
-
-  /** Answers one `ide.request` payload (ADR 0042 stage A): dispatches through
-   * the fixed read catalog, posts `{value}` or a typed `{error}`, and absorbs
-   * the 404 a replayed or already-settled request draws — replay noise is not
-   * an error surface. */
-  private async answerIdeRequest(request: IdeRequestPayload): Promise<void> {
-    let answer: { value?: unknown; error?: { code: string; message: string } };
-    try {
-      if (!isIdeMethodSupported(request.method)) {
-        answer = {
-          error: {
-            code: "ide_method_unsupported",
-            message: `The method '${request.method}' is not in the IDE read catalog.`,
-          },
-        };
-      } else {
-        answer = { value: await executeIdeMethod(request.method, request.params) };
-      }
-    } catch (error) {
-      answer = { error: { code: "ide_provider_error", message: String(error) } };
-    }
-
-    await this.client.submitIdeAnswer(request.requestId, answer).catch(() => {});
   }
 
   fail(code: string, message: string): void {

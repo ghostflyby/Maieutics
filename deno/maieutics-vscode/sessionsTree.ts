@@ -73,7 +73,7 @@ export class MaieuticsSessionsProvider implements vscode.TreeDataProvider<Elemen
       }
       case "active": {
         const item = new vscode.TreeItem(
-          element.session.title ?? element.session.id.slice(0, 12),
+          sessionLabel({ ...element.session, lastActivityAt: "" }),
           vscode.TreeItemCollapsibleState.None,
         );
         const busy = this.activity?.isBusy(element.session.id) === true;

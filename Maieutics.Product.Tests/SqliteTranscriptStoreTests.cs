@@ -30,6 +30,28 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         await TempArea.DeleteAsync(_databaseDirectory, CancellationToken.None);
     }
 
+    [Fact]
+    public void ReopenSettlesAbandonedTitleAttemptsAndRejectsTheirStaleWrites()
+    {
+        var id = AgentSessionId.Create();
+        SessionTitleState pending;
+        using (var store = new SqliteTranscriptStore(_databasePath))
+        {
+            store.SetTitle(id, null);
+            var state = store.GetTitleState(id);
+            pending = state with { Title = "Preview", Mode = "initial", Initial = "pending", Revision = state.Revision + 1 };
+            Assert.True(store.TrySetTitleState(id, state, pending));
+        }
+        using var reopened = new SqliteTranscriptStore(_databasePath);
+        var recovered = reopened.GetTitleState(id);
+        Assert.Equal("Preview", recovered.Title);
+        Assert.Equal("initial", recovered.Mode);
+        Assert.Equal("settled", recovered.Initial);
+        Assert.False(recovered.Manual);
+        Assert.True(recovered.ControlRevision > pending.ControlRevision);
+        Assert.False(reopened.TrySetTitleState(id, pending, pending with { Title = "Stale result", Revision = pending.Revision + 1 }));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -123,7 +145,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(4, Convert.ToInt32(version.ExecuteScalar()));
+        Assert.Equal(6, Convert.ToInt32(version.ExecuteScalar()));
     }
 
     [Fact]
@@ -156,6 +178,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         var descriptor = Assert.Single(store.ListSessions());
         Assert.Equal(sessionId, descriptor.Id);
         Assert.Equal("v3 title", descriptor.Title);
+        Assert.True(store.GetTitleState(sessionId).Manual);
         Assert.Equal("/repos/v3", descriptor.WorkspaceRoot);
         Assert.Null(descriptor.ParentSessionId);
         Assert.Null(descriptor.ForkPointSeq);

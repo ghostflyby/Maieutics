@@ -119,11 +119,12 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     public FrontendSessionInfo DescribeSession()
     {
         var (id, turns) = _sessionManager.ForegroundInfo;
+        var title = _sessionManager.GetTitleState(id);
         return new FrontendSessionInfo(
             id.Value.ToString("N"),
             turns,
             _sessionManager.PersistenceEnabled,
-            _sessionManager.FindDescriptor(id)?.Title);
+            title.Title, title.Revision, _sessionManager.Titles.Mode(title), title.Manual, title.Source);
     }
 
     /// <summary>Whether one session has a stored row, without mutating the live set
@@ -140,12 +141,29 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     public FrontendSessionInfo DescribeSession(string sessionId)
     {
         var session = ResolveSession(sessionId);
-        var descriptor = _sessionManager.FindDescriptor(session.Id);
+        var title = _sessionManager.GetTitleState(session.Id);
         return new FrontendSessionInfo(
             session.Id.Value.ToString("N"),
             session.GetTranscriptSnapshot().Turns.Length,
             _sessionManager.PersistenceEnabled,
-            descriptor?.Title);
+            title.Title, title.Revision, _sessionManager.Titles.Mode(title), title.Manual, title.Source);
+    }
+
+    internal Task WaitForTitleChangeAsync(string sessionId, long revision, CancellationToken token) =>
+        _sessionManager.Titles.WaitForChangeAsync(ParseSessionId(sessionId), revision, token);
+
+    internal async Task<FrontendSessionInfo> ChangeTitlePolicyAsync(string sessionId, FrontendTitlePolicyRequest request, CancellationToken token)
+    {
+        var session = ResolveSession(sessionId);
+        if (request.Mode is not null && request.Regenerate)
+            throw new FrontendFailureException(FrontendErrors.InvalidRequest, "Choose a mode change or regeneration, not both.");
+        try
+        {
+            if (request.Mode is { } mode) _sessionManager.Titles.SetMode(session.Id, mode);
+            if (request.Regenerate) await _sessionManager.Titles.RegenerateAsync(session.Id, token).ConfigureAwait(false);
+        }
+        catch (ArgumentException exception) { throw new FrontendFailureException(FrontendErrors.InvalidRequest, exception.Message); }
+        return DescribeSession(sessionId);
     }
 
     /// <summary>Resolves the addressed session: live → use; stored → lazy-resume; otherwise
@@ -185,10 +203,10 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             .ToArray();
     }
 
-    /// <summary>Sets or clears one stored session's title. Not active-session-gated: renaming
+    /// <summary>Sets or clears one session's manual title. Not active-session-gated: renaming
     /// an old session from a tree view is the primary surface.</summary>
-    /// <exception cref="FrontendFailureException">Persistence is disabled, the session id is
-    /// invalid, or the title exceeds the length cap.</exception>
+    /// <exception cref="FrontendFailureException">The session id is invalid or the title
+    /// exceeds the length cap.</exception>
     public FrontendRenameResponse Rename(string sessionId, string title)
     {
         var id = ParseSessionId(sessionId);
@@ -675,7 +693,7 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
             is true
             ? mapped
             : _sessionManager.Id;
-        if (_sessionManager.Resolve(childSessionId) is not AgentSession session ||
+        if (_sessionManager.RuntimeSession(childSessionId) is not { } session ||
             session.SubagentHost.FindChild(childRunId) is not { } child)
             throw new FrontendFailureException(FrontendErrors.NotFound, $"No retained run matches '{runId}'.");
 

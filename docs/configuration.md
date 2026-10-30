@@ -577,3 +577,30 @@ and fail the request with a typed error once the ceiling is exceeded.
 `%status` reports each configured model profile's resolved capabilities, hosted capability names, potential
 capabilities, and whether the source matched an explicit endpoint profile, is a known vendor, or is a declared baseline
 — without printing endpoint URLs. An active automatic session override is reported alongside the configured profiles.
+
+## Automatic task titles
+
+`Maieutics:Agent:Title:Mode` selects the startup default:
+
+| Value | Initial naming | Later changes |
+| --- | --- | --- |
+| `auto` (default) | One asynchronous request after the first successful turn | Primary Agent may call `set_task_title` when the task changes |
+| `initial` | Same one-time request | User changes only |
+| `manual` | Request preview | User changes only |
+
+Use `Maieutics__Agent__Title__Mode=initial` or `--Maieutics:Agent:Title:Mode initial`.
+Session overrides persist separately. Without the new setting, legacy
+`Maieutics:Agent:AutoTitle=false` selects `manual`; an explicit new mode wins.
+The startup default requires restart. Invalid modes fail configuration validation.
+
+Initial generation never blocks run completion or the next queued turn. It uses bounded
+request/answer excerpts, no tools, 96 output tokens, and an eight-second cooperative
+cancellation budget. The coordinator executes one request at a time with 64 waiting slots.
+Failed admission or generation retains the preview/name without per-turn retries; explicit
+regeneration can try again. A title tool may require an ordinary tool-continuation request.
+
+Manual names are locked in every mode. Clearing releases the lock and resets eligibility;
+`manual` still generates nothing. Regeneration requires an unlocked `auto` or `initial`
+title. Automatic titles are capped at 80 UTF-16 units and manual names at 200. See
+[ADR 0046](architecture/decisions/0046-automatic-session-titles.md) for schema-v6 migration,
+job ownership, and revision rules.

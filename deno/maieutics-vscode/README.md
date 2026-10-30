@@ -112,7 +112,8 @@ folders stay on the IDE filesystem plane; they are not passed off as local disk 
 editor folder or disconnecting leaves persisted links intact; use `%workspace close <name>` to
 retire one explicitly. Opening a project in VS Code does not create `projects/`, `scratch/` or
 `.maieutics/` inside that project. `%workspace current` shows the actual home and registered project
-links.
+links. Task-title metadata uses the same authenticated frontend connection; it adds no Deno
+permission grants.
 
 Development runtime needs `allow-net` (loopback mock server tests) and `allow-read` (discovery
 file). The renderer module regression tests also need `allow-write` for temporary bundles and
@@ -145,3 +146,21 @@ truncation. Use `saveWorkspace: true` on `terminal_run`, `terminal_input` or `te
 builds/tests: the save barrier runs before any process starts or input is sent, and failure prevents
 execution. The flag defaults to false; commands are not inspected to infer intent. These additive
 IDE methods use the existing authenticated connection and require no additional Deno grants.
+
+## Task titles
+
+The kernel defaults to `auto`: generate an initial title once after a successful turn, then let the
+Agent call `set_task_title` when the task scope changes. Initial naming runs in the background and
+never holds up execution. `initial` generates once without later model changes; `manual` uses a
+preview until you name the session. Failures do not trigger a naming request on every later turn.
+
+Titles appear in the Sessions tree, session pickers, and active notebook status bar. Click the
+status-bar title or run **Maieutics: Task Title Settings** to rename, select a mode, clear/unlock,
+or regenerate. Manual names stay locked even if the mode changes. Clearing resets eligibility while
+retaining the selected mode; regeneration requires an unlocked `auto` or `initial` title. Notebook
+URIs and snapshot dirty state stay unchanged.
+
+Session metadata arrives independently of answer output and run completion; older revisions cannot
+overwrite newer titles. Configure the startup default with `Maieutics:Agent:Title:Mode`; legacy
+`AutoTitle=false` selects `manual` when no new mode is set. These controls use the existing
+authenticated connection and require no additional Deno permissions.

@@ -210,7 +210,7 @@ public sealed class ModelOrchestrationEndpointTests
         var taskResources = new TaskResourceProvider(
         [
             new AgentTaskResourceSource(
-                sessionId => manager.IsLive(sessionId) && manager.Resolve(sessionId) is AgentSession live
+                sessionId => manager.IsLive(sessionId) && manager.RuntimeSession(sessionId) is { } live
                     ? live
                     : null,
                 () => [manager.Id]),

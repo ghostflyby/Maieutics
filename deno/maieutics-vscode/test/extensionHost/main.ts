@@ -17,6 +17,8 @@
  */
 
 import * as vscode from "vscode";
+import { SessionTitles } from "../../sessionTitles.ts";
+import { MaieuticsSessionsProvider } from "../../sessionsTree.ts";
 import { executeIdeMethod, MaieuticsNotebookController } from "../../controller.ts";
 import { QueueProjection } from "../../queueProjection.ts";
 import { FrontendClient } from "../../client.ts";
@@ -316,6 +318,16 @@ async function testQueueExecutionAsync(
   const itemId = "queued-item";
   let admitted = false;
   let scopedReplay = false;
+  const titles = new SessionTitles();
+  let announceTitle = () => {};
+  let appliedTitle = () => {};
+  const titleReady = new Promise<void>((resolve) => {
+    announceTitle = resolve;
+  });
+  const titleApplied = new Promise<void>((resolve) => {
+    appliedTitle = resolve;
+  });
+  const expectTitle = !interrupted && !missingReplay && supportsRecovery && !failBeforeRun;
   const client = FrontendClient.fromDiscovery({
     version: 1,
     url: "http://127.0.0.1:9",
@@ -375,10 +387,35 @@ async function testQueueExecutionAsync(
         messageId: "m",
         agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Recovered reply" }] },
       };
-      yield interrupted
-        ? { type: "run.failed", runId, code: "run_cancelled", message: "Cancelled" }
-        : { type: "run.completed", runId };
+      try {
+        yield interrupted
+          ? { type: "run.failed", runId, code: "run_cancelled", message: "Cancelled" }
+          : { type: "run.completed", runId };
+      } finally {
+        if (expectTitle) announceTitle();
+      }
       return;
+    }
+    if (expectTitle) {
+      const aborted = new Promise<void>((resolve) => {
+        if (options.signal?.aborted) resolve();
+        else options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await Promise.race([titleReady, aborted]);
+      if (options.signal?.aborted) return;
+      yield {
+        type: "session.updated",
+        session: {
+          id: sessionId,
+          turns: 1,
+          persistenceEnabled: true,
+          title: "Recover queued replies",
+          titleRevision: 1,
+          titleMode: "auto",
+          titleLocked: false,
+          titleSource: "initial",
+        },
+      };
     }
     if (options.signal?.aborted) return;
     await new Promise<void>((resolve) =>
@@ -399,6 +436,10 @@ async function testQueueExecutionAsync(
     {
       client: () => Promise.resolve(client),
       session: () => client.session(),
+      sessionUpdated: (session) => {
+        titles.apply(session);
+        if (session.title === "Recover queued replies") appliedTitle();
+      },
       fetchObject: () => Promise.resolve(new Uint8Array()),
     },
     output,
@@ -451,6 +492,7 @@ async function testQueueExecutionAsync(
         (async () => {
           await owner.runAsync([notebook.cellAt(0)], notebook);
           await visibleOutput;
+          if (expectTitle) await titleApplied;
         })(),
         new Promise<never>((_, reject) =>
           budget.addEventListener(
@@ -480,6 +522,23 @@ async function testQueueExecutionAsync(
         assert(
           scopedReplay && text.includes("Recovered reply"),
           "a completed early run replays into its cell",
+        );
+        const titled = titles.get(sessionId);
+        assert(
+          titled?.title === "Recover queued replies",
+          "session.updated on the idle session socket reaches the title display after run completion",
+        );
+        const tree = new MaieuticsSessionsProvider(
+          () => Promise.resolve(client),
+          () => ({ caseInsensitive: false, currentOnly: false }),
+        );
+        assert(
+          tree.getTreeItem({ kind: "active", session: titled }).label === "Recover queued replies",
+          "the real VS Code tree item displays the generated task title",
+        );
+        assert(
+          !text.includes("Recover queued replies"),
+          "session metadata is not rendered as assistant output",
         );
         assert(
           readTurnBinding({ metadata: notebook.cellAt(0).metadata, text: "Question" })?.runId ===

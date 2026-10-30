@@ -132,6 +132,8 @@ export interface NotebookBridge {
   client(): Promise<FrontendClient>;
   /** Current server session for the notebook's connection. */
   session(): Promise<SessionInfo>;
+  /** Full metadata snapshots from hello and session.updated frames. */
+  sessionUpdated?(session: SessionInfo): void;
   /** Fetches a binary object by content address (object bypass dereference). */
   fetchObject(sha256: string): Promise<Uint8Array>;
 }
@@ -844,6 +846,7 @@ export class MaieuticsNotebookController implements vscode.Disposable {
       (message) => this.output.appendLine(message),
       (snapshot) => this.applyQueueState(sessionId, snapshot),
       this.activity,
+      (session) => this.bridge.sessionUpdated?.(session),
     );
     stream.start();
     this.streams.set(sessionId, stream);
@@ -876,6 +879,7 @@ class NotebookStream {
      * the status bar, tree badges, and background notifications can follow
      * runs the active editor is not showing. */
     private readonly activity: SessionActivity,
+    private readonly onSessionUpdated: (session: SessionInfo) => void,
   ) {
     this.queue = new QueueWatcher(client, sessionId, onQueue, log);
   }
@@ -984,6 +988,10 @@ class NotebookStream {
   private async pumpRunAsync(runId: string, signal: AbortSignal): Promise<void> {
     try {
       for await (const frame of this.client.events(this.sessionId, { signal, runId })) {
+        if (frame.type === "session.updated" && frame.session?.id === this.sessionId) {
+          this.onSessionUpdated(frame.session);
+          continue;
+        }
         if (frame.type === "hello") continue;
         if (
           (frame.type === "ide.request" || frame.type === "tool.progress") &&
@@ -1026,7 +1034,14 @@ class NotebookStream {
         // hello blocks until the reconnect snapshot applied, so an item that
         // started while the socket was away attaches before its run's
         // replayed frames route.
+        if (frame.type === "hello" && frame.session?.id === this.sessionId) {
+          this.onSessionUpdated(frame.session);
+        }
         if (await this.queue.handleFrame(frame)) continue;
+        if (frame.type === "session.updated" && frame.session?.id === this.sessionId) {
+          this.onSessionUpdated(frame.session);
+          continue;
+        }
         // Run-activity frames drive the busy/idle surfaces; the idle frame
         // trails the terminal frame (invariant 7), and the terminal frames
         // mark idle themselves so a socket lost between the two cannot leave

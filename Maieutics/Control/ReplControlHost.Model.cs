@@ -351,7 +351,7 @@ internal sealed partial class ReplControlHost
         AgentSession? session;
         try
         {
-            session = _orchestration!.AgentSessions().Resolve(ownerSessionId) as AgentSession;
+            session = _orchestration!.AgentSessions().RuntimeSession(ownerSessionId);
         }
         catch (AgentSessionNotFoundException)
         {

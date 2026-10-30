@@ -123,7 +123,7 @@ public sealed class AgentSubagentFunctionsTests
                 EventSink = new SubagentEventBuffer()
             });
 
-        var session = (AgentSession)manager.Resolve(manager.Id);
+        var session = manager.Resolve(manager.Id);
         await using var run = await session.StartTurnAsync(AgentTurn.FromText("Probe"), TestContext.Current.CancellationToken);
         var events = await ReadEventsAsync(run, TestContext.Current.CancellationToken);
         await run.Completion.WaitAsync(TestContext.Current.CancellationToken);

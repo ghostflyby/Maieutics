@@ -615,6 +615,40 @@ public sealed class FrontendApiIntegrationTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task TitlePolicyAndManualChangesReachIdleSessionSockets()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await StartHostAsync(budget.Token);
+        using var client = harness.CreateClient();
+        var id = await harness.GetSessionIdAsync(budget.Token);
+        await using var socket = await harness.OpenEventsAsync(id, budget.Token);
+        Assert.Equal("hello", (await socket.ReceiveFrameAsync(budget.Token)).GetProperty("type").GetString());
+        using var policy = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/title-policy", new { mode = "initial" }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, policy.StatusCode);
+        var changed = await socket.ReceiveFrameAsync(budget.Token);
+        Assert.Equal("session.updated", changed.GetProperty("type").GetString());
+        Assert.Equal("initial", changed.GetProperty("session").GetProperty("titleMode").GetString());
+        Assert.False(changed.TryGetProperty("runId", out _));
+        Assert.False(changed.TryGetProperty("sequence", out _));
+        using var rename = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/rename", new { title = "Pinned" }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, rename.StatusCode);
+        var named = await socket.ReceiveFrameAsync(budget.Token);
+        Assert.Equal("Pinned", named.GetProperty("session").GetProperty("title").GetString());
+        Assert.True(named.GetProperty("session").GetProperty("titleLocked").GetBoolean());
+        Assert.True(named.GetProperty("session").GetProperty("titleRevision").GetInt64() >
+            changed.GetProperty("session").GetProperty("titleRevision").GetInt64());
+        using var invalid = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/title-policy", new { mode = "every-turn" }, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        using var malformed = await client.PostAsync($"/v1/agent/sessions/{id}/title-policy",
+            new StringContent("{", Encoding.UTF8, "application/json"), budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        using var mixed = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/title-policy",
+            new { mode = "auto", regenerate = true }, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, mixed.StatusCode);
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task SessionsCarryDisplayMetadataAndRenameWithoutActivation()
     {
         await using var harness = await StartHostAsync(TestContext.Current.CancellationToken);
@@ -640,6 +674,9 @@ public sealed class FrontendApiIntegrationTests
             TestContext.Current.CancellationToken);
         Assert.Equal(sessionId, activeAfterRename.GetProperty("id").GetString());
         Assert.Equal("Design review", activeAfterRename.GetProperty("title").GetString());
+        var addressed = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{sessionId}", TestContext.Current.CancellationToken);
+        Assert.Equal("Design review", addressed.GetProperty("title").GetString());
+        Assert.True(addressed.TryGetProperty("titleRevision", out _));
 
         var stored = await client.GetFromJsonAsync<JsonElement>("/v1/agent/sessions", TestContext.Current.CancellationToken);
         var match = stored.EnumerateArray()
@@ -1811,6 +1848,8 @@ public sealed class FrontendApiIntegrationTests
                 "--Maieutics:DataRoot", dataRoot
             ], builder =>
             {
+                // Existing fixtures script conversation calls only; title behavior has its own coverage.
+                builder.Configuration["Maieutics:Agent:AutoTitle"] = "false";
                 configureBuilder?.Invoke(builder);
             });
             await host.StartAsync(cancellationToken);

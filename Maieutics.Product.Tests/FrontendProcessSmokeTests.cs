@@ -26,7 +26,7 @@ public sealed class FrontendProcessSmokeTests
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         budget.CancelAfter(TimeSpan.FromSeconds(90));
-        using var workspace = TemporaryWorkspace.Create();
+        await using var workspace = TempArea.Create("document-smoke");
         var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
             toolFlow: true, toolName: saveAll ? "ide_save_all" : "ide_apply_edit",
             toolArgumentsJson: saveAll ? "{}" : """{"edit":{"changes":{"workspace://local/smoke.txt":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":1}},"newText":"smoke body\n"}]}}}""",

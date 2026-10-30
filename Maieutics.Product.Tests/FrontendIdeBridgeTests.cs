@@ -494,7 +494,8 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         string argumentsJson,
         IdeRequestRegistry registry,
         Func<string, JsonElement, IdeRequestAnswer> answerByMethod,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FrontendIdeSockets sockets)
     {
         TaskCompletionSource<string> announcedPayload = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var lastPayloadJson = string.Empty;
@@ -503,187 +504,242 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         // `lastMethod` as the live "latest request" state by design; each round trip is
         // quiesced before the shared locals are rewritten.
         // ReSharper disable once AccessToModifiedClosure
-        var invocation = function.InvokeAsync(
-            ContextArguments(
-                argumentsJson,
-                (content, _) =>
-                {
-                    announcedPayload.TrySetResult(Encoding.UTF8.GetString(Assert.IsType<DataContent>(content).Data.Span));
-                    return ValueTask.CompletedTask;
-                }),
-            cancellationToken).AsTask();
-
-        // Write tools make several bridge round trips in one call (the dirty
-        // query, then the compute request), so keep answering announcements
-        // until the invocation settles. A tool that fails before announcing
-        // surfaces its typed failure here instead of a bare timeout.
-        while (true)
+        var arguments = ContextArguments(argumentsJson, (content, _) =>
         {
-            var settled = await Task.WhenAny(
-                announcedPayload.Task,
-                invocation).ConfigureAwait(true);
-            if (settled == invocation) break;
-
-            var payloadJson = announcedPayload.Task.Result;
-            var payload = JsonDocument.Parse(payloadJson).RootElement;
-            var ideRequest = payload.GetProperty("ideRequest");
-            var method = ideRequest.GetProperty("method").GetString()!;
-            var requestId = ideRequest.GetProperty("requestId").GetString()!;
-            if (!registry.TryComplete(requestId, answerByMethod(method, ideRequest.GetProperty("params").Clone())))
-                throw new InvalidOperationException($"The announced ide request ({method}) was not pending.");
-            lastPayloadJson = payloadJson;
-            lastMethod = method;
-            announcedPayload = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        var result = await invocation.ConfigureAwait(true);
-        return new IdeInvocation(lastMethod, lastPayloadJson, Assert.IsType<JsonElement>(result));
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task ApplyEditAppliesMultiFileEditsThroughTheGatedPath()
-    {
-        using var workspace = TemporaryWorkspace.Create();
-        var cancellationToken = TestContext.Current.CancellationToken;
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "one\ntwo\n", TestContext.Current.CancellationToken);
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.cs"), "x\n", TestContext.Current.CancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
-        gate.Connected = true;
-        var apply = Function(functions.Functions, "ide_apply_edit");
-        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
-        var bPhysical = new Uri(Path.Combine(workspace.Path, "b.cs")).AbsoluteUri;
-
-        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
-
-        // `method` exists only for the answering lambda's per-request assertion.
-        // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
-        var invocation = await InvokeAnsweringByMethodAsync(
-            apply,
-            "{\"edit\":" + edit + "}",
-            registry,
-            (method, parameters) =>
-            {
-                Assert.Equal("maieutics/dirty", method);
-                var uris = parameters.GetProperty("uris").EnumerateArray()
-                    .Select(static entry => entry.GetString()).ToList();
-                Assert.Contains(aPhysical, uris);
-                Assert.Contains(bPhysical, uris);
-                return IdeRequestAnswer.FromValue(JsonDocument.Parse(
-                    """{"entries":[{"uri":"a","dirty":false},{"uri":"b","dirty":false}]}""").RootElement.Clone());
-            },
-            cancellationToken);
-
-        Assert.Equal("ONE\ntwo\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
-        Assert.Equal("xy\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "b.cs"), cancellationToken));
-        var envelope = invocation.Result.Deserialize(IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
-        Assert.Equal("applied", envelope.Status);
-        Assert.Equal(2, envelope.Applied.Count());
-        Assert.Contains(envelope.Applied, static entry => entry.Diff != null);
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task ApplyEditRejectsTheWholeEditWhenAnyTargetIsDirty()
-    {
-        using var workspace = TemporaryWorkspace.Create();
-        var cancellationToken = TestContext.Current.CancellationToken;
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "one\n", TestContext.Current.CancellationToken);
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.cs"), "x\n", TestContext.Current.CancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
-        gate.Connected = true;
-        var apply = Function(functions.Functions, "ide_apply_edit");
-
-        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
-
-        AgentToolException? failure = null;
+            announcedPayload.TrySetResult(Encoding.UTF8.GetString(Assert.IsType<DataContent>(content).Data.Span));
+            return ValueTask.CompletedTask;
+        });
+        var sessionId = WorkspaceToolCalls.TryGetSessionId(arguments) ?? throw new InvalidOperationException("Missing session");
+        var connection = sockets.Announce(sessionId, (frame, _) =>
+        {
+            var data = frame.Data ?? throw new InvalidOperationException("Missing IDE request");
+            announcedPayload.TrySetResult("{\"ideRequest\":" + data.GetRawText() + "}");
+            return Task.CompletedTask;
+        });
+        var secondary = sockets.Announce(sessionId, (_, _) =>
+            throw new InvalidOperationException("Document requests must never reach a second editor"));
         try
         {
-            // `method` exists only for the answering lambda's per-request assertion.
-            // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
-            await InvokeAnsweringByMethodAsync(
-                apply,
-                "{\"edit\":" + edit + "}",
-                registry,
-                (method, parameters) =>
-                {
-                    Assert.Equal("maieutics/dirty", method);
-                    var first = parameters.GetProperty("uris").EnumerateArray().First().GetString()!;
-                    return IdeRequestAnswer.FromValue(JsonDocument.Parse(
-                        "{\"entries\":[{\"uri\":\"" + first + "\",\"dirty\":true}]}").RootElement.Clone());
-                },
-                cancellationToken).ConfigureAwait(true);
+            var invocation = function.InvokeAsync(arguments, cancellationToken).AsTask();
+
+            // Write tools snapshot, compute, and apply over several round trips, so keep answering announcements
+            // until the invocation settles. A tool that fails before announcing
+            // surfaces its typed failure here instead of a bare timeout.
+            while (true)
+            {
+                var settled = await Task.WhenAny(
+                    announcedPayload.Task,
+                    invocation).ConfigureAwait(true);
+                if (settled == invocation) break;
+
+                var payloadJson = announcedPayload.Task.Result;
+                var payload = JsonDocument.Parse(payloadJson).RootElement;
+                var ideRequest = payload.GetProperty("ideRequest");
+                var method = ideRequest.GetProperty("method").GetString()!;
+                var requestId = ideRequest.GetProperty("requestId").GetString()!;
+                if (!registry.TryComplete(requestId, answerByMethod(method, ideRequest.GetProperty("params").Clone())))
+                    throw new InvalidOperationException($"The announced ide request ({method}) was not pending.");
+                lastPayloadJson = payloadJson;
+                lastMethod = method;
+                announcedPayload = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            var result = await invocation.ConfigureAwait(true);
+            return new IdeInvocation(lastMethod, lastPayloadJson, Assert.IsType<JsonElement>(result));
         }
-        catch (AgentToolException exception)
+        finally
         {
-            failure = exception;
+            sockets.Withdraw(sessionId, secondary);
+            sockets.Withdraw(sessionId, connection);
         }
+    }
 
-        Assert.NotNull(failure);
-        Assert.Equal("ide_document_dirty", failure.Code);
-        Assert.Equal("one\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
-        Assert.Equal("x\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "b.cs"), cancellationToken));
+    private static IdeRequestAnswer DocumentSnapshotAnswer(JsonElement parameters, string content, int version = 7)
+    {
+        var uri = Assert.Single(parameters.GetProperty("uris").EnumerateArray()).GetString();
+        return IdeRequestAnswer.FromValue(JsonSerializer.SerializeToElement(new
+        {
+            documents = new[] { new { uri, content, version } }
+        }));
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task ApplyEditRejectsOutOfRangeRangesBeforeAnyMutation()
+    public async Task SaveAllPersistsEveryApprovedEditorTargetThroughOnePinnedFrontend()
     {
         using var workspace = TemporaryWorkspace.Create();
-        var cancellationToken = TestContext.Current.CancellationToken;
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "one\n", TestContext.Current.CancellationToken);
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.cs"), "x\n", TestContext.Current.CancellationToken);
-        var (functions, _, gate, _) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
-        var apply = Function(functions.Functions, "ide_apply_edit");
-
-        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":99,"character":1},"end":{"line":99,"character":2}},"newText":"nope"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
-
-        var invocation = await InvokeAsync(
-            apply,
-            ContextArguments("{\"edit\":" + edit + "}", static (_, _) => ValueTask.CompletedTask),
-            cancellationToken);
-
-        Assert.NotNull(invocation.Failure);
-        Assert.Equal("ide_edit_rejected", invocation.Failure!.Code);
-        Assert.Contains("a.cs", invocation.Failure.Message);
-        Assert.Contains("99", invocation.Failure.Message);
-        Assert.Equal("one\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
-        Assert.Equal("x\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "b.cs"), cancellationToken));
-    }
-
-    [Fact(Timeout = 30_000)]
-    public async Task FormatDocumentComputesAndAppliesThroughTheGatedPath()
-    {
-        using var workspace = TemporaryWorkspace.Create();
-        var cancellationToken = TestContext.Current.CancellationToken;
-        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "  x\n", TestContext.Current.CancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
-        gate.Connected = true;
-        var format = Function(functions.Functions, "ide_format_document");
-        var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
-
-        var invocation = await InvokeAnsweringByMethodAsync(
-            format,
-            """{"uri":"workspace://local/a.cs"}""",
-            registry,
+        var first = new Uri(Path.Combine(workspace.Path, "a.ts")).AbsoluteUri;
+        var second = new Uri(Path.Combine(workspace.Path, "b.maieuticsnb")).AbsoluteUri;
+        var requests = new List<string>();
+        var invocation = await InvokeAnsweringByMethodAsync(Function(functions.Functions, "ide_save_all"), "{}", registry,
             (method, parameters) =>
             {
-                if (method == "maieutics/dirty")
+                requests.Add(method);
+                if (method == "maieutics/documents/dirty")
+                    return IdeRequestAnswer.FromValue(JsonSerializer.SerializeToElement(new
+                    {
+                        documents = new[] {new {uri=first,version=7,kind="text"},new {uri=second,version=3,kind="notebook"}}
+                    }));
+                Assert.Equal("maieutics/documents/save", method);
+                Assert.Equal(2, parameters.GetProperty("documents").GetArrayLength());
+                Assert.Equal(7, parameters.GetProperty("documents")[0].GetProperty("version").GetInt32());
+                return IdeRequestAnswer.FromValue(JsonSerializer.SerializeToElement(new {status="saved",saved=new[] {first,second}}));
+            }, TestContext.Current.CancellationToken, sockets);
+        Assert.Equal(new[] {"maieutics/documents/dirty","maieutics/documents/save"},requests);
+        Assert.Equal(new[] {"workspace://local/a.ts","workspace://local/b.maieuticsnb"},
+            invocation.Result.GetProperty("saved").EnumerateArray().Select(static entry=>entry.GetString()));
+        Assert.False(File.Exists(Path.Combine(workspace.Path,"a.ts")),"The kernel must never save documents through filesystem fallback.");
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("save_failed", "ide_save_failed")]
+    [InlineData("conflict", "ide_document_conflict")]
+    public async Task SaveAllFailuresAreTypedAndCannotAuthorizeADependentCommand(string reason, string code)
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var failure = await Assert.ThrowsAsync<AgentToolException>(()=> InvokeAnsweringByMethodAsync(
+            Function(functions.Functions,"ide_save_all"),"{}",registry,
+            (method,_)=>IdeRequestAnswer.FromValue(method=="maieutics/documents/dirty"
+                ? JsonSerializer.SerializeToElement(new {documents=Array.Empty<object>()})
+                : JsonSerializer.SerializeToElement(new {status="failed",saved=Array.Empty<string>(),reason})),
+            TestContext.Current.CancellationToken,sockets));
+        Assert.Equal(code,failure.Code);
+        Assert.Contains("not started",failure.Message);
+    }
+
+    [Fact]
+    public void ComputedDocumentVersionsArePreservedAndMalformedVersionsAreTypedFailures()
+    {
+        using var valid = JsonDocument.Parse("""{"changes":{"workspace://local/a.cs":[]},"versions":{"workspace://local/a.cs":7}}""");
+        Assert.Equal(7, Assert.Single(IdeWorkspaceEdit.ParseEnvelope(valid.RootElement)).Version);
+        using var invalid = JsonDocument.Parse("""{"changes":{"workspace://local/a.cs":[]},"versions":{"workspace://local/a.cs":"seven"}}""");
+        var failure = Assert.Throws<AgentToolException>(() => IdeWorkspaceEdit.ParseEnvelope(invalid.RootElement));
+        Assert.Equal("ide_invalid_arguments", failure.Code);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task UnsupportedDocumentEditingFailsWithoutAnyFilesystemFallback()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":1}},"newText":"never write"}]}}}""";
+        var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
+            Function(functions.Functions, "ide_apply_edit"), arguments, registry,
+            (method, _) =>
+            {
+                Assert.Equal("maieutics/documents/read", method);
+                return IdeRequestAnswer.FromError("ide_method_unsupported", "Old frontend");
+            }, TestContext.Current.CancellationToken, sockets));
+        Assert.Equal("ide_method_unsupported", failure.Code);
+        Assert.False(File.Exists(Path.Combine(workspace.Path, "a.cs")));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditUsesUnsavedDocumentSnapshotsAndOneEditorTransactionWithoutWritingDisk()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(20));
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "disk a", budget.Token);
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "b.cs"), "disk b", budget.Token);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var apply = Function(functions.Functions, "ide_apply_edit");
+        const string edit = """{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":4}},"newText":"ONE"}],"workspace://local/b.cs":[{"range":{"start":{"line":1,"character":2},"end":{"line":1,"character":2}},"newText":"y"}]}}""";
+        var transactions = 0;
+        var invocation = await InvokeAnsweringByMethodAsync(apply, "{\"edit\":" + edit + "}", registry,
+            (method, parameters) =>
+            {
+                if (method == "maieutics/documents/read")
+                    return DocumentSnapshotAnswer(parameters, parameters.GetProperty("uris")[0].GetString()?.EndsWith("a.cs", StringComparison.Ordinal) == true ? "one\ntwo\n" : "x\n");
+                Assert.Equal("maieutics/documents/apply", method);
+                transactions++;
+                var documents = parameters.GetProperty("documents").EnumerateArray().ToArray();
+                Assert.Equal(2, documents.Length);
+                Assert.Equal("ONE\ntwo\n", documents[0].GetProperty("content").GetString());
+                Assert.Equal("xy\n", documents[1].GetProperty("content").GetString());
+                Assert.All(documents, document =>
                 {
-                    return IdeRequestAnswer.FromValue(JsonDocument.Parse(
-                        """{"entries":[{"uri":"a","dirty":false}]}""").RootElement.Clone());
+                    Assert.Equal(7, document.GetProperty("version").GetInt32());
+                    Assert.Equal(64, document.GetProperty("expectedHash").GetString()?.Length);
+                });
+                return IdeRequestAnswer.FromValue(JsonSerializer.SerializeToElement(new {applied = true}));
+            }, budget.Token, sockets);
+        Assert.Equal(1, transactions);
+        Assert.Equal("disk a", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), budget.Token));
+        Assert.Equal("disk b", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "b.cs"), budget.Token));
+        var result = invocation.Result.Deserialize(IdeFunctionJsonContext.Default.IdeApplyEditsValue);
+        Assert.NotNull(result);
+        Assert.Equal(2, result.Applied.Count);
+        Assert.All(result.Applied, document => Assert.NotNull(document.Diff));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditRejectsStaleComputedVersionsBeforeAnyEditorTransaction()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]},"versions":{"workspace://local/a.cs":6}}}""";
+        var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
+            Function(functions.Functions, "ide_apply_edit"), arguments, registry,
+            (method, parameters) =>
+            {
+                Assert.Equal("maieutics/documents/read", method);
+                return DocumentSnapshotAnswer(parameters, "unsaved\n");
+            }, TestContext.Current.CancellationToken, sockets));
+        Assert.Equal("ide_document_conflict", failure.Code);
+        Assert.False(File.Exists(Path.Combine(workspace.Path, "a.cs")));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ApplyEditRejectsInvalidRangesAgainstTheBufferBeforeAnyMutation()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":99,"character":1},"end":{"line":99,"character":2}},"newText":"y"}]}}}""";
+        var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
+            Function(functions.Functions, "ide_apply_edit"), arguments, registry,
+            (method, parameters) =>
+            {
+                Assert.Equal("maieutics/documents/read", method);
+                return DocumentSnapshotAnswer(parameters, "unsaved\n");
+            }, TestContext.Current.CancellationToken, sockets));
+        Assert.Equal("ide_edit_rejected", failure.Code);
+        Assert.Contains("99", failure.Message);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task FormatDocumentUsesTheBufferVersionAndAppliesWithoutSaving()
+    {
+        using var workspace = TemporaryWorkspace.Create();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "disk\n", cancellationToken);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
+        gate.Connected = true;
+        var invocation = await InvokeAnsweringByMethodAsync(Function(functions.Functions, "ide_format_document"),
+            """{"uri":"workspace://local/a.cs"}""", registry,
+            (method, parameters) =>
+            {
+                if (method == "maieutics/documents/read") return DocumentSnapshotAnswer(parameters, "  x\n");
+                if (method == "textDocument/formatting")
+                {
+                    Assert.Equal(4, parameters.GetProperty("options").GetProperty("tabSize").GetInt32());
+                    return IdeRequestAnswer.FromValue(JsonDocument.Parse("""[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"x"}]""").RootElement.Clone());
                 }
-
-                Assert.Equal("textDocument/formatting", method);
-                Assert.Equal(aPhysical, parameters.GetProperty("uri").GetString());
-                Assert.Equal(4, parameters.GetProperty("options").GetProperty("tabSize").GetInt32());
-                return IdeRequestAnswer.FromValue(JsonDocument.Parse(
-                    """[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":3}},"newText":"x"}]""").RootElement.Clone());
-            },
-            cancellationToken);
-
-        Assert.Equal("x\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
-        var envelope = invocation.Result.Deserialize(IdeFunctionJsonContext.Default.IdeApplyEditsValue)!;
-        Assert.Equal("applied", envelope.Status);
-        Assert.NotNull(Assert.Single(envelope.Applied).Diff);
+                Assert.Equal("maieutics/documents/apply", method);
+                var document = Assert.Single(parameters.GetProperty("documents").EnumerateArray());
+                Assert.Equal("x\n", document.GetProperty("content").GetString());
+                Assert.Equal(7, document.GetProperty("version").GetInt32());
+                return IdeRequestAnswer.FromValue(JsonSerializer.SerializeToElement(new {applied = true}));
+            }, cancellationToken, sockets);
+        Assert.Equal("applied", invocation.Result.GetProperty("status").GetString());
+        Assert.Equal("disk\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
     }
 
     [Fact(Timeout = 30_000)]
@@ -692,7 +748,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "x\n", TestContext.Current.CancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var actions = Function(functions.Functions, "ide_code_actions");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
@@ -713,7 +769,7 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
                              "";
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
             },
-            cancellationToken);
+            cancellationToken, sockets);
 
         Assert.Equal("textDocument/codeAction", invocation.Method);
         Assert.Equal("x\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));
@@ -731,28 +787,25 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         using var workspace = TemporaryWorkspace.Create();
         var cancellationToken = TestContext.Current.CancellationToken;
         await File.WriteAllTextAsync(Path.Combine(workspace.Path, "a.cs"), "symbol\n", TestContext.Current.CancellationToken);
-        var (functions, registry, gate, _) = CreateFunctions(workspace.Path);
+        var (functions, registry, gate, sockets) = CreateFunctions(workspace.Path);
         gate.Connected = true;
         var rename = Function(functions.Functions, "ide_rename");
         var aPhysical = new Uri(DenoRealPath(Path.Combine(workspace.Path, "a.cs"))).AbsoluteUri;
 
         var invocation = await InvokeAnsweringByMethodAsync(
             rename,
-            """{"uri":"workspace://local/a.cs","select":{"line":1,"column":1},"newName":"renamed"}""",
+            """{"uri":"workspace://local/a.cs","select":{"anchor":["unsaved symbol"]},"newName":"renamed"}""",
             registry,
             (method, parameters) =>
             {
-                if (method == "maieutics/dirty")
-                {
-                    return IdeRequestAnswer.FromValue(JsonDocument.Parse("{\"entries\":[]}").RootElement.Clone());
-                }
-
+                if (method == "maieutics/documents/read") return DocumentSnapshotAnswer(parameters, "keep\nunsaved symbol\n");
+                Assert.Equal(1, parameters.GetProperty("position").GetProperty("line").GetInt32());
                 Assert.Equal("renamed", parameters.GetProperty("newName").GetString());
                 var answer = "{\"changes\":{\"" + aPhysical +
                              "\":[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":6}},\"newText\":\"renamed\"}]}}";
                 return IdeRequestAnswer.FromValue(JsonDocument.Parse(answer).RootElement.Clone());
             },
-            cancellationToken);
+            cancellationToken, sockets);
 
         Assert.Equal("textDocument/rename", invocation.Method);
         Assert.Equal("symbol\n", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "a.cs"), cancellationToken));

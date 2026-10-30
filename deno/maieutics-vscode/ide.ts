@@ -66,6 +66,10 @@ export function isIdeMethodSupported(method: string): boolean {
 const ideSpecialMethods: ReadonlySet<string> = new Set([
   "maieutics/problems",
   "maieutics/dirty",
+  "maieutics/documents/read",
+  "maieutics/documents/apply",
+  "maieutics/documents/dirty",
+  "maieutics/documents/save",
   "maieutics/fs/list",
   "maieutics/fs/read",
   "maieutics/fs/search",
@@ -87,7 +91,11 @@ export interface IdeRequestAnswer {
 export async function respondToIdeRequest(
   request: IdeRequestPayload,
   host: {
-    execute(method: string, params: Record<string, unknown>): Promise<unknown>;
+    execute(
+      method: string,
+      params: Record<string, unknown>,
+      signal?: AbortSignal,
+    ): Promise<unknown>;
     submit(requestId: string, answer: IdeRequestAnswer, signal: AbortSignal): Promise<boolean>;
     log(message: string): void;
   },
@@ -112,7 +120,10 @@ export async function respondToIdeRequest(
     } else {
       try {
         answer = {
-          value: await awaitIdeOperation(host.execute(request.method, request.params), signal),
+          value: await awaitIdeOperation(
+            host.execute(request.method, request.params, signal),
+            signal,
+          ),
         };
       } catch (error) {
         signal.throwIfAborted();
@@ -196,8 +207,14 @@ export function ideCommandArgs(
       return [objectOf(params.item)];
     case "textDocument/rename":
       return [uri, position, stringOf(params.newName) ?? ""];
-    case "textDocument/codeAction":
-      return [uri, position, objectOf(params.context) ?? { diagnostics: [] }];
+    case "textDocument/codeAction": {
+      const only = objectOf(params.context)?.only;
+      return [
+        uri,
+        objectOf(params.range) ?? { start: position, end: position },
+        Array.isArray(only) ? stringOf(only[0]) : undefined,
+      ];
+    }
     case "textDocument/formatting":
       return [uri, objectOf(params.options) ?? { tabSize: 4, insertSpaces: true }];
     default:
@@ -442,17 +459,7 @@ export function workspaceEditToWire(
   const changes: Record<string, WireTextEdit[]> = {};
   for (const [uri, edits] of edit.entries()) {
     const list = Array.isArray(edits) ? edits : [];
-    changes[String(uri)] = list.map((entry) => {
-      const textEdit = entry as { range?: { start?: unknown; end?: unknown }; newText?: unknown };
-      const range = textEdit.range as { start?: unknown; end?: unknown } | undefined;
-      return {
-        range: {
-          start: { ...(range?.start as { line: number; character: number }) },
-          end: { ...(range?.end as { line: number; character: number }) },
-        },
-        newText: typeof textEdit.newText === "string" ? textEdit.newText : "",
-      };
-    });
+    changes[String(uri)] = textEditsToWire(list);
   }
   return { changes };
 }
@@ -481,14 +488,29 @@ export function textEditsToWire(edits: readonly unknown[]): WireTextEdit[] {
   return edits.map((entry) => {
     const textEdit = entry as { range?: { start?: unknown; end?: unknown }; newText?: unknown };
     const range = textEdit.range as { start?: unknown; end?: unknown } | undefined;
+    if (typeof textEdit.newText !== "string") {
+      throw Object.assign(new Error("Provider returned a text edit without newText."), {
+        code: "ide_result_invalid",
+      });
+    }
     return {
       range: {
-        start: { ...(range?.start as { line: number; character: number }) },
-        end: { ...(range?.end as { line: number; character: number }) },
+        start: wirePosition(range?.start),
+        end: wirePosition(range?.end),
       },
-      newText: typeof textEdit.newText === "string" ? textEdit.newText : "",
+      newText: textEdit.newText,
     };
   });
+}
+
+function wirePosition(value: unknown): { line: number; character: number } {
+  const position = value as { line: number; character: number } | undefined;
+  if (typeof position?.line !== "number" || typeof position.character !== "number") {
+    throw Object.assign(new Error("Provider returned an invalid text-edit position."), {
+      code: "ide_result_invalid",
+    });
+  }
+  return { line: position.line, character: position.character };
 }
 
 // ---------- stage E: virtual file systems (decision 11) ----------

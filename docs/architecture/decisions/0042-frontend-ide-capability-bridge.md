@@ -146,35 +146,56 @@ diffs can be generated (`UnifiedDiff.Create`) but not parsed.
    Code and LSP use — declared here once because the write path is the kernel's
    first consumer of character offsets.
 
-6. **IDE computes, kernel writes — in two phases, pre-validated as a whole.**
-   Write-group methods always return data: `WorkspaceEdit` (LSP-shaped:
-   `changes`, `documentChanges` incl. `RenameFile`/`DeleteFile`/`CreateFile`) or
-   formatting `TextEdit`s. Application is a separate explicit tool call
-   (`ide_apply_edit`), which converts the edit to the internal representation
-   and applies it through the existing gated path (`WorkspaceEditFunctions`), so
-   instruction-surface gates (ADR 0032), unified-diff results, and editor-reload
-   semantics are exactly those of every other kernel edit. Before any mutation,
-   every target is pre-validated — containment, decodable text, size bounds, and
-   **not dirty** (decision 7); any failure rejects the whole edit as typed
-   `ide_edit_rejected` listing the failing targets, because an LSP edit is one
-   semantic unit and the first-failure-stops apply path is never entered
-   half-validated. A mid-apply I/O failure after pre-validation still stops at
-   the first file (no transactional filesystem is introduced) and the result
-   reports exactly which files changed. The extension host never calls
-   `workspace.applyEdit` on the agent's behalf. Command-only code actions (no
-   edit) are listed but not executed — executing arbitrary VS Code commands is
-   out of scope by decision 3.
+6. **IDE edits use editor documents; the kernel authorizes the complete edit.**
+   Amended 2026-10-29: this supersedes the original kernel-writes stage-C model.
+   `ide_rename` and `ide_code_actions` compute data; `ide_apply_edit` applies it,
+   and `ide_format_document` folds computation and application into one call.
+   The kernel reads `TextDocument` snapshots (`content`, `version`), validates
+   every target, instruction/write policy, ranges, overlaps and size bounds,
+   and computes bounded unified diffs. It sends one text-only document
+   transaction to the extension, which uses `workspace.applyEdit(WorkspaceEdit)`.
+   No IDE edit uses filesystem writes or silently falls back to disk.
+   File create/rename/delete operations and command-only actions remain outside
+   this text-edit subset; arbitrary editor commands are never executed.
 
-7. **Dirty documents are a typed rejection, and buffer/disk divergence is
-   declared semantics.** VS Code's language services compute on in-memory
-   buffers (unsaved changes included) while the kernel writes disk bytes; an
-   edit computed against a dirty buffer and applied to the file would misplace.
-   A write-group method targeting a dirty document fails typed
-   `ide_document_dirty` (message: save or revert first); `untitled:` and virtual
-   documents are rejected at translation (decision 4). Read-side tools answer
-   the buffer state and `read_text` answers the disk state; on a dirty document
-   the two may legitimately disagree — stated here so it is semantics, not a
-   bug.
+7. **Unsaved buffers are authoritative; application does not save.**
+   The editor opens documents without showing tabs and uses their current text,
+   including unsaved changes. Dirty documents are supported. One apply contains
+   at most 64 documents and 8 MiB of combined before/after UTF-8 text; existing
+   per-file kernel write bounds still apply. Every replacement carries its
+   snapshot version and SHA-256 content hash. The editor validates all targets
+   before one atomic text-only workspace edit; a version/content conflict
+   rejects the whole transaction as `ide_document_conflict`. Native undo/redo
+   remains available; saving is a separate user/editor operation.
+   Rename and code-action edit envelopes carry an additive `versions` map;
+   callers retain it when passing computed edits to `ide_apply_edit`. Formatting
+   captures a snapshot before computation and rejects a changed version.
+   Write-tool anchor/patch selectors read document snapshots too.
+   Ordinary filesystem tools keep decision 12's dirty gate and write behavior.
+   `untitled:` and virtual-document addressing remain outside this local
+   `workspace://local` tool family.
+   Each editing call elects one live frontend for the owning session and pins
+   snapshot, compute and apply to that registration. Its requests are targeted
+   standalone frames, never replayed or broadcast through tool progress. A
+   disconnect fails the call; it cannot switch editors halfway through an edit.
+   Older frontends reject the additive document methods as unsupported; there
+   is no disk fallback and the IDE capability announcement version stays 1.
+
+   `ide_save_all` provides a separate workspace save barrier: it enumerates all
+   dirty file-backed text documents and notebooks in every local IDE project,
+   including the user's pre-existing edits, and excludes unrelated/untitled
+   buffers. The kernel authorizes the full target list before saving; the
+   extension uses native document save APIs with version and final-dirty checks.
+   Enumeration is bounded at 256 targets with no truncation and carries only
+   URI/version/kind metadata. Normal save participants may update their own
+   document; changed or newly dirty buffers fail the barrier. Saves are not a
+   filesystem transaction: earlier successful saves remain on failure/cancel.
+   `terminal_run`, `terminal_input`, and `terminal_paste` add `saveWorkspace=true`
+   to run this barrier before any terminal allocation or input. Tool instructions
+   require it for IDE-backed builds/tests; false remains the compatible default
+   for other operations. The terminal depends only on an Execution-owned save
+   interface, implemented in Frontend and wired by the composition root. There
+   is no shell-command classifier or reverse domain dependency.
 
 8. **One tool family with one selector grammar and one read-only escape hatch.**
    Stage-annotated: `ide_diagnostics(uri?, minSeverity?)`,
@@ -367,8 +388,7 @@ diffs can be generated (`UnifiedDiff.Create`) but not parsed.
     write request carries the before content hash as a precondition, failing
     typed `fs_conflict` on a mismatch instead of silently last-write-wins. This
     inverts decision 6's execution point while keeping its spirit — gates,
-    diffs, and typed failures stay kernel-side — and it is the only write path
-    whose execution point cannot be the kernel.
+    diffs, and typed failures stay kernel-side — and document editing now uses the separate editor transaction in decisions 6–7.
 
 12. **The workspace repository file system itself forwards through the bridge
     when an IDE is attached — the idefs mechanism applied in the local
@@ -518,24 +538,14 @@ diffs can be generated (`UnifiedDiff.Create`) but not parsed.
   rename/binary/no-newline tolerance, typed malformed/too-large bounds) — with
   path-mismatch rejection so context is never borrowed from an unrelated patch.
   `apply_patch`'s first-match-after-seek semantics are untouched.
-- **C — write path. — IMPLEMENTED 2026-10-15.** The write-group compute methods
-  (`textDocument/rename|codeAction|formatting`) answer through the same
-  ide.request channel and return data only; the named tools are
-  `ide_rename`/`ide_code_actions` (compute) and `ide_format_document`
-  (compute+apply folded), with `ide_apply_edit` as the only writer. The apply
-  core pre-validates the whole edit (containment, decode, range table, computed
-  size) before mutating, then one `maieutics/dirty` query gates everything on
-  unsaved buffers (`ide_document_dirty`), then each file flows through the gated
-  write seam (`WorkspaceEditFunctions.ApplyComputedContentAsync` — the
-  instruction gate, size bounds, and unified diff of write_text); a mid-apply
-  failure is reported with what changed and what is pending. The extension host
-  gained write-group dispatch (`executeDocumentRenameProvider` /
-  `executeCodeActionProvider` / `executeFormatDocumentProvider`) whose answers
-  flatten to plain data — `workspaceEditToWire` notes the public API cannot read
-  file-level workspace operations, so structural refactors lose those ops. Dirty
-  checking costs one bridge round trip per apply; the
-  `TranslateIncoming`/`TranslateOutgoing` deep walk now translates object
-  property names too (an LSP changes map is keyed by them).
+- **C — write path. — IMPLEMENTED 2026-10-15; AMENDED 2026-10-29.**
+  The initial kernel-write/dirty-rejection implementation is superseded by
+  decisions 6–7 above: versioned document snapshots, kernel policy validation,
+  one editor `WorkspaceEdit`, unsaved-buffer support and native undo/redo.
+  Write-group provider answers flatten public Position getters explicitly;
+  code actions translate position selectors to Range and use the built-in
+  command's kind argument rather than an LSP context. Tests use the built-in
+  TypeScript service in a real, isolated VS Code host.
 - **D — TS API faces. — IMPLEMENTED 2026-10-15, with a decision-10 amendment.**
   Implementing the script-tools mount exposed that a script/plugin invocation
   has no run stream to announce on (`AgentToolContext.ReportProgressAsync` is

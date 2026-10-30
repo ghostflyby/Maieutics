@@ -375,6 +375,8 @@ public static class MaieuticsHost
             services.GetRequiredService<IIdeFrontendGate>(),
             services.GetRequiredService<WorkspaceEditFunctions>(),
             services.GetRequiredService<FrontendIdeSockets>()));
+        builder.Services.AddSingleton<IWorkspaceSavePreparation>(static services =>
+            services.GetRequiredService<IdeFunctions>());
         builder.Services.AddSingleton(static services => new IdeToolFamily(
             [
                 .. services.GetRequiredService<IdeFunctions>().Functions,

@@ -391,6 +391,18 @@ async function mainAsync(): Promise<number> {
   for (const dir of [userDataDir, extensionsDir, workspaceDir]) {
     await Deno.mkdir(dir, { recursive: true });
   }
+  // Apply before workbench startup; workspace settings arrive too late for
+  // built-in Chat's initial focus and application-scoped configuration.
+  const userSettingsDir = join(userDataDir, "User");
+  await Deno.mkdir(userSettingsDir, { recursive: true });
+  await Deno.writeTextFile(
+    join(userSettingsDir, "settings.json"),
+    JSON.stringify({
+      "chat.disableAIFeatures": true,
+      "workbench.startupEditor": "none",
+      "workbench.secondarySideBar.defaultVisibility": "hidden",
+    }),
+  );
   // Start in workspace-file mode so adding a second root does not require an
   // interactive folder-to-workspace transition in the hidden test window.
   const workspaceFile = join(scratch, "test.code-workspace");
@@ -398,7 +410,9 @@ async function mainAsync(): Promise<number> {
     workspaceFile,
     JSON.stringify({
       folders: [{ path: workspaceDir }],
-      settings: { "maieutics.executablePath": join(scratch, "not-a-real-kernel") },
+      settings: {
+        "maieutics.executablePath": join(scratch, "not-a-real-kernel"),
+      },
     }),
   );
 

@@ -126,3 +126,22 @@ turn is active, and serves them through the editor's workspace APIs under the ke
 permission gates. Replies use the authenticated loopback IDE endpoint; this requires no additional
 Deno grants. The Maieutics output channel logs request ids, methods, and outcomes, without file
 paths, request arguments, or file contents.
+
+IDE edits (`ide_apply_edit`, `ide_format_document`) use current `TextDocument` buffers, including
+unsaved changes. The kernel validates targets, permissions, ranges and size bounds, then the
+extension applies one `WorkspaceEdit` with document-version and content checks. Conflicts reject the
+entire transaction. Edits participate in native undo/redo and do not save automatically. Keep the
+`versions` map returned by rename/code actions when applying their edit. Snapshot, computation and
+application stay on one elected frontend; edits are never replayed or broadcast to other windows. A
+frontend that lacks document editing rejects the request; no filesystem fallback is used. Ordinary
+file tools retain their existing filesystem semantics. This adds no Deno permission grants.
+
+`ide_save_all` saves every dirty file-backed text document and notebook in all local workspace
+projects, including pre-existing user edits. Unrelated files and untitled documents remain
+untouched. The kernel checks the whole target list's permissions before saving, then the extension
+uses native document save APIs. Version conflicts, failed saves and newly dirty documents fail the
+barrier; earlier successful saves remain on disk. Up to 256 dirty documents are supported without
+truncation. Use `saveWorkspace: true` on `terminal_run`, `terminal_input` or `terminal_paste` for
+builds/tests: the save barrier runs before any process starts or input is sent, and failure prevents
+execution. The flag defaults to false; commands are not inspected to infer intent. These additive
+IDE methods use the existing authenticated connection and require no additional Deno grants.

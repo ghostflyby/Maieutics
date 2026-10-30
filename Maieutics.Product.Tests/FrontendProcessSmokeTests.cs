@@ -19,6 +19,89 @@ namespace Maieutics.Product.Tests;
 [Trait("Category", "Smoke")]
 public sealed class FrontendProcessSmokeTests
 {
+    [Theory(Timeout = 120_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublishedExecutableRoutesDocumentEditingAndSaveAllThroughTheFrontend(bool saveAll)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("document-smoke");
+        var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            toolFlow: true, toolName: saveAll ? "ide_save_all" : "ide_apply_edit",
+            toolArgumentsJson: saveAll ? "{}" : """{"edit":{"changes":{"workspace://local/smoke.txt":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":1}},"newText":"smoke body\n"}]}}}""",
+            expectedToolResultText: "smoke.txt");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var baseUrl = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("No URL");
+        var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("No token");
+        using var client = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var sessionId = session.GetProperty("id").GetString();
+        using var events = new ClientWebSocket();
+        events.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        await events.ConnectAsync(new Uri($"ws://{new Uri(baseUrl).Authority}/v1/agent/sessions/{sessionId}/events?ide=1"), budget.Token);
+        try
+        {
+            Assert.Equal("hello", (await ReceiveEventFrameAsync(events, budget.Token)).GetProperty("type").GetString());
+            using var turn = await client.PostAsJsonAsync($"/v1/agent/sessions/{sessionId}/queue",
+                new { items = new[] { new { text = "edit the document buffer" } } }, budget.Token);
+            Assert.Equal(HttpStatusCode.Accepted, turn.StatusCode);
+            var reads = 0;
+            var applies = 0;
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(events, budget.Token);
+                var type = frame.GetProperty("type").GetString();
+                if (type is "run.completed" or "run.failed")
+                {
+                    Assert.Equal("run.completed", type);
+                    break;
+                }
+                if (type != "ide.request") continue;
+                var request = frame.GetProperty("data");
+                var parameters = request.GetProperty("params");
+                object value;
+                if (request.GetProperty("method").GetString() == "maieutics/documents/dirty")
+                {
+                    reads++;
+                    Assert.True(saveAll);
+                    value = new { documents = new[] {new {uri=new Uri(Path.Combine(workspace.Path,"smoke.txt")).AbsoluteUri,version=1,kind="text"}} };
+                }
+                else if (request.GetProperty("method").GetString() == "maieutics/documents/save")
+                {
+                    applies++;
+                    Assert.True(saveAll);
+                    var document=Assert.Single(parameters.GetProperty("documents").EnumerateArray());
+                    Assert.Equal(1,document.GetProperty("version").GetInt32());
+                    value=new {status="saved",saved=new[] {document.GetProperty("uri").GetString()}};
+                }
+                else if (request.GetProperty("method").GetString() == "maieutics/documents/read")
+                {
+                    reads++;
+                    value = new { documents = new[] { new { uri = parameters.GetProperty("uris")[0].GetString(), content = "", version = 1 } } };
+                }
+                else
+                {
+                    Assert.Equal("maieutics/documents/apply", request.GetProperty("method").GetString());
+                    applies++;
+                    var document = Assert.Single(parameters.GetProperty("documents").EnumerateArray());
+                    Assert.Equal("smoke body\n", document.GetProperty("content").GetString());
+                    Assert.Equal(1, document.GetProperty("version").GetInt32());
+                    Assert.Equal(64, document.GetProperty("expectedHash").GetString()?.Length);
+                    value = new { applied = true };
+                }
+                using var answer = await client.PostAsJsonAsync($"/v1/agent/ide/{request.GetProperty("requestId").GetString()}", new { value }, budget.Token);
+                Assert.Equal(HttpStatusCode.OK, answer.StatusCode);
+            }
+            Assert.Equal(1, reads);
+            Assert.Equal(1, applies);
+            Assert.False(File.Exists(Path.Combine(workspace.Path, "smoke.txt")));
+        }
+        finally { events.Abort(); }
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableServesTheFrontendProtocol()
     {

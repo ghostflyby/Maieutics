@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.ComponentModel;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -63,7 +64,7 @@ internal static class IdeMethodCatalog
 ///     reaches the model (untranslatable entries pass through unmapped, where no read tool
 ///     can address them).
 /// </summary>
-internal sealed class IdeFunctions
+internal sealed class IdeFunctions : IWorkspaceSavePreparation
 {
     private const int MaxTranslationDepth = 32;
     private const string WorkspaceUriPrefix = "workspace://local/";
@@ -93,6 +94,14 @@ internal sealed class IdeFunctions
 
         Functions =
         [
+            CreateFunction(
+                (Func<AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)SaveAllDocumentsAsync,
+                "ide_save_all",
+                "Saves all dirty file-backed text documents and notebooks in every project of the current IDE workspace, " +
+                "including the user's pre-existing unsaved changes. Does not save unrelated or untitled documents. " +
+                "Use before builds/tests that consume files on disk; terminal_run/input/paste can enforce this barrier with " +
+                "saveWorkspace=true. A conflict or save failure fails the call; earlier successful saves remain on disk. " +
+                "Do not start the dependent build/test after a failed save. Returns the saved workspace URIs."),
             CreateFunction(
                 (Func<AIFunctionArguments, string?, string?, CancellationToken, ValueTask<JsonElement>>)DiagnosticsAsync,
                 "ide_diagnostics",
@@ -135,8 +144,8 @@ internal sealed class IdeFunctions
                 "ide_rename",
                 "Renames the symbol at one position through the language service and returns the resulting workspace " +
                 "edit as data — nothing is written; apply it with ide_apply_edit. 'uri' is a workspace://local file URI, " +
-                "'select' the coordinate or anchor selector (1-based), 'newName' the symbol's new name. Dirty documents " +
-                "are rejected: save or revert first (the edit is computed against buffers, applied against disk)."),
+                "'select' the coordinate or anchor selector (1-based), 'newName' the symbol's new name. Unsaved buffers " +
+                "are supported; keep the returned versions map when applying the computed edit."),
             CreateFunction(
                 (Func<string, JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)CodeActionsAsync,
                 "ide_code_actions",
@@ -147,10 +156,10 @@ internal sealed class IdeFunctions
             CreateFunction(
                 (Func<AIFunctionArguments, string, int?, bool?, CancellationToken, ValueTask<JsonElement>>)FormatDocumentAsync,
                 "ide_format_document",
-                "Formats one file through the language service's document formatter and writes the result back in one step " +
-                "(the compute-then-apply two-phase of the other write tools, folded for the common case). 'uri' is a " +
+                "Formats the current editor document through the language service without saving it. " +
+                "Computes and applies in one call. 'uri' is a " +
                 "workspace://local file URI; optional tabSize (default 4) and insertSpaces (default true) shape the " +
-                "formatting options. Dirty documents are rejected: save or revert first. Returns the per-file unified diff."),
+                "formatting options. Unsaved buffers are supported; version conflicts reject the edit. Returns the per-file unified diff."),
             CreateFunction(
                 (Func<AIFunctionArguments, string?, string?, CancellationToken, ValueTask<JsonElement>>)FsListAsync,
                 "ide_fs_list",
@@ -176,12 +185,11 @@ internal sealed class IdeFunctions
             CreateFunction(
                 (Func<JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)ApplyEditAsync,
                 "ide_apply_edit",
-                "Applies one LSP-shaped workspace edit through the kernel's gated write path — the only way IDE-computed " +
-                "edits reach the disk. 'edit' is {\"changes\": {\"workspace://local/…\": [{\"range\": {\"start\": {\"line\", " +
-                "\"character\"}, \"end\": {…}}, \"newText\": \"…\"}]}} with 1-based positions (the same shapes ide_code_actions " +
-                "and ide_rename return). The whole edit is pre-validated first — containment, decodable text, size bounds, " +
-                "and no unsaved buffers — and any failure rejects everything unchanged (ide_edit_rejected / " +
-                "ide_document_dirty). A file that fails mid-apply is reported with what changed and what is pending."),
+                "Applies one workspace edit to current editor documents without saving. 'edit' carries a 'changes' map " +
+                "of workspace://local URIs to range/newText edits with 1-based positions, and optional 'versions' map " +
+                "returned by ide_rename/code_actions. Keep that map to reject stale computed edits. The kernel validates " +
+                "all targets, permissions, ranges and size bounds before one version-checked editor transaction. " +
+                "Unsaved buffers are supported; failed validation or a version conflict rejects the whole edit."),
 
             CreateFunction(
                 (Func<string, JsonElement, AIFunctionArguments, CancellationToken, ValueTask<JsonElement>>)RequestAsync,
@@ -207,6 +215,73 @@ internal sealed class IdeFunctions
     /// <summary>How long one IDE request waits for the frontend's answer before the typed
     /// timeout. Internal-settable so integration tests shrink the wait.</summary>
     internal TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    async Task IWorkspaceSavePreparation.SaveAllAsync(AgentSessionId sessionId, CancellationToken cancellationToken)
+    {
+        var arguments = new AIFunctionArguments
+        {
+            Context = new Dictionary<object, object?>
+            {
+                [typeof(ScriptInvocationContext)] = new ScriptInvocationContext(sessionId.Value.ToString("N"))
+            }
+        };
+        _ = await SaveAllDocumentsAsync(arguments, cancellationToken).ConfigureAwait(false);
+    }
+
+    [Description("Saves all dirty documents across every project of the IDE workspace before disk-based builds/tests.")]
+    private async ValueTask<JsonElement> SaveAllDocumentsAsync(
+        AIFunctionArguments arguments,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected(arguments);
+        var announce = ResolveDocumentAnnouncer(arguments);
+        var answer = await SendAsync(announce, "maieutics/documents/dirty", BuildObject(), cancellationToken).ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object || !answer.TryGetProperty("documents", out var entries) ||
+            entries.ValueKind != JsonValueKind.Array || entries.GetArrayLength() > 256)
+            throw new AgentToolException("ide_result_invalid", "The editor returned an invalid save target list.");
+        IReadOnlyList<IdeDocumentSaveTarget> targets;
+        try
+        {
+            targets = entries.Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSaveTargetArray)
+                ?? throw new AgentToolException("ide_result_invalid", "The save target list is missing.");
+        }
+        catch (JsonException) { throw new AgentToolException("ide_result_invalid", "The editor returned malformed save targets."); }
+        var uris = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var target in targets)
+        {
+            if (target is null || target.Version < 1 || target.Kind is not ("text" or "notebook") ||
+                !Uri.TryCreate(target.Uri, UriKind.Absolute, out var physical) || physical.Scheme != "file" ||
+                !uris.Add(target.Uri) || !_workspace.Capture().TryMapPhysicalToWorkspaceUri(physical.LocalPath, out var workspaceUri) || workspaceUri is null)
+                throw new AgentToolException("ide_edit_rejected", "A save target is invalid or outside the agent workspace.");
+            _workspaceEdits.AuthorizeDocumentSave(workspaceUri, arguments);
+        }
+        var parameters = JsonSerializer.SerializeToElement(new IdeDocumentSaveParams(targets),
+            IdeFunctionJsonContext.Default.IdeDocumentSaveParams);
+        var result = await SendAsync(announce, "maieutics/documents/save", parameters, cancellationToken).ConfigureAwait(false);
+        if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("status", out var status) ||
+            status.ValueKind != JsonValueKind.String || !result.TryGetProperty("saved", out var saved) || saved.ValueKind != JsonValueKind.Array)
+            throw new AgentToolException("ide_result_invalid", "The editor returned an invalid save result.");
+        var confirmed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var uri in saved.EnumerateArray())
+        {
+            if (uri.ValueKind != JsonValueKind.String || uri.GetString() is not { } text || !uris.Contains(text) || !confirmed.Add(text))
+                throw new AgentToolException("ide_result_invalid", "The editor returned an invalid saved-document list.");
+        }
+        if (status.GetString() == "saved" && !confirmed.SetEquals(uris))
+            throw new AgentToolException("ide_result_invalid", "The editor did not confirm every requested document was saved.");
+        if (status.GetString() != "saved")
+        {
+            var conflict = result.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String && reason.GetString() == "conflict";
+            var failedUri = result.TryGetProperty("failedUri", out var failed) && failed.ValueKind == JsonValueKind.String
+                ? TranslateString(failed.GetString() ?? "unknown document", outgoing: false)
+                : "unknown document";
+            if (failedUri.Length > 512) failedUri = failedUri[..512];
+            throw new AgentToolException(conflict ? "ide_document_conflict" : "ide_save_failed",
+                $"Workspace save failed for '{failedUri}' after {saved.GetArrayLength()} successful save(s); unsaved documents remain. " +
+                "The dependent command was not started. Re-read the IDE state and retry saving before building/testing.");
+        }
+        return TranslateIncoming(result);
+    }
 
     [Description("Reads the IDE Problems list for the workspace or one document.")]
     private async ValueTask<JsonElement> DiagnosticsAsync(
@@ -251,7 +326,7 @@ internal sealed class IdeFunctions
         var announce = ResolveAnnouncer(arguments);
         EnsureConnected(arguments);
         var resolved = ResolveDocumentUri(uri);
-        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken);
+        var (line, character) = await ResolvePositionAsync(resolved, select, announce, cancellationToken);
         var parameters = BuildPositionParams(resolved.FileUri, line, character);
         var answer = await SendAsync(announce, "textDocument/hover", parameters, cancellationToken)
             .ConfigureAwait(false);
@@ -284,7 +359,7 @@ internal sealed class IdeFunctions
                 $"Unknown navigate kind '{kind}'. Use definition, type_definition, declaration, implementation, references, or highlights."),
         };
         var resolved = ResolveDocumentUri(uri);
-        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken);
+        var (line, character) = await ResolvePositionAsync(resolved, select, announce, cancellationToken);
         var parameters = method == "textDocument/references"
             ? BuildPositionParams(
                 resolved.FileUri,
@@ -362,12 +437,11 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var announce = ResolveAnnouncer(arguments);
+        var announce = ResolveDocumentAnnouncer(arguments);
         EnsureConnected(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(newName);
-        var resolved = ResolveDocumentUri(uri);
-        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
-        await EnsureNotDirtyAsync(announce, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        var resolved = ResolveDocumentUri(uri, documentBased: true);
+        var (line, character) = await ResolvePositionAsync(resolved, select, announce, cancellationToken, documentBased: true).ConfigureAwait(true);
         var parameters = BuildRenameParams(resolved.FileUri, line, character, newName);
         var answer = await SendAsync(announce, "textDocument/rename", parameters, cancellationToken)
             .ConfigureAwait(false);
@@ -383,10 +457,10 @@ internal sealed class IdeFunctions
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var announce = ResolveAnnouncer(arguments);
+        var announce = ResolveDocumentAnnouncer(arguments);
         EnsureConnected(arguments);
-        var resolved = ResolveDocumentUri(uri);
-        var (line, character) = await ResolvePositionAsync(resolved, select, cancellationToken).ConfigureAwait(true);
+        var resolved = ResolveDocumentUri(uri, documentBased: true);
+        var (line, character) = await ResolvePositionAsync(resolved, select, announce, cancellationToken, documentBased: true).ConfigureAwait(true);
         var parameters = BuildPositionParams(
             resolved.FileUri,
             line,
@@ -397,7 +471,7 @@ internal sealed class IdeFunctions
         return TranslateIncoming(answer);
     }
 
-    [Description("Formats one document through the language service and writes the result back.")]
+    [Description("Formats the current editor document without saving it.")]
     private async ValueTask<JsonElement> FormatDocumentAsync(
         AIFunctionArguments arguments,
         [Description("A workspace://local file URI, as returned by other tools.")]
@@ -408,10 +482,10 @@ internal sealed class IdeFunctions
         bool? insertSpaces = null,
         CancellationToken cancellationToken = default)
     {
-        var announce = ResolveAnnouncer(arguments);
+        var announce = ResolveDocumentAnnouncer(arguments);
         EnsureConnected(arguments);
-        var resolved = ResolveDocumentUri(uri);
-        await EnsureNotDirtyAsync(announce, [resolved.FileUri], cancellationToken).ConfigureAwait(true);
+        var resolved = ResolveDocumentUri(uri, documentBased: true);
+        var snapshot = await ReadDocumentAsync(announce, resolved, cancellationToken).ConfigureAwait(false);
         var parameters = BuildFormatParams(resolved.FileUri, tabSize ?? 4, insertSpaces ?? true);
         var answer = await SendAsync(announce, "textDocument/formatting", parameters, cancellationToken)
             .ConfigureAwait(false);
@@ -432,148 +506,83 @@ internal sealed class IdeFunctions
 
         return await ApplyTargetsAsync(
             announce,
-            [new IdeEditTarget(resolved.WorkspaceUri, rawEdits.ToImmutable())],
+            [new IdeEditTarget(resolved.WorkspaceUri, rawEdits.ToImmutable(), snapshot.Version)],
             arguments,
-            cancellationToken).ConfigureAwait(true);
+            cancellationToken,
+            snapshot).ConfigureAwait(true);
     }
 
-    [Description("Applies one LSP-shaped workspace edit through the kernel's gated write path.")]
+    [Description("Applies one workspace edit to current editor documents without saving.")]
     private async ValueTask<JsonElement> ApplyEditAsync(
-        [Description("The edit envelope: {\"changes\": {\"workspace://local/…\": [{\"range\": {\"start\": " +
-                     "{\"line\", \"character\"}, \"end\": {…}}, \"newText\": \"…\"}]}} with 1-based positions (the " +
-                     "shapes ide_code_actions and ide_rename return). The whole edit is pre-validated first — " +
-                     "containment, decodable text, size bounds, and no unsaved buffers — and any failure rejects " +
-                     "everything unchanged (ide_edit_rejected / ide_document_dirty); a mid-apply failure is reported " +
-                     "with what changed and what is pending.")]
+        [Description("A changes map of workspace://local URIs to range/newText edits, with 1-based positions, " +
+                     "plus the optional versions map returned by IDE compute tools. Applies to unsaved editor buffers without saving.")]
         JsonElement edit,
         AIFunctionArguments arguments,
         CancellationToken cancellationToken = default)
     {
-        var announce = ResolveAnnouncer(arguments);
+        var announce = ResolveDocumentAnnouncer(arguments);
         EnsureConnected(arguments);
         var targets = IdeWorkspaceEdit.ParseEnvelope(edit);
         return await ApplyTargetsAsync(announce, targets, arguments, cancellationToken).ConfigureAwait(true);
     }
 
-    /// <summary>The decision-6 apply core shared by every write tool: the whole
-    /// edit is pre-validated (containment, decode, range table, computed size)
-    /// before anything mutates; then the dirty check (decision 7) answers over
-    /// the bridge; then each file flows through the gated write seam. A
-    /// pre-validation failure rejects everything typed; a mid-apply failure is
-    /// reported with exactly what changed and what is pending.</summary>
+    /// <summary>Validates the complete edit against current editor snapshots,
+    /// then applies one version-checked editor transaction. Disk is never a fallback.</summary>
     private async ValueTask<JsonElement> ApplyTargetsAsync(
         Func<AIContent, CancellationToken, ValueTask>? announce,
         ImmutableArray<IdeEditTarget> targets,
         AIFunctionArguments arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IdeDocumentSnapshot? computedSnapshot = null)
     {
-        var validated = new List<(IdeEditTarget Target, ResolvedDocument Resolved, string Content)>();
-        var rejected = new List<string>();
+        var documents = new List<IdeDocumentReplacement>();
+        var applied = new List<WriteTextResult>();
+        long transactionBytes = 0;
         foreach (var target in targets)
         {
-            try
-            {
-                var resolved = ResolveDocumentUri(target.WorkspaceUri);
-                var current = await IdeSelector.ReadTextAsync(resolved.FullPath, cancellationToken).ConfigureAwait(true);
-                var content = IdeWorkspaceEdit.ComputeContent(target, current);
-                if (Encoding.UTF8.GetByteCount(content) > _workspaceEdits.MaximumWriteBytes)
-                    throw new AgentToolException(
-                        "ide_edit_rejected",
-                        $"the computed content exceeds the {_workspaceEdits.MaximumWriteBytes} byte write bound.");
-                validated.Add((target, resolved, content));
-            }
-            catch (AgentToolException exception)
-            {
-                rejected.Add($"'{target.WorkspaceUri}': {exception.Message}");
-            }
+            var resolved = ResolveDocumentUri(target.WorkspaceUri, documentBased: true);
+            var snapshot = await ReadDocumentAsync(announce, resolved, cancellationToken).ConfigureAwait(false);
+            if (target.Version is { } version && version != snapshot.Version)
+                throw new AgentToolException("ide_document_conflict", "The document changed since the edit was computed; recompute the edit.");
+            if (computedSnapshot is { } original && original.Content != snapshot.Content)
+                throw new AgentToolException("ide_document_conflict", "The document content changed during computation; recompute the edit.");
+            var content = IdeWorkspaceEdit.ComputeContent(target, snapshot.Content);
+            transactionBytes += Encoding.UTF8.GetByteCount(snapshot.Content) + Encoding.UTF8.GetByteCount(content);
+            if (transactionBytes > IdeSelector.MaxScanBytes)
+                throw new AgentToolException("ide_edit_rejected", "Document transaction exceeds 8 MiB.");
+            applied.Add(_workspaceEdits.PrepareDocumentEdit(target.WorkspaceUri, snapshot.Content, content, arguments));
+            documents.Add(new IdeDocumentReplacement(resolved.FileUri, snapshot.Version,
+                Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(snapshot.Content))), content));
         }
 
-        if (rejected.Count > 0)
-            throw new AgentToolException(
-                "ide_edit_rejected",
-                $"The edit was rejected before any file changed: {string.Join("; ", rejected)}");
-
-        await EnsureNotDirtyAsync(
-            announce,
-            validated.Select(static entry => entry.Resolved.FileUri).Distinct().ToList(),
-            cancellationToken).ConfigureAwait(true);
-
-        var applied = new List<WriteTextResult>();
-        string? failedUri = null;
-        string? failedError = null;
-        var pending = new List<string>();
-        foreach (var (target, resolved, content) in validated)
-        {
-            if (failedUri is not null)
-            {
-                pending.Add(target.WorkspaceUri);
-                continue;
-            }
-
-            try
-            {
-                applied.Add(await _workspaceEdits
-                    .ApplyComputedContentAsync(resolved.WorkspaceUri, content, arguments, cancellationToken)
-                    .ConfigureAwait(true));
-            }
-            catch (AgentToolException exception)
-            {
-                failedUri = target.WorkspaceUri;
-                failedError = exception.Message;
-            }
-        }
-
-        var status = failedUri is not null ? "partial" : "applied";
-        return JsonSerializer.SerializeToElement(
-            new IdeApplyEditsValue(status, applied, failedUri, failedError, pending),
+        var parameters = JsonSerializer.SerializeToElement(new IdeDocumentApplyParams(documents),
+            IdeFunctionJsonContext.Default.IdeDocumentApplyParams);
+        var answer = await SendAsync(announce, "maieutics/documents/apply", parameters, cancellationToken).ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object ||
+            !answer.TryGetProperty("applied", out var accepted) || accepted.ValueKind != JsonValueKind.True)
+            throw new AgentToolException("ide_result_invalid", "The editor did not acknowledge the document transaction.");
+        return JsonSerializer.SerializeToElement(new IdeApplyEditsValue("applied", applied),
             IdeFunctionJsonContext.Default.IdeApplyEditsValue);
     }
 
-    /// <summary>Decision 7's dirty gate: one maieutics/dirty query over the
-    /// bridge answers for every target at once; an unsaved buffer computed one
-    /// shape while the disk holds another, so any dirty target fails the write
-    /// typed instead of misplacing.</summary>
-    private async ValueTask EnsureNotDirtyAsync(
+    private async ValueTask<IdeDocumentSnapshot> ReadDocumentAsync(
         Func<AIContent, CancellationToken, ValueTask>? announce,
-        IReadOnlyList<string> fileUris,
+        ResolvedDocument resolved,
         CancellationToken cancellationToken)
     {
-        if (fileUris.Count == 0) return;
-
-        var buffer = new MemoryStream();
-        await using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteStartArray("uris");
-            foreach (var uri in fileUris) writer.WriteStringValue(uri);
-            writer.WriteEndArray();
-            writer.WriteEndObject();
-        }
-
-        buffer.Position = 0;
-        using var document = JsonDocument.Parse(buffer);
-        var answer = await SendAsync(announce, "maieutics/dirty", document.RootElement.Clone(), cancellationToken)
-            .ConfigureAwait(false);
-        if (answer.ValueKind != JsonValueKind.Object ||
-            !answer.TryGetProperty("entries", out var entries) ||
-            entries.ValueKind != JsonValueKind.Array)
-            throw new AgentToolException("ide_result_invalid", "The dirty answer is not the documented shape.");
-
-        var dirty = new List<string>();
-        foreach (var entry in entries.EnumerateArray())
-        {
-            if (entry.ValueKind != JsonValueKind.Object ||
-                !entry.TryGetProperty("dirty", out var dirtyElement) ||
-                dirtyElement.ValueKind != JsonValueKind.True) continue;
-            if (entry.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
-                dirty.Add(uriElement.GetString()!);
-        }
-
-        if (dirty.Count > 0)
-            throw new AgentToolException(
-                "ide_document_dirty",
-                "These documents have unsaved changes; save or revert them before kernel-side writes: " +
-                string.Join(", ", dirty));
+        var parameters = JsonSerializer.SerializeToElement(new IdeDocumentReadParams([resolved.FileUri]),
+            IdeFunctionJsonContext.Default.IdeDocumentReadParams);
+        var answer = await SendAsync(announce, "maieutics/documents/read", parameters, cancellationToken).ConfigureAwait(false);
+        if (answer.ValueKind != JsonValueKind.Object || !answer.TryGetProperty("documents", out var documents) ||
+            documents.ValueKind != JsonValueKind.Array || documents.GetArrayLength() != 1)
+            throw new AgentToolException("ide_result_invalid", "The editor did not return one document snapshot.");
+        IdeDocumentSnapshot? snapshot;
+        try { snapshot = documents[0].Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSnapshot); }
+        catch (JsonException) { throw new AgentToolException("ide_result_invalid", "The editor returned a malformed document snapshot."); }
+        if (snapshot is null || snapshot.Uri != resolved.FileUri || snapshot.Version < 1 || snapshot.Content is null ||
+            Encoding.UTF8.GetByteCount(snapshot.Content) > IdeSelector.MaxScanBytes)
+            throw new AgentToolException("ide_result_invalid", "The editor returned an invalid document snapshot.");
+        return snapshot;
     }
 
     private static JsonElement BuildRenameParams(string fileUri, int line, int character, string newName)
@@ -900,6 +909,23 @@ internal sealed class IdeFunctions
         return null;
     }
 
+    /// <summary>One editing call stays on one live frontend authority. Document
+    /// mutations are never broadcast or replayed through the run's progress stream.</summary>
+    private Func<AIContent, CancellationToken, ValueTask> ResolveDocumentAnnouncer(AIFunctionArguments arguments)
+    {
+        var authority = _sockets.TryGetAuthority(WorkspaceToolCalls.TryGetSessionId(arguments))
+            ?? throw new AgentToolException("ide_unavailable", "No editor authority is available for this session.");
+        return async (content, token) =>
+        {
+            if (content is not DataContent data)
+                throw new AgentToolException("ide_result_invalid", "Expected an IDE request payload.");
+            using var payload = JsonDocument.Parse(data.Data);
+            var frame = new FrontendEventFrame("ide.request", Data: payload.RootElement.GetProperty("ideRequest").Clone());
+            if (!await _sockets.TrySendToAsync(authority.RegistrationId, frame, token).ConfigureAwait(false))
+                throw new AgentToolException("ide_unavailable", "The editor authority disconnected; recompute the edit after reconnecting.");
+        };
+    }
+
     private async ValueTask<JsonElement> SendAsync(
         Func<AIContent, CancellationToken, ValueTask>? announce,
         string method,
@@ -997,18 +1023,22 @@ internal sealed class IdeFunctions
                 "extension host's events socket (ide=1). Reconnect the frontend or work from the workspace tools.");
     }
 
-    private ResolvedDocument ResolveDocumentUri(string uri)
+    private ResolvedDocument ResolveDocumentUri(string uri, bool documentBased = false)
     {
         try
         {
-            var resolved = _workspace.Capture().Resolve(uri);
-            if (resolved.IsDirectory)
-                throw new WorkspaceException("ide_invalid_arguments", "The uri must address a file, not a directory.");
-            return new ResolvedDocument(
-                resolved.FullPath,
-                ToFileUri(resolved.FullPath),
-                resolved.Uri,
-                WorkspaceSnapshot.ToDisplayPath(resolved.Segments));
+            if (!documentBased)
+            {
+                var resolved = _workspace.Capture().Resolve(uri);
+                if (resolved.IsDirectory)
+                    throw new WorkspaceException("ide_invalid_arguments", "The uri must address a file, not a directory.");
+                return new ResolvedDocument(resolved.FullPath, ToFileUri(resolved.FullPath), resolved.Uri,
+                    WorkspaceSnapshot.ToDisplayPath(resolved.Segments));
+            }
+            var workspace = _workspace.Capture();
+            var logical = workspace.ResolveLogical(uri, allowRoot: false);
+            var fullPath = workspace.ToPhysicalPath(logical.Segments);
+            return new ResolvedDocument(fullPath, ToFileUri(fullPath), logical.Uri, logical.DisplayPath);
         }
         catch (WorkspaceException exception)
         {
@@ -1023,7 +1053,9 @@ internal sealed class IdeFunctions
     private async ValueTask<(int Line, int Character)> ResolvePositionAsync(
         ResolvedDocument resolved,
         JsonElement select,
-        CancellationToken cancellationToken)
+        Func<AIContent, CancellationToken, ValueTask>? announce,
+        CancellationToken cancellationToken,
+        bool documentBased = false)
     {
         JsonElement anchor = default;
         JsonElement patch = default;
@@ -1054,9 +1086,9 @@ internal sealed class IdeFunctions
                 anchorLines.Add(entry.GetString() ?? string.Empty);
             }
 
-            var anchorFileLines = await IdeSelector
-                .ReadLinesAsync(resolved.FullPath, cancellationToken)
-                .ConfigureAwait(false);
+            var anchorFileLines = documentBased
+                ? DocumentLines((await ReadDocumentAsync(announce, resolved, cancellationToken).ConfigureAwait(false)).Content)
+                : await IdeSelector.ReadLinesAsync(resolved.FullPath, cancellationToken).ConfigureAwait(false);
             var anchorLine = IdeSelector.LocateAnchor(anchorFileLines, anchorLines.ToImmutable(), occurrence);
             return (anchorLine - 1, 0);
         }
@@ -1067,9 +1099,9 @@ internal sealed class IdeFunctions
                 throw new AgentToolException(
                     "ide_invalid_arguments",
                     "The selector 'patch' must be a string holding a V4A or git unified diff.");
-            var patchFileLines = await IdeSelector
-                .ReadLinesAsync(resolved.FullPath, cancellationToken)
-                .ConfigureAwait(false);
+            var patchFileLines = documentBased
+                ? DocumentLines((await ReadDocumentAsync(announce, resolved, cancellationToken).ConfigureAwait(false)).Content)
+                : await IdeSelector.ReadLinesAsync(resolved.FullPath, cancellationToken).ConfigureAwait(false);
             var patchLine = IdeSelector.LocatePatch(patchFileLines, patch.GetString()!, resolved.DisplayPath);
             return (patchLine - 1, 0);
         }
@@ -1103,6 +1135,9 @@ internal sealed class IdeFunctions
 
         return (line - 1, column - 1);
     }
+
+    private static string[] DocumentLines(string content) =>
+        content.TrimStart('\uFEFF').Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
 
     private static int? ParseSeverity(string? minSeverity)
     {
@@ -1585,14 +1620,18 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(DebugEvaluateParams))]
 [JsonSerializable(typeof(DebugBreakpointsParams))]
 [JsonSerializable(typeof(DebugControlParams))]
+[JsonSerializable(typeof(IdeDocumentSnapshot))]
+[JsonSerializable(typeof(IdeDocumentReadParams))]
+[JsonSerializable(typeof(IdeDocumentApplyParams))]
+[JsonSerializable(typeof(IdeDocumentSaveTarget[]))]
+[JsonSerializable(typeof(IdeDocumentSaveParams))]
 [JsonSerializable(typeof(IdeApplyEditsValue))]
 [JsonSerializable(typeof(WorkspaceEditDiff))]
 [JsonSerializable(typeof(WriteTextResult))]
 internal sealed partial class IdeFunctionJsonContext : JsonSerializerContext;
 
-/// <summary>The ide_apply_edit / ide_format_document answer: what each file
-/// became through the gated write, or — when a file failed mid-apply — what
-/// changed, what failed, and what is still pending (ADR 0042 decision 6).</summary>
+/// <summary>The ide_apply_edit / ide_format_document answer: document diffs for
+/// one editor transaction. Legacy partial-write fields remain for wire compatibility.</summary>
 internal sealed record IdeApplyEditsValue(
     [property: JsonPropertyName("status")] string Status,
     [property: JsonPropertyName("applied")]
@@ -1603,3 +1642,17 @@ internal sealed record IdeApplyEditsValue(
     string? FailedError = null,
     [property: JsonPropertyName("pending")]
     IReadOnlyList<string>? Pending = null);
+
+/// <summary>One editor snapshot; versions refer to the current TextDocument.</summary>
+internal sealed record IdeDocumentSnapshot(string Uri, string Content, int Version);
+/// <summary>Bounded document snapshot request.</summary>
+internal sealed record IdeDocumentReadParams(IReadOnlyList<string> Uris);
+/// <summary>One document replacement with optimistic concurrency preconditions.</summary>
+internal sealed record IdeDocumentReplacement(string Uri, int Version, string ExpectedHash, string Content);
+/// <summary>A single text-only editor transaction, never a filesystem write.</summary>
+internal sealed record IdeDocumentApplyParams(IReadOnlyList<IdeDocumentReplacement> Documents);
+
+/// <summary>Versioned editor-owned save target; no document contents cross this boundary.</summary>
+internal sealed record IdeDocumentSaveTarget(string Uri, int Version, string Kind);
+/// <summary>A workspace-wide save barrier after all targets passed kernel write policy.</summary>
+internal sealed record IdeDocumentSaveParams(IReadOnlyList<IdeDocumentSaveTarget> Documents);

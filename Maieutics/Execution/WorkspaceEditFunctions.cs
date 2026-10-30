@@ -160,6 +160,40 @@ internal sealed class WorkspaceEditFunctions
     /// (ADR 0042 decision 6 — the whole edit is validated before mutating).</summary>
     internal int MaximumWriteBytes => _maximumWriteBytes;
 
+    /// <summary>Authorizes persisting an editor-owned buffer without replacing its content.</summary>
+    internal void AuthorizeDocumentSave(string uri, AIFunctionArguments arguments)
+    {
+        try
+        {
+            var snapshot = _workspace.Capture();
+            var logical = snapshot.ResolveLogical(uri, allowRoot: false);
+            _ = snapshot.ToPhysicalPath(logical.Segments);
+            GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+            EnforceWritePolicy(uri, arguments);
+        }
+        catch (WorkspaceException exception) { throw new AgentToolException(exception.Code, exception.Message); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new AgentToolException("ide_save_failed", "Filesystem access failed while authorizing a document save.");
+        }
+    }
+
+    /// <summary>Authorizes and previews a document edit without writing it. IDE
+    /// buffers use the same instruction and write policies as filesystem tools.</summary>
+    internal WriteTextResult PrepareDocumentEdit(
+        string uri, string before, string content, AIFunctionArguments arguments)
+    {
+        GateInstructionSurface(WorkspaceRelativePath(uri), arguments);
+        EnforceWritePolicy(uri, arguments);
+        var beforeBytes = Encoding.UTF8.GetByteCount(before);
+        var afterBytes = Encoding.UTF8.GetByteCount(content);
+        if (afterBytes > _maximumWriteBytes)
+            throw new AgentToolException("ide_edit_rejected", $"Document exceeds the {_maximumWriteBytes} byte write bound.");
+        return new WriteTextResult(uri, before == content ? "unchanged" : "updated", beforeBytes, afterBytes,
+            before == content ? null : UnifiedDiff.Create(before, content,
+                WorkspaceRelativePath(uri) ?? uri, _maximumDiffBytes, _maximumDiffLines));
+    }
+
     /// <summary>Applies one computed final content through the same gated write
     /// path <c>write_text</c> uses — the instruction-surface gate (ADR 0032),
     /// the per-file size bound, containment via

@@ -291,6 +291,46 @@ public sealed class MaieuticsAgentSessionManagerTests : IAsyncDisposable
     }
 
     [Fact]
+    public void EvictionBetweenResolutionAndTitleProfileSelectionUsesTheDefaultProvider()
+    {
+        var stored = AgentSessionId.Create();
+        using (var store = new SqliteTranscriptStore(FamilyPath(stored)))
+            store.AppendTurn(stored, Turn("a", "Question", "Answer"), []);
+        using var client = new StubChatClient();
+        var profiles = new FixedProfileProvider(client);
+        using var manager = new MaieuticsAgentSessionManager(profiles, _databaseDirectory,
+            familyId => new SqliteTranscriptStore(FamilyPath(familyId)),
+            NullLogger<MaieuticsAgentSessionManager>.Instance);
+        manager.Resolve(stored);
+        // Control the gap between AcquireTitleProfileAsync's resolve and selector stages.
+        for (var index = 0; index < MaieuticsAgentSessionManager.LiveSessionCapacity; index++)
+            manager.StartNew();
+        Assert.False(manager.IsLive(stored));
+        Assert.Same(profiles, manager.SelectTitleProfileProvider(stored));
+        Assert.False(manager.IsLive(stored));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FirstTitleCompareAndSetSucceedsWithoutAnExistingSessionRow(bool persistent)
+    {
+        using var manager = new MaieuticsAgentSessionManager(new FixedProfileProvider(),
+            persistent ? _databaseDirectory : null,
+            persistent ? id => new SqliteTranscriptStore(FamilyPath(id)) : null,
+            NullLogger<MaieuticsAgentSessionManager>.Instance);
+        var id = manager.Id;
+        var before = manager.GetTitleState(id);
+        Assert.Equal(0, before.Revision);
+        Assert.Null(manager.FindDescriptor(id));
+        var next = before with { Mode = "initial", Revision = 1, ControlRevision = 1 };
+        Assert.True(manager.TrySetTitleState(id, before, next), "Missing-row initialization must preserve revision zero for the first CAS.");
+        Assert.Equal(next, manager.GetTitleState(id));
+        Assert.False(manager.TrySetTitleState(id, before, before with { Title = "stale", Revision = 1 }));
+        Assert.Equal(next, manager.GetTitleState(id));
+    }
+
+    [Fact]
     public void EvictionKeepsResumableSessionsRecoverable()
     {
         var stored = AgentSessionId.Create();

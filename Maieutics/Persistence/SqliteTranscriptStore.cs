@@ -218,7 +218,24 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
     {
         lock (_gate)
         {
+            using var transaction = _connection.BeginTransaction();
+            if (expected.Revision == 0)
+            {
+                using var ensure = _connection.CreateCommand();
+                ensure.Transaction = transaction;
+                // A missing row has the same revision-zero state as GetTitleState.
+                // This is initialization, not a user rename; never advance control ownership.
+                ensure.CommandText = """
+                    INSERT INTO sessions(id, created_at, last_activity_at, turn_count, workspace_root)
+                    VALUES($id, $now, $now, 0, $workspace) ON CONFLICT(id) DO NOTHING;
+                    """;
+                ensure.Parameters.AddWithValue("$id", sessionId.ToString());
+                ensure.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                ensure.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+                ensure.ExecuteNonQuery();
+            }
             using var update = _connection.CreateCommand();
+            update.Transaction = transaction;
             update.CommandText = """
                 UPDATE sessions SET title = $title, title_manual = $manual, title_revision = $next,
                     title_mode = $mode, title_control = $control, title_initial = $initial, title_source = $source
@@ -233,7 +250,9 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             update.Parameters.AddWithValue("$initial", next.Initial);
             update.Parameters.AddWithValue("$source", next.Source);
             update.Parameters.AddWithValue("$revision", expected.Revision);
-            return update.ExecuteNonQuery() == 1;
+            var changed = update.ExecuteNonQuery() == 1;
+            transaction.Commit();
+            return changed;
         }
     }
 
@@ -245,7 +264,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         AgentSessionId forkId,
         AgentSessionId parentSessionId,
         int forkPointSeq,
-        string? title, bool manualTitle = true)
+        string? title, bool manualTitle = false)
     {
         if (forkPointSeq < 0)
             throw new ArgumentOutOfRangeException(nameof(forkPointSeq), forkPointSeq,
@@ -268,8 +287,10 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             command.CommandText = """
                 INSERT INTO sessions(
                     id, created_at, last_activity_at, turn_count, title, preview, workspace_root,
-                    parent_session_id, fork_point_seq, title_manual)
-                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $parent, $forkPoint, $manual);
+                    parent_session_id, fork_point_seq, title_manual, title_source, title_initial)
+                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $parent, $forkPoint, $manual,
+                    CASE WHEN $manual = 1 THEN 'manual' ELSE 'derived' END,
+                    CASE WHEN $manual = 1 THEN 'settled' ELSE 'eligible' END);
                 """;
             command.Parameters.AddWithValue("$id", forkId.Value.ToString("N"));
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));

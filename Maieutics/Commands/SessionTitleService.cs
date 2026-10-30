@@ -70,6 +70,9 @@ internal sealed class SessionTitleService : IAsyncDisposable
         }
     }
 
+    /// <summary>Observes the current busy period, or completes immediately when idle.
+    /// Jobs admitted after that period drains belong to a new period and are not covered.
+    /// This test seam is not an admission barrier; disposal stops admission and joins all work.</summary>
     internal Task WaitForIdleAsync(CancellationToken token)
     {
         lock (_gate) return _idle.Task.WaitAsync(token);

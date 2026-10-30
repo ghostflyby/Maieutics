@@ -265,6 +265,15 @@ public sealed class SessionTitleGeneratorTests
         Assert.Null(SessionTitleGenerator.Normalize("  "));
     }
 
+    [Theory]
+    [InlineData("bad\u0001title")]
+    [InlineData("bad\u001b[31mtitle")]
+    [InlineData("bad\u007ftitle")]
+    public void InitialTitleNormalizationRejectsNonWhitespaceControlCharacters(string title)
+    {
+        Assert.Null(SessionTitleGenerator.Normalize(title));
+    }
+
     private static CancellationTokenSource Budget(CancellationToken token)
     {
         var budget = CancellationTokenSource.CreateLinkedTokenSource(token);

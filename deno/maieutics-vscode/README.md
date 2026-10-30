@@ -152,7 +152,9 @@ IDE methods use the existing authenticated connection and require no additional 
 The kernel defaults to `auto`: generate an initial title once after a successful turn, then let the
 Agent call `set_task_title` when the task scope changes. Initial naming runs in the background and
 never holds up execution. `initial` generates once without later model changes; `manual` uses a
-preview until you name the session. Failures do not trigger a naming request on every later turn.
+preview until you name the session. Failures do not trigger a naming request on every later turn. In
+`auto` and `initial`, the initial naming request sends a bounded request/answer excerpt to the
+configured model provider. Select `manual` to disable these dedicated naming requests.
 
 Titles appear in the Sessions tree, session pickers, and active notebook status bar. Click the
 status-bar title or run **Maieutics: Task Title Settings** to rename, select a mode, clear/unlock,

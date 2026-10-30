@@ -50,7 +50,7 @@ internal static class SessionTitleGenerator
         if (string.IsNullOrWhiteSpace(value)) return null;
         var text = string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
             .Trim('"', '\'', '`', '#', ' ');
-        if (text.Length == 0) return null;
+        if (text.Length == 0 || text.Any(char.IsControl)) return null;
         var length = Math.Min(text.Length, 80);
         if (char.IsHighSurrogate(text[length - 1])) length--;
         return text[..length];

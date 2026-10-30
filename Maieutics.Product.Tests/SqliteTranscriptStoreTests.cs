@@ -363,6 +363,25 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         Assert.Empty(store.ListSessions());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ForkTitleOwnershipIsExplicitAndDefaultsToAutomatic(bool manual)
+    {
+        using var store = new SqliteTranscriptStore(_databasePath);
+        var parent = AgentSessionId.Create();
+        store.SetTitle(parent, "Parent");
+        var fork = AgentSessionId.Create();
+        store.CreateForkSession(fork, parent, 0, "Fork", manualTitle: manual);
+        var title = store.GetTitleState(fork);
+        Assert.Equal(manual, title.Manual);
+        Assert.Equal(manual ? "manual" : "derived", title.Source);
+        Assert.Equal(manual ? "settled" : "eligible", title.Initial);
+        var defaultFork = AgentSessionId.Create();
+        store.CreateForkSession(defaultFork, parent, 0, "Derived");
+        Assert.False(store.GetTitleState(defaultFork).Manual);
+    }
+
     [Fact]
     public void CreateForkSessionPersistsLineageAndLoadWalksTheChain()
     {

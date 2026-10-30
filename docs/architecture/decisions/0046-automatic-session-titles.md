@@ -17,6 +17,9 @@ preview until named by a user. A persisted session override takes precedence.
 Without the new setting, legacy `AutoTitle=false` selects `manual`; otherwise the
 default is `auto`. Explicit new configuration wins over the legacy switch. The
 startup default requires restart; invalid modes fail configuration validation.
+Default `auto` intentionally sends one additional bounded request/answer excerpt to
+the configured provider per session. Users who want no dedicated naming request
+select `manual`; `initial` still makes the initial request.
 
 A manual rename locks the title in every mode. Clearing releases the lock and
 resets initial eligibility; the selected mode still applies. Mode changes keep the
@@ -44,7 +47,11 @@ The coordinator owns its completion task, cancellation sources, queued leases,
 and session pins. Disposal cancels and joins the worker and drains resources
 before stores/providers are disposed. Superseded jobs are cancelled; queued
 resources release when dequeued or drained. A non-cooperative in-process provider
-can outlive its cancellation budget. Admission failures are logged and settled.
+can outlive its cancellation budget, including during synchronous disposal. A
+wait-only shutdown deadline cannot safely release stores/provider generations while
+that worker still uses them; a hard deadline requires process isolation or an
+explicit host termination policy. Disposal therefore retains the full join rather
+than abandoning live work. Admission failures are logged and settled.
 Metadata failures log session and failure type, never prompts, model output or
 secrets, and do not turn a committed answer into a failed Agent turn.
 

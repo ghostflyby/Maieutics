@@ -415,7 +415,8 @@ export function activate(context: vscode.ExtensionContext): void {
           }
           await client.titlePolicy(id, { regenerate: true });
         }
-        updateSessionTitle(await client.sessionInfo(id));
+        const refreshed = await client.sessionInfo(id).catch(() => undefined);
+        if (refreshed !== undefined) updateSessionTitle(refreshed);
         treeProvider.refresh();
       },
     ),

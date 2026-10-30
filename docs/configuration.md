@@ -593,6 +593,11 @@ Session overrides persist separately. Without the new setting, legacy
 `Maieutics:Agent:AutoTitle=false` selects `manual`; an explicit new mode wins.
 The startup default requires restart. Invalid modes fail configuration validation.
 
+`auto` is an intentional product default: after each session's first successful turn,
+initial naming sends an additional bounded request/answer excerpt to that session's
+configured provider. Select `manual` to disable these dedicated naming requests and
+model-proposed title changes. `initial` still sends the initial naming request.
+
 Initial generation never blocks run completion or the next queued turn. It uses bounded
 request/answer excerpts, no tools, 96 output tokens, and an eight-second cooperative
 cancellation budget. The coordinator executes one request at a time with 64 waiting slots.

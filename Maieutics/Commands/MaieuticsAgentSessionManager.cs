@@ -410,8 +410,6 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
         {
             var family = ResolveFamily(id) ?? id;
             var store = RequiredStore(family);
-            // Ensure a row for controls on a session that has not committed yet.
-            if (!store.ContainsSession(id)) store.SetTitle(id, null);
             changed = store.TrySetTitleState(id, expected, next);
         }
         else
@@ -439,9 +437,17 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
     internal Task<IAgentRunProfileLease> AcquireTitleProfileAsync(AgentSessionId sessionId, CancellationToken cancellationToken)
     {
         _ = Resolve(sessionId);
-        IAgentRunProfileProvider provider;
-        lock (_gate) provider = _live[sessionId.Value.ToString("N")].Profile ?? _profileProvider;
-        return provider.AcquireAsync(cancellationToken);
+        return SelectTitleProfileProvider(sessionId).AcquireAsync(cancellationToken);
+    }
+
+    /// <summary>Selects the profile after resolution. The resolved entry may have been
+    /// LRU-evicted before this gate is entered; eviction drops its override, so use the default.</summary>
+    internal IAgentRunProfileProvider SelectTitleProfileProvider(AgentSessionId sessionId)
+    {
+        lock (_gate)
+            return _live.TryGetValue(sessionId.Value.ToString("N"), out var entry)
+                ? entry.Profile ?? _profileProvider
+                : _profileProvider;
     }
 
     /// <summary>Finds one stored session's descriptor across family databases, or

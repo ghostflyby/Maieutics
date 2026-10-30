@@ -23,8 +23,13 @@ export interface SessionInfo {
   id: string;
   turns: number;
   persistenceEnabled: boolean;
-  /** The user-set title; absent when never renamed (older servers omit it too). */
+  /** The manual or automatically generated title; absent before naming. */
   title?: string;
+  /** Monotonic title revision; lets replay ignore superseded metadata. */
+  titleRevision?: number;
+  titleMode?: "auto" | "initial" | "manual";
+  titleLocked?: boolean;
+  titleSource?: "preview" | "derived" | "initial" | "tool" | "manual";
 }
 
 export interface StoredSession {
@@ -32,7 +37,7 @@ export interface StoredSession {
   turns: number;
   createdAt: string;
   lastActivityAt: string;
-  /** The user-set title; absent when never renamed. */
+  /** The manual or automatically generated display title. */
   title?: string;
   /** The first committed user message, truncated for display; absent before the
    * first committed turn. */
@@ -214,6 +219,7 @@ export type EventFrameType =
   | "tool.progress"
   | "tool.finished"
   | "turn.truncated"
+  | "session.updated"
   | "run.completed"
   | "run.failed"
   | "run.missing"

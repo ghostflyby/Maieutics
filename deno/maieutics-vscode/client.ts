@@ -133,6 +133,11 @@ export class FrontendClient {
     return await this.get("/v1/agent/session", signal);
   }
 
+  /** Reads metadata for one session without moving the process foreground. */
+  async sessionInfo(sessionId: string, signal?: AbortSignal): Promise<SessionInfo> {
+    return await this.get(`/v1/agent/sessions/${sessionId}`, signal);
+  }
+
   async listSessions(signal?: AbortSignal): Promise<StoredSession[]> {
     return await this.get("/v1/agent/sessions", signal);
   }
@@ -158,6 +163,15 @@ export class FrontendClient {
       signal,
     );
     return body.title;
+  }
+
+  /** Changes user-owned title policy independently of conversation execution. */
+  async titlePolicy(
+    sessionId: string,
+    policy: { mode?: "auto" | "initial" | "manual"; regenerate?: boolean },
+    signal?: AbortSignal,
+  ): Promise<SessionInfo> {
+    return await this.post(`/v1/agent/sessions/${sessionId}/title-policy`, policy, signal);
   }
 
   /** Forks a stored session at a committed turn and makes the fork the active

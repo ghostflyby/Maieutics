@@ -153,8 +153,19 @@ internal sealed class FrontendHost : IAsyncDisposable
         frontend.MapGet("/v1/agent/session", HandleSession);
         frontend.MapPost("/v1/agent/sessions", HandleNewSession);
         frontend.MapGet("/v1/agent/sessions", HandleListSessions);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}", (HttpContext context, string sessionId) =>
+            GuardAsync(context, () => Task.FromResult(Results.Json(
+                _service.DescribeSession(sessionId), FrontendJsonContext.Default.FrontendSessionInfo))));
         frontend.MapPost("/v1/agent/sessions/{sessionId}/resume", HandleResumeSession);
         frontend.MapPost("/v1/agent/sessions/{sessionId}/rename", HandleRenameSession);
+        frontend.MapPost("/v1/agent/sessions/{sessionId}/title-policy", async (HttpContext context, string sessionId) =>
+        {
+            var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendTitlePolicyRequest);
+            if (request is null) return;
+            await GuardAsync(context, async () => Results.Json(
+                await _service.ChangeTitlePolicyAsync(sessionId, request, context.RequestAborted),
+                FrontendJsonContext.Default.FrontendSessionInfo));
+        });
         frontend.MapPost("/v1/agent/sessions/{sessionId}/fork", HandleForkSession);
         frontend.MapPost("/v1/agent/sessions/{sessionId}/gc", HandleGcSession);
         frontend.MapPost("/v1/agent/sessions/{sessionId}/repair", HandleRepairSession);
@@ -983,6 +994,29 @@ internal sealed class FrontendHost : IAsyncDisposable
                 peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
+        using var metadataLifetime = CancellationTokenSource.CreateLinkedTokenSource(peer.Token);
+        async Task PumpTitleMetadataAsync()
+        {
+            var revision = helloSession.TitleRevision;
+            try
+            {
+                while (!metadataLifetime.IsCancellationRequested)
+                {
+                    await _service.WaitForTitleChangeAsync(sessionId, revision, metadataLifetime.Token).ConfigureAwait(false);
+                    var metadata = _service.DescribeSession(sessionId);
+                    revision = metadata.TitleRevision;
+                    await SendAsync(() => SendFrameAsync(socket,
+                        new FrontendEventFrame("session.updated", Session: metadata), metadataLifetime.Token), metadataLifetime.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (metadataLifetime.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                _logger.LogWarning("Session metadata socket failed for {SessionId} ({FailureType}).", sessionId, exception.GetType().Name);
+                await peer.CancelAsync().ConfigureAwait(false);
+            }
+        }
+        var metadataPump = singleRunId is null ? PumpTitleMetadataAsync() : Task.CompletedTask;
         try
         {
             if (singleRunId is not null)
@@ -1101,6 +1135,8 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
+            await metadataLifetime.CancelAsync().ConfigureAwait(false);
+            await metadataPump.ConfigureAwait(false);
             if (ideRegistration is { } registration) _ideSockets?.Withdraw(sessionId, registration);
             try
             {

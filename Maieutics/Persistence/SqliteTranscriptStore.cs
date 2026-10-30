@@ -17,7 +17,7 @@ namespace Maieutics.Persistence;
 /// </summary>
 internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
 {
-    private const int CurrentSchemaVersion = 4;
+    private const int CurrentSchemaVersion = 6;
 
     /// <summary>Bounded display metadata: the preview (first user text) and the title cap at
     /// this many characters.</summary>
@@ -178,16 +178,81 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             var command = _connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = """
-                INSERT INTO sessions(id, created_at, last_activity_at, turn_count, title, preview, workspace_root)
-                VALUES($id, $now, $now, 0, $title, NULL, $workspace)
-                ON CONFLICT(id) DO UPDATE SET title = $title;
+                INSERT INTO sessions(id, created_at, last_activity_at, turn_count, title, preview, workspace_root, title_manual, title_source, title_initial, title_revision, title_control)
+                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $manual,
+                    CASE WHEN $manual = 1 THEN 'manual' ELSE 'preview' END,
+                    CASE WHEN $manual = 1 THEN 'settled' ELSE 'eligible' END, 1, 1)
+                ON CONFLICT(id) DO UPDATE SET title = $title, title_manual = $manual,
+                    title_revision = title_revision + 1, title_control = title_control + 1,
+                    title_initial = CASE WHEN $manual = 0 THEN 'eligible' ELSE 'settled' END,
+                    title_source = CASE WHEN $manual = 0 THEN 'preview' ELSE 'manual' END;
                 """;
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+            command.Parameters.AddWithValue("$manual", title is null ? 0 : 1);
             command.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             command.ExecuteNonQuery();
             transaction.Commit();
+        }
+    }
+
+    /// <summary>Reads the title's ownership and revision for optimistic metadata updates.</summary>
+    internal SessionTitleState GetTitleState(AgentSessionId sessionId)
+    {
+        lock (_gate)
+        {
+            using var query = _connection.CreateCommand();
+            query.CommandText = "SELECT title, title_manual, title_revision, title_mode, title_control, title_initial, title_source FROM sessions WHERE id = $id;";
+            query.Parameters.AddWithValue("$id", sessionId.Value.ToString("N"));
+            using var reader = query.ExecuteReader();
+            return reader.Read()
+                ? new SessionTitleState(reader.IsDBNull(0) ? null : reader.GetString(0), reader.GetInt32(1) != 0, reader.GetInt64(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetInt64(4), reader.GetString(5), reader.GetString(6))
+                : new SessionTitleState(null, false, 0);
+        }
+    }
+
+    /// <summary>Atomically replaces title metadata using its visible revision as a CAS token.</summary>
+    internal bool TrySetTitleState(AgentSessionId sessionId, SessionTitleState expected, SessionTitleState next)
+    {
+        lock (_gate)
+        {
+            using var transaction = _connection.BeginTransaction();
+            if (expected.Revision == 0)
+            {
+                using var ensure = _connection.CreateCommand();
+                ensure.Transaction = transaction;
+                // A missing row has the same revision-zero state as GetTitleState.
+                // This is initialization, not a user rename; never advance control ownership.
+                ensure.CommandText = """
+                    INSERT INTO sessions(id, created_at, last_activity_at, turn_count, workspace_root)
+                    VALUES($id, $now, $now, 0, $workspace) ON CONFLICT(id) DO NOTHING;
+                    """;
+                ensure.Parameters.AddWithValue("$id", sessionId.ToString());
+                ensure.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                ensure.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
+                ensure.ExecuteNonQuery();
+            }
+            using var update = _connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE sessions SET title = $title, title_manual = $manual, title_revision = $next,
+                    title_mode = $mode, title_control = $control, title_initial = $initial, title_source = $source
+                WHERE id = $id AND title_revision = $revision;
+                """;
+            update.Parameters.AddWithValue("$id", sessionId.ToString());
+            update.Parameters.AddWithValue("$title", (object?)next.Title ?? DBNull.Value);
+            update.Parameters.AddWithValue("$manual", next.Manual ? 1 : 0);
+            update.Parameters.AddWithValue("$next", next.Revision);
+            update.Parameters.AddWithValue("$mode", (object?)next.Mode ?? DBNull.Value);
+            update.Parameters.AddWithValue("$control", next.ControlRevision);
+            update.Parameters.AddWithValue("$initial", next.Initial);
+            update.Parameters.AddWithValue("$source", next.Source);
+            update.Parameters.AddWithValue("$revision", expected.Revision);
+            var changed = update.ExecuteNonQuery() == 1;
+            transaction.Commit();
+            return changed;
         }
     }
 
@@ -199,7 +264,7 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
         AgentSessionId forkId,
         AgentSessionId parentSessionId,
         int forkPointSeq,
-        string? title)
+        string? title, bool manualTitle = false)
     {
         if (forkPointSeq < 0)
             throw new ArgumentOutOfRangeException(nameof(forkPointSeq), forkPointSeq,
@@ -222,12 +287,15 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
             command.CommandText = """
                 INSERT INTO sessions(
                     id, created_at, last_activity_at, turn_count, title, preview, workspace_root,
-                    parent_session_id, fork_point_seq)
-                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $parent, $forkPoint);
+                    parent_session_id, fork_point_seq, title_manual, title_source, title_initial)
+                VALUES($id, $now, $now, 0, $title, NULL, $workspace, $parent, $forkPoint, $manual,
+                    CASE WHEN $manual = 1 THEN 'manual' ELSE 'derived' END,
+                    CASE WHEN $manual = 1 THEN 'settled' ELSE 'eligible' END);
                 """;
             command.Parameters.AddWithValue("$id", forkId.Value.ToString("N"));
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
+            command.Parameters.AddWithValue("$manual", manualTitle && title is not null ? 1 : 0);
             command.Parameters.AddWithValue("$workspace", (object?)_workspaceRootAccessor?.Invoke() ?? DBNull.Value);
             command.Parameters.AddWithValue("$parent", parentSessionId.Value.ToString("N"));
             command.Parameters.AddWithValue("$forkPoint", forkPointSeq);
@@ -431,7 +499,16 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     $"The Agent transcript store was written by a newer build (schema version {current} > {CurrentSchemaVersion}).");
             }
 
-            if (current == CurrentSchemaVersion) return;
+            if (current == CurrentSchemaVersion)
+            {
+                using var recover = _connection.CreateCommand();
+                recover.CommandText = """
+                    UPDATE sessions SET title_initial = 'settled', title_revision = title_revision + 1,
+                        title_control = title_control + 1 WHERE title_initial = 'pending';
+                    """;
+                recover.ExecuteNonQuery();
+                return;
+            }
 
             using var transaction = _connection.BeginTransaction();
             var migrate = _connection.CreateCommand();
@@ -475,9 +552,6 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     """;
             }
 
-            // Migration-ladder step: with the current schema at version 4 the guard is always
-            // true today, and it goes live again when the next schema version lands.
-            // ReSharper disable once ConditionIsAlwaysTrueOrFalse
             if (current < 4)
             {
                 script += """
@@ -485,6 +559,26 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     ALTER TABLE sessions ADD COLUMN fork_point_seq INTEGER;
                     """;
             }
+
+            if (current < 5)
+            {
+                script += """
+                    ALTER TABLE sessions ADD COLUMN title_manual INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE sessions ADD COLUMN title_revision INTEGER NOT NULL DEFAULT 0;
+                    UPDATE sessions SET title_manual = 1 WHERE title IS NOT NULL;
+                    """;
+            }
+
+            if (current < 6)
+                script += """
+                    ALTER TABLE sessions ADD COLUMN title_mode TEXT;
+                    ALTER TABLE sessions ADD COLUMN title_control INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE sessions ADD COLUMN title_initial TEXT NOT NULL DEFAULT 'eligible';
+                    ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'preview';
+                    UPDATE sessions SET title_initial = 'settled',
+                        title_source = CASE WHEN title_manual = 1 THEN 'manual' ELSE 'initial' END
+                        WHERE title IS NOT NULL;
+                    """;
 
             script += $"PRAGMA user_version={CurrentSchemaVersion};";
             migrate.CommandText = script;

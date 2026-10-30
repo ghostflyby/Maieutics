@@ -594,8 +594,10 @@ models.
 | GET | `/v1/agent/session` | The foreground session (compatibility alias; id, turn count, persistence state, title) |
 | POST | `/v1/agent/sessions` | Start a new session and make it active |
 | GET | `/v1/agent/sessions` | List stored sessions with display metadata (persistence disabled → empty) |
+| GET | `/v1/agent/sessions/{sid}` | Addressed session metadata without changing foreground |
 | POST | `/v1/agent/sessions/{sid}/resume` | Resume a stored session and make it active |
-| POST | `/v1/agent/sessions/{sid}/rename` | Set or clear one stored session's title |
+| POST | `/v1/agent/sessions/{sid}/rename` | Set or clear one session's manual title |
+| POST | `/v1/agent/sessions/{sid}/title-policy` | Change title mode or request regeneration |
 | POST | `/v1/agent/sessions/{sid}/fork` | Fork a stored session at a turn and make the fork active |
 | POST | `/v1/agent/sessions/{sid}/gc?graceHours=24` | Prune unreferenced objects |
 | POST | `/v1/agent/sessions/{sid}/repair` | Rebuild the derived object view |
@@ -643,6 +645,28 @@ command moved the foreground (`%session new` / `resume` / `fork`), in which
 case it is the new foreground — a notebook frontend re-pins only when it
 differs from its pinned session. Session-aware commands (`%session current`,
 `%model use/current/reset`) are scoped to the addressed session.
+
+Session `title` can be manual or automatic. `titleMode` is `auto`, `initial`, or `manual`;
+`titleLocked` indicates manual ownership, and `titleSource` is `preview`, `derived`,
+`initial`, `tool`, or `manual`. `auto` performs initial naming once asynchronously after a
+successful turn and allows the primary Agent to propose later changes with `set_task_title`.
+`initial` generates once; `manual` never generates. A user rename locks the title; clearing
+releases the lock and resets initial eligibility without changing the mode. Failure retains
+the preview/name without per-turn retries. Generation never delays run completion. See
+ADR 0046 for schema-v6 migration and budgets.
+
+`POST /v1/agent/sessions/{sid}/title-policy` accepts `{"mode":"initial"}` or
+`{"regenerate":true}` and returns full session metadata. Invalid modes and regeneration of
+a locked/manual title return `400 invalid_request`. Regeneration admits one asynchronous
+request using committed context; empty history waits for the next successful turn.
+The mode is user-owned and cannot be changed by the model.
+
+`SessionInfo.titleRevision` is monotonic (older servers omit it). `session.updated` carries
+complete `session` metadata on the general session socket, including while idle; it has no
+`runId` or run-local `sequence` and does not enter run replay. Clients render it independently
+of answer content and reject older revisions. Intermediate full-state notifications may
+coalesce. Reconnect `hello.session` and `GET /v1/agent/sessions/{sid}` recover current metadata;
+run-only subscribers use these reads. Manual and automatic changes use the same path.
 
 `GET /v1/agent/sessions/{sid}/transcript` returns the committed public
 transcript rendered provider-neutrally:

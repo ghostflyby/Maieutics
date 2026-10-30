@@ -23,7 +23,7 @@ namespace Maieutics.Commands;
 ///     Family databases are opened lazily, cached, and disposed with the manager. Recovery is
 ///     manual only: nothing is restored until a cell or request names a stored session.
 /// </summary>
-internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
+internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable, IAsyncDisposable
 {
     /// <summary>Bounded live set: the registry keeps at most this many sessions, evicting the
     /// least recently used ones that can still be lazily re-resumed from storage (zero-turn
@@ -46,6 +46,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private readonly Dictionary<string, LiveSession> _live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> _stores = new(StringComparer.Ordinal);
     private IAgentSession _foreground;
+    private readonly Dictionary<AgentSessionId, SessionTitleState> _volatileTitles = [];
 
     public MaieuticsAgentSessionManager(
         IAgentRunProfileProvider profileProvider,
@@ -58,7 +59,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         string? objectsRoot = null,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
         AgentSubagentOptions? subagents = null,
-        SkillCatalog? skillCatalog = null)
+        SkillCatalog? skillCatalog = null,
+        string titleMode = "manual")
     {
         _profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         _runtimeConfiguration = runtimeConfiguration;
@@ -71,8 +73,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _subagents = subagents;
         _skillCatalog = skillCatalog;
+        Titles = new SessionTitleService(this, titleMode, logger);
         _foreground = CreateLive(AgentSessionId.Create());
     }
+
+    internal SessionTitleService Titles { get; }
 
     public bool PersistenceEnabled => _storeFactory is not null;
 
@@ -149,12 +154,13 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         // Resume outside the gate: opens family databases and loads transcripts.
         var familyId = ResolveFamily(sessionId) ?? throw new AgentSessionNotFoundException(sessionId);
         var wrapper = CreateWrapper();
-        var restored = AgentSession.Resume(
-            ProviderFor(wrapper),
+        IAgentSession restored = AgentSession.Resume(
+            ProviderFor(wrapper, sessionId),
             RequiredStore(familyId),
             sessionId,
             objectStore: _objectStore);
 
+        restored = new TitledAgentSession(restored, this);
         lock (_gate)
         {
             if (_live.TryGetValue(key, out var raced))
@@ -207,11 +213,12 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     {
         var sessionId = AgentSessionId.Create();
         var wrapper = CreateWrapper();
-        var session = new AgentSession(
-            ProviderFor(wrapper),
+        IAgentSession session = new AgentSession(
+            ProviderFor(wrapper, sessionId),
             transcriptStore: OpenStore(sessionId),
             objectStore: _objectStore,
             sessionId: sessionId);
+        session = new TitledAgentSession(session, this);
         lock (_gate)
         {
             _live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);
@@ -256,15 +263,20 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
 
         var forkId = AgentSessionId.Create();
         var effectiveTitle = title ?? ForkTitle(store, sourceId, forkPointSeq);
-        store.CreateForkSession(forkId, sourceId, forkPointSeq, effectiveTitle);
+        store.CreateForkSession(forkId, sourceId, forkPointSeq, effectiveTitle, manualTitle: title is not null);
         var wrapper = CreateWrapper();
-        var forked = AgentSession.Fork(
-            ProviderFor(wrapper),
+        IAgentSession forked = AgentSession.Fork(
+            ProviderFor(wrapper, forkId),
             store,
             sourceId,
             forkId,
             forkPointSeq,
             objectStore: _objectStore);
+        var inherited = GetTitleState(sourceId);
+        var forkTitle = store.GetTitleState(forkId);
+        store.TrySetTitleState(forkId, forkTitle, forkTitle with { Mode = Titles.Mode(inherited),
+            Source = title is null ? "derived" : "manual", Initial = title is null ? "eligible" : "settled" });
+        forked = new TitledAgentSession(forked, this);
         lock (_gate)
         {
             _live[forkId.Value.ToString("N")] = new LiveSession(forked, wrapper);
@@ -335,21 +347,13 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         ];
     }
 
-    /// <summary>Sets or clears one stored session's title. Renaming works for any stored
-    /// session, active or not; an uncommitted session gets its row created (zero turns) so the
-    /// name survives and the session is listed. Whitespace-only titles clear; titles are
-    /// trimmed and capped at 200 characters.</summary>
+    /// <summary>Sets or clears a manual title. With persistence, an uncommitted session gets
+    /// a zero-turn row; otherwise metadata lives with the live session. Whitespace-only
+    /// titles release the lock and reset initial eligibility; manual titles are capped at 200 characters.</summary>
     /// <returns>The stored (normalized) title.</returns>
-    /// <exception cref="ArgumentException">Transcript persistence is disabled or the title
-    /// exceeds the length cap.</exception>
+    /// <exception cref="ArgumentException">The title exceeds the length cap.</exception>
     public string? SetTitle(AgentSessionId sessionId, string? title)
     {
-        if (_storeFactory is null)
-        {
-            throw new ArgumentException(
-                "Transcript persistence is disabled; enable Maieutics:Agent:Persistence:Enabled to rename sessions.");
-        }
-
         string? normalized;
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -365,11 +369,85 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
             }
         }
 
+        if (_storeFactory is null)
+        {
+            _ = Resolve(sessionId);
+            lock (_gate)
+            {
+                var before = _volatileTitles.GetValueOrDefault(sessionId) ?? new SessionTitleState(null, false, 0);
+                _volatileTitles[sessionId] = before with { Title = normalized, Manual = normalized is not null,
+                    Revision = before.Revision + 1, ControlRevision = before.ControlRevision + 1,
+                    Initial = normalized is null ? "eligible" : "settled", Source = normalized is null ? "preview" : "manual" };
+            }
+            Titles.Changed(sessionId);
+            return normalized;
+        }
+
         // A session with no family database yet is its own family root; naming it creates the
         // database and its zero-turn row.
         var familyId = ResolveFamily(sessionId) ?? sessionId;
         RequiredStore(familyId).SetTitle(sessionId, normalized);
+        Titles.Changed(sessionId);
         return normalized;
+    }
+
+    /// <summary>Gets metadata for a live or stored session without changing its transcript.</summary>
+    internal SessionTitleState GetTitleState(AgentSessionId sessionId)
+    {
+        if (_storeFactory is not null)
+        {
+            var family = ResolveFamily(sessionId);
+            return family is { } id ? RequiredStore(id).GetTitleState(sessionId) : new SessionTitleState(null, false, 0);
+        }
+        lock (_gate) return _volatileTitles.GetValueOrDefault(sessionId) ?? new SessionTitleState(null, false, 0);
+    }
+
+    /// <summary>Atomically applies metadata without changing transcript state.</summary>
+    internal bool TrySetTitleState(AgentSessionId id, SessionTitleState expected, SessionTitleState next)
+    {
+        bool changed;
+        if (_storeFactory is not null)
+        {
+            var family = ResolveFamily(id) ?? id;
+            var store = RequiredStore(family);
+            changed = store.TrySetTitleState(id, expected, next);
+        }
+        else
+        {
+            lock (_gate)
+            {
+                var current = _volatileTitles.GetValueOrDefault(id) ?? new SessionTitleState(null, false, 0);
+                changed = current == expected;
+                if (changed) _volatileTitles[id] = next;
+            }
+        }
+        if (changed) Titles.Changed(id);
+        return changed;
+    }
+
+    /// <summary>Gets the concrete runtime for the product's subagent composition.</summary>
+    internal AgentSession? RuntimeSession(AgentSessionId id) => Resolve(id) switch
+    {
+        TitledAgentSession managed => managed.Inner as AgentSession,
+        AgentSession raw => raw,
+        _ => null
+    };
+
+    /// <summary>Acquires the addressed session's selected model for a metadata-only request.</summary>
+    internal Task<IAgentRunProfileLease> AcquireTitleProfileAsync(AgentSessionId sessionId, CancellationToken cancellationToken)
+    {
+        _ = Resolve(sessionId);
+        return SelectTitleProfileProvider(sessionId).AcquireAsync(cancellationToken);
+    }
+
+    /// <summary>Selects the profile after resolution. The resolved entry may have been
+    /// LRU-evicted before this gate is entered; eviction drops its override, so use the default.</summary>
+    internal IAgentRunProfileProvider SelectTitleProfileProvider(AgentSessionId sessionId)
+    {
+        lock (_gate)
+            return _live.TryGetValue(sessionId.Value.ToString("N"), out var entry)
+                ? entry.Profile ?? _profileProvider
+                : _profileProvider;
     }
 
     /// <summary>Finds one stored session's descriptor across family databases, or
@@ -398,8 +476,11 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return RequiredStore(resolved).LoadTranscript(sessionId);
     }
 
-    public void Dispose()
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public async ValueTask DisposeAsync()
     {
+        await Titles.DisposeAsync().ConfigureAwait(false);
         lock (_gate)
         {
             foreach (var store in _stores.Values)
@@ -538,13 +619,14 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
         return _runtimeConfiguration is null ? null : new MaieuticsSessionProfileProvider(_runtimeConfiguration);
     }
 
-    private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper)
+    private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper, AgentSessionId sessionId)
     {
         var inner = wrapper ?? _profileProvider;
         var composed = _subagents is null ? inner : new SubagentsProfileProvider(inner, _subagents);
         // The skills decorator is outermost so both record rewrites (`with`) compose: the
         // catalog rides every lease regardless of the per-session override path.
-        return _skillCatalog is null ? composed : new SkillsProfileProvider(composed, _skillCatalog);
+        var skilled = _skillCatalog is null ? composed : new SkillsProfileProvider(composed, _skillCatalog);
+        return new TitleProfileProvider(skilled, Titles, sessionId);
     }
 
     /// <summary>Decorates every lease with the composition-root subagent configuration while
@@ -583,11 +665,12 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable
     private IAgentSession CreateLive(AgentSessionId sessionId)
     {
         var wrapper = CreateWrapper();
-        var session = new AgentSession(
-            ProviderFor(wrapper),
+        IAgentSession session = new AgentSession(
+            ProviderFor(wrapper, sessionId),
             transcriptStore: OpenStore(sessionId),
             objectStore: _objectStore,
             sessionId: sessionId);
+        session = new TitledAgentSession(session, this);
         lock (_gate)
         {
             _live[sessionId.Value.ToString("N")] = new LiveSession(session, wrapper);

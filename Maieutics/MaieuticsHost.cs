@@ -745,7 +745,7 @@ public static class MaieuticsHost
                 var sessionManager = services.GetRequiredService<MaieuticsAgentSessionManager>();
                 try
                 {
-                    return sessionManager.Resolve(sessionId) as AgentSession;
+                    return sessionManager.RuntimeSession(sessionId);
                 }
                 catch (AgentSessionNotFoundException)
                 {
@@ -778,6 +778,9 @@ public static class MaieuticsHost
         var logger = services.GetRequiredService<ILogger<MaieuticsAgentSessionManager>>();
         var paths = services.GetService<ApplicationPaths>();
         var subagents = CreateSubagentOptions(services);
+        var configuration = services.GetRequiredService<IConfiguration>();
+        var titleMode = SessionTitleService.ValidateMode(configuration["Maieutics:Agent:Title:Mode"] ??
+            (configuration.GetValue<bool?>("Maieutics:Agent:AutoTitle") == false ? "manual" : "auto"));
         if (paths is null)
         {
             return new MaieuticsAgentSessionManager(
@@ -785,7 +788,7 @@ public static class MaieuticsHost
                 familiesRoot: null,
                 storeFactory: null,
                 logger,
-                subagents: subagents);
+                subagents: subagents, titleMode: titleMode);
         }
 
         // Session rows stamp the workspace root current at row creation; a %workspace switch
@@ -804,7 +807,7 @@ public static class MaieuticsHost
             paths.AgentObjectsRoot,
             services.GetService<IMaieuticsRuntimeConfiguration>(),
             subagents,
-            services.GetService<Skills.SkillCatalog>());
+            services.GetService<Skills.SkillCatalog>(), titleMode);
     }
 
     /// <summary>Reads the composition-root subagent configuration (ADR 0030). Disabled by

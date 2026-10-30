@@ -72,8 +72,8 @@ public sealed record AgentSessionDescriptor
     /// <summary>Gets the number of committed turns stored for the session.</summary>
     public int TurnCount { get; }
 
-    /// <summary>Gets the user-set session title, or <see langword="null" /> when the session
-    /// was never renamed. A session renamed before its first committed turn has a row with a
+    /// <summary>Gets the session's manual or generated display title, or <see langword="null" />
+    /// before the session is named. A session renamed before its first committed turn has a row with a
     /// title and zero turns.</summary>
     public string? Title { get; }
 

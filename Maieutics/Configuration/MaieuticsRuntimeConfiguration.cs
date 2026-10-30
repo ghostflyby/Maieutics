@@ -147,6 +147,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
     /// never collide with these even while the gated families are hidden from a run.</summary>
     internal HashSet<string> ReservedToolNames =>
     [
+        "set_task_title",
         .. _builtInTools.Select(static function => function.Name),
         .. _terminalFunctions.Functions.Select(static function => function.Name),
         .. _ideTools?.Tools.Select(static function => function.Name) ?? []
@@ -399,6 +400,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         // server (id order) loses the name deterministically instead of failing the
         // turn at the Agent tool registry.
         var exposedToolNames = tools.Select(static function => function.Name).ToHashSet(StringComparer.Ordinal);
+        exposedToolNames.Add("set_task_title");
         foreach (var lease in mcpLeases.OrderBy(static lease => lease.ServerId, StringComparer.Ordinal))
         {
             var duplicates = false;

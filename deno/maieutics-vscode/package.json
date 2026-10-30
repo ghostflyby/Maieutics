@@ -38,7 +38,8 @@
     "onView:maieutics.sessions",
     "onCommand:maieutics.switchBranch",
     "onCommand:maieutics.queueTurn",
-    "onCommand:maieutics.attachFile"
+    "onCommand:maieutics.attachFile",
+    "onCommand:maieutics.titleSettings"
   ],
   "contributes": {
     "notebooks": [
@@ -197,6 +198,11 @@
         "title": "Attach File to Cell",
         "category": "Maieutics",
         "icon": "$(paperclip)"
+      },
+      {
+        "command": "maieutics.titleSettings",
+        "title": "Task Title Settings",
+        "category": "Maieutics"
       }
     ],
     "configuration": {

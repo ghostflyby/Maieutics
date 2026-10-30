@@ -30,6 +30,28 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         await TempArea.DeleteAsync(_databaseDirectory, CancellationToken.None);
     }
 
+    [Fact]
+    public void ReopenSettlesAbandonedTitleAttemptsAndRejectsTheirStaleWrites()
+    {
+        var id = AgentSessionId.Create();
+        SessionTitleState pending;
+        using (var store = new SqliteTranscriptStore(_databasePath))
+        {
+            store.SetTitle(id, null);
+            var state = store.GetTitleState(id);
+            pending = state with { Title = "Preview", Mode = "initial", Initial = "pending", Revision = state.Revision + 1 };
+            Assert.True(store.TrySetTitleState(id, state, pending));
+        }
+        using var reopened = new SqliteTranscriptStore(_databasePath);
+        var recovered = reopened.GetTitleState(id);
+        Assert.Equal("Preview", recovered.Title);
+        Assert.Equal("initial", recovered.Mode);
+        Assert.Equal("settled", recovered.Initial);
+        Assert.False(recovered.Manual);
+        Assert.True(recovered.ControlRevision > pending.ControlRevision);
+        Assert.False(reopened.TrySetTitleState(id, pending, pending with { Title = "Stale result", Revision = pending.Revision + 1 }));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -123,7 +145,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "PRAGMA user_version;";
-        Assert.Equal(4, Convert.ToInt32(version.ExecuteScalar()));
+        Assert.Equal(6, Convert.ToInt32(version.ExecuteScalar()));
     }
 
     [Fact]
@@ -156,6 +178,7 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         var descriptor = Assert.Single(store.ListSessions());
         Assert.Equal(sessionId, descriptor.Id);
         Assert.Equal("v3 title", descriptor.Title);
+        Assert.True(store.GetTitleState(sessionId).Manual);
         Assert.Equal("/repos/v3", descriptor.WorkspaceRoot);
         Assert.Null(descriptor.ParentSessionId);
         Assert.Null(descriptor.ForkPointSeq);
@@ -338,6 +361,25 @@ public sealed class SqliteTranscriptStoreTests : IAsyncDisposable
         using var store = new SqliteTranscriptStore(_databasePath);
         Assert.Null(store.LoadTranscript(AgentSessionId.Create()));
         Assert.Empty(store.ListSessions());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ForkTitleOwnershipIsExplicitAndDefaultsToAutomatic(bool manual)
+    {
+        using var store = new SqliteTranscriptStore(_databasePath);
+        var parent = AgentSessionId.Create();
+        store.SetTitle(parent, "Parent");
+        var fork = AgentSessionId.Create();
+        store.CreateForkSession(fork, parent, 0, "Fork", manualTitle: manual);
+        var title = store.GetTitleState(fork);
+        Assert.Equal(manual, title.Manual);
+        Assert.Equal(manual ? "manual" : "derived", title.Source);
+        Assert.Equal(manual ? "settled" : "eligible", title.Initial);
+        var defaultFork = AgentSessionId.Create();
+        store.CreateForkSession(defaultFork, parent, 0, "Derived");
+        Assert.False(store.GetTitleState(defaultFork).Manual);
     }
 
     [Fact]

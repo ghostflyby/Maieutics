@@ -19,6 +19,99 @@ namespace Maieutics.Product.Tests;
 [Trait("Category", "Smoke")]
 public sealed class FrontendProcessSmokeTests
 {
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("title-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            answer: "修复工作区诊断", requestCount: 2);
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path, autoTitle: true);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
+        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var id = session.GetProperty("id").GetString();
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        await socket.ConnectAsync(new Uri($"ws://{new Uri(url).Authority}/v1/agent/sessions/{id}/events"), budget.Token);
+        try
+        {
+            Assert.Equal("hello", (await ReceiveEventFrameAsync(socket, budget.Token)).GetProperty("type").GetString());
+            using var submitted = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/queue",
+                new { items = new[] { new { text = "修复工作区诊断" } } }, budget.Token);
+            Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+            var titled = false;
+            var completed = false;
+            while (!titled || !completed)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, budget.Token);
+                var type = frame.GetProperty("type").GetString();
+                if (type == "session.updated" && frame.GetProperty("session").GetProperty("titleSource").GetString() == "initial")
+                {
+                    Assert.Equal("修复工作区诊断", frame.GetProperty("session").GetProperty("title").GetString());
+                    Assert.False(frame.TryGetProperty("runId", out _));
+                    Assert.False(frame.TryGetProperty("sequence", out _));
+                    Assert.True(frame.GetProperty("session").GetProperty("titleRevision").GetInt64() > 0);
+                    titled = true;
+                }
+                if (type == "run.failed") Assert.Fail("The title smoke run failed.");
+                if (type == "run.completed") completed = true;
+            }
+            Assert.True(titled, "Generated metadata must reach the session socket independently of run completion.");
+            await provider.Completion.WaitAsync(budget.Token);
+            var metadata = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}", budget.Token);
+            Assert.Equal("修复工作区诊断", metadata.GetProperty("title").GetString());
+            var transcript = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}/transcript", budget.Token);
+            var turn = Assert.Single(transcript.GetProperty("turns").EnumerateArray());
+            Assert.Equal(2, turn.GetProperty("messages").GetArrayLength());
+        }
+        finally { socket.Abort(); }
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableInvokesTaskTitleToolWithoutAnInitialRequest()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("title-tool-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            toolFlow: true, toolName: "set_task_title", toolArgumentsJson: """{"title":"Task renamed by Agent"}""",
+            expectedToolResultText: "staged");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path, autoTitle: true);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString();
+        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var id = session.GetProperty("id").GetString();
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        await socket.ConnectAsync(new Uri($"ws://{new Uri(url).Authority}/v1/agent/sessions/{id}/events"), budget.Token);
+        try
+        {
+            await ReceiveEventFrameAsync(socket, budget.Token);
+            using var submitted = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/queue",
+                new { items = new[] { new { text = "Change task scope" } } }, budget.Token);
+            Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, budget.Token);
+                if (frame.GetProperty("type").GetString() == "run.failed") Assert.Fail("The title tool run failed.");
+                if (frame.GetProperty("type").GetString() == "run.completed") break;
+            }
+            await provider.Completion.WaitAsync(budget.Token);
+            var metadata = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}", budget.Token);
+            Assert.Equal("Task renamed by Agent", metadata.GetProperty("title").GetString());
+            Assert.Equal("tool", metadata.GetProperty("titleSource").GetString());
+        }
+        finally { socket.Abort(); }
+    }
+
     [Theory(Timeout = 120_000)]
     [InlineData(false)]
     [InlineData(true)]
@@ -292,7 +385,7 @@ public sealed class FrontendProcessSmokeTests
 
     private static SmokeHostProcess StartHostProcess(
         Uri endpoint,
-        string workspaceRoot)
+        string workspaceRoot, bool autoTitle = false)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -324,6 +417,8 @@ public sealed class FrontendProcessSmokeTests
         startInfo.ArgumentList.Add(discoveryPath);
         startInfo.ArgumentList.Add("--Maieutics:DataRoot");
         startInfo.ArgumentList.Add(Path.Combine(workspaceRoot, "data"));
+        startInfo.ArgumentList.Add("--Maieutics:Agent:AutoTitle");
+        startInfo.ArgumentList.Add(autoTitle ? "true" : "false");
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add("test-model");
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";

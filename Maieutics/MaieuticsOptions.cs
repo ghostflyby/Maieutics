@@ -178,10 +178,17 @@ public sealed class MaieuticsAgentOptions
 
     public int EventBufferCapacity { get; set; } = 128;
 
+    /// <summary>Legacy naming switch; an explicit Title.Mode takes precedence.</summary>
+    public bool? AutoTitle { get; set; }
+
+    /// <summary>Gets or sets the startup default for session title policies.</summary>
+    public MaieuticsTitleOptions Title { get; set; } = new();
+
     public MaieuticsAgentPersistenceOptions Persistence { get; set; } = new();
 
     internal void Validate()
     {
+        if (Title.Mode is { } mode) MaieuticsTitleOptions.NormalizeMode(mode);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);
@@ -194,6 +201,19 @@ public sealed class MaieuticsAgentOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxToolProgressEventsPerCall, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(EventBufferCapacity, 1);
     }
+}
+
+/// <summary>Configures the startup default; sessions can persist their own title mode.</summary>
+public sealed class MaieuticsTitleOptions
+{
+    /// <summary>Gets or sets auto, initial, or manual; null preserves legacy switch precedence.</summary>
+    public string? Mode { get; set; }
+
+    internal static string NormalizeMode(string mode) => mode.ToLowerInvariant() switch
+    {
+        "auto" => "auto", "initial" => "initial", "manual" => "manual",
+        _ => throw new ArgumentException("Title mode must be auto, initial, or manual.", nameof(mode))
+    };
 }
 
 // Persisted transcript storage is opt in while its recovery semantics stabilize; the flag is a

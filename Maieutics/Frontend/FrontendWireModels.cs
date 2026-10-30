@@ -46,7 +46,11 @@ internal sealed record FrontendSessionInfo(
     [property: JsonPropertyName("turns")] long Turns,
     [property: JsonPropertyName("persistenceEnabled")]
     bool PersistenceEnabled,
-    [property: JsonPropertyName("title")] string? Title = null);
+    [property: JsonPropertyName("title")] string? Title = null,
+    [property: JsonPropertyName("titleRevision")] long TitleRevision = 0,
+    [property: JsonPropertyName("titleMode")] string TitleMode = "manual",
+    [property: JsonPropertyName("titleLocked")] bool TitleLocked = false,
+    [property: JsonPropertyName("titleSource")] string TitleSource = "preview");
 
 /// <summary>Describes one stored (persisted) session.</summary>
 internal sealed record FrontendStoredSession(
@@ -65,6 +69,11 @@ internal sealed record FrontendStoredSession(
     string? ParentSessionId = null,
     [property: JsonPropertyName("forkPointSeq")]
     int? ForkPointSeq = null);
+
+/// <summary>User-only policy change or explicit asynchronous regeneration.</summary>
+internal sealed record FrontendTitlePolicyRequest(
+    [property: JsonPropertyName("mode")] string? Mode = null,
+    [property: JsonPropertyName("regenerate")] bool Regenerate = false);
 
 /// <summary>A session rename body; an empty title clears.</summary>
 internal sealed record FrontendRenameRequest([property: JsonPropertyName("title")] string Title);
@@ -425,6 +434,7 @@ internal sealed record FrontendPromptList(
 [JsonSerializable(typeof(FrontendQueueEnqueueRequest))]
 [JsonSerializable(typeof(FrontendQueueEnqueueResponse))]
 [JsonSerializable(typeof(FrontendRenameRequest))]
+[JsonSerializable(typeof(FrontendTitlePolicyRequest))]
 [JsonSerializable(typeof(FrontendRenameResponse))]
 [JsonSerializable(typeof(FrontendForkRequest))]
 [JsonSerializable(typeof(FrontendForkResponse))]

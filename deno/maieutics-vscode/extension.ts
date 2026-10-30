@@ -10,6 +10,7 @@
  */
 
 import * as vscode from "vscode";
+import { SessionTitles } from "./sessionTitles.ts";
 import { localProjectPaths } from "./projectMounts.ts";
 import { transcriptOutput } from "./transcriptView.ts";
 import { platform } from "node:os";
@@ -23,7 +24,12 @@ import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./
 import { QueueProjection } from "./queueProjection.ts";
 import { MaieuticsNotebookSerializer, NotebookType, readStoredSessionId } from "./serializer.ts";
 import { NotebookLanguage } from "./notebookFormat.ts";
-import { FrontendError, type TaskListEntry, type Transcript } from "./protocol.ts";
+import {
+  FrontendError,
+  type SessionInfo,
+  type TaskListEntry,
+  type Transcript,
+} from "./protocol.ts";
 import { sessionLabel, type SessionLike } from "./sessionGroups.ts";
 import { MaieuticsSessionsProvider, type TreeEnvironment } from "./sessionsTree.ts";
 import { shortTaskId, taskDetailText, taskPicks, TasksEmptyHint } from "./taskPicks.ts";
@@ -55,6 +61,8 @@ let connecting: Promise<Connection> | undefined;
 let controller: MaieuticsNotebookController | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
+const sessionTitles = new SessionTitles();
+let titleRefresh: (() => void) | undefined;
 const treeEnvironment: TreeEnvironment = {
   caseInsensitive: false,
   currentOnly: false,
@@ -128,7 +136,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(...registerHistorySurface());
   context.subscriptions.push(...registerQueueSurface(queueProjection, queueChanges));
   context.subscriptions.push(...registerAttachmentSurface());
-  context.subscriptions.push(...registerUsageBadge());
+  context.subscriptions.push(...registerUsageBadge(), ...registerTitleBadge());
 
   treeEnvironment.currentOnly = context.workspaceState.get(CurrentOnlyStateKey, false);
   // Reflect the persisted filter in `when` clauses from the start.
@@ -352,6 +360,67 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.commands.registerCommand(
+      "maieutics.titleSettings",
+      async (argument?: CommandArgument) => {
+        const client = await clientOf();
+        const target = await pickSession(client, unwrapSessionRef(argument), "Task title settings");
+        if (target === undefined) return;
+        const id = target.session.id;
+        const metadata = await client.sessionInfo(id);
+        const choice = await vscode.window.showQuickPick([
+          { label: "Rename", description: "Set and lock a manual title", action: "rename" },
+          {
+            label: "Title mode",
+            description: `Current: ${metadata.titleMode ?? "manual"}`,
+            action: "mode",
+          },
+          {
+            label: "Clear title and unlock",
+            description: "The selected title mode still applies",
+            action: "unlock",
+          },
+          {
+            label: "Regenerate title",
+            description: "Generate once using the current conversation",
+            action: "regenerate",
+          },
+        ], { placeHolder: metadata.title ?? "Task title" });
+        if (choice === undefined) return;
+        if (choice.action === "rename") {
+          await vscode.commands.executeCommand("maieutics.renameSession", id);
+          return;
+        }
+        if (choice.action === "unlock") await client.renameSession(id, "");
+        if (choice.action === "mode") {
+          const mode = await vscode.window.showQuickPick(
+            [
+              {
+                label: "auto",
+                description: "Initial title once; Agent may rename when the task changes",
+              },
+              { label: "initial", description: "Generate once; later changes are manual" },
+              { label: "manual", description: "Use a preview or your manual title" },
+            ] as const,
+            { placeHolder: "Task title mode" },
+          );
+          if (mode === undefined) return;
+          await client.titlePolicy(id, { mode: mode.label });
+        }
+        if (choice.action === "regenerate") {
+          if (metadata.titleLocked || metadata.titleMode === "manual") {
+            await vscode.window.showInformationMessage(
+              "Unlock the title and select auto or initial mode before regenerating.",
+            );
+            return;
+          }
+          await client.titlePolicy(id, { regenerate: true });
+        }
+        const refreshed = await client.sessionInfo(id).catch(() => undefined);
+        if (refreshed !== undefined) updateSessionTitle(refreshed);
+        treeProvider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
       "maieutics.renameSession",
       async (argument?: CommandArgument) => {
         const client = await clientOf();
@@ -359,13 +428,17 @@ export function activate(context: vscode.ExtensionContext): void {
         if (target === undefined) return;
 
         const title = await vscode.window.showInputBox({
-          prompt: `Title for session ${target.session.id.slice(0, 12)} (empty clears)`,
+          prompt: `Title for session ${
+            target.session.id.slice(0, 12)
+          } (empty clears the lock; the selected mode still applies)`,
           value: target.session.title ?? "",
           ignoreFocusOut: true,
         });
         if (title === undefined) return;
 
         await client.renameSession(target.session.id, title);
+        const metadata = await client.sessionInfo(target.session.id).catch(() => undefined);
+        if (metadata !== undefined) updateSessionTitle(metadata);
         treeProvider.refresh();
       },
     ),
@@ -1114,6 +1187,77 @@ async function showTaskDetail(task: TaskListEntry): Promise<void> {
   await vscode.window.showInformationMessage(text, { modal: true });
 }
 
+function updateSessionTitle(session: SessionInfo): void {
+  if (!sessionTitles.apply(session)) return;
+  treeRefresh?.();
+  titleRefresh?.();
+}
+
+/** Shows the pinned notebook's task title without renaming its stable session URI. */
+function registerTitleBadge(): vscode.Disposable[] {
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 80);
+  item.name = "Maieutics Task Title";
+  let request: AbortController | undefined;
+  const render = () => {
+    const notebook = vscode.window.activeNotebookEditor?.notebook;
+    const id = notebook?.notebookType === NotebookType
+      ? readStoredSessionId(notebook.metadata)
+      : undefined;
+    if (id === undefined) {
+      item.hide();
+      return;
+    }
+    const session = sessionTitles.get(id);
+    item.text = `$(comment-discussion) ${
+      sessionLabel({ id, title: session?.title, turns: session?.turns ?? 0, lastActivityAt: "" })
+    }`;
+    item.tooltip = `${session?.title ?? "New task"}\n${id}\nMode: ${
+      sessionTitles.get(id)?.titleMode ?? "manual"
+    }${sessionTitles.get(id)?.titleLocked ? " · locked" : ""}\nClick for task title settings.`;
+    item.command = {
+      command: "maieutics.titleSettings",
+      title: "Task Title Settings",
+      arguments: [id],
+    };
+    item.show();
+  };
+  const refresh = () => {
+    render();
+    request?.abort();
+    const notebook = vscode.window.activeNotebookEditor?.notebook;
+    const id = notebook?.notebookType === NotebookType
+      ? readStoredSessionId(notebook.metadata)
+      : undefined;
+    // Displaying an offline notebook must not start a kernel just to fetch its title.
+    const client = connection?.client;
+    if (id === undefined || client === undefined) return;
+    const current = request = new AbortController();
+    void client.sessionInfo(id, current.signal).then((session) => {
+      if (!current.signal.aborted) updateSessionTitle(session);
+    }).catch((error) => {
+      if (!current.signal.aborted) output?.appendLine(`Task title refresh failed: ${error}`);
+    });
+  };
+  titleRefresh = render;
+  refresh();
+  return [
+    item,
+    vscode.window.onDidChangeActiveNotebookEditor(refresh),
+    vscode.workspace.onDidChangeNotebookDocument((event) => {
+      if (
+        event.notebook === vscode.window.activeNotebookEditor?.notebook &&
+        event.metadata !== undefined
+      ) refresh();
+    }),
+    {
+      dispose: () => {
+        request?.abort();
+        titleRefresh = undefined;
+      },
+    },
+  ];
+}
+
 /** The per-notebook token badge: sums the provider usage carried by the
  * committed cells' structured turn snapshots (input ↑ / output ↓). Clicking
  * opens the server status. Purely derived from already-fetched outputs. */
@@ -1194,7 +1338,9 @@ async function pickSession(
     const stored = await client.listSessions().catch(() => []);
     const match = stored.find((session) => session.id === sessionId);
     if (match) return { session: match };
-    const active = await client.session().catch(() => undefined);
+    const active = await client.sessionInfo(sessionId).catch(() =>
+      client.session().catch(() => undefined)
+    );
     return active && active.id === sessionId
       ? { session: { id: active.id, turns: active.turns, lastActivityAt: "", title: active.title } }
       : undefined;
@@ -1250,6 +1396,7 @@ function createBridge(): NotebookBridge {
   return {
     client: clientOf,
     session: async () => await (await clientOf()).session(),
+    sessionUpdated: updateSessionTitle,
     fetchObject: async (sha256: string) => await (await clientOf()).fetchObject(sha256),
   };
 }

@@ -23,8 +23,43 @@ import {
   searchTree,
   type SearchTreeFs,
   sha256Hex,
+  textEditsToWire,
   transitionDebugSession,
+  workspaceEditToWire,
 } from "./ide.ts";
+
+Deno.test("IDE text edit conversion reads public prototype coordinates", () => {
+  class Position {
+    constructor(private readonly _line: number, private readonly _character: number) {}
+    get line() {
+      return this._line;
+    }
+    get character() {
+      return this._character;
+    }
+  }
+  const edits = [{ range: { start: new Position(0, 1), end: new Position(2, 3) }, newText: "x" }];
+  const expected = [{
+    range: { start: { line: 0, character: 1 }, end: { line: 2, character: 3 } },
+    newText: "x",
+  }];
+  assertEquals(textEditsToWire(edits), expected);
+  assertEquals(workspaceEditToWire({ entries: () => [["file:///a.ts", edits]] }), {
+    changes: { "file:///a.ts": expected },
+  });
+  assertEquals(
+    ideCommandArgs("textDocument/codeAction", {
+      uri: "file:///a.ts",
+      position: { line: 0, character: 1 },
+      context: { diagnostics: [] },
+    }),
+    [
+      "file:///a.ts",
+      { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } },
+      undefined,
+    ],
+  );
+});
 
 Deno.test("IDE dispatch admits the implemented filesystem methods only", () => {
   for (

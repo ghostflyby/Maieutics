@@ -9,7 +9,7 @@ namespace Maieutics.Frontend;
 /// <summary>One target file of an LSP-shaped workspace edit, addressed by its
 /// agent-domain <see cref="WorkspaceUri" /> with the model's 1-based positions
 /// (decision 5) still attached — validation converts them while applying.</summary>
-internal sealed record IdeEditTarget(string WorkspaceUri, ImmutableArray<IdeRawEdit> Edits);
+internal sealed record IdeEditTarget(string WorkspaceUri, ImmutableArray<IdeRawEdit> Edits, int? Version = null);
 
 /// <summary>One text edit: an inclusive 1-based source range and the text that
 /// replaces it.</summary>
@@ -31,7 +31,7 @@ internal sealed record IdeRawEdit(
 ///     every structural or range failure is a typed
 ///     <c>ide_edit_rejected</c> carrying the target path, so the caller can
 ///     reject the whole edit before any mutation. No disk access happens
-///     here; the gated write lives in <see cref="WorkspaceEditFunctions" />.
+///     here; the caller validates policy and applies the editor transaction.
 /// </summary>
 internal static class IdeWorkspaceEdit
 {
@@ -50,6 +50,9 @@ internal static class IdeWorkspaceEdit
             throw new AgentToolException(
                 "ide_invalid_arguments",
                 "The edit must be {\"changes\": {\"workspace://local/…\": [{\"range\": …, \"newText\": …}]}}.");
+
+        if (edit.TryGetProperty("versions", out var suppliedVersions) && suppliedVersions.ValueKind != JsonValueKind.Object)
+            throw new AgentToolException("ide_invalid_arguments", "The versions map must be an object keyed by document URI.");
 
         var targets = ImmutableArray.CreateBuilder<IdeEditTarget>();
         foreach (var property in changes.EnumerateObject())
@@ -87,7 +90,15 @@ internal static class IdeWorkspaceEdit
                 edits.Add(new IdeRawEdit(startLine, startCharacter, endLine, endCharacter, newTextElement.GetString()!));
             }
 
-            targets.Add(new IdeEditTarget(property.Name, edits.ToImmutable()));
+            int? version = null;
+            if (edit.TryGetProperty("versions", out var versions) &&
+                versions.ValueKind == JsonValueKind.Object && versions.TryGetProperty(property.Name, out var value))
+            {
+                if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out var number) || number < 1)
+                    throw new AgentToolException("ide_invalid_arguments", "Document versions must be positive integers.");
+                version = number;
+            }
+            targets.Add(new IdeEditTarget(property.Name, edits.ToImmutable(), version));
         }
 
         if (targets.Count == 0)

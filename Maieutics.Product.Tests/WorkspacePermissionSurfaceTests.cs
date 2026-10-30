@@ -130,6 +130,57 @@ public sealed class WorkspacePermissionSurfaceTests : IDisposable
         return Workspace.Create(_workspace.Path, _workspace.Path);
     }
 
+    [Fact]
+    public void DocumentEditsRetainWriteAndInstructionGatesWithoutWritingFiles()
+    {
+        var denied = Path.Combine(_workspace.Path, "docs");
+        var edit = new WorkspaceEditFunctions(CreateWorkspace(), acquirer: Denying(PermissionKind.Write, denied));
+        var arguments = new AIFunctionArguments();
+        var write = Assert.Throws<AgentToolException>(() =>
+            edit.PrepareDocumentEdit("workspace://local/docs/code.ts", "buffer", "changed", arguments));
+        Assert.Equal("workspace_write_forbidden", write.Code);
+        Assert.Equal("workspace_write_forbidden", Assert.Throws<AgentToolException>(() =>
+            edit.AuthorizeDocumentSave("workspace://local/docs/code.ts", arguments)).Code);
+        var instructions = new WorkspaceEditFunctions(CreateWorkspace(), acquirer: TestPermissionPolicies.Unconfigured());
+        var instruction = Assert.Throws<AgentToolException>(() =>
+            instructions.PrepareDocumentEdit("workspace://local/AGENTS.md", "buffer", "changed", arguments));
+        Assert.Equal("instructions_write_forbidden", instruction.Code);
+        Assert.Equal("instructions_write_forbidden", Assert.Throws<AgentToolException>(() =>
+            instructions.AuthorizeDocumentSave("workspace://local/AGENTS.md", arguments)).Code);
+        Assert.False(Directory.Exists(denied));
+    }
+
+    [Fact]
+    public void DocumentEditsEnforceTheSameWriteSizeBound()
+    {
+        var edit = new WorkspaceEditFunctions(CreateWorkspace(), maximumWriteBytes: 4);
+        var failure = Assert.Throws<AgentToolException>(() =>
+            edit.PrepareDocumentEdit("workspace://local/a.ts", "x", "too long", new AIFunctionArguments()));
+        Assert.Equal("ide_edit_rejected", failure.Code);
+        Assert.False(File.Exists(Path.Combine(_workspace.Path, "a.ts")));
+    }
+
+    [Fact]
+    public void DocumentSaveInstructionPathsAreDecodedExactlyOnce()
+    {
+        var acquirer = new PermissionPolicyAcquirer(() => new FixedLayerSource(new PermissionLayer
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+            {
+                [PermissionKind.Instructions] = new() {Allow = [Path.Combine(_workspace.Path,"literal","AGENTS.md")]}
+            }
+        }),new NullVariableSource());
+        var edit = new WorkspaceEditFunctions(CreateWorkspace(),acquirer:acquirer);
+        var arguments = new AIFunctionArguments { Context = new Dictionary<object, object?>
+        {
+            [typeof(ScriptInvocationContext)] = new ScriptInvocationContext(AgentSessionId.Create().Value.ToString("N"))
+        }};
+        // The physical parent is literally "literal%2f", not "literal/".
+        var failure = Assert.Throws<AgentToolException>(()=>edit.AuthorizeDocumentSave(
+            "workspace://local/literal%252f/AGENTS.md",arguments));
+        Assert.Equal("instructions_write_forbidden",failure.Code);
+    }
+
     private WorkspaceFunctions CreateFunctions(PermissionPolicyAcquirer acquirer)
     {
         return new WorkspaceFunctions(CreateWorkspace(), acquirer: acquirer);

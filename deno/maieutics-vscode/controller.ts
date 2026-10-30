@@ -40,6 +40,7 @@
  */
 
 import * as vscode from "vscode";
+import { executeDocumentMethod } from "./ideDocuments.ts";
 import type { FrontendClient, SubmitAnswer } from "./client.ts";
 import type { EventFrame, QueueState, SessionInfo } from "./protocol.ts";
 import { FrontendError } from "./protocol.ts";
@@ -2009,7 +2010,14 @@ async function executeIdeDebug(
 export async function executeIdeMethod(
   method: string,
   params: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  if (
+    method === "maieutics/documents/read" || method === "maieutics/documents/apply" ||
+    method === "maieutics/documents/dirty" || method === "maieutics/documents/save"
+  ) {
+    return await executeDocumentMethod(method, params, signal);
+  }
   if (method.startsWith("maieutics/debug/")) {
     return await executeIdeDebug(method, params);
   }
@@ -2057,6 +2065,17 @@ export async function executeIdeMethod(
     });
   }
   const args = ideCommandArgs(method, params).map(materializeIdeArg);
+  if (
+    (method === "textDocument/rename" || method === "textDocument/codeAction") &&
+    args[0] instanceof vscode.Uri
+  ) {
+    await vscode.workspace.openTextDocument(args[0]);
+  }
+  const computedVersions = new Map(
+    vscode.workspace.textDocuments.map((document) =>
+      [document.uri.toString(), document.version] as const
+    ),
+  );
   const result = await vscode.commands.executeCommand(command, ...args);
   if (method === "textDocument/hover") {
     // The provider command answers Hover[] (one entry per registered
@@ -2075,16 +2094,41 @@ export async function executeIdeMethod(
     if (typeof result !== "object" || result === null || !("entries" in result)) {
       return { changes: {} };
     }
-    return workspaceEditToWire(result as { entries(): readonly (readonly [unknown, unknown])[] });
+    return await versionedWorkspaceEdit(
+      workspaceEditToWire(result as { entries(): readonly (readonly [unknown, unknown])[] }),
+      computedVersions,
+    );
   }
   if (method === "textDocument/codeAction") {
-    return codeActionsToWire(Array.isArray(result) ? result : []);
+    return await Promise.all(
+      codeActionsToWire(Array.isArray(result) ? result : []).map(async (action) => {
+        const item = action as { edit?: ReturnType<typeof workspaceEditToWire> };
+        return item.edit === undefined
+          ? action
+          : { ...item, edit: await versionedWorkspaceEdit(item.edit, computedVersions) };
+      }),
+    );
   }
   if (method === "textDocument/formatting" && Array.isArray(result)) {
     return textEditsToWire(result);
   }
 
   return result;
+}
+
+async function versionedWorkspaceEdit(
+  edit: ReturnType<typeof workspaceEditToWire>,
+  computedVersions: ReadonlyMap<string, number>,
+): Promise<ReturnType<typeof workspaceEditToWire> & { versions: Record<string, number> }> {
+  const versions: Record<string, number> = {};
+  if (Object.keys(edit.changes).length > 64) {
+    throw Object.assign(new Error("The edit exceeds 64 documents."), { code: "ide_edit_rejected" });
+  }
+  for (const uri of Object.keys(edit.changes)) {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri));
+    versions[uri] = computedVersions.get(uri) ?? document.version;
+  }
+  return { ...edit, versions };
 }
 
 /** Converts URI strings and URI-bearing hierarchy items into the vscode objects
@@ -2096,6 +2140,15 @@ function materializeIdeArg(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(materializeIdeArg);
   if (typeof value === "object" && value !== null) {
     const record = value as Record<string, unknown>;
+    if (typeof record.line === "number" && typeof record.character === "number") {
+      return new vscode.Position(record.line, record.character);
+    }
+    if (typeof record.start === "object" && typeof record.end === "object") {
+      return new vscode.Range(
+        materializeIdeArg(record.start) as vscode.Position,
+        materializeIdeArg(record.end) as vscode.Position,
+      );
+    }
     if (typeof record.uri === "string") {
       return { ...record, uri: vscode.Uri.parse(record.uri) };
     }

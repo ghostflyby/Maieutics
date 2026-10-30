@@ -16,14 +16,16 @@ internal sealed class TerminalFunctions
         TerminalJsonSerializerContext.Default.Options;
 
     private readonly TerminalRegistry _registry;
+    private readonly IWorkspaceSavePreparation? _savePreparation;
 
-    public TerminalFunctions(TerminalRegistry registry)
+    public TerminalFunctions(TerminalRegistry registry, IWorkspaceSavePreparation? savePreparation = null)
     {
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _savePreparation = savePreparation;
         Functions =
         [
             CreateFunction(
-                (Func<string, AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalInputResult>>)
+                (Func<string, AIFunctionArguments, bool?, int?, string?, bool?, CancellationToken, ValueTask<TerminalInputResult>>)
                 InputAsync,
                 "terminal_input",
                 "Sends a batch of input lines to the interactive terminal. Each line is either 't <text>' " +
@@ -35,9 +37,11 @@ internal sealed class TerminalFunctions
                 "ordinary characters use 't ' lines; to enter ':' in a vim command, send k <Esc> then t :w " +
                 "then k <CR> separately. Returns the screen rows that changed since the last frame, plus the " +
                 "cursor and whether the program is drawing the alternate screen (vim, less, or a full-screen " +
-                "UI). The first call of a session returns the full screen; pass full=true to force a full snapshot."),
+                "UI). The first call of a session returns the full screen; pass full=true to force a full snapshot. " +
+                "For IDE-backed builds/tests set saveWorkspace=true to save all workspace documents before " +
+                "sending input; a save failure sends no input."),
             CreateFunction(
-                (Func<string, AIFunctionArguments, string[]?, int?, bool?, int?, CancellationToken, ValueTask<TerminalRunResult>>)
+                (Func<string, AIFunctionArguments, string[]?, int?, bool?, int?, bool?, CancellationToken, ValueTask<TerminalRunResult>>)
                 RunAsync,
                 "terminal_run",
                 "Starts a PTY session running an executable with arguments and returns its screen. Without " +
@@ -47,7 +51,8 @@ internal sealed class TerminalFunctions
                 "terminal_snapshot, feed input with terminal_input, interrupt with terminal_interrupt, or " +
                 "close with terminal_close; a running one-shot also returns taskUri, a " +
                 "task://terminal/... resource whose read_text snapshot shows its current status. The " +
-                "one-shot session reports 'completed' after the program exits."),
+                "one-shot session reports 'completed' after the program exits. For IDE-backed builds/tests set " +
+                "saveWorkspace=true; all workspace documents must save successfully before the process is started."),
             CreateFunction(
                 (Func<AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalSnapshotResult>>)
                 SnapshotAsync,
@@ -57,12 +62,13 @@ internal sealed class TerminalFunctions
                 "one screenful, or to re-read the screen after a delay. Requires an existing session: the " +
                 "default session is created by the first terminal_input or terminal_paste."),
             CreateFunction(
-                (Func<string, AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalPasteResult>>)
+                (Func<string, AIFunctionArguments, bool?, int?, string?, bool?, CancellationToken, ValueTask<TerminalPasteResult>>)
                 PasteAsync,
                 "terminal_paste",
                 "Pastes multi-line text into the terminal. When the running program has enabled bracketed " +
                 "paste (as vim and modern line editors do), the text is wrapped in bracketed-paste markers so " +
-                "it is inserted literally without auto-indent mangling or being treated as key presses."),
+                "it is inserted literally without auto-indent mangling or being treated as key presses. " +
+                "For IDE-backed builds/tests set saveWorkspace=true; save failure sends no pasted text."),
             CreateFunction(
                 (Func<AIFunctionArguments, string?, CancellationToken, ValueTask<TerminalCloseResult>>)CloseAsync,
                 "terminal_close",
@@ -84,6 +90,15 @@ internal sealed class TerminalFunctions
     }
 
     internal IReadOnlyList<AIFunction> Functions { get; }
+
+    private async Task PrepareWorkspaceAsync(bool? saveWorkspace, AIFunctionArguments arguments, CancellationToken cancellationToken)
+    {
+        if (saveWorkspace != true) return;
+        if (_savePreparation is not { } preparation)
+            throw new AgentToolException("ide_unavailable", "No IDE workspace save service is available; the command was not started.");
+        await preparation.SaveAllAsync(AgentToolContext.GetRequired(arguments).SessionId, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+    }
 
     private static void ValidateSnapshotRequest(int? maxCharacters)
     {
@@ -116,6 +131,8 @@ internal sealed class TerminalFunctions
         int? maxCharacters = null,
         [Description("An opaque session ID returned by terminal_run. Omit to use the lazy default session.")]
         string? sessionId = null,
+        [Description("For IDE-backed builds/tests set true: save all dirty workspace documents before starting/sending input. Any save failure prevents execution. Defaults to false.")]
+        bool? saveWorkspace = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(input))
@@ -123,6 +140,7 @@ internal sealed class TerminalFunctions
 
         ValidateSnapshotRequest(maxCharacters);
         var batch = TerminalInputBatchParser.Parse(input);
+        await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.ExecuteAsync(
             AgentToolContext.GetRequired(arguments),
             batch,
@@ -144,6 +162,8 @@ internal sealed class TerminalFunctions
         bool? full = null,
         [Description("The maximum characters the frame may carry, from 1 through 1048576. Defaults to the session limit.")]
         int? maxCharacters = null,
+        [Description("For IDE-backed builds/tests set true: save all dirty workspace documents before starting/sending input. Any save failure prevents execution. Defaults to false.")]
+        bool? saveWorkspace = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(executable))
@@ -155,6 +175,7 @@ internal sealed class TerminalFunctions
                 "terminal_invalid_arguments",
                 "timeout must be between 1 and 600 seconds.");
 
+        await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.RunOnceAsync(
             AgentToolContext.GetRequired(arguments).SessionId,
             executable,
@@ -203,12 +224,15 @@ internal sealed class TerminalFunctions
         int? maxCharacters = null,
         [Description("An opaque session ID returned by terminal_run. Omit to use the lazy default session.")]
         string? sessionId = null,
+        [Description("For IDE-backed builds/tests set true: save all dirty workspace documents before starting/sending input. Any save failure prevents execution. Defaults to false.")]
+        bool? saveWorkspace = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(text))
             throw new AgentToolException("terminal_invalid_arguments", "text is required and cannot be empty.");
 
         ValidateSnapshotRequest(maxCharacters);
+        await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.PasteAsync(
             AgentToolContext.GetRequired(arguments),
             text,

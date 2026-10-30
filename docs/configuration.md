@@ -117,6 +117,13 @@ arguments; without `timeout` it creates a persistent interactive session, and wi
 one-shot command, returning the final frame and exit code or a live session handle when it is still running at the
 deadline. Every child receives an allowlisted environment that never inherits provider credentials.
 
+For IDE-backed builds/tests, use `saveWorkspace: true` on `terminal_run`, `terminal_input`, or
+`terminal_paste`. This saves every dirty file-backed text document and notebook across the IDE's
+multi-root workspace before starting the command or sending input. Save failure or cancellation
+prevents that terminal operation; earlier successful saves remain persisted. `ide_save_all` exposes
+the same barrier independently. The flag defaults to false for other operations and headless
+compatibility; command strings are not inspected to guess which ones build or test.
+
 The terminal configuration is captured once when the Maieutics host builder is created:
 
 | Setting                                   |         Default |

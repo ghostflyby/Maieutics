@@ -34,6 +34,8 @@ import { registerCommandCompletion } from "../../completion.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
 import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
 import { testProjectRegistrationAsync } from "./projectRegistration.ts";
+import { testDocumentEditing } from "./documentEditing.ts";
+import { testWorkspaceSaving } from "./workspaceSaving.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -138,6 +140,10 @@ const notebookFixture = {
 
 /** The extension is installed in the host's registry and activates. */
 async function testActivationAsync(): Promise<void> {
+  assert(
+    vscode.workspace.getConfiguration("chat").get("disableAIFeatures") === true,
+    "isolated user settings disable built-in Chat before editor tests",
+  );
   // The host suite supplies controlled protocol peers. Incidental completion calls
   // must never launch a real kernel against the developer's persistent home.
   await vscode.workspace.getConfiguration("maieutics").update(
@@ -981,6 +987,14 @@ const tests: HostTest[] = [
     run: () => testQueueExecutionAsync(false, true, true),
   },
   { name: "the IDE executor reaches the real language services", run: testIdeExecutorAsync },
+  {
+    name: "save all persists dirty text and notebooks across every IDE project",
+    run: testWorkspaceSaving,
+  },
+  {
+    name: "IDE edits use versioned documents, undo, and unsaved TypeScript buffers",
+    run: testDocumentEditing,
+  },
   {
     name: "standalone IDE requests answer outside an Agent run",
     run: testStandaloneIdeRequestsAsync,

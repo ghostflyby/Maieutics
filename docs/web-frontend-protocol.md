@@ -424,6 +424,66 @@ locally instead. A frontend predating this family answers
 `ide_method_unsupported`; the kernel absorbs that once and serves the
 session from local I/O again (the pre-bridge behavior).
 
+### IDE document editing (`maieutics/documents/*`)
+
+The IDE edit tools use current editor documents, not the filesystem forwarding
+family above. These additive methods use the existing authenticated IDE request
+and answer endpoints (IDE capability version 1); unsupported methods fail typed
+and never degrade to disk writes. One call pins the owning session's elected
+frontend registration, including the provider computation. Requests are targeted
+standalone `ide.request` frames and are not broadcast or replayed through the run
+stream. Disconnection fails the call instead of switching editors mid-transaction.
+
+- `maieutics/documents/read` — `{uris: [physicalFileUri, ...]}` →
+  `{documents: [{uri, content, version}, ...]}`. Opens `TextDocument`s without
+  showing editor tabs; unsaved text is authoritative.
+- `maieutics/documents/apply` — `{documents: [{uri, content, version,
+  expectedHash}, ...]}` → `{applied: true}`. `content` is the kernel-validated
+  final document text; `version` and SHA-256 `expectedHash` refer to the snapshot
+  before editing. All targets must pass validation before one text-only
+  `workspace.applyEdit` transaction. Changes enter the editor undo stack and
+  remain unsaved. Version/content conflicts fail as `ide_document_conflict`;
+  editor rejection fails as `ide_edit_rejected`.
+
+Requests contain at most 64 distinct local workspace documents, with an 8 MiB
+combined UTF-8 text budget (before plus after for apply). Kernel per-file write
+bounds, instruction-surface gates, write policy and range/overlap validation
+still apply. The apply request is not exposed through the read-only `ide_request`
+escape hatch. No create/delete/rename resource operations are accepted.
+Computed rename/code-action edit envelopes add a `versions` map keyed by URI;
+the kernel translates its keys and preserves the versions when applying edits.
+Formatting records the document version before computation.
+
+Workspace saving is an explicit, separate barrier:
+
+- `maieutics/documents/dirty` — `{}` → `{documents: [{uri, version, kind}, ...]}`.
+  `kind` is `text` or `notebook`. Enumerates dirty file-backed documents across
+  every local project of this frontend's multi-root workspace, including
+  pre-existing user edits. Unrelated and untitled documents are excluded.
+- `maieutics/documents/save` — `{documents: [{uri, version, kind}, ...]}` →
+  `{status: "saved", saved: [uri, ...]}` or `{status: "failed", saved: [...],
+  failedUri, reason: "conflict" | "save_failed", pending: [...]}`. The kernel
+  authorizes every target against workspace containment, instruction and write
+  policy before requesting any save. No contents or binary notebook data are
+  transferred. At most 256 save targets are accepted, with no silent truncation.
+
+Saving uses `TextDocument.save()` / `NotebookDocument.save()`, preserving native
+save participants and file-conflict handling. A changed version or newly dirty
+document rejects the barrier; changes introduced by a document's own successful
+save participants are permitted. The final workspace check must find no dirty
+in-scope documents. Saves are sequential, so earlier successful saves remain
+persisted after a later failure or cancellation. The kernel maps failure to
+`ide_save_failed` / `ide_document_conflict`, including a bounded failed target
+and count of successful saves. It never reports a partial save as success.
+
+The agent tool is `ide_save_all`. `terminal_run`, `terminal_input` and
+`terminal_paste` accept additive `saveWorkspace: true` to enforce this barrier
+before allocating a terminal or delivering input; failures/cancellation prevent
+the dependent operation. Tool instructions require this flag for IDE-backed
+builds/tests. The default is false for compatibility and non-build operations;
+shell command text is not parsed to guess intent. One elected frontend remains
+pinned throughout each barrier, and requests are never broadcast or replayed.
+
 ## Comm channels (interactive widgets and view families)
 
 Interactive widgets (ADR 0024) and native view families (ADR 0038, the

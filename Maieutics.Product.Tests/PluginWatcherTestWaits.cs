@@ -30,87 +30,75 @@ internal static class PluginWatcherTestWaits
         Task applied,
         CancellationToken cancellationToken)
     {
-        StartHangDumpWatchdog();
-        while (!applied.IsCompleted)
+        using var watchdogLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var watchdog = CaptureHangDumpAsync(watchdogLifetime.Token);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            Task registered = manager.WatcherDebounceRegistered;
-            Task settled = await Task.WhenAny(
-                applied,
-                registered.WaitAsync(cancellationToken)).ConfigureAwait(false);
-            if (settled == applied) return;
+            while (!applied.IsCompleted)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Task registered = manager.WatcherDebounceRegistered;
+                Task settled = await Task.WhenAny(
+                    applied,
+                    registered.WaitAsync(cancellationToken)).ConfigureAwait(false);
+                if (settled == applied) return;
 
-            // Surface cancellation here instead of advancing: a canceled wait is not a
-            // registered debounce, and advancing it would start the reload at the very
-            // instant the deadline fired — the signature that hid the lost-edge race
-            // behind a "runtime will not run timers" theory.
-            await settled.ConfigureAwait(false);
-            clock.Advance(PluginHostManager.PluginReloadDebounce);
+                // Surface cancellation here instead of advancing: a canceled wait is not a
+                // registered debounce, and advancing it would start the reload at the very
+                // instant the deadline fired — the signature that hid the lost-edge race
+                // behind a "runtime will not run timers" theory.
+                await settled.ConfigureAwait(false);
+                clock.Advance(PluginHostManager.PluginReloadDebounce);
+            }
+        }
+        finally
+        {
+            await watchdogLifetime.CancelAsync().ConfigureAwait(false);
+            await watchdog.ConfigureAwait(false);
         }
     }
 
-    /// <summary>Flake-hunting diagnosis, opt-in only: when a watched reload parks past
-    /// 25s, capture a dump of the test host so the parked stacks name the stall. The
-    /// watchdog is enabled solely by MAIEUTICS_HANG_DUMP (the workflow_dispatch
-    /// hang_dump input) — never by logging alone, because every dump is hundreds of
-    /// megabytes and collection plus `clrstack -all` takes minutes. Best-effort: the
-    /// dump and its stack report land in MAIEUTICS_LOG_DIR and are uploaded with the
-    /// test logs. Runs once per process.</summary>
-    private static void StartHangDumpWatchdog()
+    /// <summary>Opt-in diagnosis owned by one reload wait. Successful waits cancel
+    /// the delay; cancellation also kills and reaps any diagnostic child. Only the first
+    /// wait that actually reaches the threshold captures a dump.</summary>
+    private static async Task CaptureHangDumpAsync(CancellationToken cancellationToken)
     {
-        if (Interlocked.Exchange(ref _hangDumpStarted, 1) == 1) return;
         if (Environment.GetEnvironmentVariable("MAIEUTICS_HANG_DUMP") is not "1") return;
         var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
         if (string.IsNullOrEmpty(logDirectory)) return;
-
-        _ = Task.Run(async () =>
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
         {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-                var dump = Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.dmp");
-                var install = Process.Start(
-                    new ProcessStartInfo("dotnet", "tool install --global dotnet-dump")
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                    });
-                using var _ = install;
-                await install!.WaitForExitAsync().ConfigureAwait(false);
-                var tool = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".dotnet", "tools", "dotnet-dump");
-                var collect = Process.Start(
-                    new ProcessStartInfo(tool, $"collect -p {Environment.ProcessId} -o {dump}")
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                    });
-                using var __ = collect;
-                await collect!.WaitForExitAsync().ConfigureAwait(false);
-                // Managed stacks cannot be read cross-OS, so the report is produced on
-                // the collecting runner and uploaded as text next to the dump.
-                var report = Process.Start(
-                    new ProcessStartInfo(
-                        tool,
-                        $"analyze {dump} -c \"clrstack -all\" -c \"exit\"")
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                    });
-                using var ___ = report;
-                var stacks = await report!.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-                await report.WaitForExitAsync().ConfigureAwait(false);
-                await File.WriteAllTextAsync(
-                    Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.stacks.txt"),
-                    stacks).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Diagnosis must never fail a test.
-            }
-        });
+            await Task.Delay(TimeSpan.FromSeconds(25), cancellationToken).ConfigureAwait(false);
+            if (Interlocked.Exchange(ref _hangDumpStarted, 1) == 1) return;
+            budget.CancelAfter(TimeSpan.FromMinutes(2));
+            var dump = Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.dmp");
+            // CI installs the tool before tests. Installing from a background test task
+            // could block on the network and mutate the user's global tool directory.
+            var tool = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".dotnet", "tools", OperatingSystem.IsWindows() ? "dotnet-dump.exe" : "dotnet-dump");
+            var collect = new ProcessStartInfo(tool);
+            foreach (var argument in new[] { "collect", "-p", Environment.ProcessId.ToString(), "-o", dump })
+                collect.ArgumentList.Add(argument);
+            await TestChildProcess.RunCapturedAsync(collect, budget.Token).ConfigureAwait(false);
+            var report = new ProcessStartInfo(tool);
+            foreach (var argument in new[] { "analyze", dump, "-c", "clrstack -all", "-c", "exit" })
+                report.ArgumentList.Add(argument);
+            var stacks = await TestChildProcess.RunCapturedAsync(report, budget.Token).ConfigureAwait(false);
+            await File.WriteAllTextAsync(Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.stacks.txt"),
+                stacks, budget.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            TestContext.Current.SendDiagnosticMessage("Hang diagnostics stopped: the 2-minute budget elapsed.");
+        }
+        catch (Exception exception)
+        {
+            TestContext.Current.SendDiagnosticMessage($"Hang diagnostics failed: {exception.GetType().Name}");
+        }
     }
 
     private static int _hangDumpStarted;

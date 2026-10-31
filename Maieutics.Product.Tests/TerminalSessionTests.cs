@@ -462,7 +462,7 @@ public sealed class TerminalSessionTests
     {
         var fake = new FakeTerminalProcess();
         await using var session = CreateSession(fake, TerminalSessionKind.OneShot, "sleep", ["60"]);
-        using var cancel = new CancellationTokenSource();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
 
         // Start the run, then cancel once the start has settled: the wire "running" state
         // proves the spawn was adopted (the idle transition happens after the process is
@@ -499,7 +499,7 @@ public sealed class TerminalSessionTests
             NullLogger<TerminalSession>.Instance);
         try
         {
-            using var cancel = new CancellationTokenSource();
+            using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
 
             // Cancel while the spawn is still blocked: the OCE surfaces before any process
             // is adopted, so the only disposer is the fire-and-forget late-spawn reclaim.

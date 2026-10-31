@@ -204,8 +204,9 @@ public sealed class FrontendUiModelTests
     [Fact(Timeout = 60_000)]
     public async Task CapabilitiesAdvertiseTheUiFamilies()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var token = TestContext.Current.CancellationToken;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
         await using var harness = await FrontendApiIntegrationTests.FrontendHarness.StartAsync(
             token,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "ok"),

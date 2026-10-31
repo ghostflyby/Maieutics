@@ -11,97 +11,61 @@ namespace Maieutics.Product.Tests;
 /// </summary>
 public sealed class DenoHelperProcessTests
 {
-    [Fact(Timeout = 60_000)]
-    public async Task CancelKillsTheChildWithinTheBudget()
+    [Theory(Timeout = 60_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelKillsTheChildWithinTheBudget(bool cancelOwner)
     {
-        if (OperatingSystem.IsWindows())
-            Assert.Skip("The stamp-polling helper child is a deno eval writing under the temp path.");
-
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(50));
-        var stampPath = Path.Combine(Path.GetTempPath(), $"mc-helper-stamp-{Guid.NewGuid():N}");
+        deadline.CancelAfter(TimeSpan.FromSeconds(40));
+        using var owner = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(owner.Token);
+        await using var area = TempArea.Create("helper-cancel");
+        var readyPath = Path.Combine(area.Path, "ready.json");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "deno",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("eval");
+        // JSON quoting also handles Windows paths. A real timer keeps the child alive
+        // until cancellation; publication lets the test acquire its OS exit handle.
+        startInfo.ArgumentList.Add(
+            "setInterval(() => {}, 1000); await Deno.writeTextFile(" +
+            System.Text.Json.JsonSerializer.Serialize(readyPath) +
+            ", JSON.stringify({ pid: Deno.pid })); await new Promise(() => {});");
+        var run = DenoHelperProcess.RunAsync(startInfo, "to prove kill-on-cancel.", cancellation.Token);
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = "deno",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-            startInfo.ArgumentList.Add("eval");
-            startInfo.ArgumentList.Add($"--allow-write={stampPath}");
-            // A long-running child that keeps refreshing a stamp file, so liveness (and death)
-            // is observable through the file system without process-table pids. The stamp path
-            // is absolute so the write grant covers it regardless of the working directory.
-            startInfo.ArgumentList.Add(
-                "for (;;) { await Deno.writeTextFile(\"" + stampPath + "\", String(Date.now())); " +
-                "await new Promise(r => setTimeout(r, 100)); }");
+            var ready = await FrontendDiscoveryFile.ReadAsync(
+                readyPath, TimeSpan.FromSeconds(30), deadline.Token);
+            using var child = Process.GetProcessById(ready.GetProperty("pid").GetInt32());
+            Assert.False(child.HasExited);
 
-            using var cancellation = new CancellationTokenSource();
-            var run = DenoHelperProcess.RunAsync(startInfo, "to prove kill-on-cancel.", cancellation.Token);
-
-            // The child is alive: its stamp file appears as an OS completion event. The
-            // properties are assigned inside the using body so a throwing setter still
-            // disposes the watcher.
-            using (var stampWatcher = new FileSystemWatcher(
-                       Path.GetDirectoryName(stampPath) ?? ".",
-                       Path.GetFileName(stampPath)))
-            {
-                stampWatcher.EnableRaisingEvents = true;
-                stampWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName;
-                var stampCreated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                stampWatcher.Created += (_, _) => stampCreated.TrySetResult();
-                stampWatcher.Changed += (_, _) => stampCreated.TrySetResult();
-                if (File.Exists(stampPath)) stampCreated.TrySetResult();
-                await stampCreated.Task.WaitAsync(deadline.Token);
-            }
-
-            await cancellation.CancelAsync();
-
-            // The helper must surface the cancellation promptly (not wait for the child)...
-            var runDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => { await run; });
-            Assert.True(DateTime.UtcNow < runDeadline);
-
-            // ...and the child must actually be dead: the stamp stops advancing. The
-            // strict-successor event for "the stamp stops" is the child process exiting —
-            // a killed child cannot write more stamps — so await the OS process exit
-            // (the helper's kill is part of the cancellation the run task observed
-            // above), then assert the stamp is stable after the exit synchronously.
-            // The helper kills the child before completing the cancelled run, so the
-            // process exit is already in the past; the stamp just needs one more
-            // observer pass to confirm it is frozen.
-            using (var deathWatcher = new FileSystemWatcher(
-                       Path.GetDirectoryName(stampPath) ?? ".",
-                       Path.GetFileName(stampPath)))
-            {
-                deathWatcher.EnableRaisingEvents = true;
-                deathWatcher.NotifyFilter = NotifyFilters.LastWrite;
-                var stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                deathWatcher.Changed += (_, _) =>
-                {
-                    // Each write re-arms: the stamp is dead only when nothing arrives.
-                    stampIdle.TrySetResult();
-                    stampIdle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                };
-                // Await one window of no further writes after the last observed write.
-                // The process is dead (the cancellation completed above), so any write
-                // that could still arrive is the OS flushing; a brief quiescence proves
-                // the stamp is frozen. This is a scenario time — the condition under
-                // test IS "no writes happen" — not a detector stand-in.
-                await Task.Delay(TimeSpan.FromSeconds(1.5), deadline.Token);
-            }
-
-            var frozenAt = File.GetLastWriteTimeUtc(stampPath);
-            Assert.True(
-                File.GetLastWriteTimeUtc(stampPath) == frozenAt,
-                "the cancelled helper child must be killed, not orphaned");
+            // The owner-cancel case exercises abandonment before the test's explicit
+            // cancel step, the path which previously left the helper and its slot alive.
+            if (cancelOwner) await owner.CancelAsync();
+            else await cancellation.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.WaitAsync(deadline.Token));
+            await child.WaitForExitAsync(deadline.Token);
+            Assert.True(child.HasExited, "helper cancellation must terminate its child");
         }
         finally
         {
-            TryDelete(stampPath);
+            // Teardown remains live after the test's token is canceled. Disposing a CTS
+            // alone would not cancel the helper, and its budget slot would remain held.
+            await cancellation.CancelAsync();
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await run.WaitAsync(cleanup.Token);
+            }
+            catch (OperationCanceledException) when (run.IsCanceled)
+            {
+            }
         }
     }
 
@@ -126,17 +90,5 @@ public sealed class DenoHelperProcessTests
         Assert.Equal(0, run.ExitCode);
         Assert.Contains("helper-out", run.StandardOutput);
         Assert.Contains("helper-err", run.StandardError);
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-            // Best-effort temp cleanup.
-        }
     }
 }

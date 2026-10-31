@@ -35,7 +35,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Assert.DoesNotContain(flags, flag => flag.Contains("instructions", StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task AWorkspaceProfileAllowAdmitsTheInstructionSurface()
     {
         var root = _workspace.Path;
@@ -51,7 +51,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
 
         // The profile layer resolves the relative pattern against its own directory, and the
         // gate judges the same physical address: the migration path is finally expressible.
-        var failure = await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md"));
+        var failure = await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", TestContext.Current.CancellationToken));
 
         Assert.Null(failure);
     }
@@ -91,7 +91,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Assert.True(DenoPermissionResolver.Resolve(withOverlay, "write", agentsPath).IsAllowed);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PermissionsCommandsSetAndClearTheSessionOverride()
     {
         var registry = new PermissionOverrideRegistry();
@@ -119,7 +119,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Assert.Null(registry.TryGet(session));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PermissionsCommandsRejectUnrepresentablePatternsLoudly()
     {
         var registry = new PermissionOverrideRegistry();
@@ -138,7 +138,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         Assert.Null(registry.TryGet(session));
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PermissionsCommandsBindTheInstructionGate()
     {
         var registry = new PermissionOverrideRegistry();
@@ -149,7 +149,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         var session = AgentSessionId.Create();
         var agentsPath = Path.Combine(_workspace.Path, "AGENTS.md");
 
-        var forbidden = await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", session));
+        var forbidden = await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", TestContext.Current.CancellationToken, session));
         Assert.Equal("instructions_write_forbidden", Assert.IsType<AgentToolException>(forbidden).Code);
 
         // The command language splits on whitespace with no quote handling, so the pattern
@@ -158,7 +158,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
             $"%permissions allow instructions {agentsPath}",
             session,
             TestContext.Current.CancellationToken);
-        Assert.Null(await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", session)));
+        Assert.Null(await Record.ExceptionAsync(() => InvokeWrite(edit, "workspace://local/AGENTS.md", TestContext.Current.CancellationToken, session)));
     }
 
     [Fact]
@@ -250,7 +250,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task InstructionAllowsMatchPercentEncodedWorkspaceUris()
     {
         // The workspace URI percent-encodes its segments; the gate judges the decoded physical
@@ -270,12 +270,12 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
         var edit = new WorkspaceEditFunctions(CreateWorkspace(), acquirer: acquirer);
 
         var failure = await Record.ExceptionAsync(() =>
-            InvokeWrite(edit, "workspace://local/.agents/my%20skills/SKILL.md"));
+            InvokeWrite(edit, "workspace://local/.agents/my%20skills/SKILL.md", TestContext.Current.CancellationToken));
 
         Assert.Null(failure);
     }
 
-    [Fact]
+    [Fact(Timeout = 30_000)]
     public async Task PermissionsCommandsRejectRelativePathPatternsLoudly()
     {
         var registry = new PermissionOverrideRegistry();
@@ -367,6 +367,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
     private static async Task InvokeWrite(
         WorkspaceEditFunctions edit,
         string uri,
+        CancellationToken cancellationToken,
         AgentSessionId? session = null)
     {
         var write = edit.Functions.Single(static function => function.Name == "write_text");
@@ -382,7 +383,7 @@ public sealed class InstructionSurfacePermissionTests : IDisposable
                         static (_, _) => ValueTask.CompletedTask)
                 }
             },
-            TestContext.Current.CancellationToken);
+            cancellationToken);
     }
 
     private sealed class ProfileLayerSource(PermissionLayer profile) : IPermissionLayerSource

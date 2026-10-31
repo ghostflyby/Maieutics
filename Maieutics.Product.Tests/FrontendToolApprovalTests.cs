@@ -64,7 +64,7 @@ public sealed class FrontendToolApprovalTests
         Assert.True(decision.AlwaysAllow);
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData("decline")]
     [InlineData("cancel")]
     [InlineData("deny")]
@@ -150,7 +150,7 @@ public sealed class FrontendToolApprovalTests
         var publisher = new RecordingFramePublisher();
         var presenter = CreatePresenter(publisher);
 
-        using var run = new CancellationTokenSource();
+        using var run = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var approval = presenter.RequestApprovalAsync(
             Request(AgentSessionId.Create(), "remove_file"),
             run.Token);

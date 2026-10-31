@@ -318,7 +318,7 @@ public sealed class PluginHostInvokeTests
         deadline.CancelAfter(Deadline);
         await using var harness = await CreateHarnessAsync(deadline.Token);
 
-        using var callCancellation = new CancellationTokenSource();
+        using var callCancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var invoke = harness.Manager.InvokeExtensionPointAsync(
             "plugin-1",
             "./main",

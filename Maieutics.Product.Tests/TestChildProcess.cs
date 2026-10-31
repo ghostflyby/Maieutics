@@ -57,9 +57,23 @@ internal sealed class TestChildProcess : IAsyncDisposable
     {
         var stdout = _process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = _process.StandardError.ReadToEndAsync(cancellationToken);
-        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        // Observe both reads even when cancellation interrupts them, then observe exit.
+        // Waiting for exit first could abandon faulted drain tasks on cancellation.
         var outputs = await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
+        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         return outputs[0] + outputs[1];
+    }
+
+    /// <summary>Runs a captured command with owned concurrent pipe drains and
+    /// kill-and-reap cleanup, including when the caller abandons the operation.</summary>
+    internal static async Task<string> RunCapturedAsync(
+        ProcessStartInfo startInfo, CancellationToken cancellationToken)
+    {
+        startInfo.UseShellExecute = false;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        await using var child = await StartAsync(startInfo, cancellationToken).ConfigureAwait(false);
+        return await child.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

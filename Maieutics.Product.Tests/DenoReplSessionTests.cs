@@ -234,16 +234,24 @@ public sealed class DenoReplSessionTests
             LongRunningOptions(),
             factory);
 
-        await session.StartAsync(TestContext.Current.CancellationToken);
-        var first = session.DisposeAsync().AsTask();
-        await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
-        var second = session.DisposeAsync().AsTask();
-        Assert.False(second.IsCompleted);
+        try
+        {
+            await session.StartAsync(TestContext.Current.CancellationToken);
+            var first = session.DisposeAsync().AsTask();
+            await generation.DisposalStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+            var second = session.DisposeAsync().AsTask();
+            Assert.False(second.IsCompleted);
 
-        generation.AllowDisposal.TrySetResult();
-        await Task.WhenAll(first, second);
-        Assert.Equal(1, generation.DisposeCount);
-        Assert.Equal("closed", session.GetSnapshot().State);
+            generation.AllowDisposal.TrySetResult();
+            await Task.WhenAll(first, second).WaitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(1, generation.DisposeCount);
+            Assert.Equal("closed", session.GetSnapshot().State);
+        }
+        finally
+        {
+            generation.AllowDisposal.TrySetResult();
+            await session.DisposeAsync();
+        }
     }
 
     private static DenoReplOptions LongRunningOptions(TimeSpan? executionTimeout = null)

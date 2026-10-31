@@ -2041,6 +2041,9 @@ public sealed class FrontendApiIntegrationTests
         {
             Client.Dispose();
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            // Close fake provider streams before joining host services. A parked model
+            // response must never depend on the host finishing disposal to be released.
+            await _provider.DisposeAsync();
             try
             {
                 await _host.StopAsync(cleanup.Token);
@@ -2050,7 +2053,6 @@ public sealed class FrontendApiIntegrationTests
             }
 
             await ((IAsyncDisposable)_host).DisposeAsync();
-            await _provider.DisposeAsync();
             try
             {
                 await TempArea.DeleteAsync(_dataRoot, CancellationToken.None);

@@ -14,7 +14,7 @@ public sealed class DiagnosticProcessTests
         start.ArgumentList.Add("eval");
         start.ArgumentList.Add("console.log('o'.repeat(512 * 1024)); console.error('e'.repeat(512 * 1024));");
 
-        var output = await PluginWatcherTestWaits.RunDiagnosticAsync(start, deadline.Token);
+        var output = await TestChildProcess.RunCapturedAsync(start, deadline.Token);
 
         Assert.Equal(512 * 1024, output.Count(character => character == 'o'));
         Assert.Equal(512 * 1024, output.Count(character => character == 'e'));
@@ -32,7 +32,7 @@ public sealed class DiagnosticProcessTests
         start.ArgumentList.Add("eval");
         start.ArgumentList.Add("setInterval(() => {}, 1000); await Deno.writeTextFile(" +
                                JsonSerializer.Serialize(readyPath) + ", JSON.stringify({ pid: Deno.pid }));");
-        var diagnostic = PluginWatcherTestWaits.RunDiagnosticAsync(start, cancellation.Token);
+        var diagnostic = TestChildProcess.RunCapturedAsync(start, cancellation.Token);
         try
         {
             var ready = await FrontendDiscoveryFile.ReadAsync(readyPath, TimeSpan.FromSeconds(10), deadline.Token);

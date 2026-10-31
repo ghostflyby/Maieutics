@@ -1,3 +1,4 @@
+// LibraryImport generates unsafe stubs even for blittable signatures (SYSLIB1062).
 #:property AllowUnsafeBlocks=true
 #:property TreatWarningsAsErrors=true
 

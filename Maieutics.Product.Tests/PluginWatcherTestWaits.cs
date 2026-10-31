@@ -66,11 +66,11 @@ internal static class PluginWatcherTestWaits
         if (Environment.GetEnvironmentVariable("MAIEUTICS_HANG_DUMP") is not "1") return;
         var logDirectory = Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR");
         if (string.IsNullOrEmpty(logDirectory)) return;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         try
         {
             await Task.Delay(TimeSpan.FromSeconds(25), cancellationToken).ConfigureAwait(false);
             if (Interlocked.Exchange(ref _hangDumpStarted, 1) == 1) return;
-            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             budget.CancelAfter(TimeSpan.FromMinutes(2));
             var dump = Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.dmp");
             // CI installs the tool before tests. Installing from a background test task
@@ -80,31 +80,25 @@ internal static class PluginWatcherTestWaits
             var collect = new ProcessStartInfo(tool);
             foreach (var argument in new[] { "collect", "-p", Environment.ProcessId.ToString(), "-o", dump })
                 collect.ArgumentList.Add(argument);
-            await RunDiagnosticAsync(collect, budget.Token).ConfigureAwait(false);
+            await TestChildProcess.RunCapturedAsync(collect, budget.Token).ConfigureAwait(false);
             var report = new ProcessStartInfo(tool);
             foreach (var argument in new[] { "analyze", dump, "-c", "clrstack -all", "-c", "exit" })
                 report.ArgumentList.Add(argument);
-            var stacks = await RunDiagnosticAsync(report, budget.Token).ConfigureAwait(false);
+            var stacks = await TestChildProcess.RunCapturedAsync(report, budget.Token).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(logDirectory, $"hang-{Environment.ProcessId}.stacks.txt"),
                 stacks, budget.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (OperationCanceledException) when (budget.IsCancellationRequested)
+        {
+            TestContext.Current.SendDiagnosticMessage("Hang diagnostics stopped: the 2-minute budget elapsed.");
+        }
         catch (Exception exception)
         {
             TestContext.Current.SendDiagnosticMessage($"Hang diagnostics failed: {exception.GetType().Name}");
         }
-    }
-
-    internal static async Task<string> RunDiagnosticAsync(
-        ProcessStartInfo startInfo, CancellationToken cancellationToken)
-    {
-        startInfo.UseShellExecute = false;
-        startInfo.RedirectStandardOutput = true;
-        startInfo.RedirectStandardError = true;
-        await using var child = await TestChildProcess.StartAsync(startInfo, cancellationToken).ConfigureAwait(false);
-        return await child.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static int _hangDumpStarted;

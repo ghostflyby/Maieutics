@@ -2,6 +2,7 @@ using System.Reflection;
 
 namespace Maieutics.Product.Tests;
 
+// Assembly-local contract mirrored in Maieutics.Agent.Tests/TestTimeoutContractTests.cs; keep both implementations in sync.
 public sealed class TestTimeoutContractTests
 {
     [Fact]

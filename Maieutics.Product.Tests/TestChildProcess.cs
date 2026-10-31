@@ -64,6 +64,18 @@ internal sealed class TestChildProcess : IAsyncDisposable
         return outputs[0] + outputs[1];
     }
 
+    /// <summary>Runs a captured command with owned concurrent pipe drains and
+    /// kill-and-reap cleanup, including when the caller abandons the operation.</summary>
+    internal static async Task<string> RunCapturedAsync(
+        ProcessStartInfo startInfo, CancellationToken cancellationToken)
+    {
+        startInfo.UseShellExecute = false;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        await using var child = await StartAsync(startInfo, cancellationToken).ConfigureAwait(false);
+        return await child.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

@@ -57,8 +57,10 @@ internal sealed class TestChildProcess : IAsyncDisposable
     {
         var stdout = _process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderr = _process.StandardError.ReadToEndAsync(cancellationToken);
-        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        // Observe both reads even when cancellation interrupts them, then observe exit.
+        // Waiting for exit first could abandon faulted drain tasks on cancellation.
         var outputs = await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
+        await _process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         return outputs[0] + outputs[1];
     }
 

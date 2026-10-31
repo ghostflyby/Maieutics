@@ -14,6 +14,29 @@ Jupyter libraries were extracted to the standalone JupyterSharp repository and a
 - [Runtime configuration](configuration.md)
 - [Logging](logging.md) — level policy, categories, and the opt-in file sink
 
+## Test execution
+
+Run .NET tests with an external process deadline when investigating hangs:
+
+```bash
+dotnet run --file .github/run_test_process.cs -- --timeout-seconds 1200 -- dotnet test Maieutics.slnx -c Release
+```
+
+The supervisor is a .NET 10 file-based app with no package dependencies. Run its lifecycle checks with
+`dotnet run --file .github/run_test_process.cs -- --self-test`.
+
+CI uses this supervisor for each suite pass (20 minutes) and NativeAOT smoke tests (10 minutes).
+It preserves the test exit code, returns 124 on deadline, and reclaims owned descendants after normal exit,
+timeout, or interruption. POSIX runs use a dedicated process group; Windows uses an inherited kill-on-close Job.
+POSIX descendants that deliberately create a new session leave that group; the supervisor itself cannot clean
+up after SIGKILL. This supplements per-test xUnit timeouts and cooperative cancellation, including fixture
+disposal and in-process providers that ignore cancellation. Teardown must release test gates in `finally`,
+stop frame producers before joining servers, and use cleanup budgets independent of an already-canceled test.
+A wait-only timeout on disposal must not release resources still used by the pending operation.
+
+The optional `MAIEUTICS_HANG_DUMP=1` watcher diagnosis requires `dotnet-dump` to be installed before tests.
+Its delay, tool processes, and pipe drains belong to the waiting test and are canceled when that wait ends.
+
 ## Architecture
 
 - [Agent platform architecture](architecture/README.md)

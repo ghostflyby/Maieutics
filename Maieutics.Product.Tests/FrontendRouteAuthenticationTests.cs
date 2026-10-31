@@ -229,10 +229,17 @@ public sealed class FrontendRouteAuthenticationTests
         public async ValueTask DisposeAsync()
         {
             _client.Dispose();
-            await _application.StopAsync(CancellationToken.None);
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await _host.DisposeAsync();
-            _manager.Dispose();
-            await _application.DisposeAsync();
+            await _manager.DisposeAsync();
+            try
+            {
+                await _application.StopAsync(cleanup.Token);
+            }
+            finally
+            {
+                await _application.DisposeAsync();
+            }
         }
 
         public static async Task<FrontendFixture> StartAsync(CancellationToken cancellationToken)

@@ -93,7 +93,7 @@ public sealed class McpProcessPolicyTests
         }
     }
 
-    [Theory]
+    [Theory(Timeout = 30_000)]
     [InlineData("/usr/bin/safe-server", "/usr/bin/evil-server", true)]
     [InlineData("/usr/bin/safe-server", "/usr/bin/safe-server", false)]
     [InlineData("/opt/servers", "/opt/servers/nested/server", false)]

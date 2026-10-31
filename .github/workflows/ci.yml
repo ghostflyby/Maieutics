@@ -169,6 +169,9 @@ jobs:
       - name: Build
         run: dotnet build Maieutics.slnx --configuration Release --no-restore -warnaserror
 
+      - name: Test process supervisor
+        run: dotnet run --file .github/run_test_process.cs -- --self-test
+
       - name: Test
         shell: bash
         env:
@@ -194,9 +197,11 @@ jobs:
           if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--no-restore --no-build); fi
           if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--minimum-expected-tests 1000); fi
           if [ -n "$TEST_FILTER" ]; then args+=(--filter-class "$TEST_FILTER"); fi
+          # The external supervisor bounds non-cooperative test/fixture disposal and
+          # reclaims descendants even when a test host exits before its Deno children.
           for pass in $(seq 1 "$TEST_REPEATS"); do
             echo "=== test pass $pass/$TEST_REPEATS ==="
-            dotnet test "${args[@]}" || exit 1
+            dotnet run --file .github/run_test_process.cs -- --timeout-seconds 1200 -- dotnet test "${args[@]}" || exit 1
           done
 
       - name: Upload test logs
@@ -266,7 +271,7 @@ jobs:
       - name: Smoke test published executable
         env:
           MAIEUTICS_TEST_HOST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
-        run: dotnet test Maieutics.Product.Tests/Maieutics.Product.Tests.csproj --configuration Release --no-restore --filter-trait "Category=Smoke"
+        run: dotnet run --file .github/run_test_process.cs -- --timeout-seconds 600 -- dotnet test Maieutics.Product.Tests/Maieutics.Product.Tests.csproj --configuration Release --no-restore --filter-trait "Category=Smoke"
 
       - name: Upload test logs
         if: failure() || github.event_name == 'schedule'

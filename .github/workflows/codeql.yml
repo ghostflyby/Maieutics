@@ -1,0 +1,50 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+
+jobs:
+  analyze:
+    name: Analyze (csharp)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          queries: security-extended
+
+      - name: Build
+        run: dotnet build Maieutics.slnx -c Release --nologo
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:csharp"
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/dependency-review-action@v5

@@ -52,5 +52,5 @@ static double Seconds(XElement element) => double.TryParse((string?)element.Attr
     NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value) && value >= 0 ? value : 0;
 static string Format(double value) => value.ToString("F3", CultureInfo.InvariantCulture);
 static string Escape(string value) => value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
-    .Replace("|", "&#124;").Replace("\r", " ").Replace("\n", " ");
+    .Replace("|", "&#124;").Replace("`", "&#96;").Replace("\r", " ").Replace("\n", " ");
 internal sealed record TestTiming(string Assembly, string Type, string Name, double Seconds, string Result);

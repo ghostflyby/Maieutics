@@ -286,6 +286,7 @@ public sealed class FrontendApiIntegrationTests
     [InlineData(true, true)]
     public async Task ClientCloseCompletesWithoutANewRunOrQueueMutation(bool activeRun, bool runScoped)
     {
+        if (runScoped) Assert.True(activeRun, "A run-scoped socket requires an active run.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
         await using var harness = activeRun

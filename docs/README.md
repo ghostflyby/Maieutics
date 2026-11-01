@@ -34,6 +34,14 @@ disposal and in-process providers that ignore cancellation. Teardown must releas
 stop frame producers before joining servers, and use cleanup budgets independent of an already-canceled test.
 A wait-only timeout on disposal must not release resources still used by the pending operation.
 
+CI also writes xUnit XML reports to `test-results/pass-N` and uploads `test-timing-<OS>` on every run.
+The job summary lists the slowest classes and cases. Class sums can overlap when collections run in parallel;
+compare assembly wall time as well as individual case durations. To inspect downloaded reports locally:
+
+```bash
+dotnet run --file .github/test_timing_summary.cs -- test-results
+```
+
 The optional `MAIEUTICS_HANG_DUMP=1` watcher diagnosis requires `dotnet-dump` to be installed before tests.
 Its delay, tool processes, and pipe drains belong to the waiting test and are canceled when that wait ends.
 

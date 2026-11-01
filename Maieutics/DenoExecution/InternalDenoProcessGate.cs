@@ -41,18 +41,18 @@ internal static class InternalDenoProcessGate
         var gate = _liveChildren;
         if (gate is null) return ChildSlotLease.None;
 
-        try
-        {
-            await gate.WaitAsync(WaitBudget, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException exception)
-        {
-            throw new TimeoutException(
-                $"The internal Deno child gate had no free slot after {WaitBudget.TotalSeconds}s; " +
-                "a leaked child is likely holding every slot.",
-                exception);
-        }
+        return await AcquireAsync(gate, WaitBudget, cancellationToken).ConfigureAwait(false);
+    }
 
+    /// <summary>Acquires against an explicit budget without changing the suite-wide
+    /// gate; tests use a local semaphore to exercise exhaustion deterministically.</summary>
+    internal static async Task<ChildSlotLease> AcquireAsync(
+        SemaphoreSlim gate, TimeSpan waitBudget, CancellationToken cancellationToken)
+    {
+        if (!await gate.WaitAsync(waitBudget, cancellationToken).ConfigureAwait(false))
+            throw new TimeoutException(
+                $"The internal Deno child gate had no free slot after {waitBudget.TotalSeconds}s; " +
+                "a leaked child is likely holding every slot.");
         return ChildSlotLease.Acquired(gate);
     }
 }

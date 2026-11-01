@@ -11,6 +11,7 @@ using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;
 
+[Collection(ProductIntegrationCollection.Name)]
 public sealed class ReplControlHostTests
 {
     private const string DenoControlClientScript = """
@@ -390,6 +391,49 @@ public sealed class ReplControlHostTests
             var result = await ReceiveBusAsync(socket, timeout.Token);
             Assert.Contains("\"status\":\"ok\"", result);
             Assert.Equal(ownerSessionId, captured);
+        }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ApplicationStopDrainsControlSocketsBeforeTheClientCloses(bool helloCompleted)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control-host socket harness is Unix-only.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, "stopping-session");
+        var (application, host) = await ReplControlTestHost.StartAsync(registry, deadline.Token);
+        using var controlOwner = host;
+        await using var applicationOwner = application;
+        using var socket = await ConnectWebSocketAsync(host.SocketPath, deadline.Token);
+        Task? stop = null;
+        try
+        {
+            if (helloCompleted)
+            {
+                await SendBusAsync(socket,
+                    """{"version":1,"type":"control.hello","payload":{"sessionId":"stopping-session"}}""",
+                    deadline.Token);
+                Assert.Contains("control.ready", await ReceiveBusAsync(socket, deadline.Token));
+            }
+            // Keep the peer open: only ApplicationStopping can release the pending
+            // hello/read. The server must not depend on client disposal to stop.
+            stop = application.StopAsync(CancellationToken.None);
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            wait.CancelAfter(TimeSpan.FromSeconds(5));
+            await stop.WaitAsync(wait.Token);
+        }
+        finally
+        {
+            socket.Dispose();
+            if (stop is not null)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await stop.WaitAsync(cleanup.Token);
+            }
         }
     }
 

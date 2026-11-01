@@ -201,8 +201,21 @@ jobs:
           # reclaims descendants even when a test host exits before its Deno children.
           for pass in $(seq 1 "$TEST_REPEATS"); do
             echo "=== test pass $pass/$TEST_REPEATS ==="
-            dotnet run --file .github/run_test_process.cs -- --timeout-seconds 1200 -- dotnet test "${args[@]}" || exit 1
+            dotnet run --file .github/run_test_process.cs -- --timeout-seconds 1200 -- dotnet test "${args[@]}" --report-xunit-xml --results-directory "$GITHUB_WORKSPACE/test-results/pass-$pass" || exit 1
           done
+
+      - name: Summarize test timing
+        if: always()
+        run: dotnet run --file .github/test_timing_summary.cs -- test-results
+
+      - name: Upload test timing
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-timing-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload test logs
         if: failure() || github.event_name == 'schedule'

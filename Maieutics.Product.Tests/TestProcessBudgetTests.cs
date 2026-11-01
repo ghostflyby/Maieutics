@@ -56,4 +56,25 @@ public sealed class TestProcessBudgetTests
             .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         again.Dispose();
     }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnExhaustedBudgetCannotMintALease()
+    {
+        using var gate = new SemaphoreSlim(0, 1);
+        await Assert.ThrowsAnyAsync<TimeoutException>(() => InternalDenoProcessGate.AcquireAsync(
+            gate, TimeSpan.Zero, TestContext.Current.CancellationToken));
+        Assert.Equal(0, gate.CurrentCount);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ALocalLeaseReturnsExactlyTheSlotItAcquired()
+    {
+        using var gate = new SemaphoreSlim(1, 1);
+        var lease = await InternalDenoProcessGate.AcquireAsync(
+            gate, TimeSpan.Zero, TestContext.Current.CancellationToken);
+        Assert.Equal(0, gate.CurrentCount);
+        lease.Dispose();
+        Assert.Equal(1, gate.CurrentCount);
+    }
+
 }

@@ -994,6 +994,9 @@ internal sealed class FrontendHost : IAsyncDisposable
                 peer.Token),
             peer.Token).ConfigureAwait(false);
         var drain = DrainReceiveAsync(socket, peer.Token);
+        // Producer waits stop independently of the receive transport, so acknowledging
+        // a client close never requires aborting its WebSocket first.
+        using var serving = CancellationTokenSource.CreateLinkedTokenSource(peer.Token);
         using var metadataLifetime = CancellationTokenSource.CreateLinkedTokenSource(peer.Token);
         async Task PumpTitleMetadataAsync()
         {
@@ -1040,7 +1043,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                         runStream,
                         since,
                         static token => Task.Delay(Timeout.InfiniteTimeSpan, token),
-                        peer.Token).ConfigureAwait(false);
+                        drain,
+                        serving.Token).ConfigureAwait(false);
                 }
             }
             else
@@ -1084,9 +1088,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                     // neither be missed nor double-served); a queue wake writes one
                     // full-state queue.updated frame straight on the socket.
                     var runWait = pendingRunWait ??=
-                        _service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, peer.Token);
-                    var queueWait = _turnQueue.WaitForChangeAsync(sessionId, queueVersion, peer.Token);
-                    var settled = await Task.WhenAny(queueWait, runWait).ConfigureAwait(false);
+                        _service.WaitForRunAsync(new AgentSessionId(addressedSession), previous, serving.Token);
+                    var queueWait = _turnQueue.WaitForChangeAsync(sessionId, queueVersion, serving.Token);
+                    var settled = await Task.WhenAny(drain, queueWait, runWait).ConfigureAwait(false);
+                    if (ReferenceEquals(settled, drain)) break;
 
                     // Flush queue state BEFORE serving a run: one worker transition fires
                     // both wakes (dequeue and announce), and clients need the queue frame
@@ -1112,7 +1117,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                                 await _turnQueue.WaitForChangeAsync(sessionId, queueVersion, token).ConfigureAwait(false);
                                 await FlushQueueAsync(peer.Token).ConfigureAwait(false);
                             },
-                            peer.Token).ConfigureAwait(false);
+                            drain,
+                            serving.Token).ConfigureAwait(false);
                         previous = stream;
                         // Replay offsets are per run; later runs stream live from their start.
                         since = 0;
@@ -1135,6 +1141,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         finally
         {
+            await serving.CancelAsync().ConfigureAwait(false);
             await metadataLifetime.CancelAsync().ConfigureAwait(false);
             await metadataPump.ConfigureAwait(false);
             if (ideRegistration is { } registration) _ideSockets?.Withdraw(sessionId, registration);
@@ -1236,8 +1243,10 @@ internal sealed class FrontendHost : IAsyncDisposable
         FrontendRunStream stream,
         long since,
         Func<CancellationToken, Task> flushQueueAsync,
+        Task clientClosed,
         CancellationToken cancellationToken)
     {
+        if (clientClosed.IsCompleted) return;
         var (initial, channel) = stream.Subscribe(since);
         // The run owns its pending waits independently of the socket receive: ending
         // replay must stop and join these waits without aborting the WebSocket.
@@ -1246,7 +1255,11 @@ internal sealed class FrontendHost : IAsyncDisposable
         var nextFrame = Task.FromResult(false);
         try
         {
-            foreach (var frame in initial) await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
+            foreach (var frame in initial)
+            {
+                if (clientClosed.IsCompleted) return;
+                await send(() => SendFrameAsync(socket, frame, cancellationToken), cancellationToken).ConfigureAwait(false);
+            }
 
             // Queue frames must interleave with run frames, not defer behind the whole
             // run: a run parked at a gated provider once pinned a worker transition
@@ -1261,7 +1274,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             nextFrame = channel.Reader.WaitToReadAsync(waits.Token).AsTask();
             while (true)
             {
-                var settled = await Task.WhenAny(nextFrame, queueWake).ConfigureAwait(false);
+                var settled = await Task.WhenAny(clientClosed, nextFrame, queueWake).ConfigureAwait(false);
+                if (ReferenceEquals(settled, clientClosed)) break;
                 if (ReferenceEquals(settled, queueWake))
                 {
                     await queueWake.ConfigureAwait(false);

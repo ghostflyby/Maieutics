@@ -280,6 +280,54 @@ public sealed class FrontendApiIntegrationTests
         }
     }
 
+    [Theory(Timeout = 45_000)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ClientCloseCompletesWithoutANewRunOrQueueMutation(bool activeRun, bool runScoped)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var harness = activeRun
+            ? await StartHostWithHangingProviderAsync(deadline.Token)
+            : await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var runId = activeRun ? await harness.SubmitTurnAsync(sessionId, "park until released", deadline.Token) : null;
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {harness.Token}");
+        var query = runScoped ? $"?runId={runId}" : string.Empty;
+        await socket.ConnectAsync(new Uri(
+            $"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/events{query}"), deadline.Token);
+        var reader = new FrontendEventsConnection(socket);
+        try
+        {
+            if (activeRun)
+                await reader.CollectUntilAsync(frame => frame.GetProperty("type").GetString() == "run.status" &&
+                    frame.GetProperty("state").GetString() == "busy", deadline.Token);
+            else
+                Assert.Equal("hello", (await reader.ReceiveFrameAsync(deadline.Token)).GetProperty("type").GetString());
+
+            // The handshake itself is the completion signal. No turn, queue mutation,
+            // host shutdown, or provider release is allowed to wake the server first.
+            using var close = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            close.CancelAfter(TimeSpan.FromSeconds(5));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client done", close.Token);
+            Assert.Equal(WebSocketState.Closed, socket.State);
+            Assert.Equal(WebSocketCloseStatus.NormalClosure, socket.CloseStatus);
+            if (runId is not null)
+            {
+                Assert.True(harness.SessionService.TryGetRun(runId, out var stream));
+                Assert.NotNull(stream);
+                Assert.False(stream.Completion.IsCompleted, "closing one subscriber must not cancel the session's run");
+            }
+        }
+        finally
+        {
+            harness.ReleaseProvider();
+        }
+        if (runId is not null) await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task ConcurrentTurnsAreRejectedAsBusy()
     {

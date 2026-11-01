@@ -773,6 +773,11 @@ close frame before cancelling the receive pump. One bounded close-handshake budg
 covers the close write and peer acknowledgement, so terminal output is delivered
 before teardown; a peer that does not acknowledge is aborted when that budget ends.
 
+A client-initiated event-socket close also wakes an idle or active stream without requiring a new
+run or queue mutation. Closing a subscription does not cancel its session's Agent turn; another
+connection can resume the retained output. Control WebSockets are canceled on application stopping
+so upgraded requests do not hold Kestrel's shutdown open until hosted services stop.
+
 ## WebSocket event stream (executable → frontend, half-duplex)
 
 `GET /v1/agent/sessions/{sid}/events?sinceSequence=<n>` upgrades to a

@@ -137,7 +137,20 @@ internal sealed partial class ReplControlHost : IDisposable
         });
         application.UseWebSockets();
         application.MapGet("/health", () => Results.Text("ok"));
-        application.Map("/ws", HandleWebSocketAsync);
+        application.Map("/ws", async context =>
+        {
+            // Kestrel drains upgrades before hosted services stop. End control
+            // requests before waiting for the plugin manager's later StopAsync.
+            using var connection = CancellationTokenSource.CreateLinkedTokenSource(
+                context.RequestAborted, application.Lifetime.ApplicationStopping);
+            try
+            {
+                await HandleWebSocketAsync(context, connection.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (connection.IsCancellationRequested)
+            {
+            }
+        });
         application.MapPost("/v1/tool.invoke", HandleToolInvokeAsync);
         if (_resources is not null) application.MapGet("/v1/resource", HandleResourceGetAsync);
         if (_orchestration is not null)
@@ -221,7 +234,7 @@ internal sealed partial class ReplControlHost : IDisposable
                _credentialRegistry.TryResolve(credential, out identity);
     }
 
-    private async Task HandleWebSocketAsync(HttpContext context)
+    private async Task HandleWebSocketAsync(HttpContext context, CancellationToken connectionToken)
     {
         if (!context.WebSockets.IsWebSocketRequest)
         {
@@ -239,7 +252,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 socket,
                 peerProcessId,
                 authorizedIdentity,
-                context.RequestAborted)
+                connectionToken)
             .ConfigureAwait(false);
         _logger.LogDebug("Control identity {Identity} peer {PeerProcessId}.", identity?.Id, peerProcessId);
         if (identity is null)
@@ -249,7 +262,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     .CloseOutputAsync(
                         WebSocketCloseStatus.PolicyViolation,
                         "identity not established",
-                        context.RequestAborted)
+                        connectionToken)
                     .ConfigureAwait(false);
             return;
         }
@@ -258,7 +271,7 @@ internal sealed partial class ReplControlHost : IDisposable
         {
             if (_pluginHosts is { } manager)
             {
-                await manager.AttachHostAsync(socket, context.RequestAborted).ConfigureAwait(false);
+                await manager.AttachHostAsync(socket, connectionToken).ConfigureAwait(false);
             }
             else
             {
@@ -266,7 +279,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     .CloseAsync(
                         WebSocketCloseStatus.PolicyViolation,
                         "plugin host support is not enabled",
-                        context.RequestAborted)
+                        connectionToken)
                     .ConfigureAwait(false);
             }
 
@@ -304,17 +317,17 @@ internal sealed partial class ReplControlHost : IDisposable
         }
 
         _connections[sessionId] = connection;
-        using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+        using var owner = CancellationTokenSource.CreateLinkedTokenSource(connectionToken);
         var toolInvocations = new List<Task>();
         try
         {
             await connection.SendAsync(
                 new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlReady),
-                context.RequestAborted).ConfigureAwait(false);
+                connectionToken).ConfigureAwait(false);
             while (socket.State == WebSocketState.Open)
             {
                 var text = await ReplControlMessageReader
-                    .ReadAsync(socket, context.RequestAborted)
+                    .ReadAsync(socket, connectionToken)
                     .ConfigureAwait(false);
                 if (text is null) break;
 

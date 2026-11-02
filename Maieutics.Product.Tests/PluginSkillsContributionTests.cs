@@ -635,9 +635,15 @@ public sealed class PluginSkillsContributionTests : IAsyncDisposable
             await poisonedManager.StartAsync(TestContext.Current.CancellationToken);
             await healthyManager.StartAsync(TestContext.Current.CancellationToken);
 
+            // Epsilon and the poison diagnostic come from two independent managers whose
+            // publication order is undefined: pin both in one wait (the diagnostic is not
+            // epsilon's strict successor) before the synchronous assertion re-checks it.
             await AwaitCatalogAsync(
                 catalog,
-                snapshot => snapshot.Skills.Any(skill => skill.Name == "epsilon"),
+                snapshot => snapshot.Skills.Any(skill => skill.Name == "epsilon") &&
+                            snapshot.Diagnostics.Any(diagnostic =>
+                                diagnostic.Contains("cannot be resolved") ||
+                                diagnostic.Contains("not covered by a read grant")),
                 TestContext.Current.CancellationToken);
             Assert.Contains(catalog.Current.Diagnostics, diagnostic =>
                 diagnostic.Contains("cannot be resolved") ||

@@ -132,8 +132,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                 _logger.LogError(
                     exception,
                     "Unhandled exception on {Method} {Path}.",
-                    context.Request.Method,
-                    context.Request.Path);
+                    LogText.Escape(context.Request.Method),
+                    LogText.Escape(context.Request.Path.ToUriComponent()));
                 throw;
             }
         });
@@ -981,7 +981,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         _logger.LogDebug(
             "Events socket opened for session {SessionId} at {Path} (since {SinceSequence}, ide {IdeAnnounced}).",
             sessionId,
-            context.Request.Path,
+            LogText.Escape(context.Request.Path.ToUriComponent()),
             since,
             ideAnnounced);
         // Copied before the closure: the loop below rewrites `since` for later runs, and the
@@ -1667,16 +1667,16 @@ internal sealed class FrontendHost : IAsyncDisposable
             // the request ends with whatever was partially written.
             _logger.LogWarning(
                 "Frontend route {Method} {Path} failed with {Code} after the response had started; the client received a partial response.",
-                context.Request.Method,
-                context.Request.Path.Value,
+                LogText.Escape(context.Request.Method),
+                LogText.Escape(context.Request.Path.ToUriComponent()),
                 code);
             return;
         }
 
         _logger.LogDebug(
             "Frontend route {Method} {Path} rejected with {Code}.",
-            context.Request.Method,
-            context.Request.Path.Value,
+            LogText.Escape(context.Request.Method),
+            LogText.Escape(context.Request.Path.ToUriComponent()),
             code);
 
         context.Response.StatusCode = code switch

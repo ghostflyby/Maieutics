@@ -254,7 +254,10 @@ internal sealed partial class ReplControlHost : IDisposable
                 authorizedIdentity,
                 connectionToken)
             .ConfigureAwait(false);
-        _logger.LogDebug("Control identity {Identity} peer {PeerProcessId}.", identity?.Id, peerProcessId);
+        _logger.LogDebug(
+            "Control identity {Identity} peer {PeerProcessId}.",
+            identity is { } establishedIdentity ? LogText.Escape(establishedIdentity.Id) : null,
+            peerProcessId);
         if (identity is null)
         {
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -295,14 +298,14 @@ internal sealed partial class ReplControlHost : IDisposable
             : sessionId;
         _logger.LogDebug(
             "Control-bus connection accepted for session {SessionId} (peer process {PeerProcessId}).",
-            sessionId,
+            LogText.Escape(sessionId),
             peerProcessId);
         var connection = new SessionBusConnection(socket);
         if (_connections.TryGetValue(sessionId, out var previous) && previous.State == WebSocketState.Open)
         {
             // A replaced connection drains under a bounded budget: a peer that stops
             // reading must not stall the new connection's registration.
-            _logger.LogDebug("Replacing the control-bus connection for session {SessionId}.", sessionId);
+            _logger.LogDebug("Replacing the control-bus connection for session {SessionId}.", LogText.Escape(sessionId));
             using var replacementBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
@@ -332,7 +335,8 @@ internal sealed partial class ReplControlHost : IDisposable
                 if (text is null) break;
 
                 await ObserveCompletedAsync(toolInvocations).ConfigureAwait(false);
-                _logger.LogDebug("Control message received: {Message}.", text);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("Control message received: {Message}.", LogText.Escape(text));
                 await HandleBusMessageAsync(
                     gateSessionId,
                     connection,
@@ -341,14 +345,14 @@ internal sealed partial class ReplControlHost : IDisposable
                     owner.Token).ConfigureAwait(false);
             }
 
-            _logger.LogDebug("Control-bus receive loop for session {SessionId} ended gracefully.", sessionId);
+            _logger.LogDebug("Control-bus receive loop for session {SessionId} ended gracefully.", LogText.Escape(sessionId));
         }
         catch (Exception exception)
         {
             _logger.LogDebug(
                 exception,
                 "Control-bus receive loop for session {SessionId} ended faulted.",
-                sessionId);
+                LogText.Escape(sessionId));
             throw;
         }
         finally
@@ -371,7 +375,7 @@ internal sealed partial class ReplControlHost : IDisposable
                 _logger.LogWarning(
                     exception,
                     "Control-bus tool invocations for session {SessionId} ended faulted.",
-                    sessionId);
+                    LogText.Escape(sessionId));
             }
         }
     }
@@ -502,7 +506,10 @@ internal sealed partial class ReplControlHost : IDisposable
         switch (envelope.Type)
         {
             case ReplMessageType.ControlPing:
-                _logger.LogDebug("Control ping {CorrelationId}.", envelope.CorrelationId);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug(
+                        "Control ping {CorrelationId}.",
+                        envelope.CorrelationId is { } correlationId ? LogText.Escape(correlationId) : null);
                 await PushAsync(
                     connection,
                     new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlPong, envelope.CorrelationId),
@@ -783,7 +790,7 @@ internal sealed partial class ReplControlHost : IDisposable
             _logger.LogWarning(
                 exception,
                 "Control WebSocket tool invocation failed for session {SessionId}.",
-                sessionId);
+                LogText.Escape(sessionId));
             try
             {
                 await PushErrorAsync(
@@ -919,7 +926,7 @@ internal sealed partial class ReplControlHost : IDisposable
         }
         catch (Exception exception)
         {
-            _logger.LogWarning(exception, "Script tool '{Tool}' failed.", tool);
+            _logger.LogWarning(exception, "Script tool '{Tool}' failed.", LogText.Escape(tool));
             envelope = ToolJson.CreateFailureEnvelope("tool_failed", exception.Message);
         }
         finally
@@ -1031,7 +1038,7 @@ internal sealed partial class ReplControlHost : IDisposable
             }
             catch (Exception exception)
             {
-                _logger.LogWarning(exception, "A post-invoke hook failed for tool '{Tool}'.", tool);
+                _logger.LogWarning(exception, "A post-invoke hook failed for tool '{Tool}'.", LogText.Escape(tool));
             }
     }
 

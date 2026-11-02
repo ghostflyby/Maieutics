@@ -83,8 +83,8 @@ internal sealed partial class ReplControlHost
             _logger.LogWarning(
                 exception,
                 "Resource read for '{Uri}' via provider {ProviderId} failed.",
-                uri,
-                provider.Id);
+                LogText.Escape(uri),
+                LogText.Escape(provider.Id));
             await WriteResourceErrorAsync(
                 context,
                 StatusCodes.Status502BadGateway,

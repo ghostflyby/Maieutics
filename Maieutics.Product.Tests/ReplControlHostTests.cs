@@ -8,6 +8,7 @@ using System.Text.Json;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
 
@@ -112,6 +113,72 @@ public sealed class ReplControlHostTests
             Assert.Contains("\"type\":\"control.pong\"", pong);
             Assert.Contains("\"correlationId\":\"p1\"", pong);
         }
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("session\r\nFORGED\u001b[2J\u2028tail\\n", "ping", "session\\r\\nFORGED\\u001b[2J\\u2028tail\\\\n", "ping")]
+    [InlineData("session", "ping\r\nFORGED\u001b[2J\u2028tail\\n", "session", "ping\\r\\nFORGED\\u001b[2J\\u2028tail\\\\n")]
+    [InlineData("session", null, "session", "(null)")]
+    public async Task BusLogsEscapePeerFieldsAndPreservePongCorrelation(
+        string sessionId, string? correlationId, string loggedSessionId, string loggedCorrelationId)
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The control host test harness authenticates this request over a Unix domain socket.");
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        using var area = TempArea.Create("control-logging-tests");
+        using var logs = new FileLoggerProvider(area.Path);
+        using var factory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Debug).AddProvider(logs));
+        var registry = new ReplControlSessionRegistry();
+        registry.Register(Environment.ProcessId, sessionId);
+        using var host = new ReplControlHost(
+            ReplControlHost.CreateSocketPath(), registry, factory.CreateLogger<ReplControlHost>());
+        await using (var application = await ReplControlTestHost.StartAsync(host.SocketPath, host, deadline.Token))
+        {
+            using var socket = await ConnectWebSocketAsync(host.SocketPath, deadline.Token);
+            var hello = new ReplEnvelope(
+                1, ReplMessageType.ControlHello,
+                Payload: JsonSerializer.SerializeToElement(new { sessionId }));
+            await SendBusAsync(socket, JsonSerializer.Serialize(hello, ReplControlJsonContext.Default.ReplEnvelope), deadline.Token);
+            Assert.Contains("\"type\":\"control.ready\"", await ReceiveBusAsync(socket, deadline.Token));
+
+            var ping = new ReplEnvelope(1, ReplMessageType.ControlPing, correlationId);
+            // JSON permits framing whitespace; those physical newlines also need log encoding.
+            await SendBusAsync(
+                socket, "\r\n" + JsonSerializer.Serialize(ping, ReplControlJsonContext.Default.ReplEnvelope) + "\r\n",
+                deadline.Token);
+            using var pong = JsonDocument.Parse(await ReceiveBusAsync(socket, deadline.Token));
+            Assert.Equal(ReplMessageType.ControlPong, pong.RootElement.GetProperty("type").GetString());
+            Assert.Equal(correlationId, pong.RootElement.GetProperty("correlationId").GetString());
+
+            await SendAllAsync(socket, BuildClientFrame([], 0x8), deadline.Token);
+            var (opcode, _) = await ReceiveFrameAsync(socket, deadline.Token);
+            Assert.Equal(0x8, opcode);
+            // Joining the host pins the receive-loop terminal log before inspecting the file.
+            await application.StopAsync(deadline.Token);
+        }
+
+        logs.Dispose();
+        // Assert the FileLoggerProvider contract: record header and message share one physical line.
+        var lines = File.ReadAllLines(Path.Combine(area.Path, $"maieutics-{Environment.ProcessId}.log"));
+        var identity = Assert.Single(lines, line => line.Contains("Control identity ", StringComparison.Ordinal));
+        Assert.Contains($"Control identity {loggedSessionId} peer ", identity);
+        var accepted = Assert.Single(lines, line => line.Contains("Control-bus connection accepted", StringComparison.Ordinal));
+        Assert.Contains($"accepted for session {loggedSessionId} (peer process ", accepted);
+        var pingLog = Assert.Single(lines, line => line.Contains("Control ping ", StringComparison.Ordinal));
+        Assert.EndsWith($"Control ping {loggedCorrelationId}.", pingLog);
+        var message = Assert.Single(lines, line => line.Contains("Control message received: ", StringComparison.Ordinal));
+        Assert.Contains("Control message received: \\r\\n{", message);
+        Assert.EndsWith("\\r\\n.", message);
+        var ended = Assert.Single(lines, line => line.Contains("ended gracefully.", StringComparison.Ordinal));
+        Assert.EndsWith($"Control-bus receive loop for session {loggedSessionId} ended gracefully.", ended);
+        Assert.DoesNotContain(lines, line => line.StartsWith("FORGED", StringComparison.Ordinal));
+        Assert.All(lines, line =>
+        {
+            Assert.DoesNotContain('\u001b', line);
+            Assert.DoesNotContain('\u2028', line);
+        });
     }
 
     [Fact(Timeout = 30_000)]

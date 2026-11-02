@@ -23,6 +23,16 @@ overrides them.
 - One `ILogger<T>` per class; the category is the type's namespace-qualified name.
 - MCP surfaces use `Maieutics.Mcp.{id}`.
 
+## Request fields
+
+Frontend request logs retain the HTTP method and the URI-escaped path (without the query
+string). Resource-read failure logs retain the requested resource URI and provider id. These
+external fields pass through `LogText.Escape`: CR, LF, and tab become visible `\r`, `\n`, and
+`\t`; other controls and Unicode line separators become `\uXXXX`. Literal backslashes are
+doubled so they cannot be confused with those escapes. Encoding applies only to log fields;
+resource providers still receive the original URI. This keeps diagnostic fields from inserting
+log lines or terminal control sequences, including in the opt-in plain-text file sink.
+
 ## Child-process bridging
 
 A deno child's stderr and stdout are never silently dropped: the owning subsystem (for example

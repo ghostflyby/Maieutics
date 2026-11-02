@@ -16,10 +16,12 @@ public sealed class SubagentFrontendFramesTests
     [Fact(Timeout = 30_000)]
     public async Task ChildFramesFlowOnTheParentStreamUnderTheChildRunId()
     {
-        var harness = CreateHarness(postToolParentResponse: "done", useTaskWait: true);
+        await using var harness = CreateHarness(postToolParentResponse: "done", useTaskWait: true);
 
         var accepted = await harness.Service.StartTurnAsync(
             harness.Manager.Id.ToString(), "Spawn", TestContext.Current.CancellationToken);
+        // Child display frames are observed only after the frontend has attached its stream.
+        harness.ParentReady.TrySetResult();
         var handle = await harness.HandleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
         if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
             throw new InvalidOperationException("The submitted run left no retained stream.");
@@ -30,18 +32,13 @@ public sealed class SubagentFrontendFramesTests
 
         // The child frames ride the parent stream through a display tap whose publishes
         // are synchronous on the child's pump: OnSubagentStartedAsync publishes the
-        // child run.started BEFORE StartChildAsync returns (the pump's first await is
-        // inside that callback's call site), so every child frame strictly precedes the
-        // spawn tool's result — which the parent renders as its tool.finished frame.
-        // The parent's tool.finished is therefore the strict successor proving the child
-        // frames were offered, and Settled (awaited above) orders the parent's whole
-        // frame sequence after it. Assert synchronously on the settled snapshot.
+        // child run.started before the spawn tool returns. The in-turn wait joins the
+        // child pump before the parent finishes, so the parent's settlement is the strict
+        // successor proving every child frame was offered. Assert synchronously on that
+        // settled snapshot.
         // Subscribing after the run completed returns the whole replay as the snapshot.
         var (initialList, _) = stream.Subscribe(0);
         var initial = initialList.ToList();
-        _ = string.Join("|", initial.Select(static frame =>
-                $"{frame.Type}@{frame.RunId?[..6]}"))
-            + $"; settledNotifications={harness.Buffer.SettledNotifications}";
 
         var parentRunId = accepted.RunId;
         var childRunId = handle.RunId.Value.ToString("N");
@@ -74,29 +71,38 @@ public sealed class SubagentFrontendFramesTests
         // The parent's post-tool response hangs until the test releases it, ensuring
         // CancelRunAsync operates on a live child (the parent run is still in-flight).
         var parentReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var harness = CreateHarness(
+        await using var harness = CreateHarness(
             postToolParentResponse: "done",
             childResponse: (_, token) => ChildHangAsync(childStarted, token),
             parentRelease: parentReleased.Task);
 
         var accepted = await harness.Service.StartTurnAsync(
             harness.Manager.Id.ToString(), "Spawn", TestContext.Current.CancellationToken);
-        var handle = await harness.HandleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
-        await childStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
-        if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
-            throw new InvalidOperationException("The submitted run left no retained stream.");
+        // Child display frames are observed only after the frontend has attached its stream.
+        harness.ParentReady.TrySetResult();
+        try
+        {
+            var handle = await harness.HandleSource.Task.WaitAsync(TestContext.Current.CancellationToken);
+            await childStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+            if (!harness.Service.TryGetRun(accepted.RunId, out var stream) || stream is null)
+                throw new InvalidOperationException("The submitted run left no retained stream.");
 
-        // Cancel the child while the parent run is still in-flight (the parent model is
-        // parked on parentReleased). The child settles as cancelled; the parent tool call
-        // sees the cancellation and the model finishes normally.
-        await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), TestContext.Current.CancellationToken);
+            // Cancel the child while the parent run is still in-flight (the parent model is
+            // parked on parentReleased). The child settles as cancelled; the parent tool call
+            // sees the cancellation and the model finishes normally.
+            await harness.Service.CancelRunAsync(handle.RunId.Value.ToString("N"), TestContext.Current.CancellationToken);
 
-        var result = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(AgentSubagentStatus.Cancelled, result.Status);
+            var result = await handle.Completion.WaitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(AgentSubagentStatus.Cancelled, result.Status);
 
-        // Release the parent; it returns "done" and the run completes normally.
-        parentReleased.TrySetResult();
-        await stream.Settled.WaitAsync(TestContext.Current.CancellationToken);
+            // Release the parent; it returns "done" and the run completes normally.
+            parentReleased.TrySetResult();
+            await stream.Settled.WaitAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            parentReleased.TrySetResult();
+        }
     }
 
     private static Harness CreateHarness(
@@ -109,19 +115,18 @@ public sealed class SubagentFrontendFramesTests
         var handleSource = new TaskCompletionSource<IAgentSubagentHandle>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var taskWaitCalls = 0;
-        CreateSpawnTool("agent_probe", (arguments, token) =>
+        var parentReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async ValueTask<JsonElement> SpawnAsync(AIFunctionArguments arguments, CancellationToken token)
         {
-            var handle = AgentSubagentContext.GetRequired(arguments)
+            var handle = await AgentSubagentContext.GetRequired(arguments)
                 .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
-                .AsTask();
-            handle.ContinueWith(
-                static (completed, state) => ((TaskCompletionSource<IAgentSubagentHandle>)state!).TrySetResult(completed.Result),
-                handleSource,
-                TaskContinuationOptions.ExecuteSynchronously);
-            return new ValueTask<JsonElement>(JsonSerializer.SerializeToElement(
+                .ConfigureAwait(false);
+            handleSource.TrySetResult(handle);
+            return JsonSerializer.SerializeToElement(
                 new SpawnValue("started"),
-                SubagentFrameJsonContext.Default.SpawnValue));
-        });
+                SubagentFrameJsonContext.Default.SpawnValue);
+        }
 
         async ValueTask<JsonElement> ProbeWaitAsync(AIFunctionArguments arguments, CancellationToken token)
         {
@@ -158,23 +163,11 @@ public sealed class SubagentFrontendFramesTests
             return StreamAsync(postToolParentResponse);
         }
 
-        var spawnTool = CreateSpawnTool("agent_spawn", (arguments, token) =>
-        {
-            var handle = AgentSubagentContext.GetRequired(arguments)
-                .StartChildAsync(new AgentSubagentSpec { Input = "child task" }, token)
-                .AsTask();
-            handle.ContinueWith(
-                static (completed, state) => ((TaskCompletionSource<IAgentSubagentHandle>)state!).TrySetResult(completed.Result),
-                handleSource,
-                TaskContinuationOptions.ExecuteSynchronously);
-            return new ValueTask<JsonElement>(JsonSerializer.SerializeToElement(
-                new SpawnValue("started"),
-                SubagentFrameJsonContext.Default.SpawnValue));
-        });
+        var spawnTool = CreateSpawnTool("agent_spawn", SpawnAsync);
         var tools = useTaskWait ? new[] { spawnTool, probeWait } : new[] { spawnTool };
 
         var client = new ScriptedChatClient(
-            (_, _) => StreamAsync(ToolCallUpdate("spawn", "agent_spawn", ("input", "child task"))),
+            (_, token) => SpawnAfterStreamAttachedAsync(parentReady.Task, token),
             Route,
             Route,
             Route);
@@ -193,14 +186,15 @@ public sealed class SubagentFrontendFramesTests
             new FrontendDenoReplPresentationRouter(),
             NullLogger<FrontendSessionService>.Instance,
             subagentEvents: buffer);
-        return new Harness(manager, service, buffer, handleSource);
+        return new Harness(manager, service, buffer, handleSource, parentReady);
     }
 
     private sealed class Harness(
         MaieuticsAgentSessionManager manager,
         FrontendSessionService service,
         SubagentEventBuffer buffer,
-        TaskCompletionSource<IAgentSubagentHandle> handleSource)
+        TaskCompletionSource<IAgentSubagentHandle> handleSource,
+        TaskCompletionSource parentReady) : IAsyncDisposable
     {
         internal MaieuticsAgentSessionManager Manager { get; } = manager;
 
@@ -209,6 +203,18 @@ public sealed class SubagentFrontendFramesTests
         internal SubagentEventBuffer Buffer { get; } = buffer;
 
         internal TaskCompletionSource<IAgentSubagentHandle> HandleSource { get; } = handleSource;
+
+        internal TaskCompletionSource ParentReady { get; } = parentReady;
+
+        public ValueTask DisposeAsync() => Manager.DisposeAsync();
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> SpawnAfterStreamAttachedAsync(
+        Task attached,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await attached.WaitAsync(cancellationToken);
+        yield return ToolCallUpdate("spawn", "agent_spawn", ("input", "child task"));
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> ChildHangAsync(

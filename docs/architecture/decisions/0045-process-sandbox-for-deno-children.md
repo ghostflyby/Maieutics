@@ -115,10 +115,11 @@ AppArmor mediation, grants userns to the bwrap binary rather than disabling the 
   the rest without killing the child. stdin is UTF-8 text, bounded.
 - **The working directory is the workspace root**; a `cwd` option fails typed. `uid`/`gid`
   options fail typed (the child runs with the session's own identity).
-- **The workspace-root grant is steering-guarded:** a workspace reached through a symlinked
-  path cannot be granted to the sandbox (the resolved spelling escapes the granted spelling)
-  — such spawns run with the workspace unreadable until the configuration grants the resolved
-  path itself.
+- **Policy-derived grants are steering-guarded:** a symlink that redirects a grant outside
+  its declared tree does not widen access. Kernel-selected workspace, system, and private-temp
+  roots are trusted and can resolve ancestor aliases; the process keeps its physical working
+  directory. Workspace validation separately rejects a final root directory that is itself
+  a symlink.
 - **Linux requires bubblewrap 0.9+ and working unprivileged user namespaces.** `Prefer`
   degrades only when the launcher is absent; `Require` refuses. An installed launcher's
   setup failure never retries unwrapped. Mount masks need existing targets: a missing denied

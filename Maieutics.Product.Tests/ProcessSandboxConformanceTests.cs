@@ -55,6 +55,25 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task WorkspaceWithSymlinkedAncestorsKeepsItsPhysicalWorkingDirectory()
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var firstParent = Directory.CreateDirectory(Path.Combine(PhysicalParent, "actual-parent")).FullName;
+        var secondParent = Directory.CreateDirectory(Path.Combine(PhysicalParent, "other-parent")).FullName;
+        var physical = Directory.CreateDirectory(Path.Combine(secondParent, "selected-workspace")).FullName;
+        Directory.CreateSymbolicLink(Path.Combine(PhysicalParent, "parent-alias"), firstParent);
+        Directory.CreateSymbolicLink(Path.Combine(firstParent, "inner-alias"), secondParent);
+        // The final directory is not a symlink (Workspace rejects that); its ancestors are.
+        var spelling = Path.Combine(PhysicalParent, "parent-alias", "inner-alias", "selected-workspace");
+        var result = await ShellAsync(CreateFunctions(workspaceRoot: spelling),
+            "printf persisted >written; pwd -P", [], null, budget.Token);
+        AssertSuccess(result);
+        Assert.Equal(physical + "\n", result.GetProperty("stdout").GetString());
+        Assert.Equal("persisted", await File.ReadAllTextAsync(Path.Combine(physical, "written"), budget.Token));
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task SyntheticAncestorsAndSharedTempAreNotExtraWriteGrants()
     {
         RequireUnix();
@@ -276,15 +295,17 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
     private ProcessSpawnFunctions CreateFunctions(
         Dictionary<PermissionKind, PermissionKindRules>? rules = null,
         ProcessSandboxMode mode = ProcessSandboxMode.Require,
-        Func<string>? createTemporaryDirectory = null)
+        Func<string>? createTemporaryDirectory = null,
+        string? workspaceRoot = null)
     {
         var kinds = rules is null ? new Dictionary<PermissionKind, PermissionKindRules>() : new(rules);
         kinds[PermissionKind.Run] = new() { AllowAll = true };
         var acquirer = new PermissionPolicyAcquirer(
             () => new LayerSource(new PermissionLayer { Kinds = kinds }), new VariableSource());
+        var root = workspaceRoot ?? _workspace.Path;
         return new ProcessSpawnFunctions(
-            new PolicyProcessSandboxPolicy(mode, createTemporaryDirectory: createTemporaryDirectory, trustedWorkspaceRoot: _workspace.Path),
-            acquirer, Workspace.Create(_workspace.Path, _workspace.Path));
+            new PolicyProcessSandboxPolicy(mode, createTemporaryDirectory: createTemporaryDirectory, trustedWorkspaceRoot: root),
+            acquirer, Workspace.Create(root, root));
     }
 
     private static Task<JsonElement> ShellAsync(

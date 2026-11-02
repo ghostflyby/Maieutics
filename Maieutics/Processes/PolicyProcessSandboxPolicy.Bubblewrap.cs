@@ -107,7 +107,13 @@ internal sealed partial class PolicyProcessSandboxPolicy
                     foreach (var ancestor in Ancestors(lexical).Reverse().Append(lexical))
                     {
                         var info = new FileInfo(ancestor);
-                        if (info.LinkTarget is { } target) aliases[ancestor] = target;
+                        if (info.LinkTarget is { } target && Path.GetDirectoryName(ancestor) is { } parent)
+                        {
+                            // A lexical parent may itself be a symlink. Create this alias
+                            // in its physical parent so setup never walks a dangling alias.
+                            var physicalParent = ResolveRealPath(parent) ?? parent;
+                            aliases[Path.Combine(physicalParent, Path.GetFileName(ancestor))] = target;
+                        }
                     }
                 }
                 bindings[resolved] = writable || bindings.GetValueOrDefault(resolved);

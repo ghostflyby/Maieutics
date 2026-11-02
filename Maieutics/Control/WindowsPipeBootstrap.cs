@@ -101,7 +101,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
         var payload = Encoding.UTF8.GetBytes($"{{\"sessionId\":\"{sessionId}\",\"credential\":\"{credential}\"}}");
         await pipe.WriteAsync(payload, _lifetime.Token).ConfigureAwait(false);
         await pipe.FlushAsync(_lifetime.Token).ConfigureAwait(false);
-        _logger.LogInformation("Issued a control credential to session {SessionId}.", sessionId);
+        _logger.LogInformation("Issued a control credential to session {SessionId}.", LogText.Escape(sessionId));
     }
 
     private static int GetClientProcessId(NamedPipeServerStream pipe)

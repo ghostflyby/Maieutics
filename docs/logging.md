@@ -34,6 +34,9 @@ doubled so they cannot be confused with those escapes. Encoding applies only to 
 resource providers still receive the original URI. This keeps diagnostic fields from inserting
 log lines or terminal control sequences in both console and the opt-in plain-text file sink.
 Control-bus routing and replies continue to use the original ids.
+Windows credential-bootstrap logs apply the same encoding to registered session ids. The
+per-message control-bus Debug logs check their level before encoding message text or ping
+correlation ids, so disabled Debug logging does not allocate escaped copies of large fields.
 
 ## Child-process bridging
 

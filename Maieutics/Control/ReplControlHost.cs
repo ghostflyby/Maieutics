@@ -335,7 +335,8 @@ internal sealed partial class ReplControlHost : IDisposable
                 if (text is null) break;
 
                 await ObserveCompletedAsync(toolInvocations).ConfigureAwait(false);
-                _logger.LogDebug("Control message received: {Message}.", LogText.Escape(text));
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("Control message received: {Message}.", LogText.Escape(text));
                 await HandleBusMessageAsync(
                     gateSessionId,
                     connection,
@@ -505,9 +506,10 @@ internal sealed partial class ReplControlHost : IDisposable
         switch (envelope.Type)
         {
             case ReplMessageType.ControlPing:
-                _logger.LogDebug(
-                    "Control ping {CorrelationId}.",
-                    envelope.CorrelationId is { } correlationId ? LogText.Escape(correlationId) : null);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug(
+                        "Control ping {CorrelationId}.",
+                        envelope.CorrelationId is { } correlationId ? LogText.Escape(correlationId) : null);
                 await PushAsync(
                     connection,
                     new ReplEnvelope(EnvelopeVersion, ReplMessageType.ControlPong, envelope.CorrelationId),

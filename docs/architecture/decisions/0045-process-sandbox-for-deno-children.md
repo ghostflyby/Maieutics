@@ -80,6 +80,26 @@ the kernel controls the launch.
    run without it; the original abort that seemed to need it was the missing ancestor
    metadata grants).
 
+## Linux implementation follow-up (2026-11-02)
+
+The bubblewrap adapter is exercised by real-process conformance cases shared with macOS.
+It uses user, pid, IPC, and UTS namespaces, drops capabilities, disables nested user namespaces,
+and ties the sandbox to its owning process. IP networking is unshared unless the classifier
+grants it. Existing system paths include the dynamic loader and library directories; trusted
+symlink spellings are recreated and grants bind their resolved paths, with the same steering
+guard as seatbelt. Parent mounts precede writable child mounts, and the synthetic root stays
+read-only without hiding workspace or per-launch temporary mounts.
+
+Denials are applied after all grants. Directories become unreadable, read-only empty mounts;
+files receive a read-only mode-000 placeholder whose launch-private source directory is hidden
+by another unreadable mount. A child cannot chmod that source to unlock a denied file. The
+tool owns the placeholder together with its temporary tree, including startup failures.
+Policy-admitted temporary-directory environment names point at the owned tree on both platforms.
+
+The reference interface is bubblewrap 0.9's [documented mount and namespace options](https://github.com/containers/bubblewrap/blob/v0.9.0/bwrap.xml).
+Linux CI installs the package, probes user/network namespaces, and, when required by Ubuntu's
+AppArmor mediation, grants userns to the bwrap binary rather than disabling the host-wide rule.
+
 ## Known limits (declared, not accidental)
 
 - **Escape path:** the polyfill is a JS-level wrapper; a cell that reaches the original
@@ -87,9 +107,9 @@ the kernel controls the launch.
   (the baseline grants no `run`). The polyfill is the convenient path, the broker is the
   boundary — and since decision 2a the sanctioned path shares the same deny-by-default run
   posture, so the two cannot diverge.
-- **Network is coarse and fail-closed:** only an unqualified net AllowAll turns the network
+- **IP networking is coarse and fail-closed:** only an unqualified net AllowAll turns the network
   on; host allowlists and host-specific denials are not expressible, so any denial keeps the
-  network entirely off.
+  IP networking entirely off.
 - **Output is text and bounded:** stdout/stderr decode strictly as UTF-8 (binary output fails
   typed — redirect it to a file); the capture keeps the first 256 KiB per stream and drains
   the rest without killing the child. stdin is UTF-8 text, bounded.
@@ -99,9 +119,12 @@ the kernel controls the launch.
   path cannot be granted to the sandbox (the resolved spelling escapes the granted spelling)
   — such spawns run with the workspace unreadable until the configuration grants the resolved
   path itself.
-- **Linux depends on bubblewrap being installed**; `Prefer` degrades to unwrapped, `Require`
-  refuses. The bwrap deny overlay is approximated (bind-to-null); its renderer has shape-level
-  coverage only.
+- **Linux requires bubblewrap 0.9+ and working unprivileged user namespaces.** `Prefer`
+  degrades only when the launcher is absent; `Require` refuses. An installed launcher's
+  setup failure never retries unwrapped. Mount masks need existing targets: a missing denied
+  entry below an exposed tree causes a typed refusal before launch, without creating host
+  mountpoints. Filesystem Unix sockets within granted trees remain reachable despite network
+  unsharing; explicit path denials can hide them. Seatbelt can be stricter for these sockets.
 - **A per-spawn temporary directory** replaces the shared system temp in the writable set
   (the shared temp stays read-only), so a sandboxed child cannot squat another process's
   temp paths.

@@ -70,6 +70,18 @@ internal static class ProcessEnvironment
         return result;
     }
 
+    /// <summary>Points policy-admitted temporary-directory variables at the launch-owned
+    /// directory. Values and names denied by the environment policy are never introduced.</summary>
+    internal static IReadOnlyDictionary<string, string?> CaptureSandbox(EffectivePolicy policy, string temporaryDirectory)
+    {
+        var result = new Dictionary<string, string?>(
+            Capture(policy), OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        foreach (var name in AllowedNames(policy, []))
+            if (name is "TMPDIR" or "TMP" or "TEMP")
+                result[name] = temporaryDirectory;
+        return result;
+    }
+
     private static IReadOnlyList<string> AllowedNames(
         EffectivePolicy policy,
         IReadOnlyList<string> additionalNames)

@@ -199,12 +199,11 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact]
     public void TheBubblewrapRendererBindsAndSeparates()
     {
+        var readable = Directory.CreateDirectory(Path.Combine(_workspace.Path, "readable")).FullName;
+        var writable = Directory.CreateDirectory(Path.Combine(_workspace.Path, "writable")).FullName;
+        var denied = Directory.CreateDirectory(Path.Combine(readable, "secret")).FullName;
         var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
-            ["/ws"],
-            ["/out"],
-            ["/ws/secret"],
-            TrustedPaths: [],
-            NetworkAllowed: false);
+            [readable], [writable], [denied], TrustedPaths: [readable, writable], NetworkAllowed: false);
 
         var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("/usr/bin/bwrap", profile, "git", ["status"]);
 
@@ -395,6 +394,28 @@ public sealed class ProcessSandboxTests : IDisposable
     }
 
     // ---------- helpers ----------
+
+    [Fact(Timeout = 30_000)]
+    public async Task AFailedLauncherStartStillDeletesTheLaunchOwnedTemporaryTree()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        var temporary = Directory.CreateDirectory(Path.Combine(_workspace.Path, "launch-owned")).FullName;
+        var acquirer = new PermissionPolicyAcquirer(
+            () => new FixedLayerSource(new PermissionLayer()), new NullVariableSource());
+        var functions = new ProcessSpawnFunctions(
+            new MissingLauncherSandbox(temporary), acquirer, Workspace.Create(_workspace.Path, _workspace.Path));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => InvokeAsync(
+            functions, "process_spawn", """{"executable":"unused"}"""));
+        Assert.Equal("process_spawn_failed", failure.Code);
+        Assert.False(Directory.Exists(temporary), "A launcher start failure must release the plan's owned filesystem resources.");
+    }
+
+    private sealed class MissingLauncherSandbox(string temporary) : IProcessSandboxPolicy
+    {
+        public ProcessLaunchPlan Plan(EffectivePolicy policy, string executable, IReadOnlyList<string> arguments) =>
+            ProcessLaunchPlan.Launch([Path.Combine(temporary, "missing-launcher")],
+                new Dictionary<string, string?>(), sandboxed: true, temporary);
+    }
 
     private static string JsonEncoded(string value)
     {

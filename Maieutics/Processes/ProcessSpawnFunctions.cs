@@ -217,22 +217,21 @@ internal sealed class ProcessSpawnFunctions
         timeoutSource.CancelAfter(timeout);
         var killToken = timeoutSource.Token;
 
-        ChildProcess process;
+        using var process = new ChildProcess { StartInfo = startInfo, EnableRaisingEvents = true };
         try
         {
-            process = new ChildProcess { StartInfo = startInfo, EnableRaisingEvents = true };
-            process.Start();
-        }
-        catch (Exception exception) when (
-            exception is Win32Exception or PlatformNotSupportedException or IOException)
-        {
-            throw new AgentToolException(
-                "process_spawn_failed",
-                $"The process could not be started: {exception.Message}");
-        }
+            try
+            {
+                process.Start();
+            }
+            catch (Exception exception) when (
+                exception is Win32Exception or PlatformNotSupportedException or IOException)
+            {
+                throw new AgentToolException(
+                    "process_spawn_failed",
+                    $"The process could not be started: {exception.Message}");
+            }
 
-        try
-        {
             // The reads carry the kill token so an orphaned descendant holding the pipe
             // write-ends cannot outlive the timeout: the captured prefix returns as
             // truncated instead of hanging the tool.

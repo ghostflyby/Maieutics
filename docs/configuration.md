@@ -379,6 +379,25 @@ pass Deno's `timeout` option, forwarded as the kill budget — that kills the pr
 interactive processes belong to the terminal tools, and binary output must be redirected to
 a file.
 
+Linux uses bubblewrap 0.9 or newer with unprivileged user namespaces enabled. Install the
+distribution's `bubblewrap` package; on Ubuntu, AppArmor must permit `/usr/bin/bwrap` to create
+user namespaces. CI installs and probes the launcher before running the same `Require`-mode
+conformance cases on Linux and macOS. A present launcher that cannot initialize its namespaces
+fails the spawn; it never causes a retry outside the sandbox.
+
+Both platforms preserve argv, stdin, exit status, the workspace working directory, explicit
+read/write grants, deny-wins rules, and launch-owned temporary storage. Policy-admitted
+`TMPDIR`, `TMP`, and `TEMP` point at that temporary tree, which is removed after exit or
+cancellation. Linux preserves trusted system symlinks (including merged `/usr` layouts),
+keeps synthetic parent directories read-only, and applies denial masks after grants.
+
+Linux mount masks require existing denied targets. A missing denied path beneath an exposed
+directory returns `process_spawn_denied`; it is not silently ignored or created in the host
+workspace. Network rules retain the existing coarse switch: only an unqualified allow-all
+enables IP networking. Linux network namespaces do not filter filesystem Unix sockets inside
+otherwise granted trees; deny those paths explicitly when needed. Seatbelt can be stricter
+for such sockets. These kernel differences are recorded in ADR 0045.
+
 ## Skills
 
 Skill discovery (ADR 0039) builds a catalog from two filesystem sources and appends it to

@@ -26,12 +26,14 @@ overrides them.
 ## Request fields
 
 Frontend request logs retain the HTTP method and the URI-escaped path (without the query
-string). Resource-read failure logs retain the requested resource URI and provider id. These
+string). Resource-read failure logs retain the requested resource URI and provider id. Control-bus
+logs retain peer identities, session and correlation ids, tool names, and received message text. These
 external fields pass through `LogText.Escape`: CR, LF, and tab become visible `\r`, `\n`, and
 `\t`; other controls and Unicode line separators become `\uXXXX`. Literal backslashes are
 doubled so they cannot be confused with those escapes. Encoding applies only to log fields;
 resource providers still receive the original URI. This keeps diagnostic fields from inserting
-log lines or terminal control sequences, including in the opt-in plain-text file sink.
+log lines or terminal control sequences in both console and the opt-in plain-text file sink.
+Control-bus routing and replies continue to use the original ids.
 
 ## Child-process bridging
 

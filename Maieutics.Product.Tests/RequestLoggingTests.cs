@@ -7,6 +7,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Product.Tests;
 
+// These assertions intentionally cover the FileLoggerProvider format contract: one record
+// header plus its message on one physical line. Update them when that sink contract changes.
 [Collection(ProductIntegrationCollection.Name)]
 public sealed class RequestLoggingTests
 {

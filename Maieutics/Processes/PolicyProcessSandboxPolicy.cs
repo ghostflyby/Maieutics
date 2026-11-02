@@ -98,6 +98,10 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
                     ProcessLaunchPlan.Launch([executable, .. arguments], environment, sandboxed: false, null));
         }
 
+        if (policy.For(PermissionKind.Read).DenyAll)
+            return WithAbandonedTemporaryDirectory(temporaryDirectory, ProcessLaunchPlan.Denied(
+                "The process sandbox cannot launch a process when the policy denies all filesystem reads."));
+
         try
         {
             var argv = OperatingSystem.IsMacOS()

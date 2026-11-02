@@ -98,6 +98,21 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task DenyingAllReadsRefusesTheSandboxedLaunchAndReleasesItsTemporaryTree()
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var temporary = Path.Combine(PhysicalParent, "refused-launch");
+        var functions = CreateFunctions(new() { [PermissionKind.Read] = new() { DenyAll = true } },
+            createTemporaryDirectory: () => Directory.CreateDirectory(temporary).FullName);
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => InvokeAsync(
+            functions, "/bin/echo", ["must-not-run"], null, budget.Token));
+        Assert.Equal("process_spawn_denied", failure.Code);
+        Assert.Contains("denies all filesystem reads", failure.Message);
+        Assert.False(Directory.Exists(temporary));
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task AnUnlistedHostFileCannotBeRead()
     {
         RequireUnix();

@@ -390,6 +390,8 @@ read/write grants, deny-wins rules, and launch-owned temporary storage. Policy-a
 `TMPDIR`, `TMP`, and `TEMP` point at that temporary tree, which is removed after exit or
 cancellation. Linux preserves trusted system symlinks (including merged `/usr` layouts),
 keeps synthetic parent directories read-only, and applies denial masks after grants.
+An explicit read-deny-all refuses a sandboxed launch on either platform rather than letting
+the required runtime mounts override that denial.
 
 Linux mount masks require existing denied targets. A missing denied path beneath an exposed
 directory returns `process_spawn_denied`; it is not silently ignored or created in the host

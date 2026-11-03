@@ -8,6 +8,20 @@ namespace Maieutics.Product.Tests;
 public sealed class ProcessEnvironmentTests
 {
     [Fact]
+    public void SandboxTemporaryVariablesComeFromTheSameEnvironmentPolicy()
+    {
+        var policy = Build((PermissionKind.Env, new PermissionKindRules
+        {
+            Allow = ["TMPDIR", "TMP"], Deny = ["TMP"]
+        }));
+        var temporary = Path.Combine(Path.GetTempPath(), "launch-owned");
+        var environment = ProcessEnvironment.CaptureSandbox(policy, temporary);
+        Assert.Equal(temporary, Assert.Contains("TMPDIR", environment));
+        Assert.DoesNotContain("TMP", environment.Keys);
+        Assert.DoesNotContain("TEMP", environment.Keys);
+    }
+
+    [Fact]
     public void DefaultPolicyYieldsTheDefaultAllowlistWithTermPinned()
     {
         using var scope = new EnvironmentVariableScope(new Dictionary<string, string?>

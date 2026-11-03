@@ -379,6 +379,43 @@ pass Deno's `timeout` option, forwarded as the kill budget — that kills the pr
 interactive processes belong to the terminal tools, and binary output must be redirected to
 a file.
 
+Linux uses bubblewrap 0.9 or newer with unprivileged user namespaces enabled. Install the
+distribution's `bubblewrap` package; on Ubuntu, AppArmor must permit `/usr/bin/bwrap` to create
+user namespaces. CI installs and probes the launcher before running the same `Require`-mode
+conformance cases on Linux and macOS. A present launcher that cannot initialize its namespaces
+fails the spawn; it never causes a retry outside the sandbox.
+
+Both platforms preserve argv, stdin, exit status, the workspace working directory, explicit
+read/write grants, deny-wins rules, and launch-owned temporary storage. Policy-admitted
+`TMPDIR`, `TMP`, and `TEMP` point at that temporary tree, which is removed after exit or
+cancellation. Linux preserves trusted system symlinks (including merged `/usr` layouts),
+keeps synthetic parent directories read-only, and applies denial masks after grants.
+An explicit read-deny-all refuses a sandboxed launch on either platform rather than letting
+the required runtime mounts override that denial.
+
+Linux mount masks require existing denied targets. A missing denied path beneath an exposed
+directory returns `process_spawn_denied`; this includes stale rules beneath the synthetic
+`/dev` and `/proc` trees. The path is not silently ignored or created in the host workspace.
+Denials also hide granted descendant mounts when they target an ancestor of the workspace or
+private temporary tree; denying `/` refuses launch.
+
+Linux grants bind paths that exist when planning the launch. A nonexistent allow path is
+omitted, so it cannot expose a new tree outside the existing mounts; creating it under an
+already writable ancestor remains possible. Seatbelt can grant future paths. Linux also
+replaces `/dev` and `/proc` with private synthetic mounts after applying grants, so explicit
+allows beneath those paths do not expose the corresponding host entries. Denials are applied
+after those synthetic mounts. Both differences can make Linux access stricter than macOS.
+Host existence checks do not validate targets in the replacement procfs: an active host
+`/proc/<pid>` denial can pass planning and then fail during bwrap setup in the new PID
+namespace. This returns a sandboxed process result with a nonzero exit code and bwrap's
+diagnostic on stderr, rather than a pre-launch `process_spawn_denied`. The requested command
+does not run, no unwrapped retry occurs, and the launch-owned temporary tree is removed.
+
+Network rules retain the existing coarse switch: only an unqualified allow-all
+enables IP networking. Linux network namespaces do not filter filesystem Unix sockets inside
+otherwise granted trees; deny those paths explicitly when needed. Seatbelt can be stricter
+for such sockets. These kernel differences are recorded in ADR 0045.
+
 ## Skills
 
 Skill discovery (ADR 0039) builds a catalog from two filesystem sources and appends it to

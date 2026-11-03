@@ -149,6 +149,10 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
 
+      - name: Set up bubblewrap and verify namespaces
+        if: runner.os == 'Linux'
+        run: bash .github/setup_bubblewrap.sh
+
       - name: Warm Deno registry cache
         shell: bash
         run: |
@@ -271,6 +275,10 @@ jobs:
 
       - name: Warm Deno REPL module cache
         run: deno cache --config deno/maieutics-deno-repl/deno.json --lock=deno/deno.lock deno/maieutics-deno-repl/main.ts deno/maieutics-deno-repl/repl_worker.ts
+
+      - name: Set up bubblewrap and verify namespaces
+        if: runner.os == 'Linux'
+        run: bash .github/setup_bubblewrap.sh
 
       - name: Restore solution
         run: dotnet restore Maieutics.slnx

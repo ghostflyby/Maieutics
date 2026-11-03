@@ -80,6 +80,28 @@ the kernel controls the launch.
    run without it; the original abort that seemed to need it was the missing ancestor
    metadata grants).
 
+## Linux implementation follow-up (2026-11-02)
+
+The bubblewrap adapter is exercised by real-process conformance cases shared with macOS.
+It uses user, pid, IPC, and UTS namespaces, drops capabilities, disables nested user namespaces,
+and ties the sandbox to its owning process. IP networking is unshared unless the classifier
+grants it. Existing system paths include the dynamic loader and library directories; trusted
+symlink spellings are recreated and grants bind their resolved paths, with the same steering
+guard as seatbelt. Parent mounts precede writable child mounts, and the synthetic root stays
+read-only without hiding workspace or per-launch temporary mounts.
+
+Denials are applied after all grants and synthetic mounts, including when a denied ancestor
+contains a granted workspace or private-temp mount. A root denial refuses launch.
+Directories become unreadable, read-only empty mounts;
+files receive a read-only mode-000 placeholder whose launch-private source directory is hidden
+by another unreadable mount. A child cannot chmod that source to unlock a denied file. The
+tool owns the placeholder together with its temporary tree, including startup failures.
+Policy-admitted temporary-directory environment names point at the owned tree on both platforms.
+
+The reference interface is bubblewrap 0.9's [documented mount and namespace options](https://github.com/containers/bubblewrap/blob/v0.9.0/bwrap.xml).
+Linux CI installs the package, probes user/network namespaces, and, when required by Ubuntu's
+AppArmor mediation, grants userns to the bwrap binary rather than disabling the host-wide rule.
+
 ## Known limits (declared, not accidental)
 
 - **Escape path:** the polyfill is a JS-level wrapper; a cell that reaches the original
@@ -87,21 +109,34 @@ the kernel controls the launch.
   (the baseline grants no `run`). The polyfill is the convenient path, the broker is the
   boundary — and since decision 2a the sanctioned path shares the same deny-by-default run
   posture, so the two cannot diverge.
-- **Network is coarse and fail-closed:** only an unqualified net AllowAll turns the network
+- **IP networking is coarse and fail-closed:** only an unqualified net AllowAll turns the network
   on; host allowlists and host-specific denials are not expressible, so any denial keeps the
-  network entirely off.
+  IP networking entirely off.
 - **Output is text and bounded:** stdout/stderr decode strictly as UTF-8 (binary output fails
   typed — redirect it to a file); the capture keeps the first 256 KiB per stream and drains
   the rest without killing the child. stdin is UTF-8 text, bounded.
 - **The working directory is the workspace root**; a `cwd` option fails typed. `uid`/`gid`
   options fail typed (the child runs with the session's own identity).
-- **The workspace-root grant is steering-guarded:** a workspace reached through a symlinked
-  path cannot be granted to the sandbox (the resolved spelling escapes the granted spelling)
-  — such spawns run with the workspace unreadable until the configuration grants the resolved
-  path itself.
-- **Linux depends on bubblewrap being installed**; `Prefer` degrades to unwrapped, `Require`
-  refuses. The bwrap deny overlay is approximated (bind-to-null); its renderer has shape-level
-  coverage only.
+- **Policy-derived grants are steering-guarded:** a symlink that redirects a grant outside
+  its declared tree does not widen access. Kernel-selected workspace, system, and private-temp
+  roots are trusted and can resolve ancestor aliases; the process keeps its physical working
+  directory. Workspace validation separately rejects a final root directory that is itself
+  a symlink.
+- **Linux requires bubblewrap 0.9+ and working unprivileged user namespaces.** `Prefer`
+  degrades only when the launcher is absent; `Require` refuses. An installed launcher's
+  setup failure never retries unwrapped. Mount masks need existing targets: a missing denied
+  entry below an exposed tree causes a typed refusal before launch, including stale `/dev`
+  or `/proc` rules, without creating host mountpoints. Only allow paths existing at planning
+  time are bound; nonexistent allows are omitted (a writable ancestor can still create them),
+  whereas Seatbelt can grant future paths. Private synthetic `/dev` and `/proc` mounts replace
+  explicit host grants under those trees; denials are still applied last. These choices can
+  restrict Linux access beyond the same Seatbelt policy.
+  A host-existing `/proc/<pid>` deny can pass planning but fail to mount in the new PID
+  namespace's procfs. That is a nonzero bwrap process result with stderr diagnostics, not a
+  pre-launch typed refusal; the requested command is not run or retried unwrapped, and the
+  launch-owned temporary tree is still cleaned up. A real Linux conformance case covers it.
+  Filesystem Unix sockets within granted trees remain reachable despite network
+  unsharing; explicit path denials can hide them. Seatbelt can be stricter for these sockets.
 - **A per-spawn temporary directory** replaces the shared system temp in the writable set
   (the shared temp stays read-only), so a sandboxed child cannot squat another process's
   temp paths.

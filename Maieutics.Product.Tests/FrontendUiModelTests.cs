@@ -13,6 +13,7 @@ namespace Maieutics.Product.Tests;
 ///     native form dialect bytes, the display-mime announcement, and the elicitation
 ///     form consumer.
 /// </summary>
+[Collection(ProductIntegrationCollection.Name)]
 public sealed class FrontendUiModelTests
 {
     private static ReplCommMessage Uplink(string commId, object? data, ReplCommKind kind = ReplCommKind.Message) =>

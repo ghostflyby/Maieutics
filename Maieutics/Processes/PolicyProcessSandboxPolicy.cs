@@ -26,7 +26,7 @@ namespace Maieutics.Processes;
 ///     keeps the executable and arguments so per-tool profiles can refine without touching the
 ///     seam.
 /// </remarks>
-internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
+internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
 {
     private readonly ProcessSandboxMode _mode;
     private readonly Func<string?> _locateSeatbelt;
@@ -98,10 +98,23 @@ internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
                     ProcessLaunchPlan.Launch([executable, .. arguments], environment, sandboxed: false, null));
         }
 
-        var argv = OperatingSystem.IsMacOS()
-            ? RenderSeatbelt(launcher, profile, executable, arguments)
-            : RenderBubblewrap(launcher, profile, executable, arguments);
-        return ProcessLaunchPlan.Launch(argv, environment, sandboxed: true, temporaryDirectory);
+        if (policy.For(PermissionKind.Read).DenyAll)
+            return WithAbandonedTemporaryDirectory(temporaryDirectory, ProcessLaunchPlan.Denied(
+                "The process sandbox cannot launch a process when the policy denies all filesystem reads."));
+
+        try
+        {
+            var argv = OperatingSystem.IsMacOS()
+                ? RenderSeatbelt(launcher, profile, executable, arguments)
+                : RenderBubblewrap(launcher, profile, executable, arguments, PrepareBubblewrapDenyFile(temporaryDirectory));
+            return ProcessLaunchPlan.Launch(
+                argv, ProcessEnvironment.CaptureSandbox(policy, temporaryDirectory),
+                sandboxed: true, temporaryDirectory);
+        }
+        catch (Exception exception) when (exception is NotSupportedException or IOException or UnauthorizedAccessException)
+        {
+            return WithAbandonedTemporaryDirectory(temporaryDirectory, ProcessLaunchPlan.Denied(exception.Message));
+        }
     }
 
     /// <summary>Drops a per-spawn temporary directory the plan ended up not using: the
@@ -187,10 +200,13 @@ internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         }
         else if (OperatingSystem.IsLinux())
         {
+            // Merged-/usr systems expose /bin and /lib* through symlinks. Keep the
+            // loader, libraries, binaries, and their data together in the read-only base.
+            yield return "/usr";
             yield return "/bin";
-            yield return "/usr/bin";
-            yield return "/usr/lib";
-            yield return "/usr/local";
+            yield return "/sbin";
+            yield return "/lib";
+            yield return "/lib64";
             yield return "/etc";
         }
 
@@ -207,26 +223,6 @@ internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         IReadOnlyList<string> arguments)
     {
         return [launcher, "-p", BuildSeatbeltProfile(profile), "--", executable, .. arguments];
-    }
-
-    /// <summary>bubblewrap invocation: read-only and writable binds, deny overlays for the
-    /// policy's denials, then network unsharing unless the policy grants networking.</summary>
-    internal static IReadOnlyList<string> RenderBubblewrap(
-        string launcher,
-        SandboxProfile profile,
-        string executable,
-        IReadOnlyList<string> arguments)
-    {
-        var argv = new List<string> { launcher };
-        foreach (var path in profile.ReadOnlyPaths) argv.AddRange(["--ro-bind", path, path]);
-        foreach (var path in profile.WritablePaths) argv.AddRange(["--bind", path, path]);
-        foreach (var path in profile.DeniedPaths) argv.AddRange(["--ro-bind-try", path, "/dev/null"]);
-        argv.AddRange(["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]);
-        if (!profile.NetworkAllowed) argv.Add("--unshare-net");
-        argv.Add("--");
-        argv.Add(executable);
-        argv.AddRange(arguments);
-        return argv;
     }
 
     /// <summary>The seatbelt profile for one spawn scope: every path walk stats the root, so
@@ -325,7 +321,7 @@ internal sealed class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
-    private static string? ResolveRealPath(string path)
+    internal static string? ResolveRealPath(string path)
     {
         if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux()) return null;
         try

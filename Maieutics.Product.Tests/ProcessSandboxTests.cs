@@ -199,12 +199,11 @@ public sealed class ProcessSandboxTests : IDisposable
     [Fact]
     public void TheBubblewrapRendererBindsAndSeparates()
     {
+        var readable = Directory.CreateDirectory(Path.Combine(_workspace.Path, "readable")).FullName;
+        var writable = Directory.CreateDirectory(Path.Combine(_workspace.Path, "writable")).FullName;
+        var denied = Directory.CreateDirectory(Path.Combine(readable, "secret")).FullName;
         var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
-            ["/ws"],
-            ["/out"],
-            ["/ws/secret"],
-            TrustedPaths: [],
-            NetworkAllowed: false);
+            [readable], [writable], [denied], TrustedPaths: [readable, writable], NetworkAllowed: false);
 
         var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("/usr/bin/bwrap", profile, "git", ["status"]);
 
@@ -214,6 +213,52 @@ public sealed class ProcessSandboxTests : IDisposable
         Assert.Contains(argv, static argument => argument == "--unshare-net");
         var separator = Array.IndexOf(argv.ToArray(), "--");
         Assert.Equal(["git", "status"], argv.Skip(separator + 1).ToArray());
+    }
+
+    [Fact]
+    public void TheBubblewrapRendererMasksAncestorsOfBindings()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("This checks Unix namespace containment.");
+        var child = Directory.CreateDirectory(Path.Combine(_workspace.Path, "granted-child")).FullName;
+        var ancestor = PolicyProcessSandboxPolicy.ResolveRealPath(_workspace.Path) ?? _workspace.Path;
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            [], [child], [ancestor], TrustedPaths: [child], NetworkAllowed: false);
+
+        var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []).ToList();
+
+        var mask = argv.IndexOf("--tmpfs");
+        Assert.True(mask >= 0, "A denied ancestor must hide its granted descendant mounts.");
+        Assert.Equal(ancestor, argv[mask + 1]);
+        Assert.True(mask > argv.IndexOf("--bind"), "Denial masks must be applied after descendant grants.");
+    }
+
+    [Fact]
+    public void TheBubblewrapRendererMasksTheSyntheticSharedTemp()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This checks Linux's synthetic /tmp path without host aliases.");
+        var denied = PolicyProcessSandboxPolicy.ResolveRealPath("/tmp") ?? "/tmp";
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            [], [], ["/tmp"], TrustedPaths: [], NetworkAllowed: false);
+
+        var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []).ToList();
+
+        var mask = argv.IndexOf("--tmpfs");
+        Assert.True(mask >= 0, "Synthetic namespace directories also participate in deny-wins.");
+        Assert.Equal(denied, argv[mask + 1]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheBubblewrapRendererAlwaysRefusesARootDenial(bool includeBindings)
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("This checks the Unix filesystem root.");
+        string[] bindings = includeBindings ? [_workspace.Path] : [];
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            bindings, [], ["/"], TrustedPaths: bindings, NetworkAllowed: false);
+
+        Assert.Throws<NotSupportedException>(() =>
+            PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []));
     }
 
     // ---------- the spawn tool over real processes ----------
@@ -395,6 +440,28 @@ public sealed class ProcessSandboxTests : IDisposable
     }
 
     // ---------- helpers ----------
+
+    [Fact(Timeout = 30_000)]
+    public async Task AFailedLauncherStartStillDeletesTheLaunchOwnedTemporaryTree()
+    {
+        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+        var temporary = Directory.CreateDirectory(Path.Combine(_workspace.Path, "launch-owned")).FullName;
+        var acquirer = new PermissionPolicyAcquirer(
+            () => new FixedLayerSource(new PermissionLayer()), new NullVariableSource());
+        var functions = new ProcessSpawnFunctions(
+            new MissingLauncherSandbox(temporary), acquirer, Workspace.Create(_workspace.Path, _workspace.Path));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => InvokeAsync(
+            functions, "process_spawn", """{"executable":"unused"}"""));
+        Assert.Equal("process_spawn_failed", failure.Code);
+        Assert.False(Directory.Exists(temporary), "A launcher start failure must release the plan's owned filesystem resources.");
+    }
+
+    private sealed class MissingLauncherSandbox(string temporary) : IProcessSandboxPolicy
+    {
+        public ProcessLaunchPlan Plan(EffectivePolicy policy, string executable, IReadOnlyList<string> arguments) =>
+            ProcessLaunchPlan.Launch([Path.Combine(temporary, "missing-launcher")],
+                new Dictionary<string, string?>(), sandboxed: true, temporary);
+    }
 
     private static string JsonEncoded(string value)
     {

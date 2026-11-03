@@ -247,12 +247,15 @@ public sealed class ProcessSandboxTests : IDisposable
         Assert.Equal(denied, argv[mask + 1]);
     }
 
-    [Fact]
-    public void TheBubblewrapRendererRefusesARootDenialWithoutBindings()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheBubblewrapRendererAlwaysRefusesARootDenial(bool includeBindings)
     {
         if (OperatingSystem.IsWindows()) Assert.Skip("This checks the Unix filesystem root.");
+        string[] bindings = includeBindings ? [_workspace.Path] : [];
         var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
-            [], [], ["/"], TrustedPaths: [], NetworkAllowed: false);
+            bindings, [], ["/"], TrustedPaths: bindings, NetworkAllowed: false);
 
         Assert.Throws<NotSupportedException>(() =>
             PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []));

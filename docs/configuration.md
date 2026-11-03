@@ -405,6 +405,11 @@ already writable ancestor remains possible. Seatbelt can grant future paths. Lin
 replaces `/dev` and `/proc` with private synthetic mounts after applying grants, so explicit
 allows beneath those paths do not expose the corresponding host entries. Denials are applied
 after those synthetic mounts. Both differences can make Linux access stricter than macOS.
+Host existence checks do not validate targets in the replacement procfs: an active host
+`/proc/<pid>` denial can pass planning and then fail during bwrap setup in the new PID
+namespace. This returns a sandboxed process result with a nonzero exit code and bwrap's
+diagnostic on stderr, rather than a pre-launch `process_spawn_denied`. The requested command
+does not run, no unwrapped retry occurs, and the launch-owned temporary tree is removed.
 
 Network rules retain the existing coarse switch: only an unqualified allow-all
 enables IP networking. Linux network namespaces do not filter filesystem Unix sockets inside

@@ -131,6 +131,10 @@ AppArmor mediation, grants userns to the bwrap binary rather than disabling the 
   whereas Seatbelt can grant future paths. Private synthetic `/dev` and `/proc` mounts replace
   explicit host grants under those trees; denials are still applied last. These choices can
   restrict Linux access beyond the same Seatbelt policy.
+  A host-existing `/proc/<pid>` deny can pass planning but fail to mount in the new PID
+  namespace's procfs. That is a nonzero bwrap process result with stderr diagnostics, not a
+  pre-launch typed refusal; the requested command is not run or retried unwrapped, and the
+  launch-owned temporary tree is still cleaned up. A real Linux conformance case covers it.
   Filesystem Unix sockets within granted trees remain reachable despite network
   unsharing; explicit path denials can hide them. Seatbelt can be stricter for these sockets.
 - **A per-spawn temporary directory** replaces the shared system temp in the writable set

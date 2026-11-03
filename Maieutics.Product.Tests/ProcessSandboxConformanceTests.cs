@@ -352,6 +352,30 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         Assert.False(Path.Exists(missing), "Planning must not create denied mount targets in the host workspace.");
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task LinuxActiveHostProcPidDenialsFailDuringLauncherSetupAndReleaseTheTemporaryTree()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This checks host versus sandbox PID namespace mount targets.");
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var activeHostPath = $"/proc/{Environment.ProcessId}";
+        Assert.True(Directory.Exists(activeHostPath), "The denied host process must remain alive through planning and launcher setup.");
+        var control = await InvokeAsync(CreateFunctions(), "/bin/echo", ["launched"], null, budget.Token);
+        AssertSuccess(control);
+        Assert.Equal("launched\n", control.GetProperty("stdout").GetString());
+
+        var temporary = Path.Combine(PhysicalParent, "proc-denied-launch");
+        var functions = CreateFunctions(new() { [PermissionKind.Read] = new() { Deny = [activeHostPath] } },
+            createTemporaryDirectory: () => Directory.CreateDirectory(temporary).FullName);
+        // Host existence passes planning; the replacement procfs belongs to the new PID
+        // namespace. This remains a launcher failure, not a typed planning refusal.
+        var result = await InvokeAsync(functions, "/bin/echo", ["must-not-run"], null, budget.Token);
+        Assert.True(result.GetProperty("sandboxed").GetBoolean());
+        Assert.NotEqual(0, result.GetProperty("exitCode").GetInt32());
+        Assert.Equal(string.Empty, result.GetProperty("stdout").GetString());
+        Assert.Contains("bwrap:", result.GetProperty("stderr").GetString() ?? string.Empty);
+        Assert.False(Directory.Exists(temporary), "A procfs setup failure must release the launch-owned temporary tree.");
+    }
+
     private static void RequireUnix()
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())

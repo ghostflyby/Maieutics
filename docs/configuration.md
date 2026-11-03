@@ -394,8 +394,19 @@ An explicit read-deny-all refuses a sandboxed launch on either platform rather t
 the required runtime mounts override that denial.
 
 Linux mount masks require existing denied targets. A missing denied path beneath an exposed
-directory returns `process_spawn_denied`; it is not silently ignored or created in the host
-workspace. Network rules retain the existing coarse switch: only an unqualified allow-all
+directory returns `process_spawn_denied`; this includes stale rules beneath the synthetic
+`/dev` and `/proc` trees. The path is not silently ignored or created in the host workspace.
+Denials also hide granted descendant mounts when they target an ancestor of the workspace or
+private temporary tree; denying `/` refuses launch.
+
+Linux grants bind paths that exist when planning the launch. A nonexistent allow path is
+omitted, so it cannot expose a new tree outside the existing mounts; creating it under an
+already writable ancestor remains possible. Seatbelt can grant future paths. Linux also
+replaces `/dev` and `/proc` with private synthetic mounts after applying grants, so explicit
+allows beneath those paths do not expose the corresponding host entries. Denials are applied
+after those synthetic mounts. Both differences can make Linux access stricter than macOS.
+
+Network rules retain the existing coarse switch: only an unqualified allow-all
 enables IP networking. Linux network namespaces do not filter filesystem Unix sockets inside
 otherwise granted trees; deny those paths explicitly when needed. Seatbelt can be stricter
 for such sockets. These kernel differences are recorded in ADR 0045.

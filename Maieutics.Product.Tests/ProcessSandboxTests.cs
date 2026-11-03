@@ -215,6 +215,49 @@ public sealed class ProcessSandboxTests : IDisposable
         Assert.Equal(["git", "status"], argv.Skip(separator + 1).ToArray());
     }
 
+    [Fact]
+    public void TheBubblewrapRendererMasksAncestorsOfBindings()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("This checks Unix namespace containment.");
+        var child = Directory.CreateDirectory(Path.Combine(_workspace.Path, "granted-child")).FullName;
+        var ancestor = PolicyProcessSandboxPolicy.ResolveRealPath(_workspace.Path) ?? _workspace.Path;
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            [], [child], [ancestor], TrustedPaths: [child], NetworkAllowed: false);
+
+        var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []).ToList();
+
+        var mask = argv.IndexOf("--tmpfs");
+        Assert.True(mask >= 0, "A denied ancestor must hide its granted descendant mounts.");
+        Assert.Equal(ancestor, argv[mask + 1]);
+        Assert.True(mask > argv.IndexOf("--bind"), "Denial masks must be applied after descendant grants.");
+    }
+
+    [Fact]
+    public void TheBubblewrapRendererMasksTheSyntheticSharedTemp()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This checks Linux's synthetic /tmp path without host aliases.");
+        var denied = PolicyProcessSandboxPolicy.ResolveRealPath("/tmp") ?? "/tmp";
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            [], [], ["/tmp"], TrustedPaths: [], NetworkAllowed: false);
+
+        var argv = PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []).ToList();
+
+        var mask = argv.IndexOf("--tmpfs");
+        Assert.True(mask >= 0, "Synthetic namespace directories also participate in deny-wins.");
+        Assert.Equal(denied, argv[mask + 1]);
+    }
+
+    [Fact]
+    public void TheBubblewrapRendererRefusesARootDenialWithoutBindings()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("This checks the Unix filesystem root.");
+        var profile = new PolicyProcessSandboxPolicy.SandboxProfile(
+            [], [], ["/"], TrustedPaths: [], NetworkAllowed: false);
+
+        Assert.Throws<NotSupportedException>(() =>
+            PolicyProcessSandboxPolicy.RenderBubblewrap("bwrap", profile, "unused", []));
+    }
+
     // ---------- the spawn tool over real processes ----------
 
     [Fact(Timeout = 30_000)]

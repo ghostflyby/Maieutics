@@ -172,6 +172,70 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         Assert.Equal("secret-canary\n", await File.ReadAllTextAsync(canary, budget.Token));
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AncestorDenialsOverrideWorkspaceGrants(bool readDenial)
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var canary = Path.Combine(PhysicalWorkspace, "ancestor-secret");
+        await File.WriteAllTextAsync(canary, "ancestor-canary", budget.Token);
+        var control = await InvokeAsync(CreateFunctions(), "/bin/cat", [canary], null, budget.Token);
+        AssertSuccess(control);
+        Assert.Equal("ancestor-canary", control.GetProperty("stdout").GetString());
+
+        var kind = readDenial ? PermissionKind.Read : PermissionKind.Write;
+        var functions = CreateFunctions(new() { [kind] = new() { Deny = [PhysicalParent] } });
+        var read = await InvokeAsync(functions, "/bin/cat", [canary], null, budget.Token);
+        Assert.True(read.GetProperty("sandboxed").GetBoolean());
+        Assert.NotEqual(0, read.GetProperty("exitCode").GetInt32());
+        Assert.DoesNotContain("ancestor-canary", read.GetProperty("stdout").GetString() ?? string.Empty);
+        var write = await ShellAsync(functions, "printf overwritten >\"$1\"", [canary], null, budget.Token);
+        Assert.True(write.GetProperty("sandboxed").GetBoolean());
+        Assert.NotEqual(0, write.GetProperty("exitCode").GetInt32());
+        Assert.Equal("ancestor-canary", await File.ReadAllTextAsync(canary, budget.Token));
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AncestorDenialsOverridePrivateTemporaryGrants(bool sharedTemp)
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var ancestor = sharedTemp ? Path.GetTempPath()
+            : Directory.CreateDirectory(Path.Combine(PhysicalParent, "temporary-parent")).FullName;
+        var temporary = Path.Combine(ancestor, $"denied-launch-{Guid.NewGuid():N}");
+        string CreateTemporary() => Directory.CreateDirectory(temporary).FullName;
+        const string script = "printf temporary >\"$TMPDIR/probe\"";
+        var control = await ShellAsync(CreateFunctions(createTemporaryDirectory: CreateTemporary),
+            script, [], null, budget.Token);
+        AssertSuccess(control);
+
+        var functions = CreateFunctions(new() { [PermissionKind.Write] = new() { Deny = [ancestor] } },
+            createTemporaryDirectory: CreateTemporary);
+        var denied = await ShellAsync(functions, script, [], null, budget.Token);
+        Assert.True(denied.GetProperty("sandboxed").GetBoolean());
+        Assert.NotEqual(0, denied.GetProperty("exitCode").GetInt32());
+        Assert.False(Directory.Exists(temporary), "A denied temporary ancestor must not bypass cleanup.");
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task LinuxRootDenialsRefuseTheLaunchAndReleaseTheTemporaryTree()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This checks the Linux root-denial planning refusal.");
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var temporary = Path.Combine(PhysicalParent, "root-denied-launch");
+        var functions = CreateFunctions(new() { [PermissionKind.Read] = new() { Deny = ["/"] } },
+            createTemporaryDirectory: () => Directory.CreateDirectory(temporary).FullName);
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() =>
+            InvokeAsync(functions, "/bin/echo", ["must-not-run"], null, budget.Token));
+        Assert.Equal("process_spawn_denied", failure.Code);
+        Assert.Contains("filesystem root", failure.Message);
+        Assert.False(Directory.Exists(temporary));
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task APlantedGrantSymlinkCannotExposeItsTarget()
     {

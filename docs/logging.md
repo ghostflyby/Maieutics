@@ -38,6 +38,12 @@ Windows credential-bootstrap logs apply the same encoding to registered session 
 per-message control-bus Debug logs check their level before encoding message text or ping
 correlation ids, so disabled Debug logging does not allocate escaped copies of large fields.
 
+This field encoding is not a sink-wide sanitizer: exception messages and `Exception.ToString()`
+can still contain external text, and the file sink writes exception text verbatim. Call sites
+must avoid passing untrusted diagnostic text through exceptions without suitable encoding.
+Windows bootstrap replies likewise retain the original session id in the wire payload;
+log encoding does not validate or frame that protocol field.
+
 ## Child-process bridging
 
 A deno child's stderr and stdout are never silently dropped: the owning subsystem (for example

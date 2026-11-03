@@ -9,6 +9,8 @@ internal sealed partial class PolicyProcessSandboxPolicy
 
         // The source is private to this launch and hidden inside the child's namespace.
         // A mode-000 regular file makes denied file reads fail, rather than returning EOF.
+        // Prepare one per plan even without file denials so every file mask has the same
+        // owned lifetime; its hidden source never becomes an extra child-visible grant.
         var directory = Directory.CreateDirectory(Path.Combine(temporaryDirectory, ".deny-mask")).FullName;
         var path = Path.Combine(directory, "file");
         File.WriteAllBytes(path, []);
@@ -53,6 +55,7 @@ internal sealed partial class PolicyProcessSandboxPolicy
 
         argv.AddRange(["--dev", "/dev", "--remount-ro", "/dev",
             "--proc", "/proc", "--remount-ro", "/proc", "--dir", "/tmp"]);
+        var exposedRoots = mounted.Keys.Concat(["/dev", "/proc", "/tmp"]).ToArray();
 
         var denials = profile.DeniedPaths.Select(path =>
             ResolveRealPath(path) ?? ResolveMissingSandboxPath(SandboxFullPath(path)))
@@ -62,12 +65,13 @@ internal sealed partial class PolicyProcessSandboxPolicy
         var masked = new List<string>();
         foreach (var path in denials)
         {
-            if (masked.Any(parent => SandboxContains(parent, path))) continue;
-            if (!mounted.Keys.Any(parent => SandboxContains(parent, path)) &&
-                !SandboxContains("/dev", path) && !SandboxContains("/proc", path))
-                continue; // The path is absent from the namespace already.
             if (path == "/")
                 throw new NotSupportedException("The Linux sandbox policy denies the filesystem root.");
+            if (masked.Any(parent => SandboxContains(parent, path))) continue;
+            // An ancestor denial must hide descendant grants too, including private temp.
+            // Synthetic mounts participate even when no host binding exposes their parent.
+            if (!exposedRoots.Any(root => SandboxContains(root, path) || SandboxContains(path, root)))
+                continue; // The denied tree has no overlap with the exposed namespace.
             if (Directory.Exists(path))
                 MaskDirectory(path);
             else if (File.Exists(path))

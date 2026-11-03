@@ -90,7 +90,9 @@ symlink spellings are recreated and grants bind their resolved paths, with the s
 guard as seatbelt. Parent mounts precede writable child mounts, and the synthetic root stays
 read-only without hiding workspace or per-launch temporary mounts.
 
-Denials are applied after all grants. Directories become unreadable, read-only empty mounts;
+Denials are applied after all grants and synthetic mounts, including when a denied ancestor
+contains a granted workspace or private-temp mount. A root denial refuses launch.
+Directories become unreadable, read-only empty mounts;
 files receive a read-only mode-000 placeholder whose launch-private source directory is hidden
 by another unreadable mount. A child cannot chmod that source to unlock a denied file. The
 tool owns the placeholder together with its temporary tree, including startup failures.
@@ -123,8 +125,13 @@ AppArmor mediation, grants userns to the bwrap binary rather than disabling the 
 - **Linux requires bubblewrap 0.9+ and working unprivileged user namespaces.** `Prefer`
   degrades only when the launcher is absent; `Require` refuses. An installed launcher's
   setup failure never retries unwrapped. Mount masks need existing targets: a missing denied
-  entry below an exposed tree causes a typed refusal before launch, without creating host
-  mountpoints. Filesystem Unix sockets within granted trees remain reachable despite network
+  entry below an exposed tree causes a typed refusal before launch, including stale `/dev`
+  or `/proc` rules, without creating host mountpoints. Only allow paths existing at planning
+  time are bound; nonexistent allows are omitted (a writable ancestor can still create them),
+  whereas Seatbelt can grant future paths. Private synthetic `/dev` and `/proc` mounts replace
+  explicit host grants under those trees; denials are still applied last. These choices can
+  restrict Linux access beyond the same Seatbelt policy.
+  Filesystem Unix sockets within granted trees remain reachable despite network
   unsharing; explicit path denials can hide them. Seatbelt can be stricter for these sockets.
 - **A per-spawn temporary directory** replaces the shared system temp in the writable set
   (the shared temp stays read-only), so a sandboxed child cannot squat another process's

@@ -211,11 +211,17 @@ function testRichDisplaySnapshotsAsync(): void {
       header.repl === undefined && header.text === undefined,
       "timeline header contains no invisible rich or answer payload",
     );
-    const reply = outputs.find((output) =>
-      output.items.some((item) => item.mime === "text/markdown")
-    );
-    assert(reply !== undefined, "assistant text uses the default Markdown output");
-    reply.items = [vscode.NotebookCellOutputItem.text("Latest live reply", "text/markdown")];
+    const reply = outputs.find((output) => {
+      const item = output.items.find((item) => item.mime === "application/vnd.maieutics.turn+json");
+      return item !== undefined &&
+        JSON.parse(new TextDecoder().decode(item.data)).timeline?.[0]?.kind === "text";
+    });
+    assert(reply !== undefined, "restored assistant text must enter the SSR-capable turn renderer");
+    const updated = JSON.parse(new TextDecoder().decode(reply.items[0].data));
+    updated.timeline[0].text = "Latest live reply";
+    reply.items = [
+      vscode.NotebookCellOutputItem.json(updated, "application/vnd.maieutics.turn+json"),
+    ];
     const saved = serializer.serializeNotebook(data, cancellation.token);
     const restored = parseNotebook(saved).cells[0].output;
     assert(
@@ -553,16 +559,16 @@ async function testQueueExecutionAsync(
           item.mime === "application/vnd.maieutics.turn+json"
         );
         assert(
-          snapshots.length === 3,
+          snapshots.length === 5,
           "turn status and all four timeline nodes are separate notebook outputs",
         );
         assert(
-          items.filter((item) => item.mime === "text/markdown").length === 2,
-          "assistant messages use separate default Markdown outputs",
+          items.every((item) => item.mime !== "text/markdown"),
+          "live assistant messages must enter the SSR-capable turn renderer without a Markdown sibling",
         );
         const fragments = snapshots.map((item) => JSON.parse(new TextDecoder().decode(item.data)));
         assert(
-          new Set(fragments.map((fragment) => fragment.nodeId)).size === 3,
+          new Set(fragments.map((fragment) => fragment.nodeId)).size === 5,
           "each output has its own stable node identity",
         );
         const orderedFragments = notebook.cellAt(0).outputs.map((output) =>

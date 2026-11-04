@@ -35,21 +35,12 @@ export const StoredSessionMetadataKey = "maieuticsSessionId";
 export const ReplDisplayMetadataKey = "maieuticsRepl";
 export const TimelineSnapshotMetadataKey = "maieuticsTimelineNode";
 
-/** Assistant text goes directly to VS Code's default Markdown renderer. */
+/** All timeline nodes use the turn renderer, which owns assistant SSR and native fallback. */
 export function timelineNotebookOutput(node: OutputSnapshot): vscode.NotebookCellOutput {
-  const entry = node.timeline?.length === 1 ? node.timeline[0] : undefined;
-  if (entry?.kind === "text") {
-    return new vscode.NotebookCellOutput([
-      vscode.NotebookCellOutputItem.text(entry.text, "text/markdown"),
-    ], {
-      [TimelineSnapshotMetadataKey]: { nodeId: node.nodeId, timeline: [{ ...entry, text: "" }] },
-      maieuticsSafeMarkdown: true,
-    });
-  }
   return new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec));
 }
 
-/** Read current Markdown bytes, since item updates do not replace output metadata. */
+/** Read legacy Markdown-node bytes, since item updates did not replace output metadata. */
 export function timelineSnapshotFromOutput(
   output: vscode.NotebookCellOutput,
 ): OutputSnapshot | undefined {

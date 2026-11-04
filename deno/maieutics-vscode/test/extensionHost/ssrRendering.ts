@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import { FrontendClient } from "../../client.ts";
 import { OutputRenderingBridge } from "../../outputRendering.ts";
-import { NotebookLanguage } from "../../notebookFormat.ts";
+import { emptyNotebook } from "../../notebookFormat.ts";
+import { MaieuticsNotebookSerializer } from "../../serializer.ts";
 import { TurnOutputMime } from "../../turnView.ts";
 
 /** Exercises the production extension bridge and actual notebook MIME renderer, without a model call. */
@@ -14,6 +15,7 @@ export async function testNotebookSsrAsync(discovery: string): Promise<void> {
   const requests = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let subscription: vscode.Disposable | undefined;
+  const cancellation = new vscode.CancellationTokenSource();
   try {
     const applied = new Promise<void>((resolve, reject) => {
       timer = setTimeout(
@@ -39,19 +41,31 @@ export async function testNotebookSsrAsync(discovery: string): Promise<void> {
     if (notebook === undefined) {
       throw new Error("The real extension did not open its session notebook");
     }
-    const cell = new vscode.NotebookCellData(
-      vscode.NotebookCellKind.Code,
-      "SSR demonstration snapshot",
-      NotebookLanguage,
+    const snapshot = emptyNotebook();
+    snapshot.cells[0].output = {
+      text: source,
+      timeline: [{ kind: "text", messageId: "demo", text: source }],
+    };
+    const restored = new MaieuticsNotebookSerializer().deserializeNotebook(
+      new TextEncoder().encode(JSON.stringify(snapshot)),
+      cancellation.token,
     );
-    cell.outputs = [
-      new vscode.NotebookCellOutput([
-        vscode.NotebookCellOutputItem.json({ text: source }, TurnOutputMime),
-      ]),
-    ];
+    if (
+      !restored.cells[0].outputs?.some((output) =>
+        output.items.some((item) =>
+          item.mime === TurnOutputMime &&
+          JSON.parse(new TextDecoder().decode(item.data)).timeline?.[0]?.kind === "text"
+        )
+      )
+    ) {
+      throw new Error("The production serializer bypassed the SSR-capable assistant renderer");
+    }
     const edit = new vscode.WorkspaceEdit();
     edit.set(notebook.uri, [
-      vscode.NotebookEdit.replaceCells(new vscode.NotebookRange(0, notebook.cellCount), [cell]),
+      vscode.NotebookEdit.replaceCells(
+        new vscode.NotebookRange(0, notebook.cellCount),
+        restored.cells,
+      ),
     ]);
     if (!await vscode.workspace.applyEdit(edit)) {
       throw new Error("Could not insert the demo snapshot");
@@ -60,6 +74,7 @@ export async function testNotebookSsrAsync(discovery: string): Promise<void> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     subscription?.dispose();
+    cancellation.dispose();
     await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
     await settings.update("discoveryFile", previous, vscode.ConfigurationTarget.Workspace);
   }

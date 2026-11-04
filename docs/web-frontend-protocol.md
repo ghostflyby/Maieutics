@@ -45,6 +45,9 @@ local request IDs, coalesces pending source updates, and rejects obsolete replie
 appears immediately and remains the fallback. A local `applied` acknowledgement follows DOM
 application for verification; it is not a frontend event frame or an Agent completion signal.
 SSR HTML is derived presentation and is not saved into notebook v1 snapshots.
+Live assistant text nodes and restored snapshots carry `application/vnd.maieutics.turn+json` so they
+enter this renderer; native Markdown fallback happens inside it. Legacy Markdown-node metadata
+remains readable when saving older in-memory outputs.
 
 ## Discovery and authentication
 

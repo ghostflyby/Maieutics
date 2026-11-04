@@ -46,10 +46,12 @@ MAIEUTICS_RENDERING_DEMO_DISCOVERY="/absolute/path/discovery.json" \
 deno task --config deno/maieutics-vscode/deno.json test:vscode
 ```
 
-The probe waits for the renderer's application acknowledgement after it replaces the output DOM.
-Without the environment variable, the standard webview test uses a snapshot fixture. Other coverage
-checks coalescing, stale-result rejection, cancellation, native fallback, raw HTML remaining inert,
-real child startup/disposal, and published NativeAOT rendering.
+The probe restores assistant text through the production serializer and waits for the renderer's
+application acknowledgement after it replaces the output DOM. Standard controller tests also require
+live text nodes to enter this same structured output route. Without the environment variable, the
+standard webview test uses a snapshot fixture. Other coverage checks coalescing, stale-result
+rejection, cancellation, native fallback, raw HTML remaining inert, real child startup/disposal, and
+published NativeAOT rendering.
 
 This initial demo updates complete text regions. Revisioned document patches, late TS bindings,
 interactive Vue components, and frontend resource URL rewriting remain future stages in the

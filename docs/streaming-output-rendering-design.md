@@ -35,6 +35,10 @@ The VS Code frontend currently projects events into ordered timeline entries in
 retains unchanged output payloads. `media/turnRenderer.js` immediately renders changed assistant text
 with VS Code's default Markdown renderer, with the protections in `markdownSafety.js`, then requests
 shared SSR through the extension's existing connection when available.
+Both live controller output and snapshot restoration use `serializer.ts`'s
+`timelineNotebookOutput`: assistant text must carry the structured turn MIME, just like other timeline
+nodes. A direct `text/markdown` item bypasses this bridge and cannot receive shared SSR. Older
+Markdown-node output metadata remains readable for snapshot compatibility.
 
 The initial renderer replaces assistant Markdown inside these existing output boundaries.
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
@@ -168,8 +172,11 @@ This coalesces derived formatting requests, not canonical Agent events or commit
 
 The browser first finishes native rendering, then requests SSR. A matching response replaces the
 assistant text region, including its scoped stylesheet, and emits a local application acknowledgement.
-The extension-host tests verify actual DOM output under CSP; an optional live-kernel test waits for
-that acknowledgement from the production Notebook renderer. Neither signal affects Agent completion.
+The extension-host tests verify actual DOM output under CSP, require the live controller to produce
+structured text nodes, and round-trip updated text through the production serializer. An optional
+live-kernel test restores output through that serializer and waits for the application acknowledgement
+from the production Notebook renderer. It must not manufacture a custom MIME output that bypasses the
+serializer's routing decision. Neither signal affects Agent completion.
 
 This demo reparses the complete source, so later reference definitions correct earlier text. It has
 no persistent server-side document, local subtree patching, or TS binding runtime. Complete region

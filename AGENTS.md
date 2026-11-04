@@ -103,7 +103,7 @@ Every change must preserve these invariants:
     the project/workspace profile, and the session override; denials always win over grants.
 21. Permission path patterns are expressed with the single-source variable table (`${env.*}`, `${var.*}`),
     never with literal duplicated paths.
-22. Internal Deno children (REPL, plugin host) are privileged by Deno permissions and are not process-sandbox
+22. Internal Deno children (REPL, plugin host, output renderer) are privileged by Deno permissions and are not process-sandbox
     targets; process sandboxes apply to general starts (terminal, MCP), never to internal Deno children. The
     REPL's permissions come from the broker against an `EffectivePolicy`; the plugin host's come from full
     launch-time flags with per-worker narrowing (ADR 0018 decision 8).

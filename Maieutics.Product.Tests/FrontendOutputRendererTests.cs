@@ -2,8 +2,11 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Maieutics.Configuration;
+using Maieutics.DenoRepl;
 using Maieutics.Frontend;
+using Microsoft.Extensions.DependencyInjection;
 using static Maieutics.Product.Tests.FrontendApiIntegrationTests;
 
 namespace Maieutics.Product.Tests;
@@ -89,5 +92,50 @@ public sealed class FrontendOutputRendererTests
         return await response.Content.ReadFromJsonAsync(
                    FrontendJsonContext.Default.FrontendRenderedMarkdown, cancellationToken)
                ?? throw new InvalidOperationException("The renderer returned no snapshot.");
+    }
+
+    [Theory(Timeout = 60_000)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StartupDenialsAndMissingExecutablesKeepTheFrontendUsableAndLeaveNoChild(bool denyEnvironment)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false,
+            configureBuilder: builder =>
+            {
+                if (!denyEnvironment)
+                {
+                    // Keep the plugin host's real Deno; fail only the presentation child's launch.
+                    builder.Services.AddSingleton(services => ActivatorUtilities.CreateInstance<FrontendOutputRenderer>(
+                        services, new DenoReplOptions { Executable = "maieutics-missing-renderer-executable" }));
+                }
+            },
+            transformConfiguration: json =>
+            {
+                var configuration = JsonNode.Parse(json) ?? throw new InvalidOperationException("Missing test configuration.");
+                var product = configuration["Maieutics"] ?? throw new InvalidOperationException("Missing product configuration.");
+                if (denyEnvironment)
+                    product["Permissions"] = JsonNode.Parse("""{"Env":{"deny":["MAIEUTICS_RENDERER_NONCE"]}}""");
+                return configuration.ToJsonString();
+            });
+        var directory = harness.OutputRenderer.ModuleDirectory;
+        try
+        {
+            using var result = await harness.Client.PostAsJsonAsync("/v1/render/markdown",
+                new FrontendRenderMarkdown(1, "demo", "# Expected fallback"), FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, result.StatusCode);
+            using var error = JsonDocument.Parse(await result.Content.ReadAsStringAsync(budget.Token));
+            Assert.Equal("render_unavailable", error.RootElement.GetProperty("code").GetString());
+            Assert.Null(harness.OutputRenderer.ProcessId);
+            using var alive = await harness.Client.GetAsync("/v1/agent/capabilities", budget.Token);
+            Assert.Equal(HttpStatusCode.OK, alive.StatusCode);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+        Assert.False(Directory.Exists(directory), "Failed startup must not retain its materialized bundle.");
     }
 }

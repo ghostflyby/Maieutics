@@ -1,0 +1,13 @@
+{
+  "maieutics": "maieutics-notebook",
+  "version": 1,
+  "cells": [
+    {
+      "kind": "agent",
+      "text": "Rendering demonstration snapshot",
+      "output": {
+        "text": "# Shared SSR output\n\n::: tip Kernel rendering\nThis report is rendered by the kernel's offline Deno service.\n:::\n\n| Item | Value |\n| --- | --- |\n| Total | **42** |\n| Status | Ready |\n\n```ts\nconst report: { total: number } = { total: 42 };\n```\n\n::: details More information\nReference-style links use the complete document: [VitePress][vp].\n:::\n\n[vp]: https://vitepress.dev/\n\nHTML and template expressions remain text in this demo: `<script>` and `{{ report.total }}`."
+      }
+    }
+  ]
+}

@@ -16,6 +16,7 @@ namespace Maieutics.Frontend;
 internal sealed class FrontendOutputRenderer(
     FrontendOptions frontend,
     DenoReplOptions deno,
+    ApplicationPaths paths,
     PermissionPolicyAcquirer policies,
     ILogger<FrontendOutputRenderer> logger) : IAsyncDisposable
 {
@@ -24,7 +25,7 @@ internal sealed class FrontendOutputRenderer(
     private readonly CancellationTokenSource _lifetime = new();
     private readonly TaskCompletionSource<int> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly string _nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-    private readonly string _directory = Path.Combine(Path.GetTempPath(), $"mc-render-{Guid.NewGuid():N}");
+    private readonly string _directory = Path.Combine(paths.OutputRendererStagingRoot, Guid.NewGuid().ToString("N"));
     private readonly HttpClient _http = new(new SocketsHttpHandler
     {
         UseProxy = false,

@@ -4,7 +4,9 @@ Executable-owned rendering primitives for the
 [streaming output design](../../docs/streaming-output-rendering-design.md). The first implementation
 provides complete passive Markdown snapshots through Markdown-it, the `@mdit-vue` heading plugin,
 Shiki, and Vue SSR. The executable embeds `bundle/service.js` and starts the rendering child on the
-first authenticated `POST /v1/render/markdown` request. No user REPL or plugin host is needed.
+first authenticated `POST /v1/render/markdown` request. No user REPL or plugin host is needed. The
+[Notebook demo](../maieutics-vscode/demo/README.md) exercises this service through the production
+extension bridge with native Markdown fallback.
 
 ```ts
 import { createOutputRenderer } from "./mod.ts";
@@ -84,4 +86,5 @@ layers, renders that captured effective policy before launch, and clears the inh
 It provides only renderer variables, a private `DENO_DIR`, and Windows `SYSTEMROOT` when needed.
 Readiness and internal render requests use authenticated HTTP. No binary data or conversation state
 travels through stdout. The child belongs to the executable's presentation scope independently of
-Agent runs and frontend subscribers.
+Agent runs and frontend subscribers. Its private module/cache directory lives under the configured
+data root's `.rendering` directory and is removed on deterministic service disposal.

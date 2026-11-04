@@ -20,6 +20,31 @@ namespace Maieutics.Product.Tests;
 public sealed class FrontendProcessSmokeTests
 {
     [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersThroughItsEmbeddedOfflineChild()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("rendering-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
+        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.PostAsJsonAsync("/v1/render/markdown",
+            new { version = 1, documentId = "published", source = "# Demo\n\n::: tip\nSSR from Deno\n:::\n\n```ts\nconst total = 42;\n```" }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Equal(1, result.GetProperty("version").GetInt32());
+        Assert.Contains("published-demo", result.GetProperty("html").GetString());
+        Assert.Contains("custom-block tip", result.GetProperty("html").GetString());
+        Assert.Contains("shiki", result.GetProperty("html").GetString());
+        Assert.Contains("--vscode", result.GetProperty("css").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

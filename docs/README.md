@@ -8,7 +8,7 @@ Jupyter libraries were extracted to the standalone JupyterSharp repository and a
 - [Web frontend protocol](web-frontend-protocol.md) — the primary frontend: discovery, REST, and event streams
 - [ADR 0023: Custom web frontend protocol and the VSCode notebook frontend](architecture/decisions/0023-custom-web-frontend-protocol-and-vscode-notebook.md)
 - [Frontend migration gaps](frontend-migration-gaps.md) — remaining gaps from the Jupyter frontend, with priorities and acceptance criteria
-- [Streaming output rendering with VitePress](streaming-output-rendering-design.md) — kernel-side Deno SSR direction, late bindings, cross references, and proposed presentation updates
+- [Streaming output rendering with VitePress](streaming-output-rendering-design.md) — integrated kernel-side Deno SSR demo, late bindings, cross references, and proposed presentation updates; [run the Notebook demo](../deno/maieutics-vscode/demo/README.md)
 
 ## Operations
 

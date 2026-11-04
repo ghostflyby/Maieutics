@@ -31,6 +31,7 @@ import type {
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 import { IdeCapabilityVersion } from "./ide.ts";
+import type { RenderedMarkdown } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
  * import surface with the client's queue API). */
@@ -127,6 +128,30 @@ export class FrontendClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return await this.get("/v1/agent/capabilities", signal);
+  }
+
+  /** Requests a passive display snapshot independently of Agent execution. */
+  async renderMarkdown(
+    documentId: string,
+    source: string,
+    signal?: AbortSignal,
+  ): Promise<RenderedMarkdown> {
+    const body = await this.post<unknown>("/v1/render/markdown", {
+      version: 1,
+      documentId,
+      source,
+    }, signal);
+    if (typeof body !== "object" || body === null) {
+      throw new FrontendError("protocol_error", 0, "The renderer returned no snapshot.");
+    }
+    const result = body as Partial<RenderedMarkdown>;
+    if (
+      result.version !== 1 || result.documentId !== documentId || typeof result.html !== "string" ||
+      result.html.length > 4_000_000 || typeof result.css !== "string" || result.css.length > 64_000
+    ) {
+      throw new FrontendError("protocol_error", 0, "The renderer returned an invalid snapshot.");
+    }
+    return { version: 1, documentId, html: result.html, css: result.css };
   }
 
   async session(signal?: AbortSignal): Promise<SessionInfo> {

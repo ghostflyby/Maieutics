@@ -34,6 +34,7 @@ import {
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
+import { testNotebookSsrAsync, testSsrRenderingAsync } from "./ssrRendering.ts";
 import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
 import { testProjectRegistrationAsync } from "./projectRegistration.ts";
 import { testDocumentEditing } from "./documentEditing.ts";
@@ -1014,6 +1015,7 @@ const tests: HostTest[] = [
     name: "Timeline and Markdown use native rendering without losing ordered activity",
     run: testTurnRendererAsync,
   },
+  { name: "SSR snapshots reach the turn renderer under webview CSP", run: testSsrRenderingAsync },
   { name: "the .maieuticsnb serializer round-trips the fixture", run: testSerializerAsync },
   {
     name: "rich output metadata survives saves without bloating headers or persisting code",
@@ -1070,7 +1072,17 @@ export async function run(): Promise<void> {
   const failed: string[] = [];
   let firstError: string | null = null;
   try {
-    for (const test of tests) {
+    const selected = [...tests];
+    const liveRenderer = vscode.workspace.getConfiguration("maieutics").get<string>(
+      "testRenderingDiscovery",
+    );
+    if (liveRenderer !== undefined) {
+      selected.push({
+        name: "the production notebook renderer applies live kernel SSR",
+        run: () => testNotebookSsrAsync(liveRenderer),
+      });
+    }
+    for (const test of selected) {
       try {
         await test.run();
         console.log("  ok -", test.name);

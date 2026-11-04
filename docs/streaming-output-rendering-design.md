@@ -1,6 +1,6 @@
 # Streaming Output Rendering with VitePress
 
-Status: Passive rendering core and kernel rendering API implemented; Notebook integration in progress.
+Status: Initial passive SSR demo integrated with the kernel and actual Notebook renderer and verified.
 The streaming document runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
@@ -32,10 +32,11 @@ require the validation stages below. The initial demo API has its own normative 
 
 The VS Code frontend currently projects events into ordered timeline entries in
 `deno/maieutics-vscode/turnTimeline.ts`. `timelineOutputs.ts` assigns independent output identities and
-retains unchanged output payloads. `media/turnRenderer.js` rebuilds the changed output's DOM and delegates
-Markdown to VS Code's default Markdown renderer, with the protections in `markdownSafety.js`.
+retains unchanged output payloads. `media/turnRenderer.js` immediately renders changed assistant text
+with VS Code's default Markdown renderer, with the protections in `markdownSafety.js`, then requests
+shared SSR through the extension's existing connection when available.
 
-The new renderer should first replace assistant Markdown inside these existing output boundaries.
+The initial renderer replaces assistant Markdown inside these existing output boundaries.
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
 retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
 not implicitly become a Vue application.
@@ -44,8 +45,9 @@ The first rendering primitive is now implemented in
 [`deno/maieutics-output-renderer`](../deno/maieutics-output-renderer/README.md), a Deno workspace member.
 It renders complete passive Markdown snapshots and heading metadata with independent parser and
 highlighter ownership. The executable embeds its offline service bundle and starts an owned Deno
-child lazily for authenticated rendering requests. The VS Code output path still uses the existing
-Markdown renderer until its bridge is connected.
+child lazily for authenticated rendering requests. The VS Code bridge applies complete SSR snapshots
+only to the current output revision; unsupported or failed rendering retains native Markdown.
+Opening an offline notebook never starts a kernel solely for rendering.
 
 ## Ownership and data flow
 
@@ -90,7 +92,8 @@ authorized producer results. Rendering must not execute through or depend on the
 The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
 heading metadata and shared utilities, markdown-it-anchor 9.2.0, markdown-it-container 4.0.0, Shiki 2.5.0,
 and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
-compiler. The Maieutics document runtime and HTML update client remain to be implemented.
+compiler. The complete-snapshot update client is implemented; the document runtime and incremental
+HTML patch client remain to be implemented.
 Markstream is a comparison candidate, not an additional authoritative parser running beside VitePress.
 
 Package reuse must be checked in the supported Deno runtime with packaged, offline dependencies.
@@ -110,8 +113,8 @@ The composed core produces a single JavaScript smoke bundle with statically incl
 themes. The offline smoke disables npm and remote-module resolution and denies network, filesystem,
 and child-process access. TextMate requires one allowlisted environment read,
 `VSCODE_TEXTMATE_DEBUG`; source tests also require Vue's `NODE_ENV`. The bundled production output
-does not require the latter. These are prototype runtime requirements; the future kernel service
-must derive launch permissions through its owning effective policy.
+does not require the latter. The kernel service derives launch permissions through its owning
+effective policy.
 
 The supported content includes scoped headings and anchors, reference links, tables, emphasis,
 TypeScript/JavaScript/JSON highlighting, and passive tip/info/warning/danger/details containers.
@@ -123,8 +126,9 @@ are rendered through Vue SSR without compiling document expressions or SFC scrip
 container title escaping, deterministic highlighting, independent ownership and repeated disposal,
 source and expanded-output bounds, and cancellation or disposal during SSR. `smoke.ts` is the offline
 integration fixture; CI builds it and runs it under the restricted permissions above. Host-scoped
-baseline styles are provided in `styles.css`. Actual notebook CSP, resource delivery, code groups,
-full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
+baseline styles are provided in `styles.css`. Both a strict-CSP VS Code webview and the production
+Notebook renderer have been verified against the live NativeAOT kernel. Resource delivery, code
+groups, full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
 
 ### Initial kernel rendering API
 
@@ -139,12 +143,38 @@ The process-scoped service admits at most eight requests, serializes rendering, 
 the app/workspace effective policy, and launches through `DenoRunProcess`. An authenticated,
 nonce-bound readiness callback reports the child's actual loopback port. The internal child endpoint
 authenticates every bounded render request. Host shutdown cancels requests, stops the child, and
-removes its private module/cache directory. Session overrides do not govern this shared passive
+removes its private module/cache directory under the configured data root's `.rendering` directory.
+Cancellation may additionally await the owned process's bounded cleanup. Session overrides do not govern this shared passive
 formatting scope; it executes no session code.
 
 `FrontendOutputRendererTests` drives the real child through the composition root, verifies SSR and
 reference corrections without adding history, rejects anonymous or invalid requests and forged
-readiness, and asserts child and temporary-directory cleanup.
+readiness, and asserts child and staging-directory cleanup. Missing Deno and denied renderer
+environment permissions produce recoverable rendering failures without disabling other frontend
+routes. A process smoke test renders through the published executable's embedded offline child.
+
+### Initial Notebook demo
+
+The [demo instructions and snapshot](../deno/maieutics-vscode/demo/README.md) exercise the production
+path without a model request: Notebook MIME renderer → extension bridge → authenticated executable
+API → supervised Deno child → HTML/CSS → the same Notebook output. The fixture includes containers,
+a table, highlighted TypeScript, details, and reference links. No derived HTML is persisted.
+
+Each mounted output has a stable document identity and a monotonically increasing local request
+revision. One extension-owned request pump permits one active request and at most 64 pending
+documents, coalescing intermediate source updates per document. Superseded computations are never
+applied; output disposal cancels its request and prevents late replies from changing the DOM.
+This coalesces derived formatting requests, not canonical Agent events or committed protocol frames.
+
+The browser first finishes native rendering, then requests SSR. A matching response replaces the
+assistant text region, including its scoped stylesheet, and emits a local application acknowledgement.
+The extension-host tests verify actual DOM output under CSP; an optional live-kernel test waits for
+that acknowledgement from the production Notebook renderer. Neither signal affects Agent completion.
+
+This demo reparses the complete source, so later reference definitions correct earlier text. It has
+no persistent server-side document, local subtree patching, or TS binding runtime. Complete region
+replacement can reset selection and expanded details. Resource URL rewriting, interactive components,
+and languages beyond the bundled grammar subset require subsequent stages.
 
 ## Document state and presentation units
 
@@ -320,14 +350,15 @@ schema and migration policy are pending. Restoring it must not execute embedded 
 Keep the existing Markdown path available for clients that do not support the new presentation
 capability. Define discovery, resource compatibility, sanitization, and fallback before changing the
 wire or notebook format. Update representative fixtures and `web-frontend-protocol.md` when those
-contracts ship. This design does not currently change protocol v1 or notebook snapshots.
+contracts ship. The shipped optional rendering capability and routes are additive to protocol v1;
+the notebook snapshot format is unchanged. Revisioned presentation snapshots and patches remain proposed.
 
 ## Implementation stages and acceptance
 
 | Stage | Status | Scope | Acceptance |
 |---|---|---|---|
 | 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
-| 2 | In progress; kernel API and supervised child implemented | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
+| 2 | Initial demo implemented and verified; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
 | 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
 | 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
@@ -346,8 +377,8 @@ assertions. Lifecycle and protocol changes require their owning integration test
 - How much VitePress page/compiler compatibility is needed beyond the composed passive subset, and
   can those additions retain offline packaging and independent ownership?
 - Which template subset and producer registration model permit safe late binding while preserving scope?
-- Which internal endpoints and frontend presentation transport provide independent lifetime and recovery?
-- What are the exact limits, overflow behavior, reconstruction policy, and renderer permission scope?
+- Which revisioned presentation transport provides independent lifetime and recovery beyond the shipped stateless API?
+- What are the document-runtime limits, overflow behavior, reconstruction policy, and authorized producer permission scope beyond the implemented passive rendering limits?
 - Which styles, resources, and interactive components can ship inside notebook host constraints?
 - What optional presentation snapshot format supports portability and older clients?
 

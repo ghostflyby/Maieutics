@@ -39,6 +39,13 @@ accepted notification returns `204`; forged or repeated notifications return `40
 frontend registration API. The owned child serves authenticated, bounded request/reply
 `POST /v1/markdown` on an ephemeral loopback port using its separate scope credential.
 
+The VS Code extension uses its already attached connection for rendering; opening an offline
+snapshot does not start a kernel. Its renderer messaging bridge assigns stable document IDs and
+local request IDs, coalesces pending source updates, and rejects obsolete replies. Native Markdown
+appears immediately and remains the fallback. A local `applied` acknowledgement follows DOM
+application for verification; it is not a frontend event frame or an Agent completion signal.
+SSR HTML is derived presentation and is not saved into notebook v1 snapshots.
+
 ## Discovery and authentication
 
 The frontend spawns the executable and passes the discovery file location:
@@ -874,7 +881,10 @@ does not reconstruct them; event replay or a saved notebook supplies them.
 
 VS Code keeps one ordered timeline throughout streaming and completion. Each assistant
 message, permitted summary, tool invocation and child run gets an independent notebook
-output block in first-appearance order. Assistant reply blocks are always expanded and use VS Code’s default Markdown renderer directly. Activity nodes default to collapsed summaries; expanding one reveals the original content. Expansion
+output block in first-appearance order. Assistant reply blocks are always expanded, initially use
+VS Code's default Markdown renderer, and replace their text region with shared passive SSR when the
+connected kernel supports it. Source revisions reject obsolete responses; failure or offline viewing
+retains native Markdown. Activity nodes default to collapsed summaries; expanding one reveals the original content. Expansion
 survives output updates. Saving joins node fragments into one portable snapshot; reopening
 restores separate collapsed outputs. Tool parameters, latest progress and results retain
 up to 20,000 characters per detail and mark truncation explicitly. Notebook v1 snapshots

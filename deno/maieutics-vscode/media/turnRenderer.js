@@ -553,8 +553,61 @@ export async function activate(context) {
   if (markdown === undefined) throw new Error("VS Code Markdown renderer is unavailable.");
   markdown.extendMarkdownIt(protectMarkdownHtml);
   const states = new Map();
+  const pending = new Map();
+  const forgetPending = (id, cancel) => {
+    for (const [requestId, request] of pending) {
+      if (id !== undefined && request.outputId !== id) continue;
+      pending.delete(requestId);
+      if (cancel) {
+        context.postMessage?.({
+          source: "maieutics-output",
+          type: "cancel",
+          documentId: request.documentId,
+          requestId,
+        });
+      }
+    }
+  };
+  context.onDidReceiveMessage?.((message) => {
+    if (message?.source !== "maieutics-output" || typeof message.requestId !== "string") return;
+    const request = pending.get(message.requestId);
+    if (request === undefined || message.documentId !== request.documentId) return;
+    pending.delete(message.requestId);
+    if (states.get(request.outputId)?.revision !== request.revision) return;
+    if (message.type === "unavailable") {
+      context.postMessage?.({
+        source: "maieutics-output",
+        type: "applied",
+        documentId: request.documentId,
+        requestId: message.requestId,
+        engine: "native",
+      });
+      return;
+    }
+    if (
+      message.type !== "rendered" || typeof message.html !== "string" ||
+      message.html.length > 4_000_000 ||
+      typeof message.css !== "string" || message.css.length > 64_000 ||
+      states.get(request.outputId)?.revision !== request.revision
+    ) return;
+    const style = document.createElement("style");
+    style.textContent = message.css;
+    const rendered = document.createElement("div");
+    rendered.innerHTML = message.html;
+    // The default renderer's shadow boundary also scopes SSR styles and inherits host variables.
+    const root = request.node.shadowRoot ?? request.node;
+    root.replaceChildren(style, rendered);
+    request.node.dataset.renderEngine = "ssr";
+    context.postMessage?.({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: request.documentId,
+      requestId: message.requestId,
+      engine: "ssr",
+    });
+  });
   return {
-    renderOutputItem(output, element) {
+    async renderOutputItem(output, element, signal) {
       if (element.querySelector("style") === null) {
         const style = document.createElement("style");
         style.textContent = STYLE;
@@ -562,7 +615,10 @@ export async function activate(context) {
       }
 
       const turn = output.json();
-      const state = states.get(output.id) ?? { openNodes: new Set() };
+      const state = states.get(output.id) ?? { openNodes: new Set(), documents: [], revision: 0 };
+      state.revision++;
+      const revision = state.revision;
+      forgetPending(output.id, false);
       states.set(output.id, state);
       for (const detail of element.querySelectorAll("details.timeline-node")) {
         if (detail.open) state.openNodes.add(detail.dataset.nodeId);
@@ -577,7 +633,7 @@ export async function activate(context) {
       const content = document.createElement("div");
       content.className = "maieutics-turn";
       content.innerHTML = render(turn, markdownToHtml);
-      const hydrate = (root) => {
+      const hydrate = async (root) => {
         for (const node of root.querySelectorAll("[data-markdown-index]")) {
           if (node.dataset.rendered) continue;
           let hidden = false;
@@ -593,8 +649,32 @@ export async function activate(context) {
           }
           if (hidden) continue;
           const index = Number(node.getAttribute("data-markdown-index"));
-          markdown.renderOutputItem(markdownOutputItem(output, blocks[index], index), node);
           node.dataset.rendered = "true";
+          try {
+            await markdown.renderOutputItem(
+              markdownOutputItem(output, blocks[index], index),
+              node,
+              signal,
+            );
+          } catch {
+            node.textContent = blocks[index];
+          }
+          if (
+            !node.closest(".assistant-reply") || states.get(output.id) !== state ||
+            state.revision !== revision || signal?.aborted
+          ) {
+            continue;
+          }
+          const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
+          const requestId = `${documentId}:${revision}`;
+          pending.set(requestId, { outputId: output.id, documentId, revision, node });
+          context.postMessage?.({
+            source: "maieutics-output",
+            type: "render",
+            requestId,
+            documentId,
+            text: blocks[index],
+          });
         }
       };
       for (const detail of content.querySelectorAll("details.timeline-node")) {
@@ -603,7 +683,7 @@ export async function activate(context) {
           if (!detail.isConnected) return;
           if (detail.open) {
             state.openNodes.add(detail.dataset.nodeId);
-            hydrate(detail);
+            void hydrate(detail);
           } else state.openNodes.delete(detail.dataset.nodeId);
         });
       }
@@ -627,9 +707,10 @@ export async function activate(context) {
         } catch { /* Malformed notebook retry links are inert. */ }
       });
       element.appendChild(content);
-      hydrate(content);
+      await hydrate(content);
     },
     disposeOutputItem(id) {
+      forgetPending(id, true);
       if (id === undefined) states.clear();
       else states.delete(id);
     },

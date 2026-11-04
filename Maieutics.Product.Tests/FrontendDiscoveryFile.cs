@@ -41,11 +41,14 @@ internal static class FrontendDiscoveryFile
             watcher.EnableRaisingEvents = true;
             watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
             // Pre-armed before the first open attempt, so a publication landing between a
-            // failed open and the wait below is folded in instead of lost.
+            // failed open and the wait below is folded in instead of lost. The handlers read
+            // the live slot on purpose: the loop re-arms it after each observed publication.
             var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // ReSharper disable AccessToModifiedClosure
             watcher.Created += (_, _) => published.TrySetResult();
             watcher.Renamed += (_, _) => published.TrySetResult();
             watcher.Changed += (_, _) => published.TrySetResult();
+            // ReSharper restore AccessToModifiedClosure
             var awaitingPublication = !File.Exists(path);
 
             while (true)

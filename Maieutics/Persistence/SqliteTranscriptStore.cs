@@ -569,16 +569,17 @@ internal sealed class SqliteTranscriptStore : IAgentTranscriptStore, IDisposable
                     """;
             }
 
-            if (current < 6)
-                script += """
-                    ALTER TABLE sessions ADD COLUMN title_mode TEXT;
-                    ALTER TABLE sessions ADD COLUMN title_control INTEGER NOT NULL DEFAULT 0;
-                    ALTER TABLE sessions ADD COLUMN title_initial TEXT NOT NULL DEFAULT 'eligible';
-                    ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'preview';
-                    UPDATE sessions SET title_initial = 'settled',
-                        title_source = CASE WHEN title_manual = 1 THEN 'manual' ELSE 'initial' END
-                        WHERE title IS NOT NULL;
-                    """;
+            // The guards above returned a current database and rejected a newer one, so
+            // every database that reaches this point still needs the version-6 columns.
+            script += """
+                ALTER TABLE sessions ADD COLUMN title_mode TEXT;
+                ALTER TABLE sessions ADD COLUMN title_control INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE sessions ADD COLUMN title_initial TEXT NOT NULL DEFAULT 'eligible';
+                ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'preview';
+                UPDATE sessions SET title_initial = 'settled',
+                    title_source = CASE WHEN title_manual = 1 THEN 'manual' ELSE 'initial' END
+                    WHERE title IS NOT NULL;
+                """;
 
             script += $"PRAGMA user_version={CurrentSchemaVersion};";
             migrate.CommandText = script;

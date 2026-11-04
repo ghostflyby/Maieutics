@@ -129,6 +129,9 @@ public sealed class ReplControlHostTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         using var area = TempArea.Create("control-logging-tests");
         using var logs = new FileLoggerProvider(area.Path);
+        // The provider is closed below to flush the file before it is read; the factory is
+        // never used again after the host stops.
+        // ReSharper disable once AccessToDisposedClosure
         using var factory = LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Debug).AddProvider(logs));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, sessionId);
@@ -159,6 +162,7 @@ public sealed class ReplControlHostTests
             await application.StopAsync(deadline.Token);
         }
 
+        // ReSharper disable once DisposeOnUsingVariable
         logs.Dispose();
         // Assert the FileLoggerProvider contract: record header and message share one physical line.
         var lines = File.ReadAllLines(Path.Combine(area.Path, $"maieutics-{Environment.ProcessId}.log"));
@@ -174,11 +178,11 @@ public sealed class ReplControlHostTests
         var ended = Assert.Single(lines, line => line.Contains("ended gracefully.", StringComparison.Ordinal));
         Assert.EndsWith($"Control-bus receive loop for session {loggedSessionId} ended gracefully.", ended);
         Assert.DoesNotContain(lines, line => line.StartsWith("FORGED", StringComparison.Ordinal));
-        Assert.All(lines, line =>
+        foreach (var line in lines)
         {
             Assert.DoesNotContain('\u001b', line);
             Assert.DoesNotContain('\u2028', line);
-        });
+        }
     }
 
     [Fact(Timeout = 30_000)]
@@ -475,7 +479,8 @@ public sealed class ReplControlHostTests
         var (application, host) = await ReplControlTestHost.StartAsync(registry, deadline.Token);
         using var controlOwner = host;
         await using var applicationOwner = application;
-        using var socket = await ConnectWebSocketAsync(host.SocketPath, deadline.Token);
+        // Disposed in the finally block so the server sees the close before cleanup waits.
+        var socket = await ConnectWebSocketAsync(host.SocketPath, deadline.Token);
         Task? stop = null;
         try
         {

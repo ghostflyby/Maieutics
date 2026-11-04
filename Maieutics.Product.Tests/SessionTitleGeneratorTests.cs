@@ -98,11 +98,14 @@ public sealed class SessionTitleGeneratorTests
         using var budget = Budget(TestContext.Current.CancellationToken);
         await using var area = TempArea.Create("title-tool");
         var entered = Signal(); var release = Signal();
+        // The fake's contract is the request it receives: it must carry the tool result.
+        // ReSharper disable ParameterOnlyUsedForPreconditionCheck.Local
         using var client = new ScriptedChatClient((_, _) => Call("New task"), (messages, token) =>
         {
             Assert.Contains(messages, message => message.Role == ChatRole.Tool && message.Contents.OfType<FunctionResultContent>().Any());
             return Gated(entered, release, token, "answer", fail);
         });
+        // ReSharper restore ParameterOnlyUsedForPreconditionCheck.Local
         await using var manager = Manager(area.Path, true, client, "auto");
         // Settle initial naming so this test exercises only the primary model's tool.
         manager.Titles.SetMode(manager.Id, "manual");
@@ -216,8 +219,9 @@ public sealed class SessionTitleGeneratorTests
         using var client = new ScriptedChatClient((_, _) => Text("first"),
             (_, token) => Gated(entered, release, token, "title"), (_, _) => Text("second"));
         var profiles = new CountingProfiles(client);
-        await using var manager = new MaieuticsAgentSessionManager(profiles, area.Path,
-            id => new SqliteTranscriptStore(SqliteTranscriptStore.FamilyDatabasePath(area.Path, id)),
+        var path = area.Path;
+        await using var manager = new MaieuticsAgentSessionManager(profiles, path,
+            id => new SqliteTranscriptStore(SqliteTranscriptStore.FamilyDatabasePath(path, id)),
             NullLogger<MaieuticsAgentSessionManager>.Instance, titleMode: "initial");
         await CommitAsync(manager.Resolve(manager.Id), "first", budget.Token);
         await entered.Task.WaitAsync(budget.Token);
@@ -225,6 +229,8 @@ public sealed class SessionTitleGeneratorTests
         await CommitAsync(manager.Resolve(second), "second", budget.Token);
         Assert.Equal(2, profiles.Active);
         Assert.True(manager.IsPinned(second));
+        // Disposal is the behavior under test; the using declaration covers the failure path.
+        // ReSharper disable once DisposeOnUsingVariable
         await manager.DisposeAsync();
         Assert.Equal(0, profiles.Active);
         Assert.False(manager.IsPinned(second));

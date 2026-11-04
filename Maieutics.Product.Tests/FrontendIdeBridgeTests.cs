@@ -510,6 +510,9 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
             return ValueTask.CompletedTask;
         });
         var sessionId = WorkspaceToolCalls.TryGetSessionId(arguments) ?? throw new InvalidOperationException("Missing session");
+        // The answering loop re-arms the announcement source after each round trip; the
+        // connection handler intentionally reads the live slot.
+        // ReSharper disable once AccessToModifiedClosure
         var connection = sockets.Announce(sessionId, (frame, _) =>
         {
             var data = frame.Data ?? throw new InvalidOperationException("Missing IDE request");
@@ -629,11 +632,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":1}},"newText":"never write"}]}}}""";
         var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
             Function(functions.Functions, "ide_apply_edit"), arguments, registry,
-            (method, _) =>
-            {
-                Assert.Equal("maieutics/documents/read", method);
-                return IdeRequestAnswer.FromError("ide_method_unsupported", "Old frontend");
-            }, TestContext.Current.CancellationToken, sockets));
+            (method, _) => method == "maieutics/documents/read"
+                ? IdeRequestAnswer.FromError("ide_method_unsupported", "Old frontend")
+                : throw new InvalidOperationException($"Unexpected IDE method '{method}'."),
+            TestContext.Current.CancellationToken, sockets));
         Assert.Equal("ide_method_unsupported", failure.Code);
         Assert.False(File.Exists(Path.Combine(workspace.Path, "a.cs")));
     }
@@ -687,11 +689,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":1,"character":1},"end":{"line":1,"character":2}},"newText":"y"}]},"versions":{"workspace://local/a.cs":6}}}""";
         var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
             Function(functions.Functions, "ide_apply_edit"), arguments, registry,
-            (method, parameters) =>
-            {
-                Assert.Equal("maieutics/documents/read", method);
-                return DocumentSnapshotAnswer(parameters, "unsaved\n");
-            }, TestContext.Current.CancellationToken, sockets));
+            (method, parameters) => method == "maieutics/documents/read"
+                ? DocumentSnapshotAnswer(parameters, "unsaved\n")
+                : throw new InvalidOperationException($"Unexpected IDE method '{method}'."),
+            TestContext.Current.CancellationToken, sockets));
         Assert.Equal("ide_document_conflict", failure.Code);
         Assert.False(File.Exists(Path.Combine(workspace.Path, "a.cs")));
     }
@@ -705,11 +706,10 @@ public sealed class FrontendIdeBridgeTests(ITestOutputHelper output)
         const string arguments = """{"edit":{"changes":{"workspace://local/a.cs":[{"range":{"start":{"line":99,"character":1},"end":{"line":99,"character":2}},"newText":"y"}]}}}""";
         var failure = await Assert.ThrowsAsync<AgentToolException>(() => InvokeAnsweringByMethodAsync(
             Function(functions.Functions, "ide_apply_edit"), arguments, registry,
-            (method, parameters) =>
-            {
-                Assert.Equal("maieutics/documents/read", method);
-                return DocumentSnapshotAnswer(parameters, "unsaved\n");
-            }, TestContext.Current.CancellationToken, sockets));
+            (method, parameters) => method == "maieutics/documents/read"
+                ? DocumentSnapshotAnswer(parameters, "unsaved\n")
+                : throw new InvalidOperationException($"Unexpected IDE method '{method}'."),
+            TestContext.Current.CancellationToken, sockets));
         Assert.Equal("ide_edit_rejected", failure.Code);
         Assert.Contains("99", failure.Message);
     }

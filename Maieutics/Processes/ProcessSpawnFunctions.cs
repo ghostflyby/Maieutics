@@ -217,7 +217,9 @@ internal sealed class ProcessSpawnFunctions
         timeoutSource.CancelAfter(timeout);
         var killToken = timeoutSource.Token;
 
-        using var process = new ChildProcess { StartInfo = startInfo, EnableRaisingEvents = true };
+        using var process = new ChildProcess();
+        process.StartInfo = startInfo;
+        process.EnableRaisingEvents = true;
         try
         {
             try

@@ -176,7 +176,7 @@ internal sealed class MaieuticsRuntimeConfiguration :
         await WaitForReloadDrainAsync().ConfigureAwait(false);
         await ObserveInitializationAsync().ConfigureAwait(false);
 
-        ProfileGeneration[] generations = [];
+        ProfileGeneration[] generations;
         Task[] retired;
         lock (_gate)
         {

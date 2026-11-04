@@ -186,21 +186,18 @@ public sealed class SubagentFrontendFramesTests
             new FrontendDenoReplPresentationRouter(),
             NullLogger<FrontendSessionService>.Instance,
             subagentEvents: buffer);
-        return new Harness(manager, service, buffer, handleSource, parentReady);
+        return new Harness(manager, service, handleSource, parentReady);
     }
 
     private sealed class Harness(
         MaieuticsAgentSessionManager manager,
         FrontendSessionService service,
-        SubagentEventBuffer buffer,
         TaskCompletionSource<IAgentSubagentHandle> handleSource,
         TaskCompletionSource parentReady) : IAsyncDisposable
     {
         internal MaieuticsAgentSessionManager Manager { get; } = manager;
 
         internal FrontendSessionService Service { get; } = service;
-
-        internal SubagentEventBuffer Buffer { get; } = buffer;
 
         internal TaskCompletionSource<IAgentSubagentHandle> HandleSource { get; } = handleSource;
 

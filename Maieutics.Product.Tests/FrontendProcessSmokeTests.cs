@@ -31,7 +31,8 @@ public sealed class FrontendProcessSmokeTests
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
         var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
         var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
-        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(url);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
         var id = session.GetProperty("id").GetString();
@@ -85,7 +86,8 @@ public sealed class FrontendProcessSmokeTests
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
         var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
         var token = discovery.GetProperty("token").GetString();
-        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(url);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
         var id = session.GetProperty("id").GetString();
@@ -128,7 +130,8 @@ public sealed class FrontendProcessSmokeTests
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
         var baseUrl = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("No URL");
         var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("No token");
-        using var client = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(baseUrl);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
         var sessionId = session.GetProperty("id").GetString();

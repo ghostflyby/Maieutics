@@ -400,7 +400,7 @@ public sealed class PluginApprovalTests
         var root = CreateProbePluginsRoot("approval-isolation");
         var approvals = PluginApprovalSeeds.SeedLocalPlugins(root);
         var clock = new FakeTimeProvider();
-        await using var manager = CreateManager(root, approvals, clock);
+        var manager = CreateManager(root, approvals, clock);
         try
         {
             await StartAsync(manager);
@@ -442,7 +442,7 @@ public sealed class PluginApprovalTests
         WriteNestedPlugin(root, "beta", null);
         var approvals = PluginApprovalSeeds.SeedPlugins(root, Path.Combine(root, "alpha"), Path.Combine(root, "beta"));
         var clock = new FakeTimeProvider();
-        await using var manager = CreateManager(root, approvals, clock);
+        var manager = CreateManager(root, approvals, clock);
         try
         {
             await StartAsync(manager);

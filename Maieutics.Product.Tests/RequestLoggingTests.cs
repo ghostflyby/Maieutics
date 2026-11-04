@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Sockets;
-using Maieutics.Configuration;
 using Maieutics.Control;
 using Maieutics.Execution;
 using Microsoft.Extensions.Logging;
@@ -36,6 +35,7 @@ public sealed class RequestLoggingTests
 
         // The rejection is logged synchronously before its response is written.
         // Close the writer before reading so the assertion also works with Windows file sharing.
+        // ReSharper disable once DisposeOnUsingVariable
         logs.Dispose();
         var lines = File.ReadAllLines(Path.Combine(area.Path, $"maieutics-{Environment.ProcessId}.log"));
         var rejection = Assert.Single(lines, line => line.Contains("Frontend route GET /v1/objects/", StringComparison.Ordinal));
@@ -55,6 +55,9 @@ public sealed class RequestLoggingTests
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
         using var area = TempArea.Create("resource-logging-tests");
         using var logs = new FileLoggerProvider(area.Path);
+        // The provider is closed below to flush the file before it is read; the factory is
+        // never used again after the host stops.
+        // ReSharper disable once AccessToDisposedClosure
         using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var registry = new ReplControlSessionRegistry();
         registry.Register(Environment.ProcessId, "log-test");
@@ -63,6 +66,10 @@ public sealed class RequestLoggingTests
             ReplControlHost.CreateSocketPath(), registry, factory.CreateLogger<ReplControlHost>(),
             resources: new ResourceRegistry([provider]));
         await using var application = await ReplControlTestHost.StartAsync(host.SocketPath, host, deadline.Token);
+        // Capture the path, not the disabled host, for the connection callback.
+        var socketPath = host.SocketPath;
+        // A pooled client cannot target this test's ephemeral Unix-socket host.
+        // ReSharper disable once ShortLivedHttpClient
         using var client = new HttpClient(new SocketsHttpHandler
         {
             ConnectCallback = async (_, cancellationToken) =>
@@ -70,7 +77,7 @@ public sealed class RequestLoggingTests
                 var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
                 try
                 {
-                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(host.SocketPath), cancellationToken);
+                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), cancellationToken);
                     return new NetworkStream(socket, ownsSocket: true);
                 }
                 catch
@@ -87,6 +94,7 @@ public sealed class RequestLoggingTests
         Assert.Contains("resource_provider_failed", await response.Content.ReadAsStringAsync(deadline.Token));
         Assert.Equal(uri, provider.LastUri);
 
+        // ReSharper disable once DisposeOnUsingVariable
         logs.Dispose();
         var lines = File.ReadAllLines(Path.Combine(area.Path, $"maieutics-{Environment.ProcessId}.log"));
         var failure = Assert.Single(lines, line => line.Contains("Resource read for '", StringComparison.Ordinal));

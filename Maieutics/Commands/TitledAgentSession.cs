@@ -1,6 +1,5 @@
 using Maieutics.Agent;
 using Maieutics.Persistence;
-using Microsoft.Extensions.AI;
 
 namespace Maieutics.Commands;
 

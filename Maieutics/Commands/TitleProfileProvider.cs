@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
-using Microsoft.Extensions.AI;
 
 namespace Maieutics.Commands;
 

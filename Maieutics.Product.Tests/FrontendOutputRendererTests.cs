@@ -32,11 +32,16 @@ public sealed class FrontendOutputRendererTests
             var pending = await RenderAsync(harness, "[Result][r]\n\nLater prose", budget.Token);
             Assert.DoesNotContain("<a ", pending.Html);
             var source = "# Demo\n\n::: tip\n**SSR**\n:::\n\n```ts\nconst answer = 42;\n```\n\n" +
+                         "::: code-group\n```ts:line-numbers=7 {2} [report.ts]\n// [!code highlight]\nconst total = 42;\n```\n\n```json [report.json]\n{}\n```\n:::\n\n" +
                          "[Result][r]\n\nLater prose\n\n[r]: https://example.test/result\n\n<script>run()</script>\n\n{{ report.total }}";
             var output = await RenderAsync(harness, source, budget.Token);
             Assert.Contains("id=\"demo-demo\"", output.Html);
             Assert.Contains("custom-block tip", output.Html);
             Assert.Contains("shiki", output.Html);
+            Assert.Contains("vp-code-group", output.Html);
+            Assert.Contains("report.ts", output.Html);
+            Assert.Contains("data-line=\"7\"", output.Html);
+            Assert.Contains("highlighted", output.Html);
             Assert.Contains("href=\"https://example.test/result\"", output.Html);
             Assert.Contains("Later prose", output.Html);
             Assert.Contains("&lt;script&gt;", output.Html);

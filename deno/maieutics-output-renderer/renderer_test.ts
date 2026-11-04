@@ -116,6 +116,120 @@ Deno.test("code highlighting uses bundled grammars and unknown languages fall ba
   assertEquals(await renderer.render("code", source), output);
 });
 
+Deno.test("code fence metadata retains syntax highlighting, escaped titles and bounded line ranges", async () => {
+  using renderer = await createOutputRenderer();
+  const { html } = await renderer.render(
+    "metadata",
+    [
+      '```ts:line-numbers=7 {2-999999999999} [<img src=x onerror="run()">]',
+      "const first = 1;",
+      "const second = 2;",
+      "```",
+    ].join("\n"),
+  );
+  assertStringIncludes(html, 'class="code-title"');
+  assertStringIncludes(html, "&lt;img");
+  assert(!html.includes("<img"));
+  assertStringIncludes(html, 'data-line="7"');
+  assertStringIncludes(html, 'class="line highlighted" data-line="8"');
+  assertStringIncludes(html, "--shiki-light:");
+});
+
+Deno.test("VitePress comment notations decorate code and remain local to each fence", async () => {
+  using renderer = await createOutputRenderer();
+  const { html } = await renderer.render(
+    "notations",
+    [
+      "```ts",
+      "const oldValue = 1; // [!code --]",
+      "const newValue = 2; // [!code ++]",
+      "const focus = 3; // [!code focus]",
+      "const highlighted = 4; // [!code highlight]",
+      "const error = 5; // [!code error]",
+      "const warning = 6; // [!code warning]",
+      "```",
+      "",
+      "```ts",
+      "const plain = 7;",
+      "```",
+    ].join("\n"),
+  );
+  for (
+    const marker of [
+      "diff remove",
+      "diff add",
+      "has-focus",
+      "highlighted",
+      "highlighted error",
+      "highlighted warning",
+    ]
+  ) {
+    assertStringIncludes(html, marker);
+  }
+  assert(!html.includes("[!code"), "Shiki must remove recognized presentation comments.");
+  assertEquals(html.match(/has-focused-lines/g)?.length, 1);
+});
+
+Deno.test("removed notation-only comments do not leave gaps in displayed line numbers", async () => {
+  using renderer = await createOutputRenderer();
+  const { html } = await renderer.render(
+    "numbered",
+    [
+      "```ts:line-numbers=7",
+      "// [!code highlight:999999999999]",
+      "const first = 1;",
+      "const second = 2;",
+      "```",
+    ].join("\n"),
+  );
+  assertStringIncludes(html, 'data-line="7"');
+  assertStringIncludes(html, 'data-line="8"');
+  assert(
+    !html.includes('data-line="9"'),
+    "Line numbers count visible code after notation removal.",
+  );
+  assertEquals(html.match(/class="line highlighted"/g)?.length, 2);
+});
+
+Deno.test("code groups produce deterministic document-scoped native controls with escaped labels", async () => {
+  using renderer = await createOutputRenderer();
+  const source = [
+    "::: code-group",
+    "```ts [one.ts]",
+    "const one = 1;",
+    "```",
+    "",
+    '```json [<img src=x onerror="run()">]',
+    '{ "two": 2 }',
+    "```",
+    ":::",
+  ].join("\n");
+  const output = await renderer.render("groups", source);
+  assertStringIncludes(output.html, '<fieldset class="vp-code-group"');
+  assertStringIncludes(output.html, 'type="radio"');
+  assertStringIncludes(output.html, 'name="groups-code-group-0"');
+  assertStringIncludes(output.html, "&lt;img");
+  assert(!output.html.includes("<img"));
+  assertEquals(output.html.match(/ checked/g)?.length, 1);
+  assertEquals(await renderer.render("groups", source), output);
+  const other = await renderer.render("other", source);
+  assert(!other.html.includes('name="groups-code-group-0"'));
+  const partial = await renderer.render("groups", source.slice(0, source.lastIndexOf(":::")));
+  assertStringIncludes(partial.html, "one.ts");
+  assertEquals(partial.html, output.html);
+});
+
+Deno.test("mixed code-group content stays visible instead of disappearing behind tabs", async () => {
+  using renderer = await createOutputRenderer();
+  const { html } = await renderer.render(
+    "mixed",
+    "::: code-group\nVisible prose\n\n```ts\nconst n = 1;\n```\n:::",
+  );
+  assertStringIncludes(html, "Visible prose");
+  assertStringIncludes(html, "const");
+  assert(!html.includes('type="radio"'));
+});
+
 Deno.test("each renderer owns its highlighter independently and disposal is idempotent", async () => {
   using first = await createOutputRenderer();
   using second = await createOutputRenderer();

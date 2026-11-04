@@ -32,16 +32,48 @@ JavaScript, and JSON grammars and both GitHub light and dark themes are bundled 
 code languages use escaped plain text without dynamically loading packages or starting workers.
 `styles.css` provides host-scoped baseline styles using VS Code variables with browser fallbacks.
 
+Fences accept literal filename titles (`ts [report.ts]`), line numbers (`ts:line-numbers`,
+`ts:line-numbers=7`, `ts:no-line-numbers`), and highlighted line lists or ranges (`ts{1,3-5}`).
+These modifiers combine without disabling the selected grammar. Line-number starts must be positive
+integers no greater than one billion; invalid starts use 1. Highlight ranges are stored as
+intervals, never expanded into arrays based on the supplied endpoints.
+
+Shiki's pinned `@shikijs/transformers` 2.5.0 implements VitePress 1.6.4's comment notations:
+`[!code ++]`, `[!code --]`, `[!code focus]`, `[!code highlight]`, `[!code error]`, and
+`[!code warning]`. Recognized comments become presentation classes, with host-scoped styles.
+
+````md
+::: code-group
+
+```ts:line-numbers {1} [report.ts]
+const total = 42;
+```
+
+```json [report.json]
+{ "total": 42 }
+```
+
+:::
+````
+
+Code groups use deterministic, document-scoped native radio controls and CSS, with an accessible
+fieldset legend and labels. They need no JavaScript, Vue hydration, network, or additional runtime
+permissions. Only direct fenced code children become tabs; empty, nested, or mixed-content groups
+retain their ordinary visible Markdown instead of hiding non-code content. Unclosed groups accept
+later source through the existing complete-snapshot path. VS Code remembers up to 128 non-default
+tab choices per output across snapshots when group ordinal, tab ordinal, and literal title still
+match (titles longer than 512 characters are not retained). Structural reconciliation remains later
+work. Other frontends can use the same HTML/CSS without this optional choice retention.
+
 HTML, scripts, styles, Vue expressions, and directives in Markdown remain text. Executable link
 schemes such as `command:` and `javascript:` are inactive. Filesystem snippet imports and include
 directives are never installed. Product resource schemes are retained for a future frontend adapter;
 resource retrieval and rewriting are not implemented here.
 
-This is a selected VitePress-compatible content subset, not complete VitePress page semantics. Code
-groups, frontmatter, SFC scripts, template execution, late bindings, HTML patches, interactive
-islands, and host resource delivery remain later work. Re-rendering with a later link definition
-corrects earlier references in a complete snapshot; stable incremental nodes require the document
-runtime.
+This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
+Frontmatter, SFC scripts, template execution, late bindings, HTML patches, interactive islands, and
+host resource delivery remain later work. Re-rendering with a later link definition corrects earlier
+references in a complete snapshot; stable incremental nodes require the document runtime.
 
 ## Why compose the underlying packages
 

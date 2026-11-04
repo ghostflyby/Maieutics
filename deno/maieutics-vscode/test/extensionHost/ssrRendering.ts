@@ -5,13 +5,31 @@ import { emptyNotebook } from "../../notebookFormat.ts";
 import { MaieuticsNotebookSerializer } from "../../serializer.ts";
 import { TurnOutputMime } from "../../turnView.ts";
 
+const CodeDemoSource = [
+  "# Demo",
+  "",
+  "::: tip",
+  "Shared SSR",
+  ":::",
+  "",
+  "::: code-group",
+  "~~~ts:line-numbers=7 {2} [report.ts]",
+  "// [!code highlight]",
+  "const total = 42;",
+  "~~~",
+  "",
+  "~~~json [report.json]",
+  '{ "total": 42 }',
+  "~~~",
+  ":::",
+].join("\n");
+
 /** Exercises the production extension bridge and actual notebook MIME renderer, without a model call. */
 export async function testNotebookSsrAsync(discovery: string): Promise<void> {
   const settings = vscode.workspace.getConfiguration("maieutics");
   const previous = settings.get<string>("discoveryFile");
   const channel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
-  const source =
-    "# Actual Notebook SSR\n\n::: tip\nLive kernel rendering demo\n:::\n\n```ts\nconst total = 42;\n```";
+  const source = CodeDemoSource;
   const requests = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let subscription: vscode.Disposable | undefined;
@@ -101,9 +119,13 @@ export async function testSsrRenderingAsync(): Promise<void> {
       client ? await client.renderMarkdown(documentId, text, signal) : {
         version: 1,
         documentId,
-        html:
-          '<div class="maieutics-output vp-doc"><div class="custom-block tip">Shared SSR</div><pre class="shiki"><code>const total = 42;</code></pre></div>',
-        css: ".maieutics-output { color: var(--vscode-editor-foreground); }",
+        html: `<div class="maieutics-output vp-doc"><div class="custom-block tip">Shared SSR</div>
+          <fieldset class="vp-code-group"><legend>Code examples</legend>
+          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div>
+          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
+          </fieldset></div>`,
+        css: `.maieutics-output { color: var(--vscode-editor-foreground); }
+          .code-panel { display: none; } .code-tab > input:checked ~ .code-panel { display: block; }`,
       },
     post: async (message) => await panel.webview.postMessage(message),
     log: (message) => console.log(message),
@@ -139,7 +161,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const native = await import(${JSON.stringify(markdownUri.toString())});
         const renderer = await import(${JSON.stringify(rendererUri.toString())});
         const markdown = native.activate({ workspace: { isTrusted: true } });
-        const delivered = Promise.withResolvers();
+        let delivered = Promise.withResolvers();
         const api = await renderer.activate({
           getRenderer: async () => markdown,
           postMessage: (message) => vscode.postMessage(message),
@@ -150,7 +172,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           })
         });
         const element = document.createElement("div"); document.body.appendChild(element);
-        const source = "# Demo\\n\\n::: tip\\nShared SSR\\n:::\\n\\n~~~ts\\nconst total = 42;\\n~~~";
+        const source = ${JSON.stringify(CodeDemoSource)};
         await api.renderOutputItem({ id: "ssr-demo", json: () => ({ text: source }) }, element);
         await delivered.promise;
         const node = element.querySelector('[data-render-engine="ssr"]');
@@ -159,6 +181,20 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(root.querySelector(".custom-block.tip")?.textContent.includes("Shared SSR"), "SSR containers reach the browser");
         assert(root.querySelector("pre.shiki code")?.textContent.includes("const total"), "SSR code output remains visible");
         assert(root.querySelector("style")?.textContent.includes("--vscode"), "host-scoped styles are delivered through messaging");
+        assert(root.querySelector('.line.highlighted[data-line="7"]'), "line metadata reaches the actual browser");
+        const labels = root.querySelectorAll(".code-tab > label");
+        const panels = root.querySelectorAll(".code-panel");
+        assert(labels.length === 2 && panels.length === 2, "the shared snapshot contains both code examples");
+        assert(getComputedStyle(panels[0]).display !== "none" && getComputedStyle(panels[1]).display === "none", "native code groups show only the first example initially");
+        labels[1].click();
+        assert(getComputedStyle(panels[0]).display === "none" && getComputedStyle(panels[1]).display !== "none", "clicking the native label switches code without document scripts");
+        delivered = Promise.withResolvers();
+        await api.renderOutputItem({ id: "ssr-demo", json: () => ({ text: source + "\\n\\nLater prose" }) }, element);
+        await delivered.promise;
+        const updatedNode = element.querySelector('[data-render-engine="ssr"]');
+        const updatedRoot = updatedNode.shadowRoot ?? updatedNode;
+        const updatedPanels = updatedRoot.querySelectorAll(".code-panel");
+        assert(getComputedStyle(updatedPanels[0]).display === "none" && getComputedStyle(updatedPanels[1]).display !== "none", "an SSR source update retains the user's selected code example");
         api.disposeOutputItem();
         vscode.postMessage({ ok: true });
       } catch (error) { vscode.postMessage({ ok: false, error: error.stack ?? String(error) }); }

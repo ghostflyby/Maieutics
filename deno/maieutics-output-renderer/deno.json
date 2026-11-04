@@ -12,6 +12,7 @@
     "@types/markdown-it-container": "npm:@types/markdown-it-container@2.0.10",
     "shiki/core": "npm:shiki@2.5.0/core",
     "shiki/engine/javascript": "npm:shiki@2.5.0/engine/javascript",
+    "@shikijs/transformers": "npm:@shikijs/transformers@2.5.0",
     "@shikijs/langs/typescript": "npm:@shikijs/langs@2.5.0/typescript",
     "@shikijs/langs/javascript": "npm:@shikijs/langs@2.5.0/javascript",
     "@shikijs/langs/json": "npm:@shikijs/langs@2.5.0/json",

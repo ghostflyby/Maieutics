@@ -14,6 +14,8 @@ import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
 import { renderToString } from "vue/server-renderer";
+import { installCodeFences } from "./codeFences.ts";
+import { installCodeGroups } from "./codeGroups.ts";
 
 /** A complete derived presentation, independent of the frontend transport. */
 export interface RenderedOutput {
@@ -65,15 +67,9 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
     const md = new MarkdownIt({
       html: false,
       linkify: true,
-      highlight(code, language) {
-        const lang = highlighter.getLoadedLanguages().includes(language) ? language : "text";
-        return highlighter.codeToHtml(code, {
-          lang,
-          themes: { light: "github-light", dark: "github-dark" },
-          defaultColor: false,
-        });
-      },
     });
+    installCodeFences(md, highlighter);
+    installCodeGroups(md);
     const validateLink = md.validateLink;
     md.validateLink = (url) => {
       const scheme = /^([a-z][a-z\d+.-]*):/i.exec(url)?.[1].toLowerCase();

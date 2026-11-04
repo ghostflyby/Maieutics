@@ -10,6 +10,7 @@
     "npm:@preact/signals-core@1.14.4": "1.14.4",
     "npm:@shikijs/langs@2.5.0": "2.5.0",
     "npm:@shikijs/themes@2.5.0": "2.5.0",
+    "npm:@shikijs/transformers@2.5.0": "2.5.0",
     "npm:@types/markdown-it-container@2.0.10": "2.0.10",
     "npm:@types/markdown-it@14.1.2": "14.1.2",
     "npm:@types/node@22.17.0": "22.17.0",
@@ -130,6 +131,13 @@
     "@shikijs/themes@2.5.0": {
       "integrity": "sha512-wGrk+R8tJnO0VMzmUExHR+QdSaPUl/NKs+a4cQQRWyoc3YFbUzuLEi/KWK1hj+8BfHRKm2jNhhJck1dfstJpiw==",
       "dependencies": [
+        "@shikijs/types"
+      ]
+    },
+    "@shikijs/transformers@2.5.0": {
+      "integrity": "sha512-SI494W5X60CaUwgi8u4q4m4s3YAFSxln3tzNjOSYqq54wlVgz0/NbbXEb3mdLbqMBztcmS7bVTaEd2w0qMmfeg==",
+      "dependencies": [
+        "@shikijs/core",
         "@shikijs/types"
       ]
     },
@@ -761,6 +769,7 @@
           "npm:@mdit-vue/shared@2.1.3",
           "npm:@shikijs/langs@2.5.0",
           "npm:@shikijs/themes@2.5.0",
+          "npm:@shikijs/transformers@2.5.0",
           "npm:@types/markdown-it-container@2.0.10",
           "npm:@types/markdown-it@14.1.2",
           "npm:acorn@8.18.0",

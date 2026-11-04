@@ -554,6 +554,19 @@ export async function activate(context) {
   markdown.extendMarkdownIt(protectMarkdownHtml);
   const states = new Map();
   const pending = new Map();
+  const rememberCodeTabs = (element, state) => {
+    for (const node of element.querySelectorAll('[data-render-engine="ssr"]')) {
+      const root = node.shadowRoot ?? node;
+      for (const input of root.querySelectorAll('.vp-code-group input[type="radio"]:checked')) {
+        const title = input.nextElementSibling?.textContent;
+        state.codeTabs.delete(input.name);
+        if (!input.defaultChecked && title !== undefined && title.length <= 512) {
+          state.codeTabs.set(input.name, { id: input.id, title });
+          if (state.codeTabs.size > 128) state.codeTabs.delete(state.codeTabs.keys().next().value);
+        }
+      }
+    }
+  };
   const forgetPending = (id, cancel) => {
     for (const [requestId, request] of pending) {
       if (id !== undefined && request.outputId !== id) continue;
@@ -573,7 +586,8 @@ export async function activate(context) {
     const request = pending.get(message.requestId);
     if (request === undefined || message.documentId !== request.documentId) return;
     pending.delete(message.requestId);
-    if (states.get(request.outputId)?.revision !== request.revision) return;
+    const state = states.get(request.outputId);
+    if (state?.revision !== request.revision) return;
     if (message.type === "unavailable") {
       context.postMessage?.({
         source: "maieutics-output",
@@ -594,6 +608,12 @@ export async function activate(context) {
     style.textContent = message.css;
     const rendered = document.createElement("div");
     rendered.innerHTML = message.html;
+    for (const input of rendered.querySelectorAll('.vp-code-group input[type="radio"]')) {
+      const selection = state.codeTabs.get(input.name);
+      if (selection?.id === input.id && selection.title === input.nextElementSibling?.textContent) {
+        input.checked = true;
+      }
+    }
     // The default renderer's shadow boundary also scopes SSR styles and inherits host variables.
     const root = request.node.shadowRoot ?? request.node;
     root.replaceChildren(style, rendered);
@@ -615,7 +635,13 @@ export async function activate(context) {
       }
 
       const turn = output.json();
-      const state = states.get(output.id) ?? { openNodes: new Set(), documents: [], revision: 0 };
+      const state = states.get(output.id) ?? {
+        openNodes: new Set(),
+        documents: [],
+        codeTabs: new Map(),
+        revision: 0,
+      };
+      rememberCodeTabs(element, state);
       state.revision++;
       const revision = state.revision;
       forgetPending(output.id, false);

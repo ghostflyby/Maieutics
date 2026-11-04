@@ -1,6 +1,6 @@
 # Streaming Output Rendering with VitePress
 
-Status: Initial passive SSR demo integrated with the kernel and actual Notebook renderer and verified.
+Status: Passive SSR integrated with the kernel and actual Notebook renderer; code presentation extended.
 The streaming document runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
@@ -94,7 +94,8 @@ authorized producer results. Rendering must not execute through or depend on the
 | Incomplete Markdown | Markstream and `stream-markdown-parser` | Evaluate partial syntax handling and structured nodes. Their parser composition is not established as equivalent to the selected VitePress pipeline. |
 
 The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
-heading metadata and shared utilities, markdown-it-anchor 9.2.0, markdown-it-container 4.0.0, Shiki 2.5.0,
+heading metadata and shared utilities, markdown-it-anchor 9.2.0, markdown-it-container 4.0.0, Shiki and
+`@shikijs/transformers` 2.5.0,
 and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
 compiler. The complete-snapshot update client is implemented; the document runtime and incremental
 HTML patch client remain to be implemented.
@@ -121,7 +122,8 @@ does not require the latter. The kernel service derives launch permissions throu
 effective policy.
 
 The supported content includes scoped headings and anchors, reference links, tables, emphasis,
-TypeScript/JavaScript/JSON highlighting, and passive tip/info/warning/danger/details containers.
+TypeScript/JavaScript/JSON highlighting, code groups, fence titles and line metadata, Shiki notation
+classes, and passive tip/info/warning/danger/details containers.
 Unknown languages fall back to escaped text. Raw HTML, document scripts and styles, Vue templates,
 and directives remain text. No filesystem snippet or include rules are installed. Complete snapshots
 are rendered through Vue SSR without compiling document expressions or SFC scripts.
@@ -131,8 +133,8 @@ container title escaping, deterministic highlighting, independent ownership and 
 source and expanded-output bounds, and cancellation or disposal during SSR. `smoke.ts` is the offline
 integration fixture; CI builds it and runs it under the restricted permissions above. Host-scoped
 baseline styles are provided in `styles.css`. Both a strict-CSP VS Code webview and the production
-Notebook renderer have been verified against the live NativeAOT kernel. Resource delivery, code
-groups, full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
+Notebook renderer have been verified against the live NativeAOT kernel. Resource delivery,
+full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
 
 ### Initial kernel rendering API
 
@@ -180,8 +182,41 @@ serializer's routing decision. Neither signal affects Agent completion.
 
 This demo reparses the complete source, so later reference definitions correct earlier text. It has
 no persistent server-side document, local subtree patching, or TS binding runtime. Complete region
-replacement can reset selection and expanded details. Resource URL rewriting, interactive components,
+replacement can reset text selection and expanded details. Code-tab choices have the bounded retention
+described below. Resource URL rewriting, interactive components,
 and languages beyond the bundled grammar subset require subsequent stages.
+
+### Code presentation compatibility
+
+Code fences support literal filename titles, `:line-numbers` / `:no-line-numbers`, custom starting
+numbers, and `{1,3-5}` line highlights without losing syntax highlighting. The matching-version Shiki
+transformers implement VitePress 1.6.4's diff, focus, highlight, error, and warning comment notations.
+Displayed line numbers are assigned after comment-only notation removal, so hidden annotation lines
+do not leave numbering gaps. Line ranges use sorted intervals and logarithmic membership checks;
+hostile range endpoints never allocate an author-sized array. Titles are escaped text, not templates
+or HTML attributes.
+
+`::: code-group` wraps direct fenced-code children in native radio controls with scoped, deterministic
+identities, labels, and fieldset semantics. Shared HTML/CSS provides switching without document scripts
+or Vue hydration in every compatible browser frontend. Empty, nested, or mixed-content groups keep
+all their normal visible content. Closed and auto-closed groups reparse on complete snapshots.
+
+The VS Code adapter captures selected non-default tabs before replacing a source region and restores
+them when document/group ordinal, tab ordinal, and title match. Retention is bounded to 128 choices
+per output with titles of at most 512 characters, and disposal releases that state. This is a local
+presentation convenience, not the stable structural identity or revisioned patch runtime of stage 3.
+Moving or removing groups or tabs can reset selection. Native controls do not establish an arbitrary
+interactive-component execution contract.
+
+The offline smoke includes code groups and fence metadata. Renderer tests cover escaping, document
+isolation, deterministic control identities, comment notation isolation, enormous line ranges,
+auto-closing groups, and mixed-content fallback. Kernel and published-process smoke tests exercise the
+embedded artifact; browser verification checks CSS visibility, native label activation, and retaining
+the selected tab through another SSR snapshot.
+
+The next content gaps are custom heading IDs and TOC, GitHub alerts, frontmatter and metadata,
+additional bundled languages, and product resource URL adaptation. File includes and snippet imports
+need an explicit authorized resource contract; arbitrary SFC/template execution remains stage 4/5.
 
 ## Document state and presentation units
 
@@ -365,7 +400,7 @@ the notebook snapshot format is unchanged. Revisioned presentation snapshots and
 | Stage | Status | Scope | Acceptance |
 |---|---|---|---|
 | 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
-| 2 | Initial demo implemented and verified; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
+| 2 | Assistant SSR and code presentation implemented; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
 | 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
 | 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
@@ -409,6 +444,10 @@ Sources consulted on 2026-11-04. Recheck the selected versions during the packag
   [Vue in Markdown](https://vitepress.dev/guide/using-vue): site generation and SFC compilation model.
 - [VitePress 1.6.4 Markdown renderer](https://github.com/vuejs/vitepress/blob/v1.6.4/src/node/markdown/markdown.ts)
   and [mdit-vue](https://github.com/mdit-vue/mdit-vue): renderer composition and reusable plugins.
+- [VitePress 1.6.4 code highlighting](https://github.com/vuejs/vitepress/blob/v1.6.4/src/node/markdown/plugins/highlight.ts)
+  and [containers](https://github.com/vuejs/vitepress/blob/v1.6.4/src/node/markdown/plugins/containers.ts):
+  matching-version notation transforms and code-group source syntax. Maieutics owns its scoped native
+  control markup, title escaping, bounded metadata parsing, and host styles.
 - [Vue SFC compiler](https://github.com/vuejs/core/blob/main/packages/compiler-sfc/README.md),
   [SSR API](https://vuejs.org/api/ssr.html), and
   [server reactivity](https://vuejs.org/guide/scaling-up/ssr.html#reactivity-on-the-server): compilation

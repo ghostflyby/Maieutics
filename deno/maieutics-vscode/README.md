@@ -36,15 +36,17 @@ Jupyter kernel involved (ADR 0023).
 - Agent output follows one **Timeline**. Every message, permitted reasoning summary, tool invocation
   and child run is a separate notebook output block, in first-appearance order. Assistant replies
   fill their output block, always expanded. They show native Markdown immediately, then use shared
-  passive SSR from an attached kernel when supported, including containers and bundled highlighting.
-  Activity nodes remain compact and collapsed by default. Click a node to expand its original
-  content; the expanded state survives streaming updates. Native Markdown remains the offline and
-  error fallback; opening a snapshot never starts a kernel solely for rendering. Model-supplied HTML
-  stays escaped. See the [SSR demo](demo/README.md) for the current subset and limitations. Tool
-  nodes retain structured arguments, latest progress and results, capped at 20,000 characters per
-  detail and 256 tools per run, with an explicit truncation note. Saving rejoins blocks into one
-  portable turn snapshot; reopening restores expanded replies and collapsed activity nodes.
-  Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
+  passive SSR from an attached kernel when supported, including containers, code groups, code
+  titles, line numbers, line highlights, and Shiki diff/focus/error annotations. Code groups switch
+  through native controls; selections survive text updates when the group, tab position, and title
+  still match. Activity nodes remain compact and collapsed by default. Click a node to expand its
+  original content; the expanded state survives streaming updates. Native Markdown remains the
+  offline and error fallback; opening a snapshot never starts a kernel solely for rendering.
+  Model-supplied HTML stays escaped. See the [SSR demo](demo/README.md) for the current subset and
+  limitations. Tool nodes retain structured arguments, latest progress and results, capped at 20,000
+  characters per detail and 256 tools per run, with an explicit truncation note. Saving rejoins
+  blocks into one portable turn snapshot; reopening restores expanded replies and collapsed activity
+  nodes. Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
   server-history restoration reconstructs model/tool order, but display-only reasoning summaries
   require saved notebook output or event replay.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the

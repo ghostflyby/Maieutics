@@ -27,9 +27,10 @@ Maieutics/bin/Debug/net10.0/maieutics \
 On Windows, use the corresponding `maieutics.exe` and an explicitly created temporary directory. In
 VS Code set `maieutics.discoveryFile` to the printed absolute path, then run **Maieutics: New
 Session** to attach the extension. Open `ssr.maieuticsnb` from this directory. Its output should
-show a tip container, a table, highlighted TypeScript, and expandable details. The fixture does not
-need to be executed. The demo model configuration supplies an unused local placeholder endpoint;
-normal Agent turns need a real provider configuration.
+show a tip container, a table, highlighted TypeScript, expandable details, filename tabs with line
+numbers, and diff/focus annotations. Switch a code tab to inspect the alternative JSON example. The
+fixture does not need to be executed. The demo model configuration supplies an unused local
+placeholder endpoint; normal Agent turns need a real provider configuration.
 
 Open the same snapshot without an attached connection to inspect its native Markdown fallback.
 Opening a snapshot never starts a kernel solely for rendering. Stop the demo kernel with Ctrl+C; its

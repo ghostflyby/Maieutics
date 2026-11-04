@@ -272,6 +272,10 @@ When adding behavior:
 Do not mix unrelated formatting, dependency upgrades, protocol refactors, provider behavior, persistence migrations, and
 tool additions. Do not revert unrelated user changes in a dirty worktree.
 
+For VitePress-based output rendering work, read and update `docs/streaming-output-rendering-design.md` in the same change.
+Keep its design decisions, protocol and lifecycle semantics, open questions, and implementation status current; update
+normative protocol documentation and compatibility fixtures separately when their contracts change.
+
 ## Test principles
 
 1. Wait on completion events, never on time.

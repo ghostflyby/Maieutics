@@ -23,7 +23,20 @@ internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("comm")] FrontendCommCapability? Comm = null,
     [property: JsonPropertyName("ui")] FrontendUiCapability? Ui = null,
     [property: JsonPropertyName("multiSession")]
-    bool? MultiSession = null);
+    bool? MultiSession = null,
+    [property: JsonPropertyName("rendering")] FrontendRenderingCapability? Rendering = null);
+
+/// <summary>Version of the optional passive Markdown rendering service.</summary>
+internal sealed record FrontendRenderingCapability(int Version);
+
+/// <summary>A stateless display request; it does not submit a turn or change canonical history.</summary>
+internal sealed record FrontendRenderMarkdown(int Version, string? DocumentId, string? Source);
+
+/// <summary>Derived passive HTML and host-scoped CSS for the requested document identity.</summary>
+internal sealed record FrontendRenderedMarkdown(int Version, string? DocumentId, string? Html, string? Css = null);
+
+/// <summary>Authenticated readiness notification from the owned renderer child.</summary>
+internal sealed record FrontendRendererReady(int Version, int Port, string? Nonce);
 
 /// <summary>Advertises the comm plane (ADR 0024); null means the build serves no comms.</summary>
 internal sealed record FrontendCommCapability(
@@ -422,6 +435,9 @@ internal sealed record FrontendPromptList(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(FrontendCapabilities))]
+[JsonSerializable(typeof(FrontendRenderMarkdown))]
+[JsonSerializable(typeof(FrontendRenderedMarkdown))]
+[JsonSerializable(typeof(FrontendRendererReady))]
 [JsonSerializable(typeof(FrontendSkillList))]
 [JsonSerializable(typeof(FrontendPromptList))]
 [JsonSerializable(typeof(FrontendSessionInfo))]

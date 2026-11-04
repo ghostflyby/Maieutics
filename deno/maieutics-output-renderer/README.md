@@ -3,8 +3,8 @@
 Executable-owned rendering primitives for the
 [streaming output design](../../docs/streaming-output-rendering-design.md). The first implementation
 provides complete passive Markdown snapshots through Markdown-it, the `@mdit-vue` heading plugin,
-Shiki, and Vue SSR. It is a Deno workspace member; it is not yet embedded in the executable or
-connected to the live frontend. No user REPL or plugin host is needed to render content.
+Shiki, and Vue SSR. The executable embeds `bundle/service.js` and starts the rendering child on the
+first authenticated `POST /v1/render/markdown` request. No user REPL or plugin host is needed.
 
 ```ts
 import { createOutputRenderer } from "./mod.ts";
@@ -65,7 +65,9 @@ The build produces an ignored `dist/smoke.js` bundle containing the rendering en
 grammars, and a representative fixture. The smoke command disables npm and remote-module resolution
 and denies network, child-process, filesystem read, and filesystem write access. It validates SSR,
 containers, highlighting, reference links, and inert document code. The generated bundle is an
-integration probe, not a shipped executable resource.
+integration probe, not a shipped executable resource. The build also regenerates the committed
+`bundle/service.js` embedded by the executable. Rebuild and commit it whenever its source or
+dependencies change.
 
 ## Deno permissions
 
@@ -73,6 +75,13 @@ Source tests allow reads of `NODE_ENV` (Vue) and `VSCODE_TEXTMATE_DEBUG` (TextMa
 environment. The bundled smoke requires only `VSCODE_TEXTMATE_DEBUG`; Deno's bundler substitutes
 `NODE_ENV` during the build. Neither command grants runtime network, process launch, or filesystem
 access. Dependency installation and bundling require package-cache access and, on a cold cache,
-registry access; the build writes only its output directory. Future kernel launch permissions must
-be derived through the owning effective policy before this module is connected to a supervised
-service.
+registry access; the build writes only its output directories.
+
+The supervised service additionally reads `MAIEUTICS_RENDERER_CALLBACK`, `MAIEUTICS_RENDERER_TOKEN`,
+and `MAIEUTICS_RENDERER_NONCE`. Its built-in policy permits listening on `127.0.0.1:0` and calling
+the kernel's concrete loopback frontend port. The kernel overlays app and workspace permission
+layers, renders that captured effective policy before launch, and clears the inherited environment.
+It provides only renderer variables, a private `DENO_DIR`, and Windows `SYSTEMROOT` when needed.
+Readiness and internal render requests use authenticated HTTP. No binary data or conversation state
+travels through stdout. The child belongs to the executable's presentation scope independently of
+Agent runs and frontend subscribers.

@@ -7,5 +7,6 @@ namespace Maieutics.DenoExecution;
 internal enum InternalDenoProcessKind
 {
     DenoRepl,
-    PluginHost
+    PluginHost,
+    OutputRenderer
 }

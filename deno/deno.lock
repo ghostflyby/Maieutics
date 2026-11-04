@@ -763,6 +763,7 @@
           "npm:@shikijs/themes@2.5.0",
           "npm:@types/markdown-it-container@2.0.10",
           "npm:@types/markdown-it@14.1.2",
+          "npm:acorn@8.18.0",
           "npm:markdown-it-anchor@9.2.0",
           "npm:markdown-it-container@4.0.0",
           "npm:markdown-it@14.3.1",

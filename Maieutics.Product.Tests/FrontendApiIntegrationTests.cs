@@ -1932,6 +1932,9 @@ public sealed class FrontendApiIntegrationTests
         public FrontendSessionService SessionService =>
             _host.Services.GetRequiredService<FrontendSessionService>();
 
+        internal FrontendOutputRenderer OutputRenderer =>
+            _host.Services.GetRequiredService<FrontendOutputRenderer>();
+
         /// <summary>The live session manager, so tests can observe eviction-pin state
         /// that the server-side turn queue drives (ADR 0025).</summary>
         public MaieuticsAgentSessionManager SessionManager =>

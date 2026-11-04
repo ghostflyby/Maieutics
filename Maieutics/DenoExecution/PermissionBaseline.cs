@@ -11,6 +11,20 @@ namespace Maieutics.DenoExecution;
 /// the baseline the overlay layers extend). Deny rules still win over these grants.</summary>
 internal static class PermissionBaseline
 {
+    /// <summary>Built-in process-scoped grants for the offline output renderer and its readiness callback.</summary>
+    internal static PermissionLayer ForOutputRendererLayer(int frontendPort) => new()
+    {
+        Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+        {
+            [PermissionKind.Net] = new() { Allow = ["127.0.0.1:0", $"127.0.0.1:{frontendPort}"] },
+            [PermissionKind.Env] = new()
+            {
+                Allow = ["MAIEUTICS_RENDERER_CALLBACK", "MAIEUTICS_RENDERER_TOKEN", "MAIEUTICS_RENDERER_NONCE",
+                    "VSCODE_TEXTMATE_DEBUG", "DENO_DIR", "SYSTEMROOT"]
+            }
+        }
+    };
+
     /// <summary>Builds the baseline for the REPL child of one session.</summary>
     internal static EffectivePolicy ForDenoRepl(
         string moduleDirectory,

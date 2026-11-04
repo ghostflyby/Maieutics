@@ -338,6 +338,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         {
             InternalDenoProcessKind.DenoRepl => "Deno REPL",
             InternalDenoProcessKind.PluginHost => "Plugin host",
+            InternalDenoProcessKind.OutputRenderer => "Output renderer",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown internal Deno process kind.")
         };
     }

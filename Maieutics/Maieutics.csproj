@@ -74,6 +74,8 @@
     <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Deno/maieutics-deno-repl/deno.json"/>
     <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Deno/maieutics-deno-repl/deno.lock"/>
     <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Deno/maieutics-plugin-sdk/deno.json"/>
+    <EmbeddedResource Include="..\deno\maieutics-output-renderer\bundle\service.js" LogicalName="Deno/maieutics-output-renderer/service.js"/>
+    <EmbeddedResource Include="..\deno\maieutics-output-renderer\styles.css" LogicalName="Deno/maieutics-output-renderer/styles.css"/>
   </ItemGroup>
 
 </Project>

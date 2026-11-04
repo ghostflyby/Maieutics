@@ -25,8 +25,8 @@
   `deno.json`.
 - `maieutics-output-renderer/` — executable-owned passive Markdown and Vue SSR primitives for
   `docs/streaming-output-rendering-design.md`. Owns offline content rendering and highlighter
-  lifetime. It is not yet embedded or wired to the live frontend; update the design document as
-  integration lands.
+  lifetime. The executable embeds its committed `bundle/service.js`; regenerate that bundle when its
+  sources change. Update the design document as integration lands.
 - `shared/` — Control channel wire contract used by `maieutics-repl-client` and
   `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version constant;
   `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches envelopes. The

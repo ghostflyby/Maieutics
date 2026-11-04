@@ -10,6 +10,35 @@ All JSON uses camelCase and is serialized with source-generated contexts on
 the NativeAOT path. No Jupyter type and no Microsoft.Extensions.AI type
 crosses the wire (invariant 11).
 
+## Passive Markdown rendering demo
+
+Capabilities may advertise `rendering: {"version":1}`. `POST /v1/render/markdown` is an authenticated,
+stateless request/reply endpoint for derived presentation, independently of run event sequencing:
+
+```json
+{"version":1,"documentId":"message1","source":"# Result\n\n**Ready**"}
+```
+
+The response is `{"version":1,"documentId":"message1","html":"…","css":"…"}`. HTML is passive
+server-rendered content; CSS is the renderer's host-scoped stylesheet. A document ID begins with an
+ASCII letter and contains at most 64 ASCII letters, digits, underscores, or hyphens. The source limit
+is 200,000 UTF-16 units; request bodies are capped at 2 MiB, and HTML at 4,000,000 UTF-16 units. The
+kernel admits at most eight rendering requests and gives each a 30-second total budget. Unknown JSON
+fields are tolerated. Invalid requests return `400 invalid_request`, saturated admission returns
+`429 render_busy`, and renderer failure returns `503 render_unavailable`; clients retain the original
+Markdown. A cancelled request does not cancel its Agent run or change canonical history.
+
+Clients correlate answers with their own source revision and ignore superseded results. This demo
+returns complete snapshots, with no patch or server-owned document revision contract. It does not
+execute document scripts, Vue expressions, includes, or filesystem snippets. Product resource links
+are preserved; frontend resource delivery and interactive components remain separate work.
+
+`POST /v1/render/ready` is an internal child-to-kernel readiness notification on the shared host. It
+requires the frontend bearer plus the child scope's nonce and accepts `{version:1,port,nonce}`. An
+accepted notification returns `204`; forged or repeated notifications return `409`. It is not a
+frontend registration API. The owned child serves authenticated, bounded request/reply
+`POST /v1/markdown` on an ephemeral loopback port using its separate scope credential.
+
 ## Discovery and authentication
 
 The frontend spawns the executable and passes the discovery file location:

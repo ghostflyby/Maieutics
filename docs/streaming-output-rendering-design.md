@@ -1,7 +1,7 @@
 # Streaming Output Rendering with VitePress
 
-Status: Passive rendering core implemented; stage 1 integration validation in progress. Live frontend
-migration, the streaming document runtime, and presentation protocol remain proposed.
+Status: Passive rendering core and kernel rendering API implemented; Notebook integration in progress.
+The streaming document runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
 
@@ -24,9 +24,9 @@ for incomplete source, late data bindings, cross references, render scheduling, 
 The standard VitePress site build does not supply this runtime.
 
 The agreed direction is kernel-side Deno rendering, SSR as the primary rendering model, and shared
-output across frontends. The package combination, authoring syntax, transport endpoints, wire schema,
-permission profile, and process topology require the validation stages below. Examples here describe
-proposed semantics and do not extend the shipped frontend protocol.
+output across frontends. The passive content subset and stateless kernel API are implemented below.
+Full template authoring, the document runtime, and revisioned update operations remain proposed and
+require the validation stages below. The initial demo API has its own normative frontend contract.
 
 ## Existing integration boundary
 
@@ -43,8 +43,9 @@ not implicitly become a Vue application.
 The first rendering primitive is now implemented in
 [`deno/maieutics-output-renderer`](../deno/maieutics-output-renderer/README.md), a Deno workspace member.
 It renders complete passive Markdown snapshots and heading metadata with independent parser and
-highlighter ownership. The executable does not embed or launch it yet, and the VS Code output path
-still uses the existing Markdown renderer.
+highlighter ownership. The executable embeds its offline service bundle and starts an owned Deno
+child lazily for authenticated rendering requests. The VS Code output path still uses the existing
+Markdown renderer until its bridge is connected.
 
 ## Ownership and data flow
 
@@ -124,6 +125,26 @@ source and expanded-output bounds, and cancellation or disposal during SSR. `smo
 integration fixture; CI builds it and runs it under the restricted permissions above. Host-scoped
 baseline styles are provided in `styles.css`. Actual notebook CSP, resource delivery, code groups,
 full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
+
+### Initial kernel rendering API
+
+`POST /v1/render/markdown` accepts version 1, a document identity, and source text and returns a complete
+passive HTML snapshot with host-scoped CSS. This stateless formatting request does not submit a turn,
+modify canonical history, or append frames to a completed run. Capabilities advertise
+`rendering: {version: 1}`; clients retain original Markdown when unavailable. Normative shapes are in
+the frontend protocol document.
+
+The process-scoped service admits at most eight requests, serializes rendering, and applies one
+30-second request budget including startup and queueing. It materializes the offline bundle, acquires
+the app/workspace effective policy, and launches through `DenoRunProcess`. An authenticated,
+nonce-bound readiness callback reports the child's actual loopback port. The internal child endpoint
+authenticates every bounded render request. Host shutdown cancels requests, stops the child, and
+removes its private module/cache directory. Session overrides do not govern this shared passive
+formatting scope; it executes no session code.
+
+`FrontendOutputRendererTests` drives the real child through the composition root, verifies SSR and
+reference corrections without adding history, rejects anonymous or invalid requests and forged
+readiness, and asserts child and temporary-directory cleanup.
 
 ## Document state and presentation units
 
@@ -306,7 +327,7 @@ contracts ship. This design does not currently change protocol v1 or notebook sn
 | Stage | Status | Scope | Acceptance |
 |---|---|---|---|
 | 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
-| 2 | Pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
+| 2 | In progress; kernel API and supervised child implemented | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
 | 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
 | 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |

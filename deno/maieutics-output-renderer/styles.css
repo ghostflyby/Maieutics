@@ -1,0 +1,52 @@
+.maieutics-output {
+  color: var(--vscode-editor-foreground, #24292e);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.maieutics-output pre {
+  overflow: auto;
+  padding: 0.75em 1em;
+  border-radius: 6px;
+  background: var(--vscode-textCodeBlock-background, #f6f8fa);
+}
+
+.maieutics-output code {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.maieutics-output .shiki span {
+  color: var(--shiki-light);
+}
+
+.vscode-dark .maieutics-output .shiki span,
+.vscode-high-contrast .maieutics-output .shiki span {
+  color: var(--shiki-dark);
+}
+
+.maieutics-output .custom-block {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-inline-start: 3px solid var(--vscode-textLink-foreground, #0969da);
+  background: var(--vscode-textBlockQuote-background, #f6f8fa);
+}
+
+.maieutics-output .custom-block-title {
+  font-weight: 600;
+}
+
+.maieutics-output .warning,
+.maieutics-output .danger {
+  border-color: var(--vscode-editorWarning-foreground, #9a6700);
+}
+
+.maieutics-output table {
+  border-collapse: collapse;
+}
+
+.maieutics-output th,
+.maieutics-output td {
+  padding: 0.25em 0.75em;
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+}

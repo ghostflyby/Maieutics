@@ -4,6 +4,7 @@
     "./maieutics-deno-repl",
     "./maieutics-plugin-sdk",
     "./maieutics-plugin-host",
+    "./maieutics-output-renderer",
     "./maieutics-vscode"
   ],
   "fmt": {

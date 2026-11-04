@@ -1,6 +1,7 @@
 # Streaming Output Rendering with VitePress
 
-Status: Design direction agreed; runtime, protocol, and package integration proposed. Not implemented.
+Status: Passive rendering core implemented; stage 1 integration validation in progress. Live frontend
+migration, the streaming document runtime, and presentation protocol remain proposed.
 
 Date: 2026-11-04
 
@@ -38,6 +39,12 @@ The new renderer should first replace assistant Markdown inside these existing o
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
 retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
 not implicitly become a Vue application.
+
+The first rendering primitive is now implemented in
+[`deno/maieutics-output-renderer`](../deno/maieutics-output-renderer/README.md), a Deno workspace member.
+It renders complete passive Markdown snapshots and heading metadata with independent parser and
+highlighter ownership. The executable does not embed or launch it yet, and the VS Code output path
+still uses the existing Markdown renderer.
 
 ## Ownership and data flow
 
@@ -79,14 +86,44 @@ authorized producer results. Rendering must not execute through or depend on the
 | DOM application | Idiomorph or morphdom | Merge HTML inside an explicitly owned boundary. Focus, selection, expansion, and scrolling still need host verification. |
 | Incomplete Markdown | Markstream and `stream-markdown-parser` | Evaluate partial syntax handling and structured nodes. Their parser composition is not established as equivalent to the selected VitePress pipeline. |
 
-The preferred initial stack is a VitePress renderer adapter, the Maieutics document runtime, Vue SSR,
-and a small HTML update client. Direct `@mdit-vue` composition is an alternative adapter strategy.
+The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
+heading metadata and shared utilities, markdown-it-anchor 9.2.0, markdown-it-container 4.0.0, Shiki 2.5.0,
+and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
+compiler. The Maieutics document runtime and HTML update client remain to be implemented.
 Markstream is a comparison candidate, not an additional authoritative parser running beside VitePress.
 
 Package reuse must be checked in the supported Deno runtime with packaged, offline dependencies.
 Node compatibility, compiler imports, Shiki assets, stylesheet packaging, and notebook CSP compatibility
 are acceptance conditions rather than assumptions. Vite is useful for building shipped assets; the
 production design must not require a development server or site rebuild for each text delta.
+
+### Initial implementation evidence
+
+The direct `vitepress@1.6.4` entry rendered headings, containers, and highlighted TypeScript under Deno
+2.9.8, but bundling that entry reached Vite's optional `lightningcss` dependency and failed. The entry
+also exposes a globally cached parser and highlighter. The current implementation avoids that entry
+and owns independent instances of the underlying packages rather than adding unused native build
+dependencies or suppressing the diagnostics.
+
+The composed core produces a single JavaScript smoke bundle with statically included grammars and
+themes. The offline smoke disables npm and remote-module resolution and denies network, filesystem,
+and child-process access. TextMate requires one allowlisted environment read,
+`VSCODE_TEXTMATE_DEBUG`; source tests also require Vue's `NODE_ENV`. The bundled production output
+does not require the latter. These are prototype runtime requirements; the future kernel service
+must derive launch permissions through its owning effective policy.
+
+The supported content includes scoped headings and anchors, reference links, tables, emphasis,
+TypeScript/JavaScript/JSON highlighting, and passive tip/info/warning/danger/details containers.
+Unknown languages fall back to escaped text. Raw HTML, document scripts and styles, Vue templates,
+and directives remain text. No filesystem snippet or include rules are installed. Complete snapshots
+are rendered through Vue SSR without compiling document expressions or SFC scripts.
+
+`renderer_test.ts` covers reference corrections and isolation, inert content and executable links,
+container title escaping, deterministic highlighting, independent ownership and repeated disposal,
+source and expanded-output bounds, and cancellation or disposal during SSR. `smoke.ts` is the offline
+integration fixture; CI builds it and runs it under the restricted permissions above. Host-scoped
+baseline styles are provided in `styles.css`. Actual notebook CSP, resource delivery, code groups,
+full template compilation, and Markstream comparison remain unverified and keep stage 1 open.
 
 ## Document state and presentation units
 
@@ -266,15 +303,15 @@ contracts ship. This design does not currently change protocol v1 or notebook sn
 
 ## Implementation stages and acceptance
 
-| Stage | Scope | Acceptance |
-|---|---|---|
-| 1 | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
-| 2 | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
-| 3 | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
-| 4 | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
-| 5 | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
+| Stage | Status | Scope | Acceptance |
+|---|---|---|---|
+| 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
+| 2 | Pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
+| 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
+| 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
+| 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
 
-Each stage starts pending. Completion requires implementation and evidence, not a design-only checkbox.
+Completion requires implementation and evidence, not a design-only checkbox.
 Focused regression coverage must include a late binding updating an earlier unit while later prose
 remains, late link definitions, incomplete expressions and code fences, ready `undefined` versus
 pending, obsolete asynchronous renders, duplicate and missing patches, snapshot recovery during live
@@ -285,7 +322,8 @@ assertions. Lifecycle and protocol changes require their owning integration test
 
 ## Open decisions
 
-- Which pinned VitePress version and adapter boundary work in the supported Deno runtime?
+- How much VitePress page/compiler compatibility is needed beyond the composed passive subset, and
+  can those additions retain offline packaging and independent ownership?
 - Which template subset and producer registration model permit safe late binding while preserving scope?
 - Which internal endpoints and frontend presentation transport provide independent lifetime and recovery?
 - What are the exact limits, overflow behavior, reconstruction policy, and renderer permission scope?

@@ -23,6 +23,10 @@
   import other workspace modules, because it ships through `deno bundle` to the extension host (Node
   runtime), not into the kernel. `package.json` is the extension manifest only; dependencies live in
   `deno.json`.
+- `maieutics-output-renderer/` — executable-owned passive Markdown and Vue SSR primitives for
+  `docs/streaming-output-rendering-design.md`. Owns offline content rendering and highlighter
+  lifetime. It is not yet embedded or wired to the live frontend; update the design document as
+  integration lands.
 - `shared/` — Control channel wire contract used by `maieutics-repl-client` and
   `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version constant;
   `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches envelopes. The

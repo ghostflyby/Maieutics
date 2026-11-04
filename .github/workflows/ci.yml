@@ -82,6 +82,12 @@ jobs:
         working-directory: deno
         run: deno task test
 
+      - name: Verify offline SSR bundle
+        working-directory: deno/maieutics-output-renderer
+        run: |
+          deno task build
+          deno task smoke:offline
+
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
         run: deno publish --dry-run --allow-dirty --no-provenance

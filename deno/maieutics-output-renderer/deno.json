@@ -1,0 +1,28 @@
+{
+  "publish": false,
+  "exclude": ["dist/"],
+  "imports": {
+    "@mdit-vue/plugin-headers": "npm:@mdit-vue/plugin-headers@2.1.3",
+    "@mdit-vue/shared": "npm:@mdit-vue/shared@2.1.3",
+    "markdown-it": "npm:markdown-it@14.3.1",
+    "markdown-it-anchor": "npm:markdown-it-anchor@9.2.0",
+    "markdown-it-container": "npm:markdown-it-container@4.0.0",
+    "@types/markdown-it": "npm:@types/markdown-it@14.1.2",
+    "@types/markdown-it-container": "npm:@types/markdown-it-container@2.0.10",
+    "shiki/core": "npm:shiki@2.5.0/core",
+    "shiki/engine/javascript": "npm:shiki@2.5.0/engine/javascript",
+    "@shikijs/langs/typescript": "npm:@shikijs/langs@2.5.0/typescript",
+    "@shikijs/langs/javascript": "npm:@shikijs/langs@2.5.0/javascript",
+    "@shikijs/langs/json": "npm:@shikijs/langs@2.5.0/json",
+    "@shikijs/themes/github-light": "npm:@shikijs/themes@2.5.0/github-light",
+    "@shikijs/themes/github-dark": "npm:@shikijs/themes@2.5.0/github-dark",
+    "vue": "npm:vue@3.5.13",
+    "vue/server-renderer": "npm:vue@3.5.13/server-renderer"
+  },
+  "tasks": {
+    "check": "deno check mod.ts renderer_test.ts smoke.ts",
+    "test": "deno test --allow-env=NODE_ENV,VSCODE_TEXTMATE_DEBUG renderer_test.ts",
+    "build": "deno bundle --minify -o dist/smoke.js smoke.ts",
+    "smoke:offline": "deno run --no-config --no-npm --no-remote --cached-only --deny-net --deny-run --deny-read --deny-write --allow-env=VSCODE_TEXTMATE_DEBUG dist/smoke.js"
+  }
+}

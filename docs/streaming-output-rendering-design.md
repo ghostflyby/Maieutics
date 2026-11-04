@@ -84,8 +84,8 @@ authorized producer results. Rendering must not execute through or depend on the
 
 | Capability | Candidate | Integration role and limit |
 |---|---|---|
-| VitePress content semantics | `createMarkdownRenderer` behind a local adapter | Reuse Markdown extensions, code groups, containers, links, and code markup. The exported API is experimental; lock the chosen version. Its output can still contain Vue template syntax. |
-| Markdown and Vue integration | `@mdit-vue` component, SFC, frontmatter, headers, title, and TOC plugins | Compose these directly if the VitePress adapter proves too dependent on site context. They do not provide late binding or incremental document lifetime. |
+| VitePress content semantics | Selected upstream plugins behind a local adapter | Source extraction of containers, alerts, fence wrappers and line numbers works offline. Patch escaping, identity and host behavior; treat code markup, client handlers and CSS as one contract. The public `createMarkdownRenderer` remains experimental and owns global state. |
+| Markdown and Vue integration | `@mdit-vue` component, SFC, frontmatter, headers, title, and TOC plugins | Prefer public packages. Frontmatter needs explicit data-only parsers and uncached options; attrs needs an allowlist. Component/SFC parsing supplies neither late binding nor incremental document lifetime. |
 | Vue compilation | `vue/compiler-sfc` and Vue template compilers | Compile complete components or templates and support binding transforms. Import resolution, TS execution, resources, and producer lifetime remain separate concerns. |
 | SSR | `vue/server-renderer` | Render a presentation unit against a captured data snapshot. Streaming one SSR result does not update HTML already delivered. |
 | Code highlighting | Shiki and `@shikijs/stream` | Reuse a highlighter and incrementally highlight code; account for recall tokens when later context changes earlier highlighting. |
@@ -105,6 +105,14 @@ Package reuse must be checked in the supported Deno runtime with packaged, offli
 Node compatibility, compiler imports, Shiki assets, stylesheet packaging, and notebook CSP compatibility
 are acceptance conditions rather than assumptions. Vite is useful for building shipped assets; the
 production design must not require a development server or site rebuild for each text delta.
+
+The [upstream extraction audit](vitepress-upstream-reuse.md) pins VitePress v1.6.4 at commit
+`1fc537b78cda287fa23c1129a815ad9455fd8106`. Twenty-three offline checks establish that selected
+plugins and public ecosystem packages can be bundled without the site entry. They also reproduce
+title/attribute escaping gaps, default JavaScript-frontmatter execution, and a global source cache.
+These require explicit policy adapters. The audit recommends public packages first, then a small
+licensed vendor subset with tracked patches. It does not replace the current production parser,
+code-group markup, CSS, or frontend bridge; migration and browser validation remain separate work.
 
 ### Initial implementation evidence
 

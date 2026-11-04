@@ -608,6 +608,29 @@ export async function activate(context) {
     style.textContent = message.css;
     const rendered = document.createElement("div");
     rendered.innerHTML = message.html;
+    rendered.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      const link = event.target instanceof Element ? event.target.closest('a[href^="#"]') : null;
+      if (link === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      let id;
+      try {
+        id = decodeURIComponent(link.getAttribute("href").slice(1));
+      } catch {
+        return;
+      }
+      if (!id) return;
+      const target = rendered.querySelector(`#${CSS.escape(id)}`);
+      if (target === null) return;
+      for (let parent = target.parentElement; parent !== null; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      target.scrollIntoView({ block: "nearest" });
+      target.focus({ preventScroll: true });
+    }, { signal: state.interactions.signal });
     for (const input of rendered.querySelectorAll('.vp-code-group input[type="radio"]')) {
       const selection = state.codeTabs.get(input.name);
       if (selection?.id === input.id && selection.title === input.nextElementSibling?.textContent) {
@@ -642,6 +665,8 @@ export async function activate(context) {
         revision: 0,
       };
       rememberCodeTabs(element, state);
+      state.interactions?.abort();
+      state.interactions = new AbortController();
       state.revision++;
       const revision = state.revision;
       forgetPending(output.id, false);
@@ -737,8 +762,13 @@ export async function activate(context) {
     },
     disposeOutputItem(id) {
       forgetPending(id, true);
-      if (id === undefined) states.clear();
-      else states.delete(id);
+      if (id === undefined) {
+        for (const state of states.values()) state.interactions?.abort();
+        states.clear();
+      } else {
+        states.get(id)?.interactions?.abort();
+        states.delete(id);
+      }
     },
   };
 }

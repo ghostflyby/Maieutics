@@ -27,10 +27,27 @@ require the supervised service boundary.
 ## Content subset
 
 Supported content includes headings, document-local anchor links, reference-style links, tables,
-emphasis, code blocks, and `tip`, `info`, `warning`, `danger`, and `details` containers. TypeScript,
-JavaScript, and JSON grammars and both GitHub light and dark themes are bundled statically. Other
-code languages use escaped plain text without dynamically loading packages or starting workers.
-`styles.css` provides host-scoped baseline styles using VS Code variables with browser fallbacks.
+emphasis, code blocks, and `tip`, `info`, `warning`, `danger`, and `details` containers. `[[toc]]`
+uses `@mdit-vue/plugin-toc` (top-level level-2/3 headings); custom anchors use `markdown-it-attrs`
+with only `id` allowed and a heading-only adapter. IDs are document-prefixed; explicit IDs must
+match `[\p{L}_][\p{L}\p{N}_.:-]{0,127}`. Invalid IDs fall back to the generated slug. Duplicates and
+code-control collisions receive deterministic numeric suffixes in source order, so duplicate
+explicit IDs cannot fail a streaming snapshot. Headings, TOC links, and header metadata share the
+resulting ID; later headings update an earlier TOC on full-source re-render.
+
+Ordinary containers and GitHub Alerts reuse extracted VitePress v1.6.4 source. Container titles
+support inline Markdown, local links, and reference definitions, and details defaults to `Details`.
+Quoted `[!TIP]`, `[!NOTE]`, `[!INFO]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`, and `[!DANGER]`
+markers use upstream recognition with escaped literal titles. Unknown markers remain blockquotes.
+The [vendor manifest](vendor/vitepress/upstream.json) pins original file hashes and adaptation
+notes; the MIT license is retained in source and the shipped bundle. Raw/v-pre containers are
+excluded. VS Code handles local-fragment scrolling/focus inside the output's shadow root and removes
+these handlers on replacement/disposal; other Shadow DOM hosts need an equivalent frontend adapter.
+
+TypeScript, JavaScript, and JSON grammars and both GitHub light and dark themes are bundled
+statically. Other code languages use escaped plain text without dynamically loading packages or
+starting workers. `styles.css` provides host-scoped baseline styles using VS Code variables with
+browser fallbacks.
 
 Fences accept literal filename titles (`ts [report.ts]`), line numbers (`ts:line-numbers`,
 `ts:line-numbers=7`, `ts:no-line-numbers`), and highlighted line lists or ranges (`ts{1,3-5}`).
@@ -80,9 +97,9 @@ references in a complete snapshot; stable incremental nodes require the document
 The prototype verified `vitepress@1.6.4` rendering in Deno 2.9.8, but importing its public entry
 also loads site-build dependencies. A direct `deno bundle` encountered Vite's optional
 `lightningcss` dependency. Its Markdown renderer also caches one parser and highlighter globally.
-The standalone implementation instead composes the underlying ecosystem with independent ownership
-and static grammar imports. It does not suppress bundler diagnostics or add unused native build
-dependencies.
+The standalone implementation composes public ecosystem packages with independent ownership and
+static grammar imports, plus the small licensed upstream container/alert extraction described above.
+It does not suppress bundler diagnostics or add unused native build dependencies.
 
 ## Verification
 
@@ -98,10 +115,10 @@ deno task smoke:offline
 The build produces an ignored `dist/smoke.js` bundle containing the rendering engine, bundled
 grammars, and a representative fixture. The smoke command disables npm and remote-module resolution
 and denies network, child-process, filesystem read, and filesystem write access. It validates SSR,
-containers, highlighting, reference links, and inert document code. The generated bundle is an
-integration probe, not a shipped executable resource. The build also regenerates the committed
-`bundle/service.js` embedded by the executable. Rebuild and commit it whenever its source or
-dependencies change.
+containers, TOC/custom anchors, alerts, highlighting, reference links, and inert document code. The
+generated bundle is an integration probe, not a shipped executable resource. The build also
+regenerates the committed `bundle/service.js` embedded by the executable. Rebuild and commit it
+whenever its source or dependencies change.
 
 ## Deno permissions
 
@@ -109,7 +126,8 @@ Source tests allow reads of `NODE_ENV` (Vue) and `VSCODE_TEXTMATE_DEBUG` (TextMa
 environment. The bundled smoke requires only `VSCODE_TEXTMATE_DEBUG`; Deno's bundler substitutes
 `NODE_ENV` during the build. Neither command grants runtime network, process launch, or filesystem
 access. Dependency installation and bundling require package-cache access and, on a cold cache,
-registry access; the build writes only its output directories.
+registry access; the build reads the vendored license to add the distribution notice and writes only
+its output directories.
 
 The supervised service additionally reads `MAIEUTICS_RENDERER_CALLBACK`, `MAIEUTICS_RENDERER_TOKEN`,
 and `MAIEUTICS_RENDERER_NONCE`. Its built-in policy permits listening on `127.0.0.1:0` and calling

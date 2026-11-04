@@ -1,6 +1,7 @@
 # Streaming Output Rendering with VitePress
 
-Status: Passive SSR integrated with the kernel and actual Notebook renderer; code presentation extended.
+Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
+containers, and alerts integrated.
 The streaming document runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
@@ -94,9 +95,8 @@ authorized producer results. Rendering must not execute through or depend on the
 | Incomplete Markdown | Markstream and `stream-markdown-parser` | Evaluate partial syntax handling and structured nodes. Their parser composition is not established as equivalent to the selected VitePress pipeline. |
 
 The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
-heading metadata and shared utilities, markdown-it-anchor 9.2.0, markdown-it-container 4.0.0, Shiki and
-`@shikijs/transformers` 2.5.0,
-and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
+heading metadata, TOC and shared utilities, markdown-it-anchor 9.2.0, markdown-it-attrs 4.3.1,
+markdown-it-container 4.0.0, Shiki and `@shikijs/transformers` 2.5.0, and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
 compiler. The complete-snapshot update client is implemented; the document runtime and incremental
 HTML patch client remain to be implemented.
 Markstream is a comparison candidate, not an additional authoritative parser running beside VitePress.
@@ -111,8 +111,10 @@ The [upstream extraction audit](vitepress-upstream-reuse.md) pins VitePress v1.6
 plugins and public ecosystem packages can be bundled without the site entry. They also reproduce
 title/attribute escaping gaps, default JavaScript-frontmatter execution, and a global source cache.
 These require explicit policy adapters. The audit recommends public packages first, then a small
-licensed vendor subset with tracked patches. It does not replace the current production parser,
-code-group markup, CSS, or frontend bridge; migration and browser validation remain separate work.
+licensed vendor subset with tracked patches. The first production migration now uses the public TOC
+and attrs packages plus extracted ordinary containers and GitHub Alerts, with the adapters below.
+Code-group markup, CSS, and client behavior remain the existing coherent native-radio contract;
+migrating the remaining code family is separate work.
 
 ### Initial implementation evidence
 
@@ -131,7 +133,32 @@ effective policy.
 
 The supported content includes scoped headings and anchors, reference links, tables, emphasis,
 TypeScript/JavaScript/JSON highlighting, code groups, fence titles and line metadata, Shiki notation
-classes, and passive tip/info/warning/danger/details containers.
+classes, and passive tip/info/warning/danger/details containers. `[[toc]]` uses the public TOC plugin
+and includes top-level level-2/3 headings, matching its VitePress defaults. Header metadata still
+includes levels 1–6. `{#id}` uses attrs with an `id`-only allowlist; only heading IDs survive the
+adapter. Explicit IDs must start with a Unicode letter or underscore and contain at most 128 Unicode
+code points from letters, numbers, `_`, `.`, `:`, and `-`; invalid IDs use the generated heading slug.
+Heading IDs are deterministically suffixed in source order on duplicates and collisions with native
+code controls, then document-prefixed once before both metadata and TOC rendering. Unlike the
+upstream anchor default, duplicate explicit IDs do not fail a streamed snapshot. Adding headings
+later regenerates earlier TOCs through full-source reparsing; there is no persistent outline cache.
+
+Ordinary containers now extract VitePress v1.6.4's `createContainer` behavior, including inline
+Markdown titles, document-scoped local links, references resolved against the complete current
+source, and the `Details` default label. GitHub-style quoted alerts recognize TIP, NOTE, INFO,
+IMPORTANT, WARNING, CAUTION, and DANGER, case-insensitively. Their custom titles remain escaped
+literal text, retaining upstream syntax without its raw HTML interpolation. Unknown alert markers
+remain ordinary blockquotes. Raw/v-pre containers and the upstream code-group implementation are
+excluded from the extraction. The [vendor manifest](../deno/maieutics-output-renderer/vendor/vitepress/upstream.json)
+records the tag, commit, original file hashes, and adaptations; its MIT notice is retained in source
+and prepended to the embedded service bundle.
+
+VS Code handles plain document-fragment clicks inside the owning rendered subtree: it opens enclosing
+details, scrolls and focuses the matching heading, and prevents host URL navigation. Modified clicks
+keep host behavior. The handler is removed on source replacement and disposal with the output's
+AbortController; no window-level listener or document-authored handler is installed. Other frontends
+need the equivalent local-fragment adapter when rendering inside Shadow DOM.
+
 Unknown languages fall back to escaped text. Raw HTML, document scripts and styles, Vue templates,
 and directives remain text. No filesystem snippet or include rules are installed. Complete snapshots
 are rendered through Vue SSR without compiling document expressions or SFC scripts.
@@ -408,7 +435,7 @@ the notebook snapshot format is unchanged. Revisioned presentation snapshots and
 | Stage | Status | Scope | Acceptance |
 |---|---|---|---|
 | 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
-| 2 | Assistant SSR and code presentation implemented; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
+| 2 | Assistant SSR, code presentation, TOC/anchors and extracted containers/alerts implemented; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
 | 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
 | 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
@@ -421,6 +448,15 @@ publication, renderer failure, cancellation, and offline restoration without sid
 streamed output must match a one-shot render under the same source, retained data, and content policy.
 Use explicit barriers and completion signals to control interleavings, never sleeps as correctness
 assertions. Lifecycle and protocol changes require their owning integration tests and fixtures.
+
+The 2026-11-04 upstream-content increment passes 25 renderer tests, 676 Deno workspace tests plus
+20 Node scenarios, and the actual VS Code extension-host suite against a live NativeAOT kernel.
+Browser coverage verifies scoped TOC targets, scroll/focus, source-replacement/disposal cleanup,
+existing code-group switching and selection retention, and production notebook serializer routing.
+The .NET suite passes 1,579 tests with eight existing platform/external-service skips (1,587 total).
+Release build completes without warnings; osx-arm64 NativeAOT publish and its real offline-renderer
+smoke pass. Offline smoke, type checks, formatting, lint, source provenance hashes, and diff checks pass.
+These checks validate the shipped snapshot path, not the proposed document runtime or late bindings.
 
 ## Open decisions
 

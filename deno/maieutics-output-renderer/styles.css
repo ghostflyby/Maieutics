@@ -168,7 +168,7 @@
 }
 
 .maieutics-output .warning,
-.maieutics-output .danger {
+.maieutics-output .caution {
   border-color: var(--vscode-editorWarning-foreground, #9a6700);
 }
 
@@ -180,4 +180,26 @@
 .maieutics-output td {
   padding: 0.25em 0.75em;
   border: 1px solid var(--vscode-panel-border, #d0d7de);
+}
+
+.maieutics-output .danger {
+  border-color: var(--vscode-editorError-foreground, #cf222e);
+}
+
+.maieutics-output .important {
+  border-color: var(--vscode-charts-purple, #8250df);
+}
+
+.maieutics-output .table-of-contents {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-inline-start: 2px solid var(--vscode-panel-border, #d0d7de);
+}
+
+.maieutics-output a {
+  color: var(--vscode-textLink-foreground, #0969da);
+}
+
+.maieutics-output :is(h1, h2, h3, h4, h5, h6):focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #0969da);
 }

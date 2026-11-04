@@ -1,6 +1,7 @@
 # Reusing VitePress upstream components
 
-Status: Source audit and offline extraction probes completed; product migration remains pending.
+Status: Source audit and offline extraction probes completed; the first production migration ships
+TOC/custom anchors, ordinary containers, and GitHub Alerts. Code-family migration remains pending.
 
 Date: 2026-11-04
 
@@ -17,6 +18,30 @@ The audit uses VitePress **v1.6.4**, commit `1fc537b78cda287fa23c1129a815ad9455f
 current compatibility target. It does not upgrade production dependencies or claim compatibility
 with VitePress 2 prereleases. Source links below refer to that tag unless a package is named
 separately.
+
+## First production migration
+
+The renderer now directly reuses `@mdit-vue/plugin-toc` and `markdown-it-attrs`, with its existing
+anchor/header plugins. A heading-only ID policy limits attributes and normalizes duplicates and
+code-control collisions before the anchor plugin; one subsequent scoping rule keeps heading HTML,
+metadata, local links, and TOC targets aligned. Streamed TOCs update through complete-source reparsing.
+
+[Extracted source](../deno/maieutics-output-renderer/vendor/vitepress/) contains ordinary container
+registration/`createContainer` and the GitHub Alert parser. The manifest records original hashes and
+local adaptations. Container titles use upstream inline Markdown with the current reference map and
+document scope. Alert titles use a local escaped-text renderer. `Details` now uses upstream's default
+capitalization. MIT attribution ships in the embedded service bundle as well as the source tree.
+
+The existing code groups retain native radios, local choice retention, and their working styles.
+Upstream raw/v-pre containers and site features are excluded. No second overlapping container
+implementation remains in `renderer.ts`. The local adapter owns policy and scoping, not the upstream
+syntax parser. VS Code owns a subtree-local fragment navigation handler with deterministic cleanup;
+it resolves TOC/inline links inside the native Markdown shadow boundary.
+
+Regression coverage includes duplicate and hostile IDs, TOC updates from later headings, late title
+references, all seven alert kinds, escaped alert titles, real child rendering, published rendering,
+and actual VS Code Shadow DOM navigation and handler cleanup. The 23 research checks below remain
+audit evidence; production verification is a separate suite.
 
 ## Public entry points and packaging
 
@@ -47,7 +72,8 @@ against the portability of individual plugins. The `cache` option controls compi
 | Math                                      | `markdown-it-mathjax3`                                                     | Independent optional package used by VitePress; offline assets and notebook CSP still need a separate prototype.                                                     |
 
 The audited standalone package probes use `@mdit-vue` 2.1.3, attrs 4.3.1, anchor 9.2.0, and emoji
-3.0.0 with Markdown-it 14.3.1. These are probe dependencies, not additions to the product workspace.
+3.0.0 with Markdown-it 14.3.1. TOC 2.1.3 and attrs 4.3.1 are now product dependencies as well; the
+other newly audited packages remain research-only.
 
 ## VitePress source extraction candidates
 

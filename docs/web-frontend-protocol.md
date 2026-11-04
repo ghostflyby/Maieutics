@@ -49,6 +49,16 @@ Live assistant text nodes and restored snapshots carry `application/vnd.maieutic
 enter this renderer; native Markdown fallback happens inside it. Legacy Markdown-node metadata
 remains readable when saving older in-memory outputs.
 
+The passive content subset also includes `[[toc]]` (top-level H2/H3 headings), heading-only `{#id}`
+attributes, inline Markdown container titles, and quoted GitHub Alerts (TIP/NOTE/INFO/IMPORTANT/
+WARNING/CAUTION/DANGER). Heading IDs and local links are document-scoped, including TOC targets.
+Explicit IDs accept `[\p{L}_][\p{L}\p{N}_.:-]{0,127}`; invalid IDs fall back to generated slugs.
+Duplicate IDs and collisions with code controls receive deterministic numeric suffixes in source
+order. Full-source rendering updates earlier TOCs and container-title references when later source
+arrives. Attribute handlers/styles are rejected; alert titles are escaped literal text. VS Code owns
+local-fragment navigation within the rendered Shadow DOM and removes its handlers on replacement
+and disposal. This content expansion does not change rendering API version 1 or the notebook format.
+
 The passive content subset includes `::: code-group` with direct fenced-code children, literal fence
 titles, line numbers and selected-line highlighting, and VitePress-style Shiki comment notations for
 diff/focus/highlight/error/warning. Code groups use document-scoped native radio controls and the

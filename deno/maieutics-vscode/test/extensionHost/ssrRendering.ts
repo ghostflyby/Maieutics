@@ -8,6 +8,13 @@ import { TurnOutputMime } from "../../turnView.ts";
 const CodeDemoSource = [
   "# Demo",
   "",
+  "[[toc]]",
+  "",
+  "## Contents {#contents}",
+  "",
+  "> [!NOTE]",
+  "> Shared alert",
+  "",
   "::: tip",
   "Shared SSR",
   ":::",
@@ -119,7 +126,8 @@ export async function testSsrRenderingAsync(): Promise<void> {
       client ? await client.renderMarkdown(documentId, text, signal) : {
         version: 1,
         documentId,
-        html: `<div class="maieutics-output vp-doc"><div class="custom-block tip">Shared SSR</div>
+        html:
+          `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div>
           <fieldset class="vp-code-group"><legend>Code examples</legend>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
@@ -182,6 +190,14 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(root.querySelector("pre.shiki code")?.textContent.includes("const total"), "SSR code output remains visible");
         assert(root.querySelector("style")?.textContent.includes("--vscode"), "host-scoped styles are delivered through messaging");
         assert(root.querySelector('.line.highlighted[data-line="7"]'), "line metadata reaches the actual browser");
+        assert(root.querySelector(".github-alert.note")?.textContent.includes("Shared alert"), "upstream alert parsing reaches the browser");
+        const tocLink = root.querySelector(".table-of-contents a");
+        const heading = root.querySelector("h2");
+        assert(tocLink?.getAttribute("href") === "#" + heading?.id, "TOC and custom anchors share the same document scope");
+        let scrolled = 0;
+        heading.scrollIntoView = () => { scrolled++; };
+        tocLink.click();
+        assert(scrolled === 1 && root.activeElement === heading, "TOC clicks scroll and focus inside the actual Markdown shadow root");
         const labels = root.querySelectorAll(".code-tab > label");
         const panels = root.querySelectorAll(".code-panel");
         assert(labels.length === 2 && panels.length === 2, "the shared snapshot contains both code examples");
@@ -193,9 +209,17 @@ export async function testSsrRenderingAsync(): Promise<void> {
         await delivered.promise;
         const updatedNode = element.querySelector('[data-render-engine="ssr"]');
         const updatedRoot = updatedNode.shadowRoot ?? updatedNode;
+        tocLink.click();
+        assert(scrolled === 1, "replacing a source revision detaches its old anchor handler");
         const updatedPanels = updatedRoot.querySelectorAll(".code-panel");
         assert(getComputedStyle(updatedPanels[0]).display === "none" && getComputedStyle(updatedPanels[1]).display !== "none", "an SSR source update retains the user's selected code example");
+        const finalLink = updatedRoot.querySelector(".table-of-contents a");
+        const finalHeading = updatedRoot.querySelector("h2");
+        let afterDisposal = 0;
+        finalHeading.scrollIntoView = () => { afterDisposal++; };
         api.disposeOutputItem();
+        finalLink.click();
+        assert(afterDisposal === 0, "disposing output detaches its fragment navigation handler");
         vscode.postMessage({ ok: true });
       } catch (error) { vscode.postMessage({ ok: false, error: error.stack ?? String(error) }); }
       </script></body></html>`;

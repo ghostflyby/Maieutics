@@ -1,10 +1,5 @@
 // @deno-types="@types/markdown-it"
 import MarkdownIt from "markdown-it";
-import anchor from "markdown-it-anchor";
-// @deno-types="@types/markdown-it-container"
-import container from "markdown-it-container";
-import { headersPlugin } from "@mdit-vue/plugin-headers";
-import { slugify } from "@mdit-vue/shared";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import typescript from "@shikijs/langs/typescript";
@@ -16,6 +11,7 @@ import { createSSRApp, h } from "vue";
 import { renderToString } from "vue/server-renderer";
 import { installCodeFences } from "./codeFences.ts";
 import { installCodeGroups } from "./codeGroups.ts";
+import { installContentPlugins } from "./contentPlugins.ts";
 
 /** A complete derived presentation, independent of the frontend transport. */
 export interface RenderedOutput {
@@ -77,35 +73,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
     };
     md.linkify.set({ fuzzyLink: false });
-    md.use(anchor, { slugify });
-    md.use(headersPlugin, { level: [1, 2, 3, 4, 5, 6], slugify });
-    md.core.ruler.after("anchor", "maieutics_heading_scope", (state) => {
-      const prefix = `${state.env.documentId}-`;
-      for (const token of state.tokens) {
-        if (token.type === "heading_open") {
-          const id = token.attrGet("id");
-          if (id !== null) token.attrSet("id", prefix + id);
-        }
-        for (const child of token.children ?? []) {
-          const href = child.attrGet("href");
-          if (href?.startsWith("#")) child.attrSet("href", `#${prefix}${href.slice(1)}`);
-        }
-      }
-    });
-    for (const name of ["tip", "info", "warning", "danger", "details"]) {
-      // The container declarations use the CJS markdown-it types; the other plugins use ESM
-      // declarations of the same runtime object. Keep that typing adaptation at this boundary.
-      container(md as unknown as Parameters<typeof container>[0], name, {
-        render(tokens, index) {
-          if (tokens[index].nesting === -1) return name === "details" ? "</details>\n" : "</div>\n";
-          const title = tokens[index].info.trim().slice(name.length).trim() || name.toUpperCase();
-          const escapedTitle = md.utils.escapeHtml(title);
-          return name === "details"
-            ? `<details class="custom-block details"><summary>${escapedTitle}</summary>\n`
-            : `<div class="custom-block ${name}"><p class="custom-block-title">${escapedTitle}</p>\n`;
-        },
-      });
-    }
+    installContentPlugins(md);
 
     let disposed = false;
     return {

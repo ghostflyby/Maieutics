@@ -288,3 +288,135 @@ Deno.test("cancellation and concurrent disposal prevent publication of an in-fli
   const error = await assertRejects(() => rendering, OutputRenderingError);
   assertEquals(error.code, "disposed");
 });
+
+Deno.test("public TOC and attrs plugins share scoped explicit anchors and heading metadata", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "[[toc]]\n\n# Title\n\n## **Ready** `value` {#result}\n\n### 中文 {#结果}\n\n[Jump](#result)";
+  const output = await renderer.render("outline", source);
+  assertStringIncludes(output.html, '<nav class="table-of-contents">');
+  assertStringIncludes(output.html, 'id="outline-result"');
+  assertStringIncludes(output.html, 'href="#outline-result">Ready value</a>');
+  assertStringIncludes(output.html, 'id="outline-结果"');
+  assertStringIncludes(output.html, 'href="#outline-结果">中文</a>');
+  assertStringIncludes(output.html, 'href="#outline-result">Jump</a>');
+  assertEquals(output.headings[0].children[0].slug, "outline-result");
+  assertEquals(output.headings[0].children[0].children[0].slug, "outline-结果");
+  assertEquals(await renderer.render("outline", source), output);
+  assert(!((await renderer.render("other", source)).html.includes("outline-result")));
+});
+
+Deno.test("later headings refresh earlier TOCs without keeping another render's outline", async () => {
+  using renderer = await createOutputRenderer();
+  const source = "[[toc]]\n\n## Earlier {#first}\n";
+  const pending = await renderer.render("stream", source);
+  assert(!pending.html.includes("stream-second"));
+  const resolved = await renderer.render("stream", source + "\n## Later {#second}\n");
+  assertStringIncludes(resolved.html, 'href="#stream-second">Later</a>');
+  assertStringIncludes(resolved.html, 'id="stream-first"');
+  assertEquals(await renderer.render("stream", source), pending);
+});
+
+Deno.test("duplicate explicit and generated IDs remain renderable and cannot claim code controls", async () => {
+  using renderer = await createOutputRenderer();
+  const source = [
+    "[[toc]]",
+    "",
+    "## Same",
+    "",
+    "## Again {#same}",
+    "",
+    "## Same",
+    "",
+    "## Other {#same-1}",
+    "",
+    "## Control {#code-group-0-tab-0}",
+    "",
+    "::: code-group",
+    "```ts [one.ts]",
+    "const one = 1;",
+    "```",
+    ":::",
+  ].join("\n");
+  const output = await renderer.render("duplicates", source);
+  for (const id of ["same", "same-1", "same-2", "same-1-1", "code-group-0-tab-0-1"]) {
+    assertStringIncludes(output.html, `id="duplicates-${id}"`);
+    assertStringIncludes(output.html, `href="#duplicates-${id}"`);
+  }
+  const ids = [...output.html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  assertEquals(
+    new Set(ids).size,
+    ids.length,
+    "Heading IDs cannot collide with native code controls.",
+  );
+});
+
+Deno.test("attribute syntax only admits bounded safe heading IDs and cannot add handlers or styles", async () => {
+  using renderer = await createOutputRenderer();
+  const { html } = await renderer.render(
+    "attrs",
+    [
+      "[[toc]]",
+      "",
+      '## Safe {#good onclick=run() style="display:none" .hidden}',
+      "",
+      "## Unsafe {id='bad\"onmouseover=\"run()'}",
+      "",
+      `[link](https://example.test){#outside onclick=run()}`,
+      "",
+      `## Long {#${"x".repeat(129)}}`,
+    ].join("\n"),
+  );
+  assertStringIncludes(html, 'id="attrs-good"');
+  assertStringIncludes(html, 'id="attrs-unsafe"');
+  assertStringIncludes(html, 'id="attrs-long"');
+  assert(!/\s(?:onclick|onmouseover|style)=/.test(html));
+  assert(!html.includes('class="hidden"'));
+  assert(!html.includes('id="outside"'));
+  assert(!html.includes('href="#attrs-bad"'));
+});
+
+Deno.test("upstream containers render inline titles with late references and scoped local links", async () => {
+  using renderer = await createOutputRenderer();
+  const source = [
+    "::: tip **Advice** [jump](#result) [later][r] <img src=x>",
+    "Body",
+    ":::",
+    "",
+    "::: details",
+    "Details body",
+    ":::",
+    "",
+    "## Result {#result}",
+  ].join("\n");
+  const pending = await renderer.render("titles", source);
+  assertStringIncludes(pending.html, "<strong>Advice</strong>");
+  assertStringIncludes(pending.html, 'href="#titles-result">jump</a>');
+  assertStringIncludes(pending.html, "<summary>Details</summary>");
+  assertStringIncludes(pending.html, "[later][r]");
+  assertStringIncludes(pending.html, "&lt;img");
+  assert(!pending.html.includes("<img"));
+  const resolved = await renderer.render("titles", source + "\n\n[r]: https://example.test/result");
+  assertStringIncludes(resolved.html, 'href="https://example.test/result">later</a>');
+  assertEquals(await renderer.render("titles", source), pending);
+});
+
+Deno.test("upstream GitHub alerts recognize all markers and escape literal custom titles", async () => {
+  using renderer = await createOutputRenderer();
+  for (const type of ["TIP", "NOTE", "INFO", "IMPORTANT", "WARNING", "CAUTION", "DANGER"]) {
+    const { html } = await renderer.render("alerts", `> [!${type}]\n> **Body**\n>\n> - Item`);
+    assertStringIncludes(html, `class="custom-block ${type.toLowerCase()} github-alert"`);
+    assertStringIncludes(html, `class="custom-block-title">${type}</p>`);
+    assertStringIncludes(html, "<strong>Body</strong>");
+    assertStringIncludes(html, "<li>Item</li>");
+  }
+  const source =
+    '> [!tip] <img src=x onerror="run()"> **literal**\n> Body\n\n> [!unknown]\n> Ordinary quote';
+  const { html } = await renderer.render("alerts", source);
+  assertStringIncludes(html, "&lt;img");
+  assertStringIncludes(html, "**literal**");
+  assert(!html.includes("<img"));
+  assertStringIncludes(html, "<blockquote>");
+  assertStringIncludes(html, "[!unknown]");
+  assertStringIncludes(html, "Ordinary quote");
+});

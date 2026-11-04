@@ -1,6 +1,9 @@
 {
   "publish": false,
-  "exclude": ["dist/", "bundle/"],
+  "exclude": [
+    "dist/",
+    "bundle/"
+  ],
   "imports": {
     "acorn": "npm:acorn@8.18.0",
     "@mdit-vue/plugin-headers": "npm:@mdit-vue/plugin-headers@2.1.3",
@@ -19,12 +22,15 @@
     "@shikijs/themes/github-light": "npm:@shikijs/themes@2.5.0/github-light",
     "@shikijs/themes/github-dark": "npm:@shikijs/themes@2.5.0/github-dark",
     "vue": "npm:vue@3.5.13",
-    "vue/server-renderer": "npm:vue@3.5.13/server-renderer"
+    "vue/server-renderer": "npm:vue@3.5.13/server-renderer",
+    "@mdit-vue/plugin-toc": "npm:@mdit-vue/plugin-toc@2.1.3",
+    "markdown-it-attrs": "npm:markdown-it-attrs@4.3.1",
+    "@types/markdown-it-attrs": "npm:@types/markdown-it-attrs@4.1.3"
   },
   "tasks": {
     "check": "deno check .",
     "test": "deno test --allow-env=NODE_ENV,VSCODE_TEXTMATE_DEBUG",
-    "build": "deno bundle --minify -o dist/smoke.js smoke.ts && deno bundle --minify -o bundle/service.js service_main.ts && deno run --allow-read=bundle/service.js --allow-write=bundle/service.js bundle_output.ts",
+    "build": "deno bundle --minify -o dist/smoke.js smoke.ts && deno bundle --minify -o bundle/service.js service_main.ts && deno run --allow-read=bundle/service.js,vendor/vitepress/LICENSE --allow-write=bundle/service.js bundle_output.ts",
     "smoke:offline": "deno run --no-config --no-npm --no-remote --cached-only --deny-net --deny-run --deny-read --deny-write --allow-env=VSCODE_TEXTMATE_DEBUG dist/smoke.js"
   }
 }

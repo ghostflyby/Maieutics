@@ -34,12 +34,14 @@ public sealed class FrontendProcessSmokeTests
         using var client = new HttpClient { BaseAddress = new Uri(url) };
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var response = await client.PostAsJsonAsync("/v1/render/markdown",
-            new { version = 1, documentId = "published", source = "# Demo\n\n::: tip\nSSR from Deno\n:::\n\n::: code-group\n```ts:line-numbers=7 {2} [report.ts]\n// [!code highlight]\nconst total = 42;\n```\n\n```json [report.json]\n{}\n```\n:::" }, budget.Token);
+            new { version = 1, documentId = "published", source = "# Demo\n\n[[toc]]\n\n## Contents {#contents}\n\n> [!NOTE]\n> Alert\n\n::: tip\nSSR from Deno\n:::\n\n::: code-group\n```ts:line-numbers=7 {2} [report.ts]\n// [!code highlight]\nconst total = 42;\n```\n\n```json [report.json]\n{}\n```\n:::" }, budget.Token);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
         Assert.Equal(1, result.GetProperty("version").GetInt32());
         Assert.Contains("published-demo", result.GetProperty("html").GetString());
         Assert.Contains("custom-block tip", result.GetProperty("html").GetString());
+        Assert.Contains("href=\"#published-contents\">Contents</a>", result.GetProperty("html").GetString());
+        Assert.Contains("custom-block note github-alert", result.GetProperty("html").GetString());
         Assert.Contains("shiki", result.GetProperty("html").GetString());
         Assert.Contains("vp-code-group", result.GetProperty("html").GetString());
         Assert.Contains("data-line=\"7\"", result.GetProperty("html").GetString());

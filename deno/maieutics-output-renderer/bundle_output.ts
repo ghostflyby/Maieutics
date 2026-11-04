@@ -40,5 +40,10 @@ export function normalizeBundle(source: string): string {
 
 if (import.meta.main) {
   const path = "bundle/service.js";
-  await Deno.writeTextFile(path, normalizeBundle(await Deno.readTextFile(path)));
+  const license = await Deno.readTextFile("vendor/vitepress/LICENSE");
+  await Deno.writeTextFile(
+    path,
+    `/*! VitePress v1.6.4 extracted content plugins\n${license}*/\n` +
+      normalizeBundle(await Deno.readTextFile(path)),
+  );
 }

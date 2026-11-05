@@ -17,6 +17,10 @@ namespace Maieutics;
 ///     Windows, where named pipes need no directory.
 /// </param>
 /// <param name="TempRoot">Single-run staging under the platform temporary directory.</param>
+// The snapshot is the composition root's single directory decision (ADR 0022): it carries
+// every platform root so modules never re-derive one, even where today's modules read only
+// some of them.
+// ReSharper disable NotAccessedPositionalProperty.Global
 internal sealed record ApplicationPaths(
     string DataRoot,
     string CacheRoot,
@@ -160,3 +164,4 @@ internal sealed record ApplicationPaths(
         return baseDirectory;
     }
 }
+// ReSharper restore NotAccessedPositionalProperty.Global

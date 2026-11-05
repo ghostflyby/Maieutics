@@ -223,7 +223,8 @@ internal sealed class WorkspaceFunctions
             : null;
     }
 
-    /// <summary>The physical path a bridged match refers to. <see cref="Path.GetFullPath" />
+    /// <summary>The physical path a bridged match refers to.
+    /// <see cref="M:System.IO.Path.GetFullPath(System.String)" />
     /// collapses any traversal the frontend sent, and the judge then denies a path outside
     /// the workspace root, so a hostile relative path cannot pass as covered.</summary>
     private static string BridgedMatchPhysicalPath(string rootPhysical, string relativePath)

@@ -239,20 +239,18 @@ internal sealed class IdeFunctions : IWorkspaceSavePreparation
         if (answer.ValueKind != JsonValueKind.Object || !answer.TryGetProperty("documents", out var entries) ||
             entries.ValueKind != JsonValueKind.Array || entries.GetArrayLength() > 256)
             throw new AgentToolException("ide_result_invalid", "The editor returned an invalid save target list.");
-        IReadOnlyList<IdeDocumentSaveTarget> targets;
-        try
-        {
-            targets = entries.Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSaveTargetArray)
-                ?? throw new AgentToolException("ide_result_invalid", "The save target list is missing.");
-        }
-        catch (JsonException) { throw new AgentToolException("ide_result_invalid", "The editor returned malformed save targets."); }
         var uris = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var target in targets)
+        var targets = new List<IdeDocumentSaveTarget>(entries.GetArrayLength());
+        foreach (var entry in entries.EnumerateArray())
         {
-            if (target is null || target.Version < 1 || target.Kind is not ("text" or "notebook") ||
-                !Uri.TryCreate(target.Uri, UriKind.Absolute, out var physical) || physical.Scheme != "file" ||
-                !uris.Add(target.Uri) || !_workspace.Capture().TryMapPhysicalToWorkspaceUri(physical.LocalPath, out var workspaceUri) || workspaceUri is null)
+            IdeDocumentSaveTargetPayload? payload;
+            try { payload = entry.Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSaveTargetPayload); }
+            catch (JsonException) { throw new AgentToolException("ide_result_invalid", "The editor returned malformed save targets."); }
+            if (payload is null || payload.Uri is null || payload.Version < 1 || payload.Kind is not ("text" or "notebook") ||
+                !Uri.TryCreate(payload.Uri, UriKind.Absolute, out var physical) || physical.Scheme != "file" ||
+                !uris.Add(payload.Uri) || !_workspace.Capture().TryMapPhysicalToWorkspaceUri(physical.LocalPath, out var workspaceUri) || workspaceUri is null)
                 throw new AgentToolException("ide_edit_rejected", "A save target is invalid or outside the agent workspace.");
+            targets.Add(new IdeDocumentSaveTarget(payload.Uri, payload.Version, payload.Kind));
             _workspaceEdits.AuthorizeDocumentSave(workspaceUri, arguments);
         }
         var parameters = JsonSerializer.SerializeToElement(new IdeDocumentSaveParams(targets),
@@ -576,13 +574,14 @@ internal sealed class IdeFunctions : IWorkspaceSavePreparation
         if (answer.ValueKind != JsonValueKind.Object || !answer.TryGetProperty("documents", out var documents) ||
             documents.ValueKind != JsonValueKind.Array || documents.GetArrayLength() != 1)
             throw new AgentToolException("ide_result_invalid", "The editor did not return one document snapshot.");
-        IdeDocumentSnapshot? snapshot;
-        try { snapshot = documents[0].Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSnapshot); }
+        IdeDocumentSnapshotPayload? payload;
+        try { payload = documents[0].Deserialize(IdeFunctionJsonContext.Default.IdeDocumentSnapshotPayload); }
         catch (JsonException) { throw new AgentToolException("ide_result_invalid", "The editor returned a malformed document snapshot."); }
-        if (snapshot is null || snapshot.Uri != resolved.FileUri || snapshot.Version < 1 || snapshot.Content is null ||
-            Encoding.UTF8.GetByteCount(snapshot.Content) > IdeSelector.MaxScanBytes)
+        if (payload is null || payload.Uri is null || payload.Content is null ||
+            payload.Uri != resolved.FileUri || payload.Version < 1 ||
+            Encoding.UTF8.GetByteCount(payload.Content) > IdeSelector.MaxScanBytes)
             throw new AgentToolException("ide_result_invalid", "The editor returned an invalid document snapshot.");
-        return snapshot;
+        return new IdeDocumentSnapshot(payload.Content, payload.Version);
     }
 
     private static JsonElement BuildRenameParams(string fileUri, int line, int character, string newName)
@@ -1620,10 +1619,10 @@ internal sealed record DiagnosticsTotals(
 [JsonSerializable(typeof(DebugEvaluateParams))]
 [JsonSerializable(typeof(DebugBreakpointsParams))]
 [JsonSerializable(typeof(DebugControlParams))]
-[JsonSerializable(typeof(IdeDocumentSnapshot))]
+[JsonSerializable(typeof(IdeDocumentSnapshotPayload))]
 [JsonSerializable(typeof(IdeDocumentReadParams))]
 [JsonSerializable(typeof(IdeDocumentApplyParams))]
-[JsonSerializable(typeof(IdeDocumentSaveTarget[]))]
+[JsonSerializable(typeof(IdeDocumentSaveTargetPayload))]
 [JsonSerializable(typeof(IdeDocumentSaveParams))]
 [JsonSerializable(typeof(IdeApplyEditsValue))]
 [JsonSerializable(typeof(WorkspaceEditDiff))]
@@ -1643,8 +1642,11 @@ internal sealed record IdeApplyEditsValue(
     [property: JsonPropertyName("pending")]
     IReadOnlyList<string>? Pending = null);
 
-/// <summary>One editor snapshot; versions refer to the current TextDocument.</summary>
-internal sealed record IdeDocumentSnapshot(string Uri, string Content, int Version);
+/// <summary>One current editor buffer snapshot; the request already identified the document.</summary>
+internal sealed record IdeDocumentSnapshot(string Content, int Version);
+/// <summary>An editor snapshot as received: untrusted JSON can null any field, so the wire
+/// shape is validated before it becomes <see cref="IdeDocumentSnapshot" />.</summary>
+internal sealed record IdeDocumentSnapshotPayload(string? Uri, string? Content, int Version);
 /// <summary>Bounded document snapshot request.</summary>
 internal sealed record IdeDocumentReadParams(IReadOnlyList<string> Uris);
 /// <summary>One document replacement with optimistic concurrency preconditions.</summary>
@@ -1654,5 +1656,8 @@ internal sealed record IdeDocumentApplyParams(IReadOnlyList<IdeDocumentReplaceme
 
 /// <summary>Versioned editor-owned save target; no document contents cross this boundary.</summary>
 internal sealed record IdeDocumentSaveTarget(string Uri, int Version, string Kind);
+/// <summary>A save target as received: untrusted JSON can null any field, so the wire shape is
+/// validated before it becomes <see cref="IdeDocumentSaveTarget" />.</summary>
+internal sealed record IdeDocumentSaveTargetPayload(string? Uri, int Version, string? Kind);
 /// <summary>A workspace-wide save barrier after all targets passed kernel write policy.</summary>
 internal sealed record IdeDocumentSaveParams(IReadOnlyList<IdeDocumentSaveTarget> Documents);

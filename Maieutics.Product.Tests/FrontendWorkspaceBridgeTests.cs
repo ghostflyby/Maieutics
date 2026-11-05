@@ -109,14 +109,14 @@ public sealed class FrontendWorkspaceBridgeTests
             record.Message.Contains("Sending", StringComparison.Ordinal) &&
             record.Message.Contains("maieutics/fs/local/read", StringComparison.Ordinal));
         Assert.Contains(logger.Records, record => record.Message.Contains("answered with ok", StringComparison.Ordinal));
-        Assert.All(logger.Records, record =>
+        foreach (var record in logger.Records)
         {
             Assert.Contains("ide-", record.Message);
             Assert.Contains(BridgeHarness.SessionId, record.Message);
             Assert.DoesNotContain("private-file", record.Message);
             Assert.DoesNotContain("private-result-content", record.Message);
             Assert.DoesNotContain(harness.Root, record.Message);
-        });
+        }
     }
 
     [Fact(Timeout = 30_000)]

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Maieutics.Permissions;
 
 namespace Maieutics.DenoRepl;
@@ -18,7 +17,7 @@ internal sealed class ReplOwnerPolicyCache
     private const int Capacity = 512;
 
     private readonly Lock _gate = new();
-    private readonly ConcurrentDictionary<string, EffectivePolicy> _policies = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EffectivePolicy> _policies = new(StringComparer.Ordinal);
     private readonly Queue<string> _order = new();
 
     public void Cache(string ownerSessionId, EffectivePolicy policy)
@@ -30,7 +29,7 @@ internal sealed class ReplOwnerPolicyCache
         {
             if (!_policies.ContainsKey(ownerSessionId)) _order.Enqueue(ownerSessionId);
             _policies[ownerSessionId] = policy;
-            while (_order.Count > Capacity) _policies.TryRemove(_order.Dequeue(), out _);
+            while (_order.Count > Capacity) _policies.Remove(_order.Dequeue());
         }
     }
 
@@ -39,7 +38,7 @@ internal sealed class ReplOwnerPolicyCache
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerSessionId);
         lock (_gate)
         {
-            _policies.TryRemove(ownerSessionId, out _);
+            _policies.Remove(ownerSessionId);
         }
     }
 
@@ -55,6 +54,9 @@ internal sealed class ReplOwnerPolicyCache
     public EffectivePolicy? TryGet(string ownerSessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerSessionId);
-        return _policies.GetValueOrDefault(ownerSessionId);
+        lock (_gate)
+        {
+            return _policies.GetValueOrDefault(ownerSessionId);
+        }
     }
 }

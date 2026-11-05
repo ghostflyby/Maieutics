@@ -1,3 +1,4 @@
+import { mountVueIsland } from "./vueIslands.js";
 // Maieutics turn timeline renderer for `application/vnd.maieutics.turn+json`.
 // Dependency-free DOM/HTML only: this entry is hand-written (no bundler), but
 // it is an ES module — VS Code loads renderer entrypoints with a native
@@ -604,6 +605,10 @@ export async function activate(context) {
       typeof message.css !== "string" || message.css.length > 64_000 ||
       states.get(request.outputId)?.revision !== request.revision
     ) return;
+    if (
+      request.vue && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
+        message.vue.code.length > 400_000 || message.vue.scopeId !== `data-v-${request.documentId}`)
+    ) return;
     const style = document.createElement("style");
     style.textContent = message.css;
     const rendered = document.createElement("div");
@@ -639,14 +644,25 @@ export async function activate(context) {
     }
     // The default renderer's shadow boundary also scopes SSR styles and inherits host variables.
     const root = request.node.shadowRoot ?? request.node;
+    const previous = request.vue ? [...root.childNodes] : [];
     root.replaceChildren(style, rendered);
-    request.node.dataset.renderEngine = "ssr";
+    let engine = "ssr";
+    if (request.vue) {
+      try {
+        state.vueDisposers.push(mountVueIsland(rendered, message.vue.code));
+        engine = "vue";
+      } catch {
+        root.replaceChildren(...previous);
+        engine = "native";
+      }
+    }
+    request.node.dataset.renderEngine = engine;
     context.postMessage?.({
       source: "maieutics-output",
       type: "applied",
       documentId: request.documentId,
       requestId: message.requestId,
-      engine: "ssr",
+      engine,
     });
   });
   return {
@@ -658,19 +674,31 @@ export async function activate(context) {
       }
 
       const payload = output.json();
+      const isVue = output.mime === "application/vnd.maieutics.vue+json";
+      const vue = isVue && payload?.version === 1 && ["markdown", "sfc"].includes(payload.format)
+        ? { version: 1, format: payload.format }
+        : undefined;
       const isTemplate = output.mime === "application/vnd.maieutics.template+json";
       const template = isTemplate && payload?.version === 1 && typeof payload.source === "string"
         ? { version: 1, bindings: payload.bindings, sourceSealed: payload.sourceSealed }
         : undefined;
-      const turn = isTemplate
+      const turn = isVue
+        ? {
+          text: vue && typeof payload.source === "string"
+            ? payload.source
+            : "[invalid_vue_component]",
+        }
+        : isTemplate
         ? { text: template ? payload.source : "[invalid_template]" }
         : payload;
       const state = states.get(output.id) ?? {
         openNodes: new Set(),
         documents: [],
         codeTabs: new Map(),
+        vueDisposers: [],
         revision: 0,
       };
+      for (const dispose of state.vueDisposers.splice(0)) dispose();
       rememberCodeTabs(element, state);
       state.interactions?.abort();
       state.interactions = new AbortController();
@@ -725,7 +753,7 @@ export async function activate(context) {
           }
           const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
           const requestId = `${documentId}:${revision}`;
-          pending.set(requestId, { outputId: output.id, documentId, revision, node });
+          pending.set(requestId, { vue, outputId: output.id, documentId, revision, node });
           context.postMessage?.({
             source: "maieutics-output",
             type: "render",
@@ -733,6 +761,7 @@ export async function activate(context) {
             documentId,
             text: blocks[index],
             ...(template ? { template } : {}),
+            ...(vue ? { vue } : {}),
           });
         }
       };
@@ -771,10 +800,14 @@ export async function activate(context) {
     disposeOutputItem(id) {
       forgetPending(id, true);
       if (id === undefined) {
-        for (const state of states.values()) state.interactions?.abort();
+        for (const state of states.values()) {
+          state.interactions?.abort();
+          for (const dispose of state.vueDisposers.splice(0)) dispose();
+        }
         states.clear();
       } else {
         states.get(id)?.interactions?.abort();
+        for (const dispose of states.get(id)?.vueDisposers.splice(0) ?? []) dispose();
         states.delete(id);
       }
     },

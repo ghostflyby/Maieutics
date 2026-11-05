@@ -2,8 +2,8 @@
 
 Executable-owned rendering primitives for the
 [streaming output design](../../docs/streaming-output-rendering-design.md). The first implementation
-provides complete passive Markdown snapshots and explicit data-only template snapshots through
-Markdown-it, the `@mdit-vue` heading plugin, Shiki, and Vue SSR. The executable embeds
+provides complete passive Markdown, explicit data-only templates and live Vue component snapshots
+through Markdown-it, the `@mdit-vue` heading plugin, Shiki, and Vue SSR. The executable embeds
 `bundle/service.js` and starts the rendering child on the first authenticated
 `POST /v1/render/markdown` request. No user REPL or plugin host is needed. The
 [Notebook demo](../maieutics-vscode/demo/README.md) exercises this service through the production
@@ -89,10 +89,10 @@ directives are never installed. Product resource schemes are retained for a futu
 resource retrieval and rewriting are not implemented here.
 
 This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
-Frontmatter, SFC scripts, general template execution, automatic late-binding subscriptions, HTML
-patches, interactive islands, and host resource delivery remain later work. Re-rendering with a
-later link definition corrects earlier references in a complete snapshot; stable incremental nodes
-require the document runtime.
+Frontmatter, automatic late-binding subscriptions, HTML patches and host resource delivery remain
+later work. Complete Vue components use the separate explicit lane below. Re-rendering with a later
+link definition corrects earlier references in a complete snapshot; stable incremental nodes require
+the document runtime.
 
 ## Explicit data templates
 
@@ -131,9 +131,27 @@ Limits: 128 bindings, 8,192 data values, 16 data nesting levels, 64,000 aggregat
 units, 256 interpolations, 2,048 units per expression, 256 interpreter steps and 32 traversal
 levels. Non-JSON values, accessors, prototype keys and duplicate binding names are rejected. The
 renderer retains no document or producer. Automatic producer subscriptions, cancellation settlement,
-SFC/TS module execution and document patches remain later work. Producers can publish snapshots
-through the existing authorized REPL display API; [the demo](../maieutics-vscode/demo/README.md)
-shows the pattern.
+automatic SFC producer registration and document patches remain later work. Producers can publish
+snapshots through the existing authorized REPL display API;
+[the demo](../maieutics-vscode/demo/README.md) shows the pattern.
+
+## Explicit live Vue components
+
+`renderer.renderVue(documentId, source, "markdown" | "sfc", signal)` compiles complete
+Vue-in-Markdown or a Vue SFC, executes SSR in a fresh permissionless worker, and returns initial
+HTML plus a compiled component factory and scoped styles. Public mdit-vue component/SFC plugins,
+Vue's official SFC/template/style compilers and Sucrase TypeScript erasure are reused. Code spans
+and fences remain literal. Only static `vue` imports are supported; external imports/blocks and
+style preprocessors are rejected. Ordinary `render` and data templates do not execute scripts.
+
+The executable exposes `/v1/render/vue` with `rendering.vueVersion:1`. The live rich MIME is
+`application/vnd.maieutics.vue+json`, `{version:1,format:"markdown"|"sfc",source}`. The frontend
+hydrates using the same compiled factory and bundled Vue runtime, then unmounts on replacement or
+disposal. Setup runs twice (SSR and hydration); initial state must be deterministic, and producers
+belong in the authorized REPL. Async setup/Suspense and resource hydration are not verified. Live
+source is removed on notebook saving and reading; supply a text fallback. See the
+[protocol](../../docs/web-frontend-protocol.md#explicit-live-vue-rendering-v1) and
+[runnable demo](../maieutics-vscode/demo/README.md#live-vue-counter).
 
 ## Why compose the underlying packages
 
@@ -159,19 +177,27 @@ The build produces an ignored `dist/smoke.js` bundle containing the rendering en
 grammars, and a representative fixture. The smoke command disables npm and remote-module resolution
 and denies network, child-process, filesystem read, and filesystem write access. It validates SSR,
 containers, TOC/custom anchors, alerts, highlighting, reference links, and inert document code. The
-generated bundle is an integration probe, not a shipped executable resource. The build also
-regenerates the committed `bundle/service.js` embedded by the executable. Rebuild and commit it
-whenever its source or dependencies change.
+generated bundle is an integration probe, not a shipped executable resource. The build also first
+builds a browser-ESM worker using the separate `deno.worker.json`/`deno.worker.lock`, embeds its
+JavaScript source into committed `bundle/vue_worker_source.js`, and regenerates the committed
+`bundle/service.js` embedded by the executable. The separate worker lock prevents its standalone
+bundle graph from pruning workspace dependencies. Offline smoke also executes real Vue SSR. Rebuild
+and commit it whenever its source or dependencies change.
 
 ## Deno permissions
 
 Source tests allow reads of `NODE_ENV` (Vue) and `VSCODE_TEXTMATE_DEBUG` (TextMate) from the
 environment. The bundled smoke requires only `VSCODE_TEXTMATE_DEBUG`; Deno's bundler substitutes
 `NODE_ENV` during the build. Neither command grants runtime network, process launch, or filesystem
-access. Data-template interpretation uses the same permissions and executes no producer code.
-Dependency installation and bundling require package-cache access and, on a cold cache, registry
-access; the build reads the vendored license to add the distribution notice and writes only its
-output directories.
+access. Data-template interpretation uses the same permissions and executes no producer code. Vue
+SSR adds `--unstable-worker-options` and creates a worker with `deno.permissions:"none"`; it adds no
+parent grants. A private MessagePort carries the result, with a five-second deadline and
+deterministic termination on cancellation/disposal. The trusted prebundled worker source is a
+JavaScript module data URL, not a filesystem module or remote import. Browser execution follows ADR
+0038/0047 live-output trust; the worker restriction is not a browser sandbox. Dependency
+installation and bundling require package-cache access and, on a cold cache, registry access; the
+build reads the vendored license to add the distribution notice and writes only its output
+directories.
 
 The supervised service additionally reads `MAIEUTICS_RENDERER_CALLBACK`, `MAIEUTICS_RENDERER_TOKEN`,
 and `MAIEUTICS_RENDERER_NONCE`. Its built-in policy permits listening on `127.0.0.1:0` and calling

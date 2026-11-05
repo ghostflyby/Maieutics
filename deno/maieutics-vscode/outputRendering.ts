@@ -10,6 +10,11 @@ export interface TemplateContext {
   sourceSealed?: boolean;
 }
 
+export interface VueRequest {
+  version: 1;
+  format: "markdown" | "sfc";
+}
+
 export const TemplateOutputMime = "application/vnd.maieutics.template+json";
 
 /** Stateless SSR snapshots returned by the optional kernel presentation service. */
@@ -18,6 +23,7 @@ export interface RenderedMarkdown {
   documentId: string;
   html: string;
   css: string;
+  vue?: { version: 1; code: string; scopeId: string };
 }
 
 interface RenderRequest {
@@ -27,6 +33,7 @@ interface RenderRequest {
   documentId: string;
   text: string;
   template?: TemplateContext;
+  vue?: VueRequest;
 }
 
 interface OutputRenderingOptions {
@@ -35,6 +42,7 @@ interface OutputRenderingOptions {
     text: string,
     signal: AbortSignal,
     template?: TemplateContext,
+    vue?: VueRequest,
   ): Promise<RenderedMarkdown | undefined>;
   post(message: unknown): Promise<unknown>;
   log(message: string): void;
@@ -86,6 +94,13 @@ export class OutputRenderingBridge {
         return;
       }
     }
+    if (value.vue !== undefined) {
+      const vue = value.vue as Partial<VueRequest> | null;
+      if (
+        typeof vue !== "object" || vue === null || vue.version !== 1 ||
+        !["markdown", "sfc"].includes(vue.format ?? "") || value.template !== undefined
+      ) return;
+    }
     const request = value as unknown as RenderRequest;
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
       await this.options.post({ ...this.#identity(request), type: "unavailable" });
@@ -121,6 +136,7 @@ export class OutputRenderingBridge {
           request.text,
           controller.signal,
           request.template,
+          request.vue,
         );
       } catch (error) {
         if (!controller.signal.aborted) {
@@ -141,6 +157,7 @@ export class OutputRenderingBridge {
               type: "rendered",
               html: result.html,
               css: result.css,
+              ...(result.vue ? { vue: result.vue } : {}),
             },
           );
         }

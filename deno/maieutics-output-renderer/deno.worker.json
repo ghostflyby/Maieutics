@@ -1,0 +1,10 @@
+{
+  "imports": {
+    "vue": "npm:@vue/runtime-dom@3.5.13/dist/runtime-dom.esm-bundler.js",
+    "vue/server-renderer": "npm:@vue/server-renderer@3.5.13/dist/server-renderer.esm-bundler.js",
+    "@vue/runtime-core": "npm:@vue/runtime-core@3.5.13/dist/runtime-core.esm-bundler.js",
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-bundler.js",
+    "@vue/shared": "npm:@vue/shared@3.5.13/dist/shared.esm-bundler.js"
+  },
+  "lock": "deno.worker.lock"
+}

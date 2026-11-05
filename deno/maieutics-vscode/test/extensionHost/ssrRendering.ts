@@ -2,8 +2,20 @@ import * as vscode from "vscode";
 import { FrontendClient } from "../../client.ts";
 import { OutputRenderingBridge } from "../../outputRendering.ts";
 import { emptyNotebook } from "../../notebookFormat.ts";
-import { MaieuticsNotebookSerializer } from "../../serializer.ts";
+import { bundleItems, MaieuticsNotebookSerializer } from "../../serializer.ts";
 import { TurnOutputMime } from "../../turnView.ts";
+
+const VueDemoSource = `# Counter
+
+<script setup lang="ts">
+import { ref, onUnmounted } from 'vue';
+const count = ref<number>(0);
+onUnmounted(() => { globalThis.__maieuticsVueUnmounts = (globalThis.__maieuticsVueUnmounts ?? 0) + 1; });
+</script>
+
+<button class="counter-btn" @click="count++">Count</button><span class="counter-display">{{ count }}</span>
+
+<style scoped>.counter-btn { color: rgb(255, 0, 0); padding: 6px 14px; }</style>`;
 
 const CodeDemoSource = [
   "# Demo",
@@ -32,11 +44,17 @@ const CodeDemoSource = [
 ].join("\n");
 
 /** Exercises the production extension bridge and actual notebook MIME renderer, without a model call. */
-export async function testNotebookSsrAsync(discovery: string, template = false): Promise<void> {
+export async function testNotebookSsrAsync(
+  discovery: string,
+  template = false,
+  vue = false,
+): Promise<void> {
   const settings = vscode.workspace.getConfiguration("maieutics");
   const previous = settings.get<string>("discoveryFile");
   const channel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
-  const source = template
+  const source = vue
+    ? VueDemoSource
+    : template
     ? "Total {{ report.total.toFixed(2) }}\n\nLater independent prose"
     : CodeDemoSource;
   const requests = new Set<string>();
@@ -53,7 +71,7 @@ export async function testNotebookSsrAsync(discovery: string, template = false):
         if (message?.source !== "maieutics-output") return;
         if (message.type === "render" && message.text === source) requests.add(message.requestId);
         if (message.type === "applied" && requests.has(message.requestId)) {
-          if (message.engine === "ssr") resolve();
+          if (message.engine === (vue ? "vue" : "ssr")) resolve();
           else {reject(
               new Error(
                 "Actual notebook kept its native fallback instead of using the live renderer",
@@ -89,7 +107,7 @@ export async function testNotebookSsrAsync(discovery: string, template = false):
       cancellation.token,
     );
     if (
-      !template &&
+      !template && !vue &&
       !restored.cells[0].outputs?.some((output) =>
         output.items.some((item) =>
           item.mime === TurnOutputMime &&
@@ -105,6 +123,15 @@ export async function testNotebookSsrAsync(discovery: string, template = false):
         output.items.some((item) => item.mime === "application/vnd.maieutics.template+json")
       )
     ) throw new Error("The production serializer dropped the template MIME");
+    if (vue) {
+      // This is the production live-display factory used by the controller, not restored code.
+      restored.cells[0].outputs = [
+        new vscode.NotebookCellOutput(bundleItems({
+          "application/vnd.maieutics.vue+json": { version: 1, format: "markdown", source },
+          "text/plain": "Counter fallback",
+        })),
+      ];
+    }
     const edit = new vscode.WorkspaceEdit();
     edit.set(notebook.uri, [
       vscode.NotebookEdit.replaceCells(
@@ -142,8 +169,22 @@ export async function testSsrRenderingAsync(): Promise<void> {
     preserveFocus: true,
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri, markdown.extensionUri] });
   const bridge = new OutputRenderingBridge({
-    render: async (documentId, text, signal, template) =>
-      client ? await client.renderMarkdown(documentId, text, signal, template) : template
+    render: async (documentId, text, signal, template, vue) =>
+      client ? await client.renderMarkdown(documentId, text, signal, template, vue) : vue
+        ? {
+          version: 1,
+          documentId,
+          html:
+            `<div class="maieutics-output vp-doc" data-v-${documentId}><h1 data-v-${documentId}>Counter</h1><button class="counter-btn" data-v-${documentId}>Count</button><span class="counter-display" data-v-${documentId}>0</span></div>`,
+          css: `.counter-btn[data-v-${documentId}] { color: rgb(255, 0, 0); padding: 6px 14px; }`,
+          vue: {
+            version: 1,
+            scopeId: `data-v-${documentId}`,
+            code:
+              `const {ref,onUnmounted,h}=Vue;return {__scopeId:"data-v-${documentId}",setup(){const count=ref(0);onUnmounted(()=>{globalThis.__maieuticsVueUnmounts=(globalThis.__maieuticsVueUnmounts??0)+1});return()=>h("div",{class:"maieutics-output vp-doc"},[h("h1",null,"Counter"),h("button",{class:"counter-btn",onClick:()=>count.value++},"Count"),h("span",{class:"counter-display"},String(count.value))])}};`,
+          },
+        }
+        : template
         ? {
           version: 1,
           documentId,
@@ -171,13 +212,18 @@ export async function testSsrRenderingAsync(): Promise<void> {
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let subscription: vscode.Disposable | undefined;
+  let stage = "initial";
   try {
     const verdict = new Promise<void>((resolve, reject) => {
       timer = setTimeout(
-        () => reject(new Error("SSR DOM probe exceeded its completion budget")),
+        () => reject(new Error(`SSR DOM probe exceeded its completion budget at ${stage}`)),
         45_000,
       );
       subscription = panel.webview.onDidReceiveMessage((message) => {
+        if (typeof message?.trace === "string") {
+          stage = message.trace;
+          return;
+        }
         if (message?.source === "maieutics-output") {
           void bridge.handle(message).catch(reject);
         } else if (message?.ok === true) resolve();
@@ -191,7 +237,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
       vscode.Uri.joinPath(markdown.extensionUri, "notebook-out", "index.js"),
     );
     panel.webview.html = `<!doctype html><html><head>
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline';">
       <style id="_defaultStyles">body { font-size: 13px; }</style></head><body>
       <script type="module">
       const vscode = acquireVsCodeApi();
@@ -212,6 +258,9 @@ export async function testSsrRenderingAsync(): Promise<void> {
         });
         const element = document.createElement("div"); document.body.appendChild(element);
         const source = ${JSON.stringify(CodeDemoSource)};
+        const vueRuntime = await import(new URL("./vueIslands.js", ${
+      JSON.stringify(rendererUri.toString())
+    }).href);
         await api.renderOutputItem({ id: "ssr-demo", json: () => ({ text: source }) }, element);
         await delivered.promise;
         const node = element.querySelector('[data-render-engine="ssr"]');
@@ -260,6 +309,37 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const readyRoot = readyTemplate.shadowRoot ?? readyTemplate;
         assert(readyRoot.querySelector('[data-template-state="ready"]')?.textContent === "42.00" && !readyRoot.querySelector('[data-template-state="pending"]'), "a binding-only update resolves earlier interpolation through the live kernel");
         assert(readyRoot.textContent.includes("Later independent prose"), "later content survives a binding-only update");
+        const vueElement = document.createElement("div"); document.body.appendChild(vueElement);
+        const vueOutput = () => ({ id: "vue-demo", mime: "application/vnd.maieutics.vue+json", json: () => ({ version: 1, format: "markdown", source: ${
+      JSON.stringify(VueDemoSource).replaceAll("<", String.fromCharCode(92) + "u003c")
+    } }) });
+        globalThis.__maieuticsVueUnmounts = 0;
+        const mountVue = async () => {
+          delivered = Promise.withResolvers();
+          await api.renderOutputItem(vueOutput(), vueElement);
+          await delivered.promise;
+          const mounted = vueElement.querySelector('[data-render-engine="vue"]');
+          assert(mounted, "kernel SSR is hydrated by the actual Vue runtime");
+          return mounted.shadowRoot ?? mounted;
+        };
+        vscode.postMessage({ trace: "vue-request" });
+        const firstVue = await mountVue();
+        vscode.postMessage({ trace: "vue-mounted" });
+        const clickCounter = async (root) => {
+          const value = root.querySelector(".counter-display");
+          assert(value?.textContent === "0", "the SSR counter starts at zero");
+          root.querySelector(".counter-btn").click();
+          await vueRuntime.vueUpdatesComplete();
+          assert(value.textContent === "1", "Vue click events update reactive state");
+        };
+        assert(getComputedStyle(firstVue.querySelector(".counter-btn")).color === "rgb(255, 0, 0)", "compiled scoped CSS applies to hydrated nodes");
+        await clickCounter(firstVue);
+        vscode.postMessage({ trace: "vue-clicked" });
+        const secondVue = await mountVue();
+        assert(globalThis.__maieuticsVueUnmounts === 1, "source replacement unmounts the previous component exactly once");
+        await clickCounter(secondVue);
+        api.disposeOutputItem("vue-demo");
+        assert(globalThis.__maieuticsVueUnmounts === 2, "output disposal unmounts Vue effects exactly once");
         const finalLink = updatedRoot.querySelector(".table-of-contents a");
         const finalHeading = updatedRoot.querySelector("h2");
         let afterDisposal = 0;

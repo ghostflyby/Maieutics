@@ -31,7 +31,7 @@ import type {
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 import { IdeCapabilityVersion } from "./ide.ts";
-import type { RenderedMarkdown, TemplateContext } from "./outputRendering.ts";
+import type { RenderedMarkdown, TemplateContext, VueRequest } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
  * import surface with the client's queue API). */
@@ -136,14 +136,16 @@ export class FrontendClient {
     source: string,
     signal?: AbortSignal,
     template?: TemplateContext,
+    vue?: VueRequest,
   ): Promise<RenderedMarkdown> {
     const body = await this.post<unknown>(
-      template ? "/v1/render/template" : "/v1/render/markdown",
+      vue ? "/v1/render/vue" : template ? "/v1/render/template" : "/v1/render/markdown",
       {
         version: 1,
         documentId,
         source,
         ...(template ? { template } : {}),
+        ...(vue ? { vue } : {}),
       },
       signal,
     );
@@ -157,7 +159,18 @@ export class FrontendClient {
     ) {
       throw new FrontendError("protocol_error", 0, "The renderer returned an invalid snapshot.");
     }
-    return { version: 1, documentId, html: result.html, css: result.css };
+    if (
+      vue &&
+      (result.vue?.version !== 1 || typeof result.vue.code !== "string" ||
+        result.vue.code.length > 400_000 || result.vue.scopeId !== `data-v-${documentId}`)
+    ) throw new FrontendError("protocol_error", 0, "Invalid Vue component snapshot.");
+    return {
+      version: 1,
+      documentId,
+      html: result.html,
+      css: result.css,
+      ...(vue ? { vue: result.vue } : {}),
+    };
   }
 
   async session(signal?: AbortSignal): Promise<SessionInfo> {

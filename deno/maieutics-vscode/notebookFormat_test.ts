@@ -275,3 +275,56 @@ Deno.test("saving live summary segments keeps parent, child and partial answer t
   });
   assertEquals(mergeOutputSnapshots([], "legacy"), undefined);
 });
+
+Deno.test("untrusted notebook Vue sources are stripped on read and live sources are stripped on save", () => {
+  const output: OutputSnapshot = {
+    repl: [{
+      displayId: "vue",
+      data: {
+        "application/vnd.maieutics.vue+json": {
+          version: 1,
+          format: "markdown",
+          source: '<script setup>throw new Error("must not run")</script>',
+        },
+        "text/plain": "Frozen counter",
+      },
+    }],
+  };
+  const notebook = emptyNotebook();
+  notebook.cells[0].output = output;
+  const restored = parseNotebook(serializeNotebook(notebook));
+  assertEquals(restored.cells[0].output?.repl?.[0].data, { "text/plain": "Frozen counter" });
+  assertEquals(stripBundledDisplaySources(output).repl?.[0].data, {
+    "text/plain": "Frozen counter",
+  });
+  assertEquals(output.repl?.[0].data["application/vnd.maieutics.vue+json"] !== undefined, true);
+});
+
+Deno.test("a combined Vue/native bundle cannot preserve executable sources through either snapshot boundary", () => {
+  const output: OutputSnapshot = {
+    repl: [{
+      displayId: "both",
+      data: {
+        "application/vnd.maieutics.vue+json": { source: "script" },
+        [NativeViewMime]: {
+          viewFamily: "test",
+          state: { count: 0 },
+          esmSource: "script",
+          cssSource: "css",
+        },
+        "text/plain": "Frozen",
+      },
+    }],
+  };
+  const expected = {
+    [NativeViewMime]: { viewFamily: "test", state: { count: 0 } },
+    "text/plain": "Frozen",
+  };
+  assertEquals(stripBundledDisplaySources(output).repl?.[0].data, expected);
+  const notebook = emptyNotebook();
+  notebook.cells[0].output = output;
+  assertEquals(
+    parseNotebook(serializeNotebook(notebook)).cells[0].output?.repl?.[0].data,
+    expected,
+  );
+});

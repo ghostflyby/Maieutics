@@ -139,6 +139,32 @@ public sealed class FrontendOutputRendererTests
         Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task LiveVueComponentUsesIsolatedSsrAndReturnsMatchingScopedClientCode()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        const string source = "<script setup lang=\"ts\">import { ref } from 'vue'; const count = ref<number>(0);</script>\n<template><button class=\"counter\" @click=\"count++\">Count</button><span>{{ count }}</span></template>\n<style scoped>.counter { color:red; }</style>";
+        var request = new FrontendRenderMarkdown(1, "counter", source, Vue: new FrontendVueRequest(1, "sfc"));
+        using var response = await harness.Client.PostAsJsonAsync("/v1/render/vue", request,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(result);
+        Assert.Contains(">0</span>", result.Html);
+        Assert.Contains("[data-v-counter]", result.Css);
+        Assert.NotNull(result.Vue);
+        Assert.Equal("data-v-counter", result.Vue.ScopeId);
+        Assert.Contains("component.render", result.Vue.Code);
+        using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/vue",
+            request with { Source = "<script setup>import x from 'node:fs'</script><template/>" },
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
+    }
+
     private static async Task<FrontendRenderedMarkdown> RenderAsync(
         FrontendHarness harness, string source, CancellationToken cancellationToken)
     {

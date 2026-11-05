@@ -1033,3 +1033,52 @@ otherwise it retains native Markdown. The bridge additionally bounds serialized 
 re-rendering a snapshot never launches a producer. An interrupted producer may leave a frozen pending
 snapshot; automatic producer registration, cancellation settlement and late subscriptions are not
 part of this stateless version.
+
+## Explicit live Vue rendering (v1)
+
+`rendering: {"version":1,"vueVersion":1}` additionally advertises authenticated, stateless
+`POST /v1/render/vue`. This route alone selects component compilation and evaluation:
+
+```json
+{"version":1,"documentId":"counter1","source":"<script setup>import { ref } from 'vue'; const count = ref(0)</script>\n\n<button @click=\"count++\">{{ count }}</button>","vue":{"version":1,"format":"markdown"}}
+```
+
+`format` is `markdown` (Vue-in-Markdown) or `sfc` (complete Vue single-file component). Version and
+format are required. Only static imports from `vue` are supported. Other imports, dynamic imports,
+`import.meta`, external blocks, custom blocks, CSS modules and non-CSS style preprocessors fail with
+`400 invalid_request`. Source must form a complete compilable component. Unknown fields remain
+tolerated. Ordinary Markdown and data-template routes do not evaluate component scripts.
+
+The response extends the Markdown shape with
+`"vue":{"version":1,"code":"…","scopeId":"data-v-counter1"}`. `html` is initial SSR output;
+`code` is a compiled component factory body taking the shipped Vue runtime as its `Vue` argument.
+`css` includes the baseline stylesheet and compiled component styles. Source, HTML and document ID
+limits remain unchanged; compiled code is capped at 400,000 UTF-16 units and component styles at
+48,000. Existing 2 MiB request, eight-request admission and 30-second total budgets apply. SSR runs
+in a fresh permissionless worker with a five-second deadline and private reply port. Worker failure
+or timeout returns `503 render_unavailable`; authored errors and compiler details are not echoed.
+The internal child exposes authenticated `POST /v1/vue` with the same request and component metadata;
+its CSS contains component styles only, with the baseline added by the executable.
+
+The live frontend hydrates with the matching bundled Vue runtime and owns/unmounts one app per output.
+A replacement snapshot resets component state. Local Vue event/reactivity updates do not generate
+Agent events or modify canonical history. The client revision guard rejects obsolete responses before
+mounting. The current contract verifies synchronous deterministic setup; setup executes in both SSR
+and hydration. External operations remain authorized producer work. Async setup/Suspense and resource
+hydration are not specified. This is executable live output under ADR 0038/0047, not a browser sandbox.
+
+The corresponding rich-display MIME is `application/vnd.maieutics.vue+json`:
+
+```json
+{"version":1,"format":"markdown","source":"<script setup>import { ref } from 'vue'; const count = ref(0)</script>\n\n<button @click=\"count++\">{{ count }}</button>"}
+```
+
+Publish through the existing explicitly selected REPL rich-display API and include `text/plain`
+fallback. Live output delivery and updates use existing display identities. VS Code selects this MIME
+only for live output, requests the explicit endpoint, and hydrates successful SSR. Unsupported or
+failed rendering retains native source/fallback. Merely printing this source in assistant text does
+not select execution. The compiled factory is not accepted from a saved notebook or a MIME bundle.
+Notebook v1 reading and saving both discard the Vue MIME and preserve its other fallback items;
+reading also strips executable `esmSource`/`cssSource` from existing bundled-view MIME. Reopening a
+snapshot executes no component; a live producer must redisplay it. Data-template snapshots remain
+persistable. No document revision protocol, producer subscription or patch stream is introduced.

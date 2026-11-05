@@ -2,7 +2,8 @@
 
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
-the streaming document runtime and revisioned presentation protocol remain proposed.
+explicit live Vue components now compile, SSR and hydrate with scoped styles. The streaming document
+runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
 
@@ -26,8 +27,8 @@ The standard VitePress site build does not supply this runtime.
 
 The agreed direction is kernel-side Deno rendering, SSR as the primary rendering model, and shared
 output across frontends. The passive content subset and stateless kernel API are implemented below.
-Full SFC/script authoring, the document runtime, and revisioned update operations remain proposed and
-require the validation stages below. The initial demo API has its own normative frontend contract.
+Complete Vue SFC/Markdown authoring is implemented through an explicit live-output lane. The document
+runtime and revisioned update operations remain proposed and require the validation stages below. The initial demo API has its own normative frontend contract.
 
 ## Existing integration boundary
 
@@ -98,7 +99,9 @@ may publish data snapshots through the existing rich-display lane; the renderer 
 The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
 heading metadata, TOC and shared utilities, markdown-it-anchor 9.2.0, markdown-it-attrs 4.3.1,
 markdown-it-container 4.0.0, Shiki and `@shikijs/transformers` 2.5.0, and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
-compiler. The complete-snapshot update client is implemented; the document runtime and incremental
+compiler. The explicit Vue lane additionally reuses public component/SFC plugins, Vue
+`@vue/compiler-sfc` 3.5.13, Sucrase 3.35.0 for TypeScript erasure, and Vue runtime-dom 3.5.13
+for hydration. The complete-snapshot update client is implemented; the document runtime and incremental
 HTML patch client remain to be implemented.
 Markstream is a comparison candidate, not an additional authoritative parser running beside VitePress.
 
@@ -253,7 +256,8 @@ the selected tab through another SSR snapshot.
 
 The remaining content gaps are frontmatter and metadata,
 additional bundled languages, and product resource URL adaptation. File includes and snippet imports
-need an explicit authorized resource contract; arbitrary SFC/template execution remains stage 4/5.
+need an explicit authorized resource contract. Complete live SFC snapshots use the separate lane below;
+ordinary Markdown and data templates keep their existing policies.
 
 ## Explicit template snapshots (implemented 2026-11-05)
 
@@ -314,8 +318,68 @@ pattern. The [template demo](../deno/maieutics-vscode/demo/README.md) supplies r
 and frozen pending/ready snapshots. A producer should publish terminal failed/cancelled snapshots
 when possible; an interrupted producer can leave the last frozen display pending. Automatic producer
 registration, terminal settlement after cancellation, subscriptions beyond run lifetime, dependency
-cycles between producers, generic SFC/script modules and document patches remain future document-runtime
-work. The stateless renderer does not claim ownership of an external producer's lifetime.
+cycles between producers and document patches remain future document-runtime work. Complete live Vue
+components have their own stateless lane below. The stateless renderer does not claim ownership of an external producer's lifetime.
+
+## Explicit live Vue components (implemented 2026-11-05)
+
+ADR [0047](architecture/decisions/0047-live-vue-output-components.md) defines this additional lane.
+`rendering.vueVersion: 1`, authenticated `POST /v1/render/vue`, and rich-display MIME
+`application/vnd.maieutics.vue+json` select it explicitly. The MIME contains
+`{version:1, format:"markdown"|"sfc", source}` and should accompany a `text/plain` fallback.
+Ordinary assistant Markdown does not execute `<script>` or Vue directives. A model produces an
+interactive example by calling the existing authorized `repl_execute` display API with this MIME;
+printing the same source into ordinary prose remains passive.
+
+For Markdown, public `@mdit-vue/plugin-component` and `plugin-sfc` extract SFC scripts/styles and
+recognize component syntax. The shared Markdown pipeline supplies containers, highlighting and
+anchors, then wraps the content as a Vue template. Fences and inline code use `v-pre` so literal
+example interpolations do not execute. For SFC input, the source goes directly to the same official
+Vue compiler. `compileScript`, `compileTemplate`, and `compileStyle` implement setup bindings,
+directives, events and scoped CSS; Sucrase erases TypeScript. This is ecosystem reuse, not a second
+implementation of Vue semantics. Static imports from `vue` bind to the shipped runtime. Other
+imports, dynamic import, `import.meta`, external SFC blocks, custom blocks, CSS modules and style
+preprocessors are rejected. VitePress page context, filesystem includes and resource loading are
+not installed. A component must be complete before compilation; this lane does not infer future
+bindings or execute partially received script text.
+
+The compiler parent never evaluates authored code. Each SSR evaluation runs in a fresh owned Deno
+worker with `deno.permissions:"none"`, a five-second deadline and a private transferred MessagePort.
+Authored global `postMessage` cannot forge the private result. The worker has no filesystem,
+network, environment or process permissions; failures expose fixed diagnostics. Cancellation and
+renderer disposal terminate the worker and close its ports. Only one request is active under the
+existing service gate. The trusted worker runtime is bundled ahead of time, embedded as JavaScript
+text, and loaded from a module data URL: there is no runtime download or binary-to-text transfer.
+The deadline is a CPU/lifetime bound, not a memory quota or a claim of protection against runtime bugs.
+
+The response carries SSR HTML, baseline plus component CSS, and the same compiled component factory
+used by SSR. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
+one app per output boundary. Reactive refs, computed values, directives and event handlers then
+update that app locally. The renderer unmounts the old app before source replacement and on output
+or renderer disposal; `onUnmounted` runs and owned Vue effects stop. A complete output replacement
+creates fresh component state. This is not HMR or state-preserving structural patching. Browser
+coverage checks initial SSR state, a real button click/reactive flush, computed scoped styles, and
+unmount on replacement/disposal through both webview and actual notebook paths.
+
+The live browser evaluation follows ADR 0038's existing executable bundled-view posture. It uses a
+compiled factory under the notebook output CSP; this is an executable live output, not an HTML trust
+upgrade or a browser sandbox. Setup runs once for SSR and again for client hydration. Initial state
+must be deterministic, and external operations/producers belong in the authorized REPL rather than
+setup. Vue subscriptions, listeners and timers created outside its effect scope still need their
+normal cleanup hooks. Async setup/Suspense, client-only components, external imports and asynchronous
+resource hydration are not part of the verified contract.
+
+Persistence never replays component code: notebook saving and reading both remove this MIME,
+retaining its producer-provided text fallback. The same read-time rule strips executable bundled-view
+sources, matching their existing save-time rule. The notebook format remains v1; opening a file or
+reconnecting does not make a saved component executable. A live producer can redisplay it through
+the existing channel. The data-template MIME continues to persist its data-only source and bindings.
+
+Source is limited to 200,000 UTF-16 units, compiled factory to 400,000, scoped styles to 48,000 and
+HTML to 4,000,000. Existing request/admission/revision guards remain in force. SSR failure, malformed
+source or unsupported frontend capability leaves readable native source/fallback. Stable document
+nodes, late producer registration, binding subscriptions, incremental SFC compilation and patch
+recovery remain the later document-runtime stages below.
 
 ## Document state and presentation units
 
@@ -377,8 +441,9 @@ and the defined streaming subset.
 Complete producer modules execute at explicit execution boundaries. Rendering reads their published
 results. Source reparsing, data invalidation, reconnect, and snapshot restoration must not rerun
 producer side effects. Model-authored Markdown does not gain permission to execute scripts, imports,
-or arbitrary Vue expressions by passing through a template compiler. The implemented data template subset is defined above. Authorized component registration and
-producer modules require their own contract before implementation.
+or arbitrary Vue expressions by passing through the passive Markdown compiler. Explicit live Vue
+output uses the separate contract above; it does not register external producers. The implemented
+data-template subset is defined above. Automatic producer modules require their own lifetime contract.
 
 ## Cross references and invalidation
 
@@ -504,7 +569,7 @@ the notebook snapshot format is unchanged. Revisioned presentation snapshots and
 | 2 | Assistant SSR, code presentation, TOC/anchors and extracted containers/alerts implemented; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
 | 4 | Data-only expressions and explicit binding snapshots implemented; automatic producer ownership/subscriptions pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
-| 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
+| 5 | Explicit complete Vue components, scoped CSS, isolated SSR and client hydration implemented; broader output integration pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
 
 Completion requires implementation and evidence, not a design-only checkbox.
 Focused regression coverage must include a late binding updating an earlier unit while later prose
@@ -533,6 +598,20 @@ osx-arm64 NativeAOT publish and both published Markdown/template smoke tests pas
 InspectCode version as CI reports no error-level findings; existing non-gating warnings are tracked
 in its SARIF output. Type/format/lint, offline smoke and diff checks pass. These results validate
 snapshot interpolation, not automatic producer lifecycle or revisioned patches.
+
+The 2026-11-05 live-component increment passes 46 renderer/interpreter/worker tests and 702 Deno
+workspace tests plus 20 Node scenarios. The .NET suite passes 1,583 tests with eight existing
+platform/external-service skips (1,591 total). Release build has no warnings; osx-arm64 NativeAOT
+publish and all three published Markdown/template/Vue smoke tests pass. Real VS Code tests against
+the NativeAOT kernel verify the live notebook MIME route, actual component hydration, reactive
+clicks, scoped styles and unmount on replacement/disposal. Worker tests verify denied filesystem,
+network and environment access, private reply-channel integrity, cancellation, the five-second
+non-cooperative-setup deadline, and recovery on the next request. Read/write notebook fixtures verify
+executable source removal without losing fallback or mutating live output. Type/format/lint, frozen
+lock installation, offline smoke and diff checks pass. InspectCode reports no error-level findings
+and the two existing non-gating test warnings. These checks validate complete live component
+snapshots, not automatic producer subscriptions or revisioned streaming patches. Linux and Windows
+verification is delegated to the PR's platform jobs; local evidence is macOS arm64.
 
 ## Open decisions
 

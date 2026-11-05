@@ -543,3 +543,27 @@ Deno.test("interpolation-count rejection leaves the renderer reusable", async ()
     ">2</span>",
   );
 });
+
+Deno.test("Vue-in-Markdown uses official SFC extraction while preserving containers and literal code", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    `# Counter\n\n<script setup lang="ts">\nimport { ref } from 'vue';\nconst count = ref<number>(0);\n</script>\n\n<p><button class="counter" @click="count++">Count</button><span>{{ count }}</span></p>\n\n::: tip\nVue content\n:::\n\n\`{{ count }}\`\n\n<style scoped>.counter { color:red; }</style>`;
+  const output = await renderer.renderVue("counter", source, "markdown");
+  assertStringIncludes(output.html, ">0</span>");
+  assertStringIncludes(output.html, "custom-block tip");
+  assertStringIncludes(output.html, "{{ count }}");
+  assertStringIncludes(output.html, "counter-counter");
+  assertStringIncludes(output.vue?.css ?? "", "[data-v-counter]");
+  assertStringIncludes((await renderer.render("counter", source)).html, "&lt;script setup");
+});
+
+Deno.test("renderer disposal cancels and terminates an active Vue evaluation", async () => {
+  const renderer = await createOutputRenderer();
+  const pending = renderer.renderVue(
+    "disposing",
+    "<script setup>while(true){}</script><template/>",
+    "sfc",
+  );
+  renderer[Symbol.dispose]();
+  await assertRejects(() => pending, DOMException);
+});

@@ -57,7 +57,7 @@ rejection, cancellation, native fallback, raw HTML remaining inert, real child s
 published NativeAOT rendering.
 
 This initial demo updates complete text regions. Revisioned document patches, late TS bindings,
-interactive Vue components, and frontend resource URL rewriting remain future stages in the
+automatic producer subscriptions and frontend resource URL rewriting remain future stages in the
 [design document](../../../docs/streaming-output-rendering-design.md).
 
 ## Template interpolation and producer updates
@@ -107,3 +107,49 @@ The live VS Code suite also verifies this MIME through the production notebook s
 binding-only update through the actual kernel, and checks that later independent prose remains. The
 protocol remains a full-snapshot API; automatic subscriptions, cancellation settlement and local DOM
 patching require the later document runtime.
+
+## Live Vue counter
+
+Use the explicitly selected `repl_execute` display API to publish the following live component. A
+model can use the same producer pattern; emitting these tags in ordinary assistant text remains
+passive. Rebuild both the executable and extension assets (`deno task build:media` as well as
+`deno task build`) for this lane.
+
+```ts
+await Deno.jupyter.display({
+  "application/vnd.maieutics.vue+json": {
+    version: 1,
+    format: "markdown",
+    source: `<script setup lang="ts">
+import { ref } from 'vue'
+const count = ref<number>(0)
+</script>
+
+# Counter
+
+<button class="counter" @click="count++">Count: {{ count }}</button>
+
+::: tip
+The button updates the hydrated Vue component locally.
+:::
+
+<style scoped>
+.counter { padding: 6px 14px; border: 1px solid currentColor; border-radius: 8px; cursor: pointer; }
+</style>`,
+  },
+  "text/plain": "Interactive Vue counter (live output only).",
+}, { raw: true, display_id: "vue-counter-demo" });
+```
+
+Expect initial count 0 from kernel SSR, then 1 after clicking. The official Vue compiler handles
+script setup, TypeScript, template interpolation, event handlers and scoped CSS. Only `vue` imports
+are supported; setup must have deterministic initial state because SSR and hydration both run it.
+External operations should run in the REPL and publish new snapshots. Replacing the display resets
+client state and unmounts the old app. Use `format:"sfc"` with a complete `<template>` block for
+ordinary Vue SFC input. Async setup/Suspense and external resources are not verified.
+
+This MIME intentionally cannot be a frozen executable demo: notebook saving and reading remove its
+source and retain the plain-text fallback. Reopening runs no component; redisplay from a live
+producer. The live-kernel VS Code suite checks the real notebook MIME route, SSR, click/reactive
+updates, scoped CSS and replacement/disposal cleanup. Revisioned source patches and automatic late
+producer binding remain later work.

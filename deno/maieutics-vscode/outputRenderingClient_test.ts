@@ -64,3 +64,38 @@ Deno.test("template clients select the explicit endpoint and preserve the undefi
     await server.shutdown();
   }
 });
+
+Deno.test("Vue client selects the live endpoint and rejects a component for another scope", async () => {
+  let scopeId = "data-v-doc";
+  const received: unknown[] = [];
+  const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+    assertEquals(new URL(request.url).pathname, "/v1/render/vue");
+    received.push(await request.json());
+    return Response.json({
+      version: 1,
+      documentId: "doc",
+      html: "<p>0</p>",
+      css: "",
+      vue: { version: 1, code: "return {};", scopeId },
+    });
+  });
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    const vue = { version: 1 as const, format: "sfc" as const };
+    const result = await client.renderMarkdown("doc", "source", undefined, undefined, vue);
+    assertEquals(result.vue?.scopeId, "data-v-doc");
+    assertEquals(received, [{ version: 1, documentId: "doc", source: "source", vue }]);
+    scopeId = "data-v-another";
+    const failure = await assertRejects(
+      () => client.renderMarkdown("doc", "source", undefined, undefined, vue),
+      FrontendError,
+    );
+    assertEquals(failure.code, "protocol_error");
+  } finally {
+    await server.shutdown();
+  }
+});

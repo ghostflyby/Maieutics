@@ -65,3 +65,33 @@ Deno.test("the explicit template endpoint validates bindings and leaves Markdown
     assertEquals((await handler(request("template", invalid))).status, 400);
   }
 });
+
+Deno.test("Vue evaluation requires the explicit endpoint and a valid versioned mode", async () => {
+  using renderer = await createOutputRenderer();
+  const handler = createRenderHandler(renderer, "secret");
+  const source =
+    '<script setup>import { ref } from "vue"; const count = ref(0)</script><template><p>{{ count }}</p></template>';
+  const request = (path: string, vue: unknown) =>
+    new Request(`http://localhost/v1/${path}`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+      body: JSON.stringify({ version: 1, documentId: "counter", source, vue }),
+    });
+  const vue = { version: 1, format: "sfc" };
+  const passive = await (await handler(request("markdown", vue))).json();
+  assertStringIncludes(passive.html, "&lt;script setup&gt;");
+  assertEquals(passive.vue, undefined);
+  const response = await handler(request("vue", vue));
+  assertEquals(response.status, 200);
+  const active = await response.json();
+  assertStringIncludes(active.html, ">0</p>");
+  assertEquals(active.vue.scopeId, "data-v-counter");
+  for (
+    const invalid of [undefined, null, { version: 2, format: "sfc" }, {
+      version: 1,
+      format: "other",
+    }]
+  ) {
+    assertEquals((await handler(request("vue", invalid))).status, 400);
+  }
+});

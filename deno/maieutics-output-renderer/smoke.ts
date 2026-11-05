@@ -87,3 +87,13 @@ if (
   readyTemplate.expressions?.[1].state !== "ready"
 ) throw new Error("Offline template did not reconcile ready values.");
 console.log("Offline template interpolation passed.");
+
+const vue = await renderer.renderVue(
+  "vueoffline",
+  '<script setup>import {ref} from "vue";const count=ref(0)</script><template><button @click="count++">Count</button><span>{{count}}</span></template><style scoped>button{color:red}</style>',
+  "sfc",
+);
+if (!vue.html.includes(">0</span>") || !vue.vue?.css.includes("data-v-vueoffline")) {
+  throw new Error("Offline Vue worker failed.");
+}
+console.log("Offline isolated Vue SSR passed.");

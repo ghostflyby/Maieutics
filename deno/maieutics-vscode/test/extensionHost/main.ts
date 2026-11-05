@@ -1101,6 +1101,10 @@ export async function run(): Promise<void> {
         run: () => testNotebookSsrAsync(liveRenderer),
       });
       selected.push({
+        name: "live Vue notebook output mounts the official client runtime",
+        run: () => testNotebookSsrAsync(liveRenderer, false, true),
+      });
+      selected.push({
         name: "the production notebook template MIME applies live kernel interpolation",
         run: () => testNotebookSsrAsync(liveRenderer, true),
       });

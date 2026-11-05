@@ -76,6 +76,29 @@ public sealed class FrontendProcessSmokeTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersLiveVueComponentThroughIsolatedWorker()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("vue-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "published", vue = new { version = 1, format = "markdown" },
+            source = "# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">Count</button><span>{{ count }}</span>\n\n<style scoped>button {color:red;}</style>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">0</span>", result.GetProperty("html").GetString());
+        Assert.Contains("[data-v-published]", result.GetProperty("css").GetString());
+        Assert.Equal(1, result.GetProperty("vue").GetProperty("version").GetInt32());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

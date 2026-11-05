@@ -154,6 +154,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         frontend.MapGet("/v1/agent/capabilities", HandleCapabilities);
         frontend.MapPost("/v1/render/markdown", HandleRenderMarkdown);
         frontend.MapPost("/v1/render/template", HandleRenderTemplate);
+        frontend.MapPost("/v1/render/vue", HandleRenderVue);
         frontend.MapPost("/v1/render/ready", HandleRendererReady);
         frontend.MapGet("/v1/skills", HandleSkills);
         frontend.MapGet("/v1/prompts", HandlePrompts);
@@ -411,7 +412,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     FrontendUiCapabilityVersion,
                     [FrontendUiWire.FormFamily]),
             MultiSession: true,
-            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1)),
+            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1)),
             FrontendJsonContext.Default.FrontendCapabilities);
     }
 
@@ -419,7 +420,9 @@ internal sealed class FrontendHost : IAsyncDisposable
 
     private Task HandleRenderTemplate(HttpContext context) => HandleRender(context, template: true);
 
-    private async Task HandleRender(HttpContext context, bool template)
+    private Task HandleRenderVue(HttpContext context) => HandleRender(context, template: false, vue: true);
+
+    private async Task HandleRender(HttpContext context, bool template, bool vue = false)
     {
         if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
             limit.MaxRequestBodySize = 2 * 1024 * 1024;
@@ -428,7 +431,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         await GuardAsync(context, async () => Results.Json(
             await (_outputRenderer ?? throw new FrontendFailureException(
                 "render_unavailable", "This server does not expose Markdown rendering."))
-                .RenderAsync(request, context.RequestAborted, template).ConfigureAwait(false),
+                .RenderAsync(request, context.RequestAborted, template, vue).ConfigureAwait(false),
             FrontendJsonContext.Default.FrontendRenderedMarkdown));
     }
 

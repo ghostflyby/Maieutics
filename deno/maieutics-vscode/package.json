@@ -60,7 +60,8 @@
         "entrypoint": "./media/turnRenderer.js",
         "mimeTypes": [
           "application/vnd.maieutics.turn+json",
-          "application/vnd.maieutics.template+json"
+          "application/vnd.maieutics.template+json",
+          "application/vnd.maieutics.vue+json"
         ],
         "requiresMessaging": "always"
       },

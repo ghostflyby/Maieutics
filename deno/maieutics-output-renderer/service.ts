@@ -1,3 +1,4 @@
+import { VueComponentError } from "./vueComponent.ts";
 import { captureTemplate, TemplateInputError } from "./template.ts";
 import { timingSafeEqual } from "node:crypto";
 import { type OutputRenderer, OutputRenderingError } from "./mod.ts";
@@ -13,7 +14,7 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
       return Response.json({ code: "unauthorized" }, { status: 401 });
     }
     const path = new URL(request.url).pathname;
-    if (!["/v1/markdown", "/v1/template"].includes(path) || request.method !== "POST") {
+    if (!["/v1/markdown", "/v1/template", "/v1/vue"].includes(path) || request.method !== "POST") {
       return Response.json({ code: "not_found" }, { status: 404 });
     }
     try {
@@ -50,7 +51,20 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
       ) {
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
-      const output = path === "/v1/template"
+      const vue = body.vue as { version?: number; format?: string } | undefined;
+      if (
+        path === "/v1/vue" &&
+        (typeof vue !== "object" || vue === null || vue.version !== 1 ||
+          !["markdown", "sfc"].includes(vue.format ?? ""))
+      ) return Response.json({ code: "invalid_request" }, { status: 400 });
+      const output = path === "/v1/vue"
+        ? await renderer.renderVue(
+          body.documentId,
+          body.source,
+          vue?.format as "markdown" | "sfc",
+          request.signal,
+        )
+        : path === "/v1/template"
         ? await renderer.renderTemplate(
           body.documentId,
           body.source,
@@ -62,6 +76,10 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         version: 1,
         documentId: output.documentId,
         html: output.html,
+        css: output.vue?.css,
+        vue: output.vue
+          ? { version: 1, code: output.vue.code, scopeId: output.vue.scopeId }
+          : undefined,
         expressions: output.expressions?.map(({ state, dependencies, code }) => ({
           state,
           dependencies,
@@ -74,6 +92,11 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         error instanceof TemplateInputError
       ) {
         return Response.json({ code: "invalid_request" }, { status: 400 });
+      }
+      if (error instanceof VueComponentError) {
+        return Response.json({ code: error.code }, {
+          status: error.code.startsWith("component_") ? 503 : 400,
+        });
       }
       if (error instanceof OutputRenderingError) {
         return Response.json({ code: error.code }, { status: 400 });

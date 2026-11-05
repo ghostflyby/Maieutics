@@ -8,6 +8,14 @@ import json from "@shikijs/langs/json";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
+import { componentPlugin } from "@mdit-vue/plugin-component";
+import { sfcPlugin } from "@mdit-vue/plugin-sfc";
+import {
+  type CompiledVueComponent,
+  compileVueComponent,
+  VueComponentError,
+} from "./vueComponent.ts";
+import { renderVueComponent } from "./vueSsr.ts";
 import { renderToString } from "vue/server-renderer";
 import { installCodeFences } from "./codeFences.ts";
 import { installCodeGroups } from "./codeGroups.ts";
@@ -21,6 +29,7 @@ export interface RenderedOutput {
   readonly html: string;
   readonly headings: readonly RenderedHeading[];
   readonly expressions?: readonly TemplateResult[];
+  readonly vue?: CompiledVueComponent;
 }
 
 /** Heading metadata collected by the same plugin family as VitePress. */
@@ -38,6 +47,12 @@ export interface OutputRenderer extends Disposable {
     documentId: string,
     source: string,
     context: TemplateContext,
+    signal?: AbortSignal,
+  ): Promise<RenderedOutput>;
+  renderVue(
+    documentId: string,
+    source: string,
+    format: "markdown" | "sfc",
     signal?: AbortSignal,
   ): Promise<RenderedOutput>;
 }
@@ -58,9 +73,10 @@ export const MaximumSourceCharacters = 200_000;
 export const MaximumHtmlCharacters = 4_000_000;
 
 /**
- * Creates an offline, passive Markdown renderer from VitePress's underlying ecosystem.
+ * Creates offline rendering primitives from VitePress's underlying ecosystem.
  * Raw HTML remains text; ordinary Markdown leaves expressions literal. The explicit template method
- * interprets only data expressions. No producer code, file includes, or imports execute.
+ * interprets only data expressions. Explicit live Vue output compiles complete components and runs
+ * SSR in owned permissionless workers. File includes and external imports are unavailable.
  * Each renderer owns its parser and highlighter and must be disposed by its caller.
  */
 export async function createOutputRenderer(): Promise<OutputRenderer> {
@@ -70,23 +86,38 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
     engine: createJavaScriptRegexEngine(),
   });
   try {
-    const md = new MarkdownIt({
-      html: false,
-      linkify: true,
-    });
-    installCodeFences(md, highlighter);
-    installCodeGroups(md);
-    const validateLink = md.validateLink;
-    md.validateLink = (url) => {
-      const scheme = /^([a-z][a-z\d+.-]*):/i.exec(url)?.[1].toLowerCase();
-      return validateLink(url) && (scheme === undefined ||
-        ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
+    const markdown = (html: boolean) => {
+      const md = new MarkdownIt({
+        html,
+        linkify: true,
+      });
+      installCodeFences(md, highlighter);
+      installCodeGroups(md);
+      const validateLink = md.validateLink;
+      md.validateLink = (url) => {
+        const scheme = /^([a-z][a-z\d+.-]*):/i.exec(url)?.[1].toLowerCase();
+        return validateLink(url) && (scheme === undefined ||
+          ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
+      };
+      md.linkify.set({ fuzzyLink: false });
+      installInterpolation(md);
+      installContentPlugins(md);
+
+      if (html) {
+        md.use(componentPlugin).use(sfcPlugin);
+        const fence = md.renderer.rules.fence;
+        md.renderer.rules.fence = (...args) => `<div v-pre>${fence?.(...args) ?? ""}</div>`;
+        const inline = md.renderer.rules.code_inline;
+        md.renderer.rules.code_inline = (tokens, index, options, env, renderer) =>
+          `<span v-pre>${inline?.(tokens, index, options, env, renderer) ?? ""}</span>`;
+      }
+      return md;
     };
-    md.linkify.set({ fuzzyLink: false });
-    installInterpolation(md);
-    installContentPlugins(md);
+    const md = markdown(false);
+    const vueMd = markdown(true);
 
     let disposed = false;
+    const componentLifetime = new AbortController();
     const render = async (
       documentId: string,
       source: string,
@@ -142,9 +173,39 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
           expressions: [],
         });
       },
+      async renderVue(documentId, source, format, signal) {
+        signal?.throwIfAborted();
+        if (disposed) throw new OutputRenderingError("disposed");
+        if (
+          !/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters
+        ) throw new VueComponentError("invalid_component");
+        let sfc = source;
+        if (format === "markdown") {
+          const env: {
+            documentId: string;
+            sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
+          } = { documentId };
+          const body = vueMd.render(source, env);
+          if (body.length > MaximumHtmlCharacters) {
+            throw new OutputRenderingError("output_too_large");
+          }
+          sfc = `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
+            env.sfcBlocks?.scripts.map((block) => block.content).join("\n") ?? ""
+          }\n${env.sfcBlocks?.styles.map((block) => block.content).join("\n") ?? ""}`;
+        }
+        const component = compileVueComponent(documentId, sfc);
+        const active = signal
+          ? AbortSignal.any([signal, componentLifetime.signal])
+          : componentLifetime.signal;
+        const html = await renderVueComponent(component, active);
+        signal?.throwIfAborted();
+        if (disposed) throw new OutputRenderingError("disposed");
+        return { documentId, html, headings: [], vue: component };
+      },
       [Symbol.dispose]() {
         if (disposed) return;
         disposed = true;
+        componentLifetime.abort();
         highlighter.dispose();
       },
     };

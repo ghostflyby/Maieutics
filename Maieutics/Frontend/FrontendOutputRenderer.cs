@@ -50,7 +50,7 @@ internal sealed class FrontendOutputRenderer(
     }
 
     internal async Task<FrontendRenderedMarkdown> RenderAsync(
-        FrontendRenderMarkdown request, CancellationToken cancellationToken, bool template = false)
+        FrontendRenderMarkdown request, CancellationToken cancellationToken, bool template = false, bool vue = false)
     {
         if (request.Version != 1 || request.DocumentId is not { Length: > 0 and <= 64 } ||
             !char.IsAsciiLetter(request.DocumentId[0]) ||
@@ -59,6 +59,8 @@ internal sealed class FrontendOutputRenderer(
             throw new FrontendFailureException("invalid_request", "Invalid Markdown render request.");
         if (template && (request.Template is not { Version: 1, Bindings: { Length: <= 128 } }))
             throw new FrontendFailureException("invalid_request", "Invalid template render request.");
+        if (vue && request.Vue is not { Version: 1, Format: "markdown" or "sfc" })
+            throw new FrontendFailureException("invalid_request", "Invalid Vue component request.");
         if (Interlocked.Increment(ref _queued) > 8)
         {
             Interlocked.Decrement(ref _queued);
@@ -74,7 +76,7 @@ internal sealed class FrontendOutputRenderer(
             entered = true;
             if (_failed) throw Unavailable();
             var port = _port ??= await StartAsync(operation.Token).ConfigureAwait(false);
-            var endpoint = template ? "template" : "markdown";
+            var endpoint = vue ? "vue" : template ? "template" : "markdown";
             using var message = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/{endpoint}");
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _nonce);
             message.Content = JsonContent.Create(request, FrontendJsonContext.Default.FrontendRenderMarkdown);
@@ -88,7 +90,10 @@ internal sealed class FrontendOutputRenderer(
                 result.Html is null || result.Html.Length > 4_000_000 ||
                 (template && result.Expressions is not { Length: <= 256 }))
                 throw Unavailable();
-            return result with { Css = _css };
+            if (vue && (result.Vue is not { Version: 1, Code: { Length: <= 400_000 } } ||
+                        result.Vue.ScopeId != $"data-v-{request.DocumentId}" || result.Css is not { Length: <= 48_000 }))
+                throw Unavailable();
+            return result with { Css = vue ? _css + result.Css : _css };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -137,7 +142,7 @@ internal sealed class FrontendOutputRenderer(
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        foreach (var argument in new[] { "run", "--no-prompt", "--no-config", "--no-lock", "--no-npm", "--no-remote", "--cached-only" })
+        foreach (var argument in new[] { "run", "--no-prompt", "--no-config", "--no-lock", "--no-npm", "--no-remote", "--cached-only", "--unstable-worker-options" })
             start.ArgumentList.Add(argument);
         foreach (var argument in DenoPermissionRenderer.Render(policy)) start.ArgumentList.Add(argument);
         start.ArgumentList.Add(entry);

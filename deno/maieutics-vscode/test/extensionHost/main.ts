@@ -191,6 +191,11 @@ function testRichDisplaySnapshotsAsync(): void {
         displayId: "d",
         data: {
           "text/plain": "Rich value",
+          "application/vnd.maieutics.template+json": {
+            version: 1,
+            source: "{{ report.total }}",
+            bindings: [{ name: "report", state: "ready", value: { total: 42 } }],
+          },
           "application/vnd.maieutics.view+json": {
             family: "custom",
             esmSource: "private executable source",
@@ -205,6 +210,10 @@ function testRichDisplaySnapshotsAsync(): void {
     assert(
       outputs[0].metadata?.[ReplDisplayMetadataKey]?.displayId === "d",
       "rich data belongs to its own output metadata",
+    );
+    assert(
+      outputs[0].items.some((item) => item.mime === "application/vnd.maieutics.template+json"),
+      "templates restore through the production MIME adapter",
     );
     const header = JSON.parse(new TextDecoder().decode(outputs[1].items[0].data));
     assert(
@@ -227,6 +236,10 @@ function testRichDisplaySnapshotsAsync(): void {
     assert(
       restored?.text === "Latest live reply" && restored.repl?.[0].displayId === "d",
       "save reconstructs answer and rich display data independently",
+    );
+    assert(
+      restored?.repl?.[0].data["application/vnd.maieutics.template+json"] !== undefined,
+      "template source and frozen binding data round-trip without producer code",
     );
     const plain = new TextDecoder().decode(saved);
     assert(
@@ -1086,6 +1099,10 @@ export async function run(): Promise<void> {
       selected.push({
         name: "the production notebook renderer applies live kernel SSR",
         run: () => testNotebookSsrAsync(liveRenderer),
+      });
+      selected.push({
+        name: "the production notebook template MIME applies live kernel interpolation",
+        run: () => testNotebookSsrAsync(liveRenderer, true),
       });
     }
     for (const test of selected) {

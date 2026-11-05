@@ -1,12 +1,12 @@
 # Streaming Output Rendering with VitePress
 
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
-containers, and alerts integrated.
-The streaming document runtime and revisioned presentation protocol remain proposed.
+containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
+the streaming document runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-04
+Last updated: 2026-11-05
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -26,7 +26,7 @@ The standard VitePress site build does not supply this runtime.
 
 The agreed direction is kernel-side Deno rendering, SSR as the primary rendering model, and shared
 output across frontends. The passive content subset and stateless kernel API are implemented below.
-Full template authoring, the document runtime, and revisioned update operations remain proposed and
+Full SFC/script authoring, the document runtime, and revisioned update operations remain proposed and
 require the validation stages below. The initial demo API has its own normative frontend contract.
 
 ## Existing integration boundary
@@ -79,7 +79,8 @@ assembly is required just to represent this boundary.
 
 The executable remains authoritative for the conversation and presentation revision it publishes.
 Deno owns bounded, disposable derived state that can be reconstructed from retained source and
-authorized producer results. Rendering must not execute through or depend on the user's REPL.
+authorized producer results. Rendering must not execute through or depend on the user's REPL. An authorized REPL producer
+may publish data snapshots through the existing rich-display lane; the renderer never calls it back.
 
 ## Reusable ecosystem capabilities
 
@@ -159,8 +160,8 @@ keep host behavior. The handler is removed on source replacement and disposal wi
 AbortController; no window-level listener or document-authored handler is installed. Other frontends
 need the equivalent local-fragment adapter when rendering inside Shadow DOM.
 
-Unknown languages fall back to escaped text. Raw HTML, document scripts and styles, Vue templates,
-and directives remain text. No filesystem snippet or include rules are installed. Complete snapshots
+Unknown languages fall back to escaped text. Raw HTML, document scripts/styles and directives remain text. Ordinary Markdown keeps Vue
+interpolations literal; the explicit template path below evaluates the defined data expression subset. No filesystem snippet or include rules are installed. Complete snapshots
 are rendered through Vue SSR without compiling document expressions or SFC scripts.
 
 `renderer_test.ts` covers reference corrections and isolation, inert content and executable links,
@@ -216,7 +217,8 @@ from the production Notebook renderer. It must not manufacture a custom MIME out
 serializer's routing decision. Neither signal affects Agent completion.
 
 This demo reparses the complete source, so later reference definitions correct earlier text. It has
-no persistent server-side document, local subtree patching, or TS binding runtime. Complete region
+no persistent server-side document or local subtree patching. The explicit template display lane
+below now accepts published TS producer results as binding snapshots. Complete region
 replacement can reset text selection and expanded details. Code-tab choices have the bounded retention
 described below. Resource URL rewriting, interactive components,
 and languages beyond the bundled grammar subset require subsequent stages.
@@ -249,9 +251,71 @@ auto-closing groups, and mixed-content fallback. Kernel and published-process sm
 embedded artifact; browser verification checks CSS visibility, native label activation, and retaining
 the selected tab through another SSR snapshot.
 
-The next content gaps are custom heading IDs and TOC, GitHub alerts, frontmatter and metadata,
+The remaining content gaps are frontmatter and metadata,
 additional bundled languages, and product resource URL adaptation. File includes and snippet imports
 need an explicit authorized resource contract; arbitrary SFC/template execution remains stage 4/5.
+
+## Explicit template snapshots (implemented 2026-11-05)
+
+`POST /v1/render/template` and MIME `application/vnd.maieutics.template+json` explicitly select
+version-1 data template evaluation. `/v1/render/markdown` continues to leave `{{ }}` literal even
+if a caller supplies template fields. Capability `rendering.templateVersion: 1` advertises the new
+lane separately. This is a complete-snapshot primitive, not the revisioned document protocol below.
+
+A snapshot supplies Markdown source plus at most 128 uniquely named bindings. Binding states are
+`pending`, `ready`, `failed`, and `cancelled`. Ready JSON data uses `value` (including `null`, `false`
+and zero); ready `undefined` uses `undefined: true` with no `value`. Other states carry no value.
+Missing names remain pending while source is open; `sourceSealed: true` makes missing names an
+`unresolved_binding` failure. Explicitly pending bindings stay pending after sealing, since source
+completion does not imply producer completion. The renderer captures and freezes bounded plain data
+before asynchronous SSR and retains no binding state between requests or documents.
+
+Acorn 8.18.0, already pinned in the workspace, supplies expression parsing and delimiter tokenization.
+Maieutics interprets its AST to preserve pending semantics and restrict effects. The initial subset
+includes primitive/array/object literals, own-property reads, optional chaining, unary `!`, `+`, `-`
+and `typeof`, arithmetic, comparisons, strict equality, `&&`, `||`, `??`, ternaries, and numeric
+`.toFixed(0..20)`. Only evaluated branches acquire dependencies: pending cannot select a fallback
+branch or become false. Arbitrary calls, functions, assignment/update, loops, imports, `new`, prototype
+paths and host globals are not exposed. This is a data expression subset, not arbitrary Vue or TS
+execution. Vue's public `toDisplayString` supplies ready-value formatting; ready undefined/null render
+empty text, distinct from pending's ellipsis and state metadata.
+
+A Markdown-it inline rule recognizes interpolation only in normal inline content, including headings
+and ordinary container titles. Escapes, code spans and fences stay literal. Acorn tokenization ignores
+closing braces inside quoted strings, templates and regex literals; unsupported expressions still
+produce local failures. Incomplete source is shown escaped and marked `incomplete`, or failed when
+sealed, without executing guessed syntax. Inserted values are never reparsed as Markdown, HTML,
+attributes, URLs or expressions. Heading metadata and TOCs read the same captured text and update
+with the whole snapshot; explicit anchors are recommended for headings whose text changes.
+
+The response includes local expression state/dependency metadata, indexed by the HTML's
+`data-template-index` within that snapshot. These ordinals follow parser/render registration order
+(including inline container titles), not stable source identities. A failure affects its own span;
+independent later prose remains visible. The limits are 256 interpolations, 2,048 UTF-16 units per
+expression, 256 interpreter steps and 32 AST traversal levels; data is limited to 8,192 values,
+16 nesting levels and 64,000 aggregate UTF-16 units in keys/string values. Existing source, HTML,
+request admission, cancellation and process limits still apply. Binding names are ASCII identifiers
+of at most 64 characters; `undefined`, `constructor`, `prototype` and `__proto__` are reserved.
+Non-finite numbers, accessors, class instances, cycles and prototype keys are rejected.
+
+The VS Code turn renderer also claims the template MIME. The production rich-display serializer
+retains its source and frozen bindings, and the extension forwards it to the explicit API only when
+the kernel advertises support. Native Markdown remains the offline/unavailable fallback. Existing
+`display_id` and `update: true` replace one display with a new complete snapshot even when source is
+unchanged. The bridge's request revision rejects obsolete binding results; no new Agent event, binary
+encoding or notebook schema version is introduced. Restoring a snapshot evaluates only pure data
+expressions; it never executes producer code or starts a kernel by itself.
+
+Producers run only through an explicitly selected existing runtime, such as `repl_execute`, under
+its owning session's permissions and cancellation. They publish values through the existing structured
+rich-display lane; there is no renderer-to-REPL call and no producer execution during re-render,
+reconnect or restoration. `repl_execute` now describes this MIME and the complete-snapshot update
+pattern. The [template demo](../deno/maieutics-vscode/demo/README.md) supplies runnable producer code
+and frozen pending/ready snapshots. A producer should publish terminal failed/cancelled snapshots
+when possible; an interrupted producer can leave the last frozen display pending. Automatic producer
+registration, terminal settlement after cancellation, subscriptions beyond run lifetime, dependency
+cycles between producers, generic SFC/script modules and document patches remain future document-runtime
+work. The stateless renderer does not claim ownership of an external producer's lifetime.
 
 ## Document state and presentation units
 
@@ -299,8 +363,9 @@ An initial authoring option is a registered component with an explicit binding n
 </AwaitValue>
 ```
 
-This component and syntax are proposed. The runtime resolves the binding and supplies its ready
-value through the slot. The producer registration and publication API remains to be designed.
+This component and syntax remain proposed. The initial shipped lane instead accepts explicit data
+snapshots through the template MIME above. Automatic producer registration and slot ownership remain
+to be designed.
 
 Supporting bare `{{ report.total }}` with a declaration that arrives later requires an explicit
 compiler transform or a complete compilation context. Ordinary VitePress compilation does not turn
@@ -311,8 +376,8 @@ and the defined streaming subset.
 Complete producer modules execute at explicit execution boundaries. Rendering reads their published
 results. Source reparsing, data invalidation, reconnect, and snapshot restoration must not rerun
 producer side effects. Model-authored Markdown does not gain permission to execute scripts, imports,
-or arbitrary Vue expressions by passing through a template compiler. The executable template subset
-and authorized component or producer registration require an explicit contract before implementation.
+or arbitrary Vue expressions by passing through a template compiler. The implemented data template subset is defined above. Authorized component registration and
+producer modules require their own contract before implementation.
 
 ## Cross references and invalidation
 
@@ -437,7 +502,7 @@ the notebook snapshot format is unchanged. Revisioned presentation snapshots and
 | 1 | In progress; passive core and offline bundle implemented | Deno and package prototype | Render representative VitePress content offline with pinned dependencies; verify compiler, highlighter, resources, and host CSP. Compare Markstream partial parsing with the selected semantics. |
 | 2 | Assistant SSR, code presentation, TOC/anchors and extracted containers/alerts implemented; broader content/resource compatibility pending | Assistant Markdown replacement | Share SSR output through the executable projection and existing timeline boundaries; retain raw Markdown fallback and offline readability. |
 | 3 | Pending | Streaming document updates | Implement stable identities, versioned snapshots and patches, syntax buffering, cross-reference corrections, and final reconciliation. |
-| 4 | Pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
+| 4 | Data-only expressions and explicit binding snapshots implemented; automatic producer ownership/subscriptions pending | Late data bindings | Add explicit binding states and authorized producers; verify conditional boundaries, local failures, cancellation, cycles, and stale-result rejection. |
 | 5 | Pending | Interactive components and broader output | Add isolated client component lifetimes, then evaluate reasoning summaries, tool presentation, and other rich output separately. |
 
 Completion requires implementation and evidence, not a design-only checkbox.

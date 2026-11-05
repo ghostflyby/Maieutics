@@ -40,3 +40,27 @@ Deno.test("render client correlates and validates optional SSR snapshots indepen
     await server.shutdown();
   }
 });
+
+Deno.test("template clients select the explicit endpoint and preserve the undefined discriminator", async () => {
+  let received: unknown;
+  const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+    assertEquals(new URL(request.url).pathname, "/v1/render/template");
+    received = await request.json();
+    return Response.json({ version: 1, documentId: "doc", html: "", css: "" });
+  });
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    const template = {
+      version: 1 as const,
+      bindings: [{ name: "empty", state: "ready" as const, undefined: true }],
+    };
+    await client.renderMarkdown("doc", "{{ empty }}", undefined, template);
+    assertEquals(received, { version: 1, documentId: "doc", source: "{{ empty }}", template });
+  } finally {
+    await server.shutdown();
+  }
+});

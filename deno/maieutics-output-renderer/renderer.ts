@@ -12,12 +12,15 @@ import { renderToString } from "vue/server-renderer";
 import { installCodeFences } from "./codeFences.ts";
 import { installCodeGroups } from "./codeGroups.ts";
 import { installContentPlugins } from "./contentPlugins.ts";
+import { installInterpolation, type TemplateEnvironment } from "./interpolation.ts";
+import { captureTemplate, type TemplateContext, type TemplateResult } from "./template.ts";
 
 /** A complete derived presentation, independent of the frontend transport. */
 export interface RenderedOutput {
   readonly documentId: string;
   readonly html: string;
   readonly headings: readonly RenderedHeading[];
+  readonly expressions?: readonly TemplateResult[];
 }
 
 /** Heading metadata collected by the same plugin family as VitePress. */
@@ -31,6 +34,12 @@ export interface RenderedHeading {
 /** An explicitly owned highlighter and Markdown pipeline. */
 export interface OutputRenderer extends Disposable {
   render(documentId: string, source: string, signal?: AbortSignal): Promise<RenderedOutput>;
+  renderTemplate(
+    documentId: string,
+    source: string,
+    context: TemplateContext,
+    signal?: AbortSignal,
+  ): Promise<RenderedOutput>;
 }
 
 /** Recoverable failure at the content rendering boundary. */
@@ -50,7 +59,8 @@ export const MaximumHtmlCharacters = 4_000_000;
 
 /**
  * Creates an offline, passive Markdown renderer from VitePress's underlying ecosystem.
- * Raw HTML and Vue expressions remain text; no document code, file includes, or imports execute.
+ * Raw HTML remains text; ordinary Markdown leaves expressions literal. The explicit template method
+ * interprets only data expressions. No producer code, file includes, or imports execute.
  * Each renderer owns its parser and highlighter and must be disposed by its caller.
  */
 export async function createOutputRenderer(): Promise<OutputRenderer> {
@@ -73,42 +83,64 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
     };
     md.linkify.set({ fuzzyLink: false });
+    installInterpolation(md);
     installContentPlugins(md);
 
     let disposed = false;
-    return {
-      async render(documentId, source, signal) {
-        signal?.throwIfAborted();
-        if (disposed) throw new OutputRenderingError("disposed");
-        if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId)) {
-          throw new OutputRenderingError("invalid_document_id");
-        }
-        if (source.length > MaximumSourceCharacters) {
-          throw new OutputRenderingError("source_too_large");
-        }
-        // All parser state is per call. A later link definition reparses earlier references.
-        const env: { documentId: string; headers?: RenderedHeading[] } = { documentId };
-        const body = md.render(source, env);
-        if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
-        const html = await renderToString(createSSRApp({
-          render: () =>
-            h("div", {
-              class: "maieutics-output vp-doc",
-              "data-document": documentId,
-              innerHTML: body,
-            }),
+    const render = async (
+      documentId: string,
+      source: string,
+      signal?: AbortSignal,
+      template?: TemplateEnvironment,
+    ): Promise<RenderedOutput> => {
+      signal?.throwIfAborted();
+      if (disposed) throw new OutputRenderingError("disposed");
+      if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId)) {
+        throw new OutputRenderingError("invalid_document_id");
+      }
+      if (source.length > MaximumSourceCharacters) {
+        throw new OutputRenderingError("source_too_large");
+      }
+      // All parser state is per call. A later link definition reparses earlier references.
+      const env: {
+        documentId: string;
+        headers?: RenderedHeading[];
+        template?: TemplateEnvironment;
+      } = { documentId, template };
+      const body = md.render(source, env);
+      if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
+      const html = await renderToString(createSSRApp({
+        render: () =>
+          h("div", {
+            class: "maieutics-output vp-doc",
+            "data-document": documentId,
+            innerHTML: body,
+          }),
+      }));
+      signal?.throwIfAborted();
+      if (disposed) throw new OutputRenderingError("disposed");
+      if (html.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
+      const scopeHeadings = (headings: readonly RenderedHeading[]): RenderedHeading[] =>
+        headings.map((heading) => ({
+          level: heading.level,
+          title: heading.title,
+          slug: heading.slug,
+          children: scopeHeadings(heading.children),
         }));
-        signal?.throwIfAborted();
-        if (disposed) throw new OutputRenderingError("disposed");
-        if (html.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
-        const scopeHeadings = (headings: readonly RenderedHeading[]): RenderedHeading[] =>
-          headings.map((heading) => ({
-            level: heading.level,
-            title: heading.title,
-            slug: heading.slug,
-            children: scopeHeadings(heading.children),
-          }));
-        return { documentId, html, headings: scopeHeadings(env.headers ?? []) };
+      return {
+        documentId,
+        html,
+        headings: scopeHeadings(env.headers ?? []),
+        ...(template ? { expressions: template.expressions } : {}),
+      };
+    };
+    return {
+      render,
+      async renderTemplate(documentId, source, context, signal) {
+        return await render(documentId, source, signal, {
+          context: captureTemplate(context),
+          expressions: [],
+        });
       },
       [Symbol.dispose]() {
         if (disposed) return;

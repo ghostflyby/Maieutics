@@ -2,9 +2,10 @@
 
 Executable-owned rendering primitives for the
 [streaming output design](../../docs/streaming-output-rendering-design.md). The first implementation
-provides complete passive Markdown snapshots through Markdown-it, the `@mdit-vue` heading plugin,
-Shiki, and Vue SSR. The executable embeds `bundle/service.js` and starts the rendering child on the
-first authenticated `POST /v1/render/markdown` request. No user REPL or plugin host is needed. The
+provides complete passive Markdown snapshots and explicit data-only template snapshots through
+Markdown-it, the `@mdit-vue` heading plugin, Shiki, and Vue SSR. The executable embeds
+`bundle/service.js` and starts the rendering child on the first authenticated
+`POST /v1/render/markdown` request. No user REPL or plugin host is needed. The
 [Notebook demo](../maieutics-vscode/demo/README.md) exercises this service through the production
 extension bridge with native Markdown fallback.
 
@@ -88,9 +89,51 @@ directives are never installed. Product resource schemes are retained for a futu
 resource retrieval and rewriting are not implemented here.
 
 This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
-Frontmatter, SFC scripts, template execution, late bindings, HTML patches, interactive islands, and
-host resource delivery remain later work. Re-rendering with a later link definition corrects earlier
-references in a complete snapshot; stable incremental nodes require the document runtime.
+Frontmatter, SFC scripts, general template execution, automatic late-binding subscriptions, HTML
+patches, interactive islands, and host resource delivery remain later work. Re-rendering with a
+later link definition corrects earlier references in a complete snapshot; stable incremental nodes
+require the document runtime.
+
+## Explicit data templates
+
+`renderer.renderTemplate(documentId, source, {version:1, bindings, sourceSealed}, signal)` evaluates
+`{{ expression }}` against an independently captured snapshot. The ordinary `render` method remains
+passive. The kernel exposes this lane at `POST /v1/render/template`; it advertises
+`rendering.templateVersion: 1`.
+[Protocol details](../../docs/web-frontend-protocol.md#explicit-template-rendering-v1) define the
+JSON shape, bounds, error states and corresponding rich-display MIME.
+
+```ts
+const result = await renderer.renderTemplate("report1", "Total {{ report.total.toFixed(2) }}", {
+  version: 1,
+  bindings: [{ name: "report", state: "ready", value: { total: 42 } }],
+  sourceSealed: true,
+});
+```
+
+Bindings distinguish pending, ready, failed and cancelled; ready undefined uses `undefined:true`
+without `value`. Vue formats undefined/null as empty text, while pending shows an ellipsis. Missing
+names are pending until sealing, when they fail as unresolved; explicitly pending bindings can
+remain pending. Short-circuit evaluation reads only selected branches. Results include expression
+state and actual dependencies. Subsequent complete snapshots re-render existing values without
+re-executing a producer, including when only bindings changed.
+
+The interpreter reuses Acorn for parsing and Vue for value formatting. It implements literal data,
+record/array own-property reads, string length, optional chaining, arithmetic, comparison/strict
+equality, unary `!`, `+`, `-`, `typeof`, logical/nullish operators, ternaries, and numeric
+`toFixed`. It exposes no eval, assignment, functions, imports, host globals, prototype paths or
+arbitrary calls. Code spans/fences and escapes stay literal; values are escaped text, never
+reinterpreted as markup. Headings, TOCs and ordinary container titles share the captured values.
+Incomplete syntax remains escaped source and reconciles on later snapshots; local errors leave other
+content visible.
+
+Limits: 128 bindings, 8,192 data values, 16 data nesting levels, 64,000 aggregate UTF-16 key/string
+units, 256 interpolations, 2,048 units per expression, 256 interpreter steps and 32 traversal
+levels. Non-JSON values, accessors, prototype keys and duplicate binding names are rejected. The
+renderer retains no document or producer. Automatic producer subscriptions, cancellation settlement,
+SFC/TS module execution and document patches remain later work. Producers can publish snapshots
+through the existing authorized REPL display API; [the demo](../maieutics-vscode/demo/README.md)
+shows the pattern.
 
 ## Why compose the underlying packages
 
@@ -125,9 +168,10 @@ whenever its source or dependencies change.
 Source tests allow reads of `NODE_ENV` (Vue) and `VSCODE_TEXTMATE_DEBUG` (TextMate) from the
 environment. The bundled smoke requires only `VSCODE_TEXTMATE_DEBUG`; Deno's bundler substitutes
 `NODE_ENV` during the build. Neither command grants runtime network, process launch, or filesystem
-access. Dependency installation and bundling require package-cache access and, on a cold cache,
-registry access; the build reads the vendored license to add the distribution notice and writes only
-its output directories.
+access. Data-template interpretation uses the same permissions and executes no producer code.
+Dependency installation and bundling require package-cache access and, on a cold cache, registry
+access; the build reads the vendored license to add the distribution notice and writes only its
+output directories.
 
 The supervised service additionally reads `MAIEUTICS_RENDERER_CALLBACK`, `MAIEUTICS_RENDERER_TOKEN`,
 and `MAIEUTICS_RENDERER_NONCE`. Its built-in policy permits listening on `127.0.0.1:0` and calling

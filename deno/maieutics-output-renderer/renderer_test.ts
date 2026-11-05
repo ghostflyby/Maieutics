@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { createOutputRenderer, OutputRenderingError } from "./mod.ts";
+import { TemplateInputError } from "./template.ts";
 import { MaximumSourceCharacters } from "./renderer.ts";
 
 Deno.test("SSR preserves content structure and scopes heading references per document", async () => {
@@ -419,4 +420,126 @@ Deno.test("upstream GitHub alerts recognize all markers and escape literal custo
   assertStringIncludes(html, "<blockquote>");
   assertStringIncludes(html, "[!unknown]");
   assertStringIncludes(html, "Ordinary quote");
+});
+
+Deno.test("explicit template snapshots resolve earlier values while later prose remains visible", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "Total {{ report.total.toFixed(2) }}.\n\nLater independent prose.\n\nFalse: {{ false }} / empty: {{ empty }}";
+  const pending = await renderer.renderTemplate("template", source, {
+    version: 1,
+    bindings: [
+      { name: "report", state: "pending" },
+      { name: "empty", state: "ready", undefined: true },
+    ],
+  });
+  assertStringIncludes(pending.html, 'data-template-state="pending"');
+  assertStringIncludes(pending.html, "Later independent prose.");
+  assertEquals(pending.expressions?.map((value) => value.state), ["pending", "ready", "ready"]);
+  const context = {
+    version: 1 as const,
+    bindings: [{ name: "report", state: "ready" as const, value: { total: 42 } }, {
+      name: "empty",
+      state: "ready" as const,
+      undefined: true,
+    }],
+  };
+  const ready = await renderer.renderTemplate("template", source, context);
+  assertStringIncludes(ready.html, ">42.00</span>");
+  assertStringIncludes(ready.html, "Later independent prose.");
+  assert(!ready.html.includes('data-template-state="pending"'));
+  assertEquals(await renderer.renderTemplate("template", source, context), ready);
+  const passive = await renderer.render("template", source);
+  assertStringIncludes(passive.html, "{{ report.total.toFixed(2) }}");
+  assertEquals(passive.expressions, undefined);
+});
+
+Deno.test("interpolation values stay text without being reparsed as Markdown, attributes or HTML", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "[[toc]]\n\n## Result {{ title }} {#result}\n\nValue {{ html }}\n\n::: tip **{{ title }}**\nBody {{ 1 + 2 }}\n:::\n\n`{{ ignored }}`\n\n```ts\n{{ ignored }}\n```";
+  const output = await renderer.renderTemplate("safe", source, {
+    version: 1,
+    bindings: [
+      { name: "title", state: "ready", value: "**bold** {#bad}" },
+      {
+        name: "html",
+        state: "ready",
+        value: '<img src=x onerror="run()"> [evil](javascript:run())',
+      },
+    ],
+  });
+  assertStringIncludes(output.html, 'id="safe-result"');
+  assertStringIncludes(output.html, 'href="#safe-result">Result **bold** {#bad}</a>');
+  assertStringIncludes(output.html, "&lt;img");
+  assert(!output.html.includes("<img"));
+  assert(!output.html.includes('id="safe-bad"'));
+  assert(!output.html.includes("<strong>bold</strong>"));
+  assertStringIncludes(output.html, ">3</span>");
+  assertStringIncludes(output.html, "{{ ignored }}");
+  assertEquals(
+    output.expressions?.length,
+    4,
+    "Code spans and fences must not register template dependencies.",
+  );
+});
+
+Deno.test("incomplete interpolations never execute guessed source and reconcile when completed", async () => {
+  using renderer = await createOutputRenderer();
+  const context = {
+    version: 1 as const,
+    bindings: [{ name: "report", state: "ready" as const, value: { total: 42 } }],
+  };
+  const incomplete = await renderer.renderTemplate(
+    "partial",
+    "Before {{ report.\n\nLater prose",
+    context,
+  );
+  assertStringIncludes(incomplete.html, "{{ report.");
+  assertStringIncludes(incomplete.html, "Later prose");
+  assertEquals(incomplete.expressions?.[0].state, "incomplete");
+  const sealed = await renderer.renderTemplate("partial", "Before {{ report.", {
+    ...context,
+    sourceSealed: true,
+  });
+  assertEquals(sealed.expressions?.[0].state, "failed");
+  const complete = await renderer.renderTemplate(
+    "partial",
+    "Before {{ report.total }}\n\nLater prose",
+    context,
+  );
+  assertStringIncludes(complete.html, ">42</span>");
+  const quoted = await renderer.renderTemplate("partial", '{{ "}}" }}', context);
+  assertStringIncludes(quoted.html, ">}}</span>");
+});
+
+Deno.test("expression failures remain local and re-rendering cannot leak bindings or publish cancelled work", async () => {
+  using renderer = await createOutputRenderer();
+  const source = "{{ report.total }} {{ (() => 1)() }}\n\nVisible prose";
+  const context = {
+    version: 1 as const,
+    bindings: [{ name: "report", state: "ready" as const, value: { total: 42 } }],
+  };
+  const first = await renderer.renderTemplate("owner", source, context);
+  assertEquals(first.expressions?.map((value) => value.state), ["ready", "failed"]);
+  assertStringIncludes(first.html, "Visible prose");
+  const other = await renderer.renderTemplate("other", source, { version: 1, bindings: [] });
+  assertEquals(other.expressions?.[0].state, "pending");
+  const cancellation = new AbortController();
+  const pending = renderer.renderTemplate("owner", source, context, cancellation.signal);
+  cancellation.abort();
+  await assertRejects(() => pending, DOMException);
+  assertEquals(await renderer.renderTemplate("owner", source, context), first);
+});
+
+Deno.test("interpolation-count rejection leaves the renderer reusable", async () => {
+  using renderer = await createOutputRenderer();
+  await assertRejects(
+    () => renderer.renderTemplate("budget", "{{ 1 }}".repeat(257), { version: 1, bindings: [] }),
+    TemplateInputError,
+  );
+  assertStringIncludes(
+    (await renderer.renderTemplate("budget", "{{ 2 }}", { version: 1, bindings: [] })).html,
+    ">2</span>",
+  );
 });

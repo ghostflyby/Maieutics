@@ -32,11 +32,13 @@ const CodeDemoSource = [
 ].join("\n");
 
 /** Exercises the production extension bridge and actual notebook MIME renderer, without a model call. */
-export async function testNotebookSsrAsync(discovery: string): Promise<void> {
+export async function testNotebookSsrAsync(discovery: string, template = false): Promise<void> {
   const settings = vscode.workspace.getConfiguration("maieutics");
   const previous = settings.get<string>("discoveryFile");
   const channel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
-  const source = CodeDemoSource;
+  const source = template
+    ? "Total {{ report.total.toFixed(2) }}\n\nLater independent prose"
+    : CodeDemoSource;
   const requests = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let subscription: vscode.Disposable | undefined;
@@ -67,15 +69,27 @@ export async function testNotebookSsrAsync(discovery: string): Promise<void> {
       throw new Error("The real extension did not open its session notebook");
     }
     const snapshot = emptyNotebook();
-    snapshot.cells[0].output = {
-      text: source,
-      timeline: [{ kind: "text", messageId: "demo", text: source }],
-    };
+    snapshot.cells[0].output = template
+      ? {
+        repl: [{
+          displayId: "template-demo",
+          data: {
+            "application/vnd.maieutics.template+json": {
+              version: 1,
+              source,
+              bindings: [{ name: "report", state: "ready", value: { total: 42 } }],
+            },
+            "text/plain": "Total 42.00",
+          },
+        }],
+      }
+      : { text: source, timeline: [{ kind: "text", messageId: "demo", text: source }] };
     const restored = new MaieuticsNotebookSerializer().deserializeNotebook(
       new TextEncoder().encode(JSON.stringify(snapshot)),
       cancellation.token,
     );
     if (
+      !template &&
       !restored.cells[0].outputs?.some((output) =>
         output.items.some((item) =>
           item.mime === TurnOutputMime &&
@@ -85,6 +99,12 @@ export async function testNotebookSsrAsync(discovery: string): Promise<void> {
     ) {
       throw new Error("The production serializer bypassed the SSR-capable assistant renderer");
     }
+    if (
+      template &&
+      !restored.cells[0].outputs?.some((output) =>
+        output.items.some((item) => item.mime === "application/vnd.maieutics.template+json")
+      )
+    ) throw new Error("The production serializer dropped the template MIME");
     const edit = new vscode.WorkspaceEdit();
     edit.set(notebook.uri, [
       vscode.NotebookEdit.replaceCells(
@@ -122,19 +142,30 @@ export async function testSsrRenderingAsync(): Promise<void> {
     preserveFocus: true,
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri, markdown.extensionUri] });
   const bridge = new OutputRenderingBridge({
-    render: async (documentId, text, signal) =>
-      client ? await client.renderMarkdown(documentId, text, signal) : {
-        version: 1,
-        documentId,
-        html:
-          `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div>
+    render: async (documentId, text, signal, template) =>
+      client ? await client.renderMarkdown(documentId, text, signal, template) : template
+        ? {
+          version: 1,
+          documentId,
+          css: ".maieutics-output {}",
+          html: `<div class="maieutics-output"><span data-template-state="${
+            template.bindings[0]?.state === "ready" ? "ready" : "pending"
+          }">${
+            template.bindings[0]?.state === "ready" ? "42.00" : "…"
+          }</span><p>Later independent prose</p></div>`,
+        }
+        : {
+          version: 1,
+          documentId,
+          html:
+            `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div>
           <fieldset class="vp-code-group"><legend>Code examples</legend>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
           </fieldset></div>`,
-        css: `.maieutics-output { color: var(--vscode-editor-foreground); }
+          css: `.maieutics-output { color: var(--vscode-editor-foreground); }
           .code-panel { display: none; } .code-tab > input:checked ~ .code-panel { display: block; }`,
-      },
+        },
     post: async (message) => await panel.webview.postMessage(message),
     log: (message) => console.log(message),
   });
@@ -213,6 +244,22 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(scrolled === 1, "replacing a source revision detaches its old anchor handler");
         const updatedPanels = updatedRoot.querySelectorAll(".code-panel");
         assert(getComputedStyle(updatedPanels[0]).display === "none" && getComputedStyle(updatedPanels[1]).display !== "none", "an SSR source update retains the user's selected code example");
+        const templateElement = document.createElement("div"); document.body.appendChild(templateElement);
+        const templateSource = "Total {{ report.total.toFixed(2) }}\\n\\nLater independent prose";
+        const templateItem = (binding) => ({ id: "binding-demo", mime: "application/vnd.maieutics.template+json", json: () => ({ version: 1, source: templateSource, bindings: [binding] }) });
+        delivered = Promise.withResolvers();
+        await api.renderOutputItem(templateItem({ name: "report", state: "pending" }), templateElement);
+        await delivered.promise;
+        const pendingTemplate = templateElement.querySelector('[data-render-engine="ssr"]');
+        const pendingRoot = pendingTemplate.shadowRoot ?? pendingTemplate;
+        assert(pendingRoot.querySelector('[data-template-state="pending"]') && pendingRoot.textContent.includes("Later independent prose"), "a template placeholder does not hide later content");
+        delivered = Promise.withResolvers();
+        await api.renderOutputItem(templateItem({ name: "report", state: "ready", value: { total: 42 } }), templateElement);
+        await delivered.promise;
+        const readyTemplate = templateElement.querySelector('[data-render-engine="ssr"]');
+        const readyRoot = readyTemplate.shadowRoot ?? readyTemplate;
+        assert(readyRoot.querySelector('[data-template-state="ready"]')?.textContent === "42.00" && !readyRoot.querySelector('[data-template-state="pending"]'), "a binding-only update resolves earlier interpolation through the live kernel");
+        assert(readyRoot.textContent.includes("Later independent prose"), "later content survives a binding-only update");
         const finalLink = updatedRoot.querySelector(".table-of-contents a");
         const finalHeading = updatedRoot.querySelector("h2");
         let afterDisposal = 0;

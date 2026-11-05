@@ -1,3 +1,4 @@
+import { captureTemplate, TemplateInputError } from "./template.ts";
 import { timingSafeEqual } from "node:crypto";
 import { type OutputRenderer, OutputRenderingError } from "./mod.ts";
 
@@ -11,7 +12,8 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
     if (supplied.length !== expected.length || !timingSafeEqual(expected, supplied)) {
       return Response.json({ code: "unauthorized" }, { status: 401 });
     }
-    if (new URL(request.url).pathname !== "/v1/markdown" || request.method !== "POST") {
+    const path = new URL(request.url).pathname;
+    if (!["/v1/markdown", "/v1/template"].includes(path) || request.method !== "POST") {
       return Response.json({ code: "not_found" }, { status: 404 });
     }
     try {
@@ -48,10 +50,29 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
       ) {
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
-      const output = await renderer.render(body.documentId, body.source, request.signal);
-      return Response.json({ version: 1, documentId: output.documentId, html: output.html });
+      const output = path === "/v1/template"
+        ? await renderer.renderTemplate(
+          body.documentId,
+          body.source,
+          captureTemplate(body.template),
+          request.signal,
+        )
+        : await renderer.render(body.documentId, body.source, request.signal);
+      return Response.json({
+        version: 1,
+        documentId: output.documentId,
+        html: output.html,
+        expressions: output.expressions?.map(({ state, dependencies, code }) => ({
+          state,
+          dependencies,
+          code,
+        })),
+      });
     } catch (error) {
-      if (error instanceof SyntaxError) {
+      if (
+        error instanceof SyntaxError ||
+        error instanceof TemplateInputError
+      ) {
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
       if (error instanceof OutputRenderingError) {

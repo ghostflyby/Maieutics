@@ -31,7 +31,7 @@ import type {
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 import { IdeCapabilityVersion } from "./ide.ts";
-import type { RenderedMarkdown } from "./outputRendering.ts";
+import type { RenderedMarkdown, TemplateContext } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
  * import surface with the client's queue API). */
@@ -135,12 +135,18 @@ export class FrontendClient {
     documentId: string,
     source: string,
     signal?: AbortSignal,
+    template?: TemplateContext,
   ): Promise<RenderedMarkdown> {
-    const body = await this.post<unknown>("/v1/render/markdown", {
-      version: 1,
-      documentId,
-      source,
-    }, signal);
+    const body = await this.post<unknown>(
+      template ? "/v1/render/template" : "/v1/render/markdown",
+      {
+        version: 1,
+        documentId,
+        source,
+        ...(template ? { template } : {}),
+      },
+      signal,
+    );
     if (typeof body !== "object" || body === null) {
       throw new FrontendError("protocol_error", 0, "The renderer returned no snapshot.");
     }

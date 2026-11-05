@@ -59,7 +59,8 @@
         "displayName": "Maieutics Turn Timeline",
         "entrypoint": "./media/turnRenderer.js",
         "mimeTypes": [
-          "application/vnd.maieutics.turn+json"
+          "application/vnd.maieutics.turn+json",
+          "application/vnd.maieutics.template+json"
         ],
         "requiresMessaging": "always"
       },

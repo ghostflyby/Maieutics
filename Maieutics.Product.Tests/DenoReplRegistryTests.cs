@@ -38,6 +38,7 @@ public sealed class DenoReplRegistryTests
         Assert.Contains("Deno.jupyter.display", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("raw: true", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("display_id", functions.Single(static function => function.Name == "repl_execute").Description);
+        Assert.Contains("application/vnd.maieutics.template+json", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("update: true", functions.Single(static function => function.Name == "repl_execute").Description);
         Assert.Contains("text/plain", functions.Single(static function => function.Name == "repl_execute").Description);
     }

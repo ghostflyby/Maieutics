@@ -94,6 +94,51 @@ public sealed class FrontendOutputRendererTests
         Assert.Null(harness.OutputRenderer.ProcessId);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task TemplateSnapshotsResolveBindingsWithoutExecutingMarkdownOrChangingHistory()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        const string source = "Total {{ report.total.toFixed(2) }}\n\nLater prose\n\n{{ empty }}";
+        var template = new FrontendTemplateContext(1,
+            [new("report", "pending"), new("empty", "ready", Undefined: true)]);
+        var request = new FrontendRenderMarkdown(1, "template", source, template);
+        using var pendingResponse = await harness.Client.PostAsJsonAsync("/v1/render/template", request,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, pendingResponse.StatusCode);
+        var pending = await pendingResponse.Content.ReadFromJsonAsync(
+            FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(pending);
+        Assert.Contains("data-template-state=\"pending\"", pending.Html);
+        Assert.Contains("Later prose", pending.Html);
+        Assert.NotNull(pending.Expressions);
+        Assert.Equal(["pending", "ready"], pending.Expressions.Select(static item => item.State));
+        using var total = JsonDocument.Parse("{\"total\":42}");
+        var readyRequest = request with { Template = template with { Bindings =
+            [new("report", "ready", total.RootElement.Clone()), new("empty", "ready", Undefined: true)] } };
+        using var readyResponse = await harness.Client.PostAsJsonAsync("/v1/render/template", readyRequest,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        var ready = await readyResponse.Content.ReadFromJsonAsync(
+            FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(ready);
+        Assert.Contains(">42.00</span>", ready.Html);
+        Assert.DoesNotContain("data-template-state=\"pending\"", ready.Html);
+        using var passiveResponse = await harness.Client.PostAsJsonAsync("/v1/render/markdown", readyRequest,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        var passive = await passiveResponse.Content.ReadFromJsonAsync(
+            FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(passive);
+        Assert.Contains("{{ report.total.toFixed(2) }}", passive.Html);
+        Assert.Null(passive.Expressions);
+        using var invalidResponse = await harness.Client.PostAsJsonAsync("/v1/render/template",
+            request with { Template = new FrontendTemplateContext(1, [new("report", "ready")]) },
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidResponse.StatusCode);
+        Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
+    }
+
     private static async Task<FrontendRenderedMarkdown> RenderAsync(
         FrontendHarness harness, string source, CancellationToken cancellationToken)
     {

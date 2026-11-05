@@ -24,7 +24,13 @@ internal sealed class DenoReplFunctions
                 "repl_execute",
                 "Executes TypeScript in a stateful Deno REPL (Jupyter-compatible display API). console output and the final expression are " +
                 "private reasoning results. Show rich output to the notebook user with " +
-                "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). For updates, " +
+                "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). " +
+                "For data-bound Markdown use MIME application/vnd.maieutics.template+json with " +
+                "{version:1,source:'Total {{ report.total.toFixed(2) }}',bindings:[{name:'report',state:'pending'}]}. " +
+                "Publish ready data with {name:'report',state:'ready',value:{total:42}} or ready undefined " +
+                "with {name:'report',state:'ready',undefined:true}; failed/cancelled are terminal binding states. " +
+                "The template evaluates only bounded data expressions, not arbitrary JS or scripts; execute producers here " +
+                "and publish new complete binding snapshots. Pair templates with a text/plain fallback. For updates, " +
                 "first display with { raw: true, display_id: id }, then display the replacement with " +
                 "{ raw: true, display_id: id, update: true }. The property is display_id, not displayId, and every " +
                 "rich MIME bundle should include a text/plain fallback."),

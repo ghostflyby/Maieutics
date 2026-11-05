@@ -34,7 +34,7 @@ function createContainer(
         tokens: Token[],
         idx: number,
         _options: unknown,
-        env: { documentId: string; references?: unknown },
+        env: { documentId: string; references?: unknown; template?: unknown },
       ) {
         const token = tokens[idx];
         const info = token.info.trim().slice(klass.length).trim();
@@ -43,6 +43,7 @@ function createContainer(
           const title = md.renderInline(info || defaultTitle, {
             references: env.references,
             documentId: env.documentId,
+            template: env.template,
           });
           if (klass === "details") {
             return `<details class="custom-block ${klass}"${attrs}><summary>${title}</summary>\n`;

@@ -203,3 +203,13 @@
 .maieutics-output :is(h1, h2, h3, h4, h5, h6):focus-visible {
   outline: 1px solid var(--vscode-focusBorder, #0969da);
 }
+
+.maieutics-output .template-value[data-template-state="pending"],
+.maieutics-output .template-value[data-template-state="incomplete"] {
+  color: var(--vscode-descriptionForeground, #6e7781);
+}
+
+.maieutics-output .template-value[data-template-state="failed"],
+.maieutics-output .template-value[data-template-state="cancelled"] {
+  color: var(--vscode-editorError-foreground, #cf222e);
+}

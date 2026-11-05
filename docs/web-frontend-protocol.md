@@ -966,3 +966,70 @@ never reads or writes it. Save/load must not mutate the live session
   ]
 }
 ```
+
+## Explicit template rendering (v1)
+
+`rendering: {"version":1,"templateVersion":1}` advertises an additional authenticated, stateless
+`POST /v1/render/template` request/reply endpoint. The Markdown endpoint remains passive. Request:
+
+```json
+{
+  "version": 1,
+  "documentId": "report1",
+  "source": "Total {{ report.total.toFixed(2) }}\n\nLater prose. {{ empty }}",
+  "template": {
+    "version": 1,
+    "sourceSealed": false,
+    "bindings": [
+      {"name":"report","state":"pending"},
+      {"name":"empty","state":"ready","undefined":true}
+    ]
+  }
+}
+```
+
+Bindings have unique ASCII identifier names (maximum 64 characters). States are `pending`, `ready`,
+`failed`, and `cancelled`; only ready bindings carry `value` or `undefined:true`, exclusively. JSON
+null is a real ready value. `undefined`, `constructor`, `prototype`, and `__proto__` are reserved names.
+Unknown fields are tolerated; unknown states/versions and invalid data fail with `400 invalid_request`.
+Data is JSON-only: finite numbers, strings, booleans, null, arrays and records, with no prototype keys.
+Limits: 128 bindings, 8,192 data values, 16 data nesting levels, and 64,000 aggregate UTF-16 units in
+string values and object keys; keys are at most 128 UTF-16 units. Existing 2 MiB request, 200,000 source,
+4,000,000 HTML, eight-request admission and 30-second total rendering limits apply.
+
+The response extends the Markdown response with `expressions`, each containing `state`,
+`dependencies` (names actually read), and an optional fixed `code`. State additionally includes
+`incomplete` for unfinished syntax. The zero-based index matches `data-template-index` spans for that
+snapshot, including container titles registered during rendering; it is not a stable source identity.
+Ready undefined/null produce empty text, false produces `false`, and zero produces `0`; pending
+produces an ellipsis. Binding failures/cancellation and invalid expressions produce local diagnostics.
+Expression source and producer error details are not echoed in metadata.
+
+Only the data-expression subset in [the design](streaming-output-rendering-design.md#explicit-template-snapshots-implemented-2026-11-05)
+is supported. Interpolations are not recognized inside code spans/fences or Markdown escapes. Values
+are inserted as escaped text without reparsing. Missing names stay pending until `sourceSealed:true`,
+then fail as unresolved; explicitly pending names stay pending. Short-circuit branches depend only on
+values they read, and pending never acts as false or undefined. Each snapshot allows 256 interpolations,
+2,048 UTF-16 units per expression, 256 interpreter steps and 32 AST traversal levels. Exceeding the
+interpolation-count or data limit rejects the request; per-expression failures remain local.
+
+The supervised child exposes authenticated `POST /v1/template` with the same request and HTML/state
+response (CSS remains kernel-owned). It uses the existing child lifecycle and permissions and does
+not retain documents or call a producer. Requests and answers are correlated by the client request
+revision; no server document revisions, publication stream or automatic producer settlement is implied.
+
+A REPL rich display can carry `application/vnd.maieutics.template+json`:
+
+```json
+{"version":1,"source":"{{ report.total }}","sourceSealed":true,"bindings":[{"name":"report","state":"ready","value":{"total":42}}]}
+```
+
+Pair it with `text/plain` fallback. It travels through existing `repl.display`/`repl.updateDisplay`
+frames and notebook-v1 MIME snapshots unchanged. A later update with the same display ID replaces
+source and the complete binding list; it never merges partial binding lists. VS Code recognizes this
+MIME through the production serializer/renderer and requests the explicit template API when supported;
+otherwise it retains native Markdown. The bridge additionally bounds serialized template context to
+128,000 UTF-16 units. Persistence includes source/data, not rendered HTML or producer code. Opening or
+re-rendering a snapshot never launches a producer. An interrupted producer may leave a frozen pending
+snapshot; automatic producer registration, cancellation settlement and late subscriptions are not
+part of this stateless version.

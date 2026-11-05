@@ -49,6 +49,31 @@ public sealed class FrontendProcessSmokeTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableEvaluatesExplicitTemplateSnapshots()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("template-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient { BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL")) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/template", new {
+            version = 1, documentId = "published", source = "{{ report.total.toFixed(2) }} {{ empty }}\n\nLater prose",
+            template = new { version = 1, bindings = new object[] {
+                new { name = "report", state = "ready", value = new { total = 42 } },
+                new { name = "empty", state = "ready", undefined = true }
+            } }
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">42.00</span>", result.GetProperty("html").GetString());
+        Assert.Contains("Later prose", result.GetProperty("html").GetString());
+        Assert.Equal("ready", result.GetProperty("expressions")[1].GetProperty("state").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

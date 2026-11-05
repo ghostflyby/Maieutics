@@ -18,7 +18,7 @@ export interface Capabilities {
    * route directly; absent means the legacy single-active-server semantics. */
   multiSession?: boolean;
   /** Optional stateless, kernel-side passive Markdown SSR. */
-  rendering?: { version: number };
+  rendering?: { version: number; templateVersion?: number };
 }
 
 export interface SessionInfo {

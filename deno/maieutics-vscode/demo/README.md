@@ -59,3 +59,51 @@ published NativeAOT rendering.
 This initial demo updates complete text regions. Revisioned document patches, late TS bindings,
 interactive Vue components, and frontend resource URL rewriting remain future stages in the
 [design document](../../../docs/streaming-output-rendering-design.md).
+
+## Template interpolation and producer updates
+
+`template.maieuticsnb` contains frozen pending and ready rich-display snapshots. Open it with an
+already attached kernel to inspect SSR. Without one, the source remains readable in native Markdown.
+Restoring it starts no producer. The `pending` snapshot intentionally remains pending; it is saved
+presentation data, not a live task registration.
+
+To publish a live value, run this code through the explicitly selected `repl_execute` tool. It uses
+the existing authorized REPL and display update channel; rendering never evaluates the producer.
+
+```ts
+const templateMime = "application/vnd.maieutics.template+json";
+const templateSource =
+  "## Report {#report}\n\nTotal {{ report.total.toFixed(2) }}\n\nLater independent prose.";
+const templateId = "report-demo";
+const publishTemplate = async (binding, update = false) => {
+  await Deno.jupyter.display({
+    [templateMime]: { version: 1, source: templateSource, sourceSealed: true, bindings: [binding] },
+    "text/plain": binding.state === "ready"
+      ? `Total ${binding.value.total}`
+      : `Report: ${binding.state}`,
+  }, { raw: true, display_id: templateId, update });
+};
+await publishTemplate({ name: "report", state: "pending" });
+try {
+  // Replace this data-producing operation with your authorized calculation or resource request.
+  const report = await Promise.resolve({ total: 42 });
+  await publishTemplate({ name: "report", state: "ready", value: report }, true);
+} catch (error) {
+  await publishTemplate({
+    name: "report",
+    state: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed",
+  }, true);
+  throw error;
+}
+```
+
+Every update contains all bindings, not a partial merge. No fixed delay is needed. A fast producer
+may be coalesced directly to ready by the presentation bridge. `undefined:true` without `value`
+represents ready undefined; `pending` never substitutes for it and never selects a fallback branch.
+Arbitrary scripts, function calls, directives and SFC execution are not enabled by template MIME.
+Numeric `.toFixed()` is the initial explicit pure formatting operation.
+
+The live VS Code suite also verifies this MIME through the production notebook serializer, applies a
+binding-only update through the actual kernel, and checks that later independent prose remains. The
+protocol remains a full-snapshot API; automatic subscriptions, cancellation settlement and local DOM
+patching require the later document runtime.

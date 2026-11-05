@@ -59,3 +59,31 @@ for (
 console.log(
   JSON.stringify({ status: "ok", htmlCharacters: output.html.length, headings: output.headings }),
 );
+
+const templateSource =
+  "Total {{ report.total.toFixed(2) }}\n\nLater independent prose\n\n{{ empty }}";
+const pendingTemplate = await renderer.renderTemplate("template", templateSource, {
+  version: 1,
+  bindings: [{ name: "report", state: "pending" }, {
+    name: "empty",
+    state: "ready",
+    undefined: true,
+  }],
+});
+if (pendingTemplate.expressions?.[0].state !== "pending") {
+  throw new Error("Offline template must retain pending state.");
+}
+const readyTemplate = await renderer.renderTemplate("template", templateSource, {
+  version: 1,
+  bindings: [{ name: "report", state: "ready", value: { total: 42 } }, {
+    name: "empty",
+    state: "ready",
+    undefined: true,
+  }],
+});
+if (
+  !readyTemplate.html.includes(">42.00</span>") ||
+  !readyTemplate.html.includes("Later independent prose") ||
+  readyTemplate.expressions?.[1].state !== "ready"
+) throw new Error("Offline template did not reconcile ready values.");
+console.log("Offline template interpolation passed.");

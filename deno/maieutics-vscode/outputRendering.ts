@@ -1,3 +1,17 @@
+/** Explicit, versioned data snapshot from a template rich display. */
+export interface TemplateContext {
+  version: 1;
+  bindings: readonly {
+    name: string;
+    state: "pending" | "ready" | "failed" | "cancelled";
+    value?: unknown;
+    undefined?: boolean;
+  }[];
+  sourceSealed?: boolean;
+}
+
+export const TemplateOutputMime = "application/vnd.maieutics.template+json";
+
 /** Stateless SSR snapshots returned by the optional kernel presentation service. */
 export interface RenderedMarkdown {
   version: 1;
@@ -12,6 +26,7 @@ interface RenderRequest {
   requestId: string;
   documentId: string;
   text: string;
+  template?: TemplateContext;
 }
 
 interface OutputRenderingOptions {
@@ -19,6 +34,7 @@ interface OutputRenderingOptions {
     documentId: string,
     text: string,
     signal: AbortSignal,
+    template?: TemplateContext,
   ): Promise<RenderedMarkdown | undefined>;
   post(message: unknown): Promise<unknown>;
   log(message: string): void;
@@ -57,6 +73,19 @@ export class OutputRenderingBridge {
       value.text.length > 200_000 ||
       !/^[a-z][a-z\d_-]{0,63}$/i.test(value.documentId)
     ) return;
+    if (value.template !== undefined) {
+      if (typeof value.template !== "object" || value.template === null) return;
+      const template = value.template as Partial<TemplateContext>;
+      if (
+        template.version !== 1 || !Array.isArray(template.bindings) ||
+        template.bindings.length > 128
+      ) return;
+      try {
+        if (JSON.stringify(template).length > 128_000) return;
+      } catch {
+        return;
+      }
+    }
     const request = value as unknown as RenderRequest;
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
       await this.options.post({ ...this.#identity(request), type: "unavailable" });
@@ -87,7 +116,12 @@ export class OutputRenderingBridge {
       this.#active = { documentId: request.documentId, requestId: request.requestId, controller };
       let result: RenderedMarkdown | undefined;
       try {
-        result = await this.options.render(request.documentId, request.text, controller.signal);
+        result = await this.options.render(
+          request.documentId,
+          request.text,
+          controller.signal,
+          request.template,
+        );
       } catch (error) {
         if (!controller.signal.aborted) {
           // Log only the failure category; source text and response payloads are untrusted.

@@ -50,13 +50,15 @@ internal sealed class FrontendOutputRenderer(
     }
 
     internal async Task<FrontendRenderedMarkdown> RenderAsync(
-        FrontendRenderMarkdown request, CancellationToken cancellationToken)
+        FrontendRenderMarkdown request, CancellationToken cancellationToken, bool template = false)
     {
         if (request.Version != 1 || request.DocumentId is not { Length: > 0 and <= 64 } ||
             !char.IsAsciiLetter(request.DocumentId[0]) ||
             request.DocumentId.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_') ||
             request.Source is null || request.Source.Length > 200_000)
             throw new FrontendFailureException("invalid_request", "Invalid Markdown render request.");
+        if (template && (request.Template is not { Version: 1, Bindings: { Length: <= 128 } }))
+            throw new FrontendFailureException("invalid_request", "Invalid template render request.");
         if (Interlocked.Increment(ref _queued) > 8)
         {
             Interlocked.Decrement(ref _queued);
@@ -72,15 +74,19 @@ internal sealed class FrontendOutputRenderer(
             entered = true;
             if (_failed) throw Unavailable();
             var port = _port ??= await StartAsync(operation.Token).ConfigureAwait(false);
-            using var message = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/markdown");
+            var endpoint = template ? "template" : "markdown";
+            using var message = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/{endpoint}");
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _nonce);
             message.Content = JsonContent.Create(request, FrontendJsonContext.Default.FrontendRenderMarkdown);
             using var response = await _http.SendAsync(message, operation.Token).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.BadRequest)
+                throw new FrontendFailureException("invalid_request", "Invalid render input.");
             if (!response.IsSuccessStatusCode) throw Unavailable();
             var result = await response.Content.ReadFromJsonAsync(
                 FrontendJsonContext.Default.FrontendRenderedMarkdown, operation.Token).ConfigureAwait(false);
             if (result is null || result.Version != 1 || result.DocumentId != request.DocumentId ||
-                result.Html is null || result.Html.Length > 4_000_000)
+                result.Html is null || result.Html.Length > 4_000_000 ||
+                (template && result.Expressions is not { Length: <= 256 }))
                 throw Unavailable();
             return result with { Css = _css };
         }

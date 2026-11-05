@@ -657,7 +657,14 @@ export async function activate(context) {
         element.appendChild(style);
       }
 
-      const turn = output.json();
+      const payload = output.json();
+      const isTemplate = output.mime === "application/vnd.maieutics.template+json";
+      const template = isTemplate && payload?.version === 1 && typeof payload.source === "string"
+        ? { version: 1, bindings: payload.bindings, sourceSealed: payload.sourceSealed }
+        : undefined;
+      const turn = isTemplate
+        ? { text: template ? payload.source : "[invalid_template]" }
+        : payload;
       const state = states.get(output.id) ?? {
         openNodes: new Set(),
         documents: [],
@@ -725,6 +732,7 @@ export async function activate(context) {
             requestId,
             documentId,
             text: blocks[index],
+            ...(template ? { template } : {}),
           });
         }
       };

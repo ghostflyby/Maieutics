@@ -26,14 +26,23 @@ internal sealed record FrontendCapabilities(
     bool? MultiSession = null,
     [property: JsonPropertyName("rendering")] FrontendRenderingCapability? Rendering = null);
 
-/// <summary>Version of the optional passive Markdown rendering service.</summary>
-internal sealed record FrontendRenderingCapability(int Version);
+/// <summary>Versions of optional passive Markdown and explicit data-template rendering.</summary>
+internal sealed record FrontendRenderingCapability(int Version, int? TemplateVersion = null);
 
 /// <summary>A stateless display request; it does not submit a turn or change canonical history.</summary>
-internal sealed record FrontendRenderMarkdown(int Version, string? DocumentId, string? Source);
+internal sealed record FrontendRenderMarkdown(int Version, string? DocumentId, string? Source, FrontendTemplateContext? Template = null);
+
+/// <summary>Explicit data-only template inputs, isolated from the passive Markdown API.</summary>
+internal sealed record FrontendTemplateContext(int Version, FrontendTemplateBinding[]? Bindings, bool SourceSealed = false);
+
+/// <summary>One published binding; ready undefined is distinct from a missing or pending value.</summary>
+internal sealed record FrontendTemplateBinding(string? Name, string? State, JsonElement? Value = null, bool Undefined = false);
+
+/// <summary>State and actual read dependencies of one derived interpolation boundary.</summary>
+internal sealed record FrontendTemplateExpression(string State, string[] Dependencies, string? Code = null);
 
 /// <summary>Derived passive HTML and host-scoped CSS for the requested document identity.</summary>
-internal sealed record FrontendRenderedMarkdown(int Version, string? DocumentId, string? Html, string? Css = null);
+internal sealed record FrontendRenderedMarkdown(int Version, string? DocumentId, string? Html, string? Css = null, FrontendTemplateExpression[]? Expressions = null);
 
 /// <summary>Authenticated readiness notification from the owned renderer child.</summary>
 internal sealed record FrontendRendererReady(int Version, int Port, string? Nonce);

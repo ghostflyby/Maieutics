@@ -112,3 +112,58 @@ Deno.test("unsupported rendering keeps fallback visible and malformed requests n
     await bridge.dispose();
   }
 });
+
+Deno.test("template binding updates keep the source identity and discard an older binding snapshot", async () => {
+  const first = Promise.withResolvers<import("./outputRendering.ts").RenderedMarkdown>();
+  const started = Promise.withResolvers<void>();
+  const received: unknown[] = [];
+  const posted: unknown[] = [];
+  let calls = 0;
+  const bridge = new OutputRenderingBridge({
+    render: async (documentId, _source, _signal, template) => {
+      received.push(template);
+      if (++calls === 1) {
+        started.resolve();
+        return await first.promise;
+      }
+      return { version: 1, documentId, html: "ready", css: "" };
+    },
+    post: (message) => {
+      posted.push(message);
+      return Promise.resolve();
+    },
+    log: () => {},
+  });
+  try {
+    const base = {
+      source: "maieutics-output",
+      type: "render",
+      documentId: "doc",
+      text: "{{ report }}",
+    };
+    const pending = bridge.handle({
+      ...base,
+      requestId: "pending",
+      template: { version: 1, bindings: [{ name: "report", state: "pending" }] },
+    });
+    await started.promise;
+    const ready = bridge.handle({
+      ...base,
+      requestId: "ready",
+      template: { version: 1, bindings: [{ name: "report", state: "ready", value: 42 }] },
+    });
+    first.resolve({ version: 1, documentId: "doc", html: "obsolete pending", css: "" });
+    await Promise.all([pending, ready]);
+    assertEquals(received.length, 2);
+    assertEquals(posted, [{
+      source: "maieutics-output",
+      type: "rendered",
+      documentId: "doc",
+      requestId: "ready",
+      html: "ready",
+      css: "",
+    }]);
+  } finally {
+    await bridge.dispose();
+  }
+});

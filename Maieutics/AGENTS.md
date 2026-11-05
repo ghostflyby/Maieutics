@@ -68,7 +68,8 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
   seam instead: the REPL's `Deno.Command` polyfill routes them to the `process_spawn` tool, whose run gate is
   deny-by-default and whose sandbox profile derives from the same effective policy (ADR 0045).
 - The output renderer is another internal Deno child. It uses an offline bundle and a captured presentation-scope
-  effective policy rendered before launch; it executes no session or model-authored code. Its process and staged
+  effective policy rendered before launch; it evaluates only the documented data-expression subset and runs no
+  producer, arbitrary session script, or model-authored module. Its process and staged
   files belong to the frontend presentation owner, independently of any run or notebook connection.
 - On Windows, the named-pipe FFI bootstrap is a one-time grant: the child receives an ffi grant only long enough to
   bind `kernel32`, then the broker revokes it. Re-verify platform ffi path-grant behavior before narrowing the flag.

@@ -367,8 +367,9 @@ This component and syntax remain proposed. The initial shipped lane instead acce
 snapshots through the template MIME above. Automatic producer registration and slot ownership remain
 to be designed.
 
-Supporting bare `{{ report.total }}` with a declaration that arrives later requires an explicit
-compiler transform or a complete compilation context. Ordinary VitePress compilation does not turn
+The shipped inline interpreter supports bare `{{ report.total }}` in explicit data snapshots.
+Extending this to declarations in later Vue/SFC source requires an explicit compiler transform or
+a complete compilation context. Ordinary VitePress compilation does not turn
 unknown identifiers into future data slots. Full arbitrary Vue SFC and TS semantics can require
 waiting for an entire script or document; early rendering is guaranteed only for independent units
 and the defined streaming subset.
@@ -523,11 +524,22 @@ Release build completes without warnings; osx-arm64 NativeAOT publish and its re
 smoke pass. Offline smoke, type checks, formatting, lint, source provenance hashes, and diff checks pass.
 These checks validate the shipped snapshot path, not the proposed document runtime or late bindings.
 
+The 2026-11-05 template increment passes 38 renderer/interpreter tests, 691 Deno workspace tests
+plus 20 Node scenarios, and the actual VS Code extension-host suite against the final NativeAOT
+kernel. Browser coverage includes binding-only pending-to-ready updates, later prose remaining,
+production template-MIME restoration and ordinary Markdown compatibility. The .NET suite passes
+1,581 tests with eight platform/external-service skips (1,589 total). Release build has no warnings;
+osx-arm64 NativeAOT publish and both published Markdown/template smoke tests pass. The same pinned
+InspectCode version as CI reports no error-level findings; existing non-gating warnings are tracked
+in its SARIF output. Type/format/lint, offline smoke and diff checks pass. These results validate
+snapshot interpolation, not automatic producer lifecycle or revisioned patches.
+
 ## Open decisions
 
 - How much VitePress page/compiler compatibility is needed beyond the composed passive subset, and
   can those additions retain offline packaging and independent ownership?
-- Which template subset and producer registration model permit safe late binding while preserving scope?
+- How should authorized producer/component registration extend the shipped data-expression subset
+  with automatic late binding, cancellation settlement and stable document scope?
 - Which revisioned presentation transport provides independent lifetime and recovery beyond the shipped stateless API?
 - What are the document-runtime limits, overflow behavior, reconstruction policy, and authorized producer permission scope beyond the implemented passive rendering limits?
 - Which styles, resources, and interactive components can ship inside notebook host constraints?

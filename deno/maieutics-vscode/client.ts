@@ -130,7 +130,7 @@ export class FrontendClient {
     return await this.get("/v1/agent/capabilities", signal);
   }
 
-  /** Requests a passive display snapshot independently of Agent execution. */
+  /** Requests a display snapshot; an explicit template context selects data expression evaluation. */
   async renderMarkdown(
     documentId: string,
     source: string,

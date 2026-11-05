@@ -31,7 +31,8 @@ public sealed class FrontendProcessSmokeTests
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
         var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
         var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
-        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(url);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         using var response = await client.PostAsJsonAsync("/v1/render/markdown",
             new { version = 1, documentId = "published", source = "# Demo\n\n[[toc]]\n\n## Contents {#contents}\n\n> [!NOTE]\n> Alert\n\n::: tip\nSSR from Deno\n:::\n\n::: code-group\n```ts:line-numbers=7 {2} [report.ts]\n// [!code highlight]\nconst total = 42;\n```\n\n```json [report.json]\n{}\n```\n:::" }, budget.Token);
@@ -57,7 +58,8 @@ public sealed class FrontendProcessSmokeTests
         await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
         await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
-        using var client = new HttpClient { BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL")) };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
         using var response = await client.PostAsJsonAsync("/v1/render/template", new {
             version = 1, documentId = "published", source = "{{ report.total.toFixed(2) }} {{ empty }}\n\nLater prose",

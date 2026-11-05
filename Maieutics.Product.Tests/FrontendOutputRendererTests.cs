@@ -3,7 +3,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Maieutics.Configuration;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
 using Microsoft.Extensions.DependencyInjection;
@@ -82,7 +81,8 @@ public sealed class FrontendOutputRendererTests
         budget.CancelAfter(TimeSpan.FromSeconds(50));
         await using var harness = await FrontendHarness.StartAsync(budget.Token,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
-        using var anonymous = new HttpClient { BaseAddress = new Uri(harness.Url) };
+        using var anonymous = new HttpClient();
+        anonymous.BaseAddress = new Uri(harness.Url);
         using var denied = await anonymous.PostAsJsonAsync("/v1/render/markdown", new { }, budget.Token);
         Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
         using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/markdown",

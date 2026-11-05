@@ -67,13 +67,18 @@ per-process temporary directory before launching the REPL child
 Deno-side file that is imported by another embedded file but is not itself embedded fails at child
 startup with `Module not found`, breaking every real-Deno integration test.
 
-When adding, renaming, or removing a `.ts` file under this workspace:
+When adding, renaming, or removing an individually embedded REPL/client/host `.ts` file:
 
 1. Update `Maieutics/Maieutics.csproj` `EmbeddedResource` entries (one
    `<EmbeddedResource Include=... LogicalName="Maieutics.Deno....">` per file).
 2. Update the `DenoReplModule.Entries` table in `Maieutics/DenoRepl/DenoReplModule.cs` (the logical
    name maps to the materialized relative path).
 3. Keep the two lists in sync with each other and with the module's own `deno.json` imports.
+
+The output renderer ships as the committed `maieutics-output-renderer/bundle/service.js` resource,
+not as individual source files. Source additions there require regenerating that bundle and running
+its offline smoke; do not add those source files to `DenoReplModule.Entries`. The self-contained VS
+Code extension likewise ships through its own bundle rather than the kernel's REPL resources.
 
 ## Validation
 

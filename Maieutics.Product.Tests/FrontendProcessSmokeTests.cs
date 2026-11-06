@@ -99,6 +99,29 @@ public sealed class FrontendProcessSmokeTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersSealedLiveAssistantVue()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("assistant-vue-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/assistant", new {
+            version = 1, documentId = "published",
+            source = "---\ntitle: Counter\n---\n# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">+</button><span>{{ count }}</span>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">0</span>", result.GetProperty("html").GetString());
+        Assert.DoesNotContain("title: Counter", result.GetProperty("html").GetString());
+        Assert.Equal(1, result.GetProperty("vue").GetProperty("version").GetInt32());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

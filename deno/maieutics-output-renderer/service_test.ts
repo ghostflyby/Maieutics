@@ -95,3 +95,24 @@ Deno.test("Vue evaluation requires the explicit endpoint and a valid versioned m
     assertEquals((await handler(request("vue", invalid))).status, 400);
   }
 });
+
+Deno.test("sealed assistant API derives component metadata without changing the passive endpoint", async () => {
+  using renderer = await createOutputRenderer();
+  const handler = createRenderHandler(renderer, "secret");
+  const source =
+    "<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">+</button><span>{{ count }}</span>";
+  const request = (path: string, text: string) =>
+    new Request(`http://localhost/v1/${path}`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+      body: JSON.stringify({ version: 1, documentId: "assistant", source: text }),
+    });
+  const live = await (await handler(request("assistant", source))).json();
+  assertEquals(live.vue.version, 1);
+  assertStringIncludes(live.html, ">0</span>");
+  const fenced = await (await handler(request("assistant", "```vue\n" + source + "\n```"))).json();
+  assertEquals(fenced.vue, undefined);
+  const passive = await (await handler(request("markdown", source))).json();
+  assertEquals(passive.vue, undefined);
+  assertStringIncludes(passive.html, "&lt;script setup&gt;");
+});

@@ -625,8 +625,9 @@ export async function activate(context) {
       typeof message.css !== "string" || message.css.length > 64_000 ||
       states.get(request.outputId)?.revision !== request.revision
     ) return;
+    const component = request.vue || (request.assistant && message.vue !== undefined);
     if (
-      request.vue && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
+      component && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
         message.vue.code.length > 400_000 || message.vue.scopeId !== `data-v-${request.documentId}`)
     ) return;
     rememberCodeTabs(state.element, state);
@@ -670,7 +671,7 @@ export async function activate(context) {
     state.regions.delete(request.node);
     root.replaceChildren(style, rendered);
     let dispose;
-    if (request.vue) {
+    if (component) {
       try {
         dispose = mountVueIsland(rendered, message.vue.code);
       } catch {
@@ -686,7 +687,7 @@ export async function activate(context) {
       interactions,
       dispose,
     });
-    const engine = request.vue ? "vue" : "ssr";
+    const engine = component ? "vue" : "ssr";
     request.node.dataset.renderEngine = engine;
     acknowledge(engine);
   });
@@ -699,6 +700,7 @@ export async function activate(context) {
       }
 
       const payload = output.json();
+      const assistant = output.mime === "application/vnd.maieutics.live-assistant+json";
       const isVue = output.mime === "application/vnd.maieutics.vue+json";
       const vue = isVue && payload?.version === 1 && ["markdown", "sfc"].includes(payload.format)
         ? { version: 1, format: payload.format }
@@ -753,7 +755,13 @@ export async function activate(context) {
         content.className = "maieutics-turn";
         content.innerHTML = markup;
       }
-      const mode = vue ? `vue:${vue.format}` : template ? "template" : "markdown";
+      const mode = assistant
+        ? "assistant"
+        : vue
+        ? `vue:${vue.format}`
+        : template
+        ? "template"
+        : "markdown";
       const outgoing = [];
       const regions = retained ? state.regions : new Map();
       const hydrate = async (root) => {
@@ -772,7 +780,7 @@ export async function activate(context) {
           }
           if (hidden) continue;
           const index = Number(node.getAttribute("data-markdown-index"));
-          const key = JSON.stringify([blocks[index], template, vue]);
+          const key = JSON.stringify([blocks[index], template, vue, assistant]);
           const previous = regions.get(node);
           if (previous?.ready && previous.mode === mode && previous.key === key) continue;
           if (previous?.requestRevision === revision || previous?.preparingRevision === revision) {
@@ -793,16 +801,16 @@ export async function activate(context) {
             fallback.textContent = blocks[index];
           }
           if (!current(output.id, state, revision, signal)) return;
-          const assistant = node.closest(".assistant-reply");
+          const reply = node.closest(".assistant-reply");
           let target = node;
-          if (!assistant || !previous?.ready || previous.mode !== mode) {
+          if (!reply || !previous?.ready || previous.mode !== mode) {
             releaseRegion(previous);
             regions.delete(node);
             node.replaceWith(fallback);
             target = fallback;
-            regions.set(target, { mode, key, ready: !assistant });
+            regions.set(target, { mode, key, ready: !reply });
           }
-          if (!assistant) continue;
+          if (!reply) continue;
           const region = regions.get(target);
           region.requestRevision = revision;
           const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
@@ -810,6 +818,7 @@ export async function activate(context) {
           outgoing.push({
             request: {
               vue,
+              assistant,
               mode,
               key,
               signal,
@@ -827,6 +836,7 @@ export async function activate(context) {
               text: blocks[index],
               ...(template ? { template } : {}),
               ...(vue ? { vue } : {}),
+              ...(assistant ? { assistant: true } : {}),
             },
           });
         }

@@ -50,7 +50,7 @@ internal sealed class FrontendOutputRenderer(
     }
 
     internal async Task<FrontendRenderedMarkdown> RenderAsync(
-        FrontendRenderMarkdown request, CancellationToken cancellationToken, bool template = false, bool vue = false)
+        FrontendRenderMarkdown request, CancellationToken cancellationToken, bool template = false, bool vue = false, bool assistant = false)
     {
         if (request.Version != 1 || request.DocumentId is not { Length: > 0 and <= 64 } ||
             !char.IsAsciiLetter(request.DocumentId[0]) ||
@@ -76,7 +76,7 @@ internal sealed class FrontendOutputRenderer(
             entered = true;
             if (_failed) throw Unavailable();
             var port = _port ??= await StartAsync(operation.Token).ConfigureAwait(false);
-            var endpoint = vue ? "vue" : template ? "template" : "markdown";
+            var endpoint = assistant ? "assistant" : vue ? "vue" : template ? "template" : "markdown";
             using var message = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/v1/{endpoint}");
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _nonce);
             message.Content = JsonContent.Create(request, FrontendJsonContext.Default.FrontendRenderMarkdown);
@@ -90,10 +90,11 @@ internal sealed class FrontendOutputRenderer(
                 result.Html is null || result.Html.Length > 4_000_000 ||
                 (template && result.Expressions is not { Length: <= 256 }))
                 throw Unavailable();
-            if (vue && (result.Vue is not { Version: 1, Code: { Length: <= 400_000 } } ||
+            var component = vue || (assistant && result.Vue is not null);
+            if (component && (result.Vue is not { Version: 1, Code: { Length: <= 400_000 } } ||
                         result.Vue.ScopeId != $"data-v-{request.DocumentId}" || result.Css is not { Length: <= 48_000 }))
                 throw Unavailable();
-            return result with { Css = vue ? _css + result.Css : _css };
+            return result with { Css = component ? _css + result.Css : _css };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

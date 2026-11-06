@@ -1,4 +1,10 @@
 .maieutics-output {
+  --vp-c-brand-1: var(--vscode-textLink-foreground, #3451b2);
+  --vp-c-brand-soft: var(--vscode-list-hoverBackground, #3451b21a);
+  --vp-c-bg-soft: var(--vscode-textCodeBlock-background, #f6f8fa);
+  --vp-c-text-1: var(--vscode-editor-foreground, #24292e);
+  --vp-c-text-2: var(--vscode-descriptionForeground, #656d76);
+  --vp-c-divider: var(--vscode-panel-border, #d1d9e0);
   color: var(--vscode-editor-foreground, #24292e);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
   overflow-wrap: anywhere;

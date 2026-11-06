@@ -8,6 +8,7 @@ import json from "@shikijs/langs/json";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
+import { frontmatterPlugin } from "@mdit-vue/plugin-frontmatter";
 import { componentPlugin } from "@mdit-vue/plugin-component";
 import { sfcPlugin } from "@mdit-vue/plugin-sfc";
 import {
@@ -49,6 +50,11 @@ export interface OutputRenderer extends Disposable {
     context: TemplateContext,
     signal?: AbortSignal,
   ): Promise<RenderedOutput>;
+  renderAssistant(
+    documentId: string,
+    source: string,
+    signal?: AbortSignal,
+  ): Promise<RenderedOutput>;
   renderVue(
     documentId: string,
     source: string,
@@ -60,7 +66,12 @@ export interface OutputRenderer extends Disposable {
 /** Recoverable failure at the content rendering boundary. */
 export class OutputRenderingError extends Error {
   constructor(
-    readonly code: "invalid_document_id" | "source_too_large" | "output_too_large" | "disposed",
+    readonly code:
+      | "invalid_document_id"
+      | "source_too_large"
+      | "output_too_large"
+      | "disposed"
+      | "invalid_frontmatter",
   ) {
     super(`Output rendering failed: ${code}.`);
     this.name = "OutputRenderingError";
@@ -91,6 +102,42 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         html,
         linkify: true,
       });
+      // Metadata is recognized and omitted, never evaluated or exposed as component bindings.
+      const omitMetadata = (source: string) => {
+        if (source.length > 16_000) throw new OutputRenderingError("invalid_frontmatter");
+        return {};
+      };
+      const rejectMetadata = () => {
+        throw new OutputRenderingError("invalid_frontmatter");
+      };
+      const withoutMetadata = md.render.bind(md);
+      md.use(frontmatterPlugin, {
+        renderExcerpt: false,
+        grayMatterOptions: {
+          engines: {
+            yaml: omitMetadata,
+            yml: omitMetadata,
+            json: omitMetadata,
+            js: rejectMetadata,
+            javascript: rejectMetadata,
+            coffee: rejectMetadata,
+            coffeescript: rejectMetadata,
+          },
+        },
+      });
+      const withMetadata = md.render.bind(md);
+      md.render = (source, env = {}) => {
+        const opening = /^(?:\uFEFF)?---(?:[ \t]*([A-Za-z][\w-]*))?[ \t]*(?:\r?\n|$)/.exec(source);
+        if (!opening) return withoutMetadata(source, env);
+        if (opening[1] && !["yaml", "yml", "json"].includes(opening[1])) {
+          throw new OutputRenderingError("invalid_frontmatter");
+        }
+        if (!/^(?:---|\.\.\.)[ \t]*\r?$/m.test(source.slice(opening[0].length))) {
+          env.unsealedFrontmatter = true;
+          return withoutMetadata(source, env);
+        }
+        return withMetadata(source, env);
+      };
       installCodeFences(md, highlighter);
       installCodeGroups(md);
       const validateLink = md.validateLink;
@@ -105,6 +152,20 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
 
       if (html) {
         md.use(componentPlugin).use(sfcPlugin);
+        md.core.ruler.after("block", "maieutics-script-source", (state) => {
+          state.env.authoredScript = state.tokens.some((token) =>
+            token.type === "html_block" &&
+            token.level === 0 && /^\s*<script(?:\s|>)/i.test(token.content)
+          );
+        });
+        const htmlBlock = md.renderer.rules.html_block;
+        md.renderer.rules.html_block = (tokens, index, options, env, renderer) => {
+          const token = tokens[index];
+          if (token.level > 0 && /^\s*<(?:script|style)(?:\s|>)/i.test(token.content)) {
+            return `<pre v-pre>${md.utils.escapeHtml(token.content)}</pre>`;
+          }
+          return htmlBlock?.(tokens, index, options, env, renderer) ?? "";
+        };
         const fence = md.renderer.rules.fence;
         md.renderer.rules.fence = (...args) => `<div v-pre>${fence?.(...args) ?? ""}</div>`;
         const inline = md.renderer.rules.code_inline;
@@ -165,6 +226,46 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         ...(template ? { expressions: template.expressions } : {}),
       };
     };
+    const prepareVueMarkdown = (documentId: string, source: string) => {
+      const env: {
+        documentId: string;
+        authoredScript?: boolean;
+        unsealedFrontmatter?: boolean;
+        sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
+      } = { documentId };
+      const body = vueMd.render(source, env);
+      if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
+      return {
+        scripted: env.authoredScript === true,
+        unsealedFrontmatter: env.unsealedFrontmatter === true,
+        source: `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
+          env.sfcBlocks?.scripts.map((block) => block.content).join("\n") ?? ""
+        }\n${env.sfcBlocks?.styles.map((block) => block.content).join("\n") ?? ""}`,
+      };
+    };
+    const renderVue = async (
+      documentId: string,
+      source: string,
+      format: "markdown" | "sfc",
+      signal?: AbortSignal,
+      prepared?: string,
+    ): Promise<RenderedOutput> => {
+      signal?.throwIfAborted();
+      if (disposed) throw new OutputRenderingError("disposed");
+      if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters) {
+        throw new VueComponentError("invalid_component");
+      }
+      const sfc = prepared ??
+        (format === "markdown" ? prepareVueMarkdown(documentId, source).source : source);
+      const component = compileVueComponent(documentId, sfc);
+      const active = signal
+        ? AbortSignal.any([signal, componentLifetime.signal])
+        : componentLifetime.signal;
+      const html = await renderVueComponent(component, active);
+      signal?.throwIfAborted();
+      if (disposed) throw new OutputRenderingError("disposed");
+      return { documentId, html, headings: [], vue: component };
+    };
     return {
       render,
       async renderTemplate(documentId, source, context, signal) {
@@ -173,34 +274,24 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
           expressions: [],
         });
       },
-      async renderVue(documentId, source, format, signal) {
+      renderVue,
+      async renderAssistant(documentId, source, signal) {
         signal?.throwIfAborted();
         if (disposed) throw new OutputRenderingError("disposed");
-        if (
-          !/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters
-        ) throw new VueComponentError("invalid_component");
-        let sfc = source;
-        if (format === "markdown") {
-          const env: {
-            documentId: string;
-            sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
-          } = { documentId };
-          const body = vueMd.render(source, env);
-          if (body.length > MaximumHtmlCharacters) {
-            throw new OutputRenderingError("output_too_large");
-          }
-          sfc = `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
-            env.sfcBlocks?.scripts.map((block) => block.content).join("\n") ?? ""
-          }\n${env.sfcBlocks?.styles.map((block) => block.content).join("\n") ?? ""}`;
+        if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId)) {
+          throw new OutputRenderingError("invalid_document_id");
         }
-        const component = compileVueComponent(documentId, sfc);
-        const active = signal
-          ? AbortSignal.any([signal, componentLifetime.signal])
-          : componentLifetime.signal;
-        const html = await renderVueComponent(component, active);
-        signal?.throwIfAborted();
-        if (disposed) throw new OutputRenderingError("disposed");
-        return { documentId, html, headings: [], vue: component };
+        if (source.length > MaximumSourceCharacters) {
+          throw new OutputRenderingError("source_too_large");
+        }
+        // The public SFC/component plugins see source after frontmatter removal. Their parser
+        // distinguishes top-level scripts from fenced, escaped, inline and quoted examples.
+        if (!/<script(?:\s|>)/i.test(source)) return await render(documentId, source, signal);
+        const prepared = prepareVueMarkdown(documentId, source);
+        if (prepared.unsealedFrontmatter) throw new OutputRenderingError("invalid_frontmatter");
+        return prepared.scripted
+          ? await renderVue(documentId, source, "markdown", signal, prepared.source)
+          : await render(documentId, source, signal);
       },
       [Symbol.dispose]() {
         if (disposed) return;

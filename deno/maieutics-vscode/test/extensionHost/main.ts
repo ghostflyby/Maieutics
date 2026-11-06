@@ -221,7 +221,10 @@ function testRichDisplaySnapshotsAsync(): void {
       "timeline header contains no invisible rich or answer payload",
     );
     const reply = outputs.find((output) => {
-      const item = output.items.find((item) => item.mime === "application/vnd.maieutics.turn+json");
+      const item = output.items.find((item) =>
+        ["application/vnd.maieutics.turn+json", "application/vnd.maieutics.live-assistant+json"]
+          .includes(item.mime)
+      );
       return item !== undefined &&
         JSON.parse(new TextDecoder().decode(item.data)).timeline?.[0]?.kind === "text";
     });
@@ -332,6 +335,7 @@ async function testQueueExecutionAsync(
   supportsRecovery = true,
   missingReplay = false,
   interrupted = false,
+  truncated = false,
 ): Promise<void> {
   const sessionId = "a".repeat(32);
   const runId = "b".repeat(32);
@@ -407,6 +411,7 @@ async function testQueueExecutionAsync(
         messageId: "m",
         agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Recovered reply" }] },
       };
+      if (truncated) yield { type: "turn.truncated", runId };
       try {
         yield interrupted
           ? { type: "run.failed", runId, code: "run_cancelled", message: "Cancelled" }
@@ -442,7 +447,9 @@ async function testQueueExecutionAsync(
       options.signal?.addEventListener("abort", () => resolve(), { once: true })
     );
   };
-  const id = interrupted
+  const id = truncated
+    ? "queue-truncated-test"
+    : interrupted
     ? "queue-interrupt-test"
     : missingReplay
     ? "queue-missing-test"
@@ -480,7 +487,10 @@ async function testQueueExecutionAsync(
       outputChanged = vscode.workspace.onDidChangeNotebookDocument((event) => {
         if (event.notebook !== notebook) return;
         const frames = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
-          .filter((item) => item.mime === "application/vnd.maieutics.turn+json")
+          .filter((item) =>
+            ["application/vnd.maieutics.turn+json", "application/vnd.maieutics.live-assistant+json"]
+              .includes(item.mime)
+          )
           .map((item) => JSON.parse(new TextDecoder().decode(item.data)));
         frames.push(
           ...notebook.cellAt(0).outputs.map(timelineSnapshotFromOutput).filter((node) =>
@@ -569,7 +579,8 @@ async function testQueueExecutionAsync(
       if (supportsRecovery && !missingReplay && !failBeforeRun) {
         const items = notebook.cellAt(0).outputs.flatMap((entry) => entry.items);
         const snapshots = items.filter((item) =>
-          item.mime === "application/vnd.maieutics.turn+json"
+          ["application/vnd.maieutics.turn+json", "application/vnd.maieutics.live-assistant+json"]
+            .includes(item.mime)
         );
         assert(
           snapshots.length === 5,
@@ -579,6 +590,42 @@ async function testQueueExecutionAsync(
           items.every((item) => item.mime !== "text/markdown"),
           "live assistant messages must enter the SSR-capable turn renderer without a Markdown sibling",
         );
+        assert(
+          items.filter((item) => item.mime === "application/vnd.maieutics.live-assistant+json")
+            .length === (interrupted || truncated ? 0 : 2),
+          "only successful completed live assistant messages select interactive compilation",
+        );
+        const codec = new MaieuticsNotebookSerializer();
+        const persistence = new vscode.CancellationTokenSource();
+        try {
+          const frozen = codec.deserializeNotebook(
+            await codec.serializeNotebook(
+              new vscode.NotebookData([
+                Object.assign(
+                  new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "Question", "markdown"),
+                  { outputs: [...notebook.cellAt(0).outputs] },
+                ),
+              ]),
+              persistence.token,
+            ),
+            persistence.token,
+          );
+          const frozenOutputs = frozen.cells[0].outputs;
+          assert(
+            frozenOutputs && frozenOutputs.length > 0,
+            "reopening must retain readable assistant output",
+          );
+          assert(
+            frozenOutputs.every((output) =>
+              output.items.every((item) =>
+                item.mime !== "application/vnd.maieutics.live-assistant+json"
+              )
+            ),
+            "saving and reopening live replies retains source without executable provenance",
+          );
+        } finally {
+          persistence.dispose();
+        }
         const fragments = snapshots.map((item) => JSON.parse(new TextDecoder().decode(item.data)));
         assert(
           new Set(fragments.map((fragment) => fragment.nodeId)).size === 5,
@@ -1059,6 +1106,10 @@ const tests: HostTest[] = [
     run: () => testQueueExecutionAsync(false, true, false, true),
   },
   {
+    name: "truncated live replies never acquire component execution provenance",
+    run: () => testQueueExecutionAsync(false, true, false, false, true),
+  },
+  {
     name: "an older kernel requests an upgrade before accepting queued work",
     run: () => testQueueExecutionAsync(true, false),
   },
@@ -1103,6 +1154,10 @@ export async function run(): Promise<void> {
       selected.push({
         name: "live Vue notebook output mounts the official client runtime",
         run: () => testNotebookSsrAsync(liveRenderer, false, true),
+      });
+      selected.push({
+        name: "Completed live assistant Vue uses the production output factory and kernel",
+        run: () => testNotebookSsrAsync(liveRenderer, false, false, true),
       });
       selected.push({
         name: "the production notebook template MIME applies live kernel interpolation",

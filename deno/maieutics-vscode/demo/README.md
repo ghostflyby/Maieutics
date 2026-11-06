@@ -111,8 +111,9 @@ patching require the later document runtime.
 ## Live Vue counter
 
 Use the explicitly selected `repl_execute` display API to publish the following live component. A
-model can use the same producer pattern; emitting these tags in ordinary assistant text remains
-passive. Rebuild both the executable and extension assets (`deno task build:media` as well as
+model can use the same producer pattern. Completed live assistant replies also support direct
+Vue-in-Markdown through the default path described below; streaming/restored replies remain passive.
+Rebuild both the executable and extension assets (`deno task build:media` as well as
 `deno task build`) for this lane.
 
 ```ts
@@ -155,3 +156,20 @@ source and retain the plain-text fallback. Reopening runs no component; redispla
 producer. The live-kernel VS Code suite checks the real notebook MIME route, SSR, click/reactive
 updates, scoped CSS and replacement/disposal cleanup. Revisioned source patches and automatic late
 producer binding remain later work.
+
+## Direct live assistant counter
+
+With `rendering.assistantVersion:1`, a model can output Vue-in-Markdown directly in its answer;
+`vue-counter.md` is a complete authoring example. Script/setup, markup and scoped styles must be
+outside code fences. Fenced Vue remains an example. The controller waits for successful run
+completion before selecting interactive rendering; partial/failed/cancelled replies remain passive.
+No REPL call is needed for this self-contained component. External data producers still use the
+explicit tools.
+
+After rebuilding/updating both kernel and extension, reload the window and restart the kernel. A
+fresh completed reply should show real buttons, initial zero, computed disabled decrement/reset and
+reactive conditional hints. Source frontmatter is omitted; common VitePress color variables follow
+the host theme. Opening `vue-counter.md` as an ordinary Markdown file or restoring a saved notebook
+does not execute it. Notebook saving preserves answer source, then reopening uses passive rendering;
+a new explicit live run/replay can recreate component state. This is not automatic execution of
+saved code or progressive evaluation of partial scripts.

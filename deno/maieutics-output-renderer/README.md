@@ -89,10 +89,10 @@ directives are never installed. Product resource schemes are retained for a futu
 resource retrieval and rewriting are not implemented here.
 
 This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
-Frontmatter, automatic late-binding subscriptions, HTML patches and host resource delivery remain
-later work. Complete Vue components use the separate explicit lane below. Re-rendering with a later
-link definition corrects earlier references in a complete snapshot; stable incremental nodes require
-the document runtime.
+Frontmatter value exposure, automatic late-binding subscriptions, HTML patches and host resource
+delivery remain later work. Complete Vue components use the separate explicit lane below.
+Re-rendering with a later link definition corrects earlier references in a complete snapshot; stable
+incremental nodes require the document runtime.
 
 ## Explicit data templates
 
@@ -152,6 +152,23 @@ belong in the authorized REPL. Async setup/Suspense and resource hydration are n
 source is removed on notebook saving and reading; supply a text fallback. See the
 [protocol](../../docs/web-frontend-protocol.md#explicit-live-vue-rendering-v1) and
 [runnable demo](../maieutics-vscode/demo/README.md#live-vue-counter).
+
+## Default completed live assistant output
+
+`renderer.renderAssistant(documentId, source, signal)` and `/v1/render/assistant` recognize complete
+Vue-in-Markdown with authored top-level script blocks and return optional compiled Vue metadata.
+Plain content stays passive. Code fences, inline/escaped/quoted examples and metadata never select
+execution. Frontmatter uses the public `@mdit-vue/plugin-frontmatter` 2.1.3 adapter with explicit
+uncached engines: bounded YAML/YML/JSON bodies are omitted, their values ignored and never
+evaluated; JS/CoffeeScript engines are rejected. Common VitePress content color variables map to
+host colors.
+
+The live controller selects this lane only after successful turn completion; streaming partials and
+failed/cancelled output remain passive. Saving/reopening removes live provenance and retains source.
+The [protocol](../../docs/web-frontend-protocol.md#completed-live-assistant-rendering-v1) defines
+the additive capability, endpoint and local MIME. Standalone SFCs keep their explicit format
+selector. This enables default direct assistant components without running incomplete scripts or
+producers.
 
 ## Why compose the underlying packages
 

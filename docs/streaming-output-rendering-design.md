@@ -2,7 +2,8 @@
 
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
-explicit live Vue components now compile, SSR and hydrate with scoped styles. The streaming document
+explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
+assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts. The streaming document
 runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
@@ -42,7 +43,9 @@ Both live controller output and snapshot restoration use `serializer.ts`'s
 nodes. A direct `text/markdown` item bypasses this bridge and cannot receive shared SSR. Older
 Markdown-node output metadata remains readable for snapshot compatibility.
 
-The initial renderer replaces assistant Markdown inside these existing output boundaries.
+The renderer replaces assistant Markdown inside these existing output boundaries. Successful live
+turn completion now selects the assistant endpoint described below; streaming partials and restored
+notebook snapshots retain the passive lane.
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
 retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
 not implicitly become a Vue application.
@@ -97,7 +100,7 @@ may publish data snapshots through the existing rich-display lane; the renderer 
 | Incomplete Markdown | Markstream and `stream-markdown-parser` | Evaluate partial syntax handling and structured nodes. Their parser composition is not established as equivalent to the selected VitePress pipeline. |
 
 The initial implementation uses direct ecosystem composition: Markdown-it 14.3.1, `@mdit-vue` 2.1.3
-heading metadata, TOC and shared utilities, markdown-it-anchor 9.2.0, markdown-it-attrs 4.3.1,
+heading metadata, frontmatter extraction, TOC and shared utilities, markdown-it-anchor 9.2.0, markdown-it-attrs 4.3.1,
 markdown-it-container 4.0.0, Shiki and `@shikijs/transformers` 2.5.0, and Vue 3.5.13 SSR. It supports a selected passive content subset rather than the full VitePress page
 compiler. The explicit Vue lane additionally reuses public component/SFC plugins, Vue
 `@vue/compiler-sfc` 3.5.13, Sucrase 3.35.0 for TypeScript erasure, and Vue runtime-dom 3.5.13
@@ -163,8 +166,8 @@ keep host behavior. The handler is removed on source replacement and disposal wi
 AbortController; no window-level listener or document-authored handler is installed. Other frontends
 need the equivalent local-fragment adapter when rendering inside Shadow DOM.
 
-Unknown languages fall back to escaped text. Raw HTML, document scripts/styles and directives remain text. Ordinary Markdown keeps Vue
-interpolations literal; the explicit template path below evaluates the defined data expression subset. No filesystem snippet or include rules are installed. Complete snapshots
+Unknown languages fall back to escaped text. On the passive endpoint, raw HTML, document scripts,
+styles and directives remain text. Passive Markdown keeps Vue interpolations literal; the explicit template path below evaluates the defined data expression subset. No filesystem snippet or include rules are installed. Complete snapshots
 are rendered through Vue SSR without compiling document expressions or SFC scripts.
 
 `renderer_test.ts` covers reference corrections and isolation, inert content and executable links,
@@ -262,7 +265,7 @@ auto-closing groups, and mixed-content fallback. Kernel and published-process sm
 embedded artifact; browser verification checks CSS visibility, native label activation, and retaining
 the selected tab through another SSR snapshot.
 
-The remaining content gaps are frontmatter and metadata,
+The remaining content gaps are frontmatter value exposure and metadata,
 additional bundled languages, and product resource URL adaptation. File includes and snippet imports
 need an explicit authorized resource contract. Complete live SFC snapshots use the separate lane below;
 ordinary Markdown and data templates keep their existing policies.
@@ -335,9 +338,10 @@ ADR [0047](architecture/decisions/0047-live-vue-output-components.md) defines th
 `rendering.vueVersion: 1`, authenticated `POST /v1/render/vue`, and rich-display MIME
 `application/vnd.maieutics.vue+json` select it explicitly. The MIME contains
 `{version:1, format:"markdown"|"sfc", source}` and should accompany a `text/plain` fallback.
-Ordinary assistant Markdown does not execute `<script>` or Vue directives. A model produces an
-interactive example by calling the existing authorized `repl_execute` display API with this MIME;
-printing the same source into ordinary prose remains passive.
+The passive Markdown endpoint, streaming partial answers and restored notebook snapshots do not
+execute `<script>` or Vue directives. After ADR 0048 below, successful completed live assistant
+replies also select the component runtime directly. The dedicated MIME remains available for
+explicit REPL displays and producer-driven updates.
 
 For Markdown, public `@mdit-vue/plugin-component` and `plugin-sfc` extract SFC scripts/styles and
 recognize component syntax. The shared Markdown pipeline supplies containers, highlighting and
@@ -391,6 +395,69 @@ HTML to 4,000,000. Existing request/admission/revision guards remain in force. S
 source or unsupported frontend capability leaves readable native source/fallback. Stable document
 nodes, late producer registration, binding subscriptions, incremental SFC compilation and patch
 recovery remain the later document-runtime stages below.
+
+## Default completed live assistant Vue (implemented 2026-11-06)
+
+The user selected direct rendering of Vue in realtime assistant answers. ADR
+[0048](architecture/decisions/0048-default-live-assistant-vue.md) supersedes the earlier decision to
+require a REPL rich display for every component. This is a live presentation policy, not a change
+to the passive Markdown endpoint or notebook trust.
+
+The authenticated, stateless `POST /v1/render/assistant` accepts the existing version-1
+`{version,documentId,source}` request and returns the existing HTML/CSS plus optional Vue component
+metadata. `rendering.assistantVersion:1` advertises it. All validation, admission, source/code/CSS/HTML
+bounds and worker isolation remain unchanged. It does not submit a turn or modify canonical history.
+The compiler uses the public Markdown/SFC pipeline to recognize authored top-level script blocks
+after frontmatter removal. Such Vue-in-Markdown compiles with its template, events, directives and
+styles. Fenced, inline, escaped and quoted examples, and script-looking text in metadata, do not
+select execution. Plain assistant text stays passive SSR. Standalone SFC input continues to use the
+explicit `format:"sfc"` rich-display contract; no filesystem component resolution is inferred.
+
+The VS Code controller emits local MIME `application/vnd.maieutics.live-assistant+json` only for
+assistant text after **successful run completion**. Before that, source is still streaming through
+the existing passive turn MIME. Failed, cancelled and truncated executions never acquire the live
+marker. This conservative first implementation waits for the whole source/context: it neither
+executes partial scripts nor substitutes undefined for future declarations. Native/SSR text remains
+readable while source arrives. The text output cache explicitly invalidates on stream-to-sealed
+transition even when the final text bytes match the last delta, so completion cannot leave a passive
+output behind accidentally. Reasoning, tools and child reports keep their existing rendering lanes.
+
+The extension selects the assistant endpoint only when the connected kernel advertises support;
+older kernels retain passive SSR. The live renderer accepts optional compiled factories only for
+this selected request or the existing explicit Vue MIME. Its existing revision guards, retained
+presentation and Vue lifecycle apply. Identical completed redelivery reuses the app; a changed source
+replaces it when ready. Setup still runs in SSR and hydration and must be deterministic. External
+producers remain explicit tool work. Source completion here is not automatic producer settlement or
+the proposed streaming document protocol.
+
+Live provenance is frontend runtime state: notebook serialization reads the new local MIME but
+saves only the ordinary source/timeline snapshot. Restore always reconstructs passive turn MIME and
+never the live marker. A forged marker field in a file cannot turn its text into a component. Opening
+or formatting a saved notebook does not execute scripts or start a producer. An explicitly resumed
+live run/replay is a new delivery from the authenticated kernel, subject to the same live completion
+policy; it can recreate derived component state. No producer executes during rendering or replay.
+
+Frontmatter extraction now reuses `@mdit-vue/plugin-frontmatter` 2.1.3 with explicit uncached engine
+options. YAML/YML/JSON header content is bounded to 16,000 UTF-16 units, omitted and never evaluated
+or expanded; metadata values are currently ignored rather than exposed as bindings. JavaScript and
+CoffeeScript engines and aliases are rejected. An unfinished header remains readable passive source
+and cannot authorize a live component. This closes the visible `title:` leak in the reported
+counter example without installing gray-matter's default executable engines or global source cache.
+`$frontmatter`, metadata-driven routes/resources and full VitePress page semantics remain later work.
+The stylesheet supplies the counter's common `--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`,
+`--vp-c-text-1`, `--vp-c-text-2` and `--vp-c-divider` aliases from VS Code colors with browser fallbacks.
+These are a content subset, not the complete VitePress default theme.
+
+The screenshot counter regression covers initial zero, computed disabled controls, increment/reset,
+`v-if`/`v-else` hints, scoped CSS, duplicate delivery and pending replacement lifecycle. Core tests
+prove script-like code examples and metadata stay inert. Controller tests verify successful live
+selection and failed-run exclusion, invalidate a sealed text cache without requiring a changed
+final delta, and save/reopen live answers as passive source. Real Notebook tests use the production
+output factory and the new endpoint against a published osx-arm64 NativeAOT kernel. The complete
+.NET suite passes 1,585 tests with eight existing platform/external-service skips (1,593 total);
+All 708 Deno workspace tests and 20 Node scenarios pass. Four published-process rendering
+smoke tests and the offline assistant component probe pass. Release build has no warnings and
+InspectCode has no error-level findings (two existing non-gating warnings).
 
 ## Document state and presentation units
 

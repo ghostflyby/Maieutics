@@ -29,7 +29,10 @@ internal sealed class DenoReplFunctions
                 "{version:1,source:'Total {{ report.total.toFixed(2) }}',bindings:[{name:'report',state:'pending'}]}. " +
                 "Publish ready data with {name:'report',state:'ready',value:{total:42}} or ready undefined " +
                 "with {name:'report',state:'ready',undefined:true}; failed/cancelled are terminal binding states. " +
-                "For interactive Vue/VitePress examples publish application/vnd.maieutics.vue+json with " +
+                "Completed live assistant replies can render Vue-in-Markdown directly: write top-level script setup, " +
+                "Vue markup and scoped CSS outside code fences; fenced examples remain literal. Components wait for " +
+                "successful turn completion before compilation, so partial/cancelled scripts do not execute. " +
+                "For explicit rich output or producer-driven Vue updates publish application/vnd.maieutics.vue+json with " +
                 "{version:1,format:'markdown',source:vueMarkdown} (or format:'sfc' for a complete Vue SFC). " +
                 "Use Vue script setup imports, event handlers and scoped CSS there; only imports from vue are supported. " +
                 "This explicit live output runs isolated SSR and mounts a Vue client island; setup runs in each realm, " +

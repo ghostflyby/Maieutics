@@ -207,3 +207,15 @@ short patch list explaining escaping, identity, bounds, ownership, and host chan
 files recognizable; apply product behavior through wrappers where feasible. Review upstream diffs
 against both its fixtures and Maieutics regressions before updating the manifest. No production
 vendor tree has been introduced by this research change.
+
+## Frontmatter extraction integration (2026-11-06)
+
+The shared renderer now uses `@mdit-vue/plugin-frontmatter` 2.1.3 for bounded header extraction.
+It always supplies explicit uncached engine options. YAML/YML/JSON bodies are opaque, bounded to
+16,000 UTF-16 units and omitted; values and aliases are never evaluated/expanded. JavaScript and
+CoffeeScript engines/aliases reject. Unclosed headers remain readable and cannot select a component.
+This intentionally implements extraction without frontmatter value bindings or site page metadata.
+The core tests cover rejected executable engines, omitted title headers, no cross-source cached
+metadata and script-like metadata remaining inert. Official component/SFC parsing now also selects
+Vue for successful completed live assistant answers, behind the owning API and provenance contract
+in ADR 0048. It does not authorize code examples, restored snapshots or producer execution.

@@ -1081,9 +1081,53 @@ The corresponding rich-display MIME is `application/vnd.maieutics.vue+json`:
 Publish through the existing explicitly selected REPL rich-display API and include `text/plain`
 fallback. Live output delivery and updates use existing display identities. VS Code selects this MIME
 only for live output, requests the explicit endpoint, and hydrates successful SSR. Unsupported or
-failed rendering retains native source/fallback. Merely printing this source in assistant text does
-not select execution. The compiled factory is not accepted from a saved notebook or a MIME bundle.
+failed rendering retains native source/fallback. Streaming partials and restored assistant snapshots
+do not select execution; the completed live-assistant policy below separately opts into this runtime. The compiled factory is not accepted from a saved notebook or a MIME bundle.
 Notebook v1 reading and saving both discard the Vue MIME and preserve its other fallback items;
 reading also strips executable `esmSource`/`cssSource` from existing bundled-view MIME. Reopening a
 snapshot executes no component; a live producer must redisplay it. Data-template snapshots remain
 persistable. No document revision protocol, producer subscription or patch stream is introduced.
+
+## Completed live assistant rendering (v1)
+
+`rendering: {"version":1,"assistantVersion":1}` advertises authenticated, stateless
+`POST /v1/render/assistant`. Clients select it for a successfully completed **live assistant** source:
+
+```json
+{"version":1,"documentId":"reply1","source":"# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">{{ count }}</button>"}
+```
+
+The request has the same bounds and unknown-field tolerance as Markdown v1; no Vue format selector
+is required. Response is the existing `{version,documentId,html,css}` snapshot, optionally with
+`vue:{version:1,code,scopeId}` under the same component bounds. Plain source uses passive SSR.
+Top-level authored script blocks select Vue-in-Markdown compilation using the existing isolated
+worker/runtime. Fenced, inline, escaped and quoted examples, and script text inside frontmatter, do
+not select component execution. Invalid source is `400 invalid_request`; worker failure/timeout is
+`503 render_unavailable`. Existing auth, queue admission, budgets and request-revision rules apply.
+The internal child endpoint is authenticated `POST /v1/assistant` and returns component-only CSS;
+the executable adds baseline styling. This endpoint does not change Agent history or event order.
+
+VS Code emits local `application/vnd.maieutics.live-assistant+json` for text nodes only after a
+successful run terminal frame. Payload remains the existing turn snapshot. Streaming text continues
+through passive turn MIME, and failed/cancelled/truncated executions never receive live provenance. The final
+text cache invalidates even if text bytes match its last streaming delta. The renderer sends the
+local bridge request with `assistant:true`; template/Vue selectors cannot be combined with that
+flag. The extension selects the endpoint only when advertised; older kernels retain passive SSR.
+Optional compiled metadata is accepted only for the current selected assistant/component request.
+
+Notebook v1 saving recognizes this local MIME and extracts ordinary source/timeline data. Restoration
+always emits passive turn MIME; a stored marker or source text cannot select execution. The notebook
+format and canonical transcript are unchanged. Opening a saved notebook runs no component. An
+explicit live replay from the authenticated kernel can recreate presentation state. Component setup
+still runs for SSR and hydration and must have deterministic initial state; external producers remain
+explicit tools. This version waits for full source/turn completion and introduces no partial-script
+execution, automatic binding subscriptions or document patches. The dedicated Vue-rich-display MIME
+and explicit SFC format remain available for producer-driven output.
+
+The shared content pipeline recognizes bounded frontmatter headers through the public mdit-vue plugin
+with explicit uncached parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) are omitted without
+parsing/evaluating their values or expanding aliases. JavaScript/CoffeeScript engines are rejected.
+An unfinished header remains readable passive source and cannot authorize a component.
+Metadata values and `$frontmatter` bindings are not exposed. CSS additionally provides common
+`--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`, `--vp-c-text-1`, `--vp-c-text-2`, and
+`--vp-c-divider` host aliases. This adds no site page context or resource loader.

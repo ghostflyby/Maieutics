@@ -567,3 +567,91 @@ Deno.test("renderer disposal cancels and terminates an active Vue evaluation", a
   renderer[Symbol.dispose]();
   await assertRejects(() => pending, DOMException);
 });
+
+Deno.test("sealed live assistant source compiles Vue while code examples and metadata stay inert", async () => {
+  using renderer = await createOutputRenderer();
+  const source = `---
+title: Counter
+---
+# Counter
+
+<script setup>
+import { ref, computed } from 'vue';
+const count = ref(0);
+const isZero = computed(() => count.value === 0);
+const increase = () => { count.value++ };
+</script>
+
+<button @click="increase">+</button><button :disabled="isZero">−</button><span>{{ count }}</span>
+
+<p v-if="isZero">Not clicked</p><p v-else>Clicked {{ count }} times</p>
+
+<style scoped>button { color: red; }</style>`;
+  const passive = await renderer.render("passive", source);
+  assertStringIncludes(passive.html, "&lt;script setup&gt;");
+  assertEquals(passive.html.includes("title: Counter"), false);
+  const live = await renderer.renderAssistant("live", source);
+  assertStringIncludes(live.html, ">0</span>");
+  assertStringIncludes(live.html, "disabled");
+  assertStringIncludes(live.html, "Not clicked");
+  assertEquals(live.html.includes("title: Counter"), false);
+  assertStringIncludes(live.vue?.code ?? "", 'Vue["computed"]');
+  for (
+    const example of [
+      "```vue\n" + source + "\n```",
+      "`<script setup>execute()</script>`",
+      "> <script setup>\n> execute()\n> </script>",
+      "---\ntitle: '<script setup>execute()</script>'\n---\nText {{ untouched }}",
+    ]
+  ) {
+    const output = await renderer.renderAssistant("example", example);
+    assertEquals(output.vue, undefined, "Examples and metadata must not authorize a component");
+  }
+});
+
+Deno.test("frontmatter extraction has no executable engines or source cache", async () => {
+  using renderer = await createOutputRenderer();
+  for (
+    const language of [
+      "js",
+      "javascript",
+      "coffee",
+      "coffeescript",
+      "toml",
+      "constructor",
+      "toString",
+    ]
+  ) {
+    await assertRejects(
+      () => renderer.render("metadata", `---${language}\n({title:'unsafe'})\n---\nBody`),
+      OutputRenderingError,
+    );
+  }
+  await assertRejects(
+    () => renderer.render("metadata", "---\n" + "x".repeat(16_001) + "\n---\nBody"),
+    OutputRenderingError,
+  );
+  const first = await renderer.render("metadata", "---\ntitle: First\n---\nBody");
+  const next = await renderer.render("metadata", "---\ntitle: Second\n---\nBody");
+  assertEquals(first.html, next.html);
+});
+
+Deno.test("an unfinished frontmatter header remains readable and cannot authorize a live component", async () => {
+  using renderer = await createOutputRenderer();
+  assertStringIncludes(
+    (await renderer.render("header", "---\nStill streaming prose")).html,
+    "Still streaming prose",
+  );
+  assertStringIncludes(
+    (await renderer.render("rule", "----\nVisible prose")).html,
+    "Visible prose",
+  );
+  await assertRejects(
+    () =>
+      renderer.renderAssistant(
+        "header",
+        "---\ntitle: partial\n<script setup>const count=0</script>\n\n<span>{{ count }}</span>",
+      ),
+    OutputRenderingError,
+  );
+});

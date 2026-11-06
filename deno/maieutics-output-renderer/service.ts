@@ -14,7 +14,10 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
       return Response.json({ code: "unauthorized" }, { status: 401 });
     }
     const path = new URL(request.url).pathname;
-    if (!["/v1/markdown", "/v1/template", "/v1/vue"].includes(path) || request.method !== "POST") {
+    if (
+      !["/v1/markdown", "/v1/template", "/v1/vue", "/v1/assistant"].includes(path) ||
+      request.method !== "POST"
+    ) {
       return Response.json({ code: "not_found" }, { status: 404 });
     }
     try {
@@ -57,7 +60,9 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         (typeof vue !== "object" || vue === null || vue.version !== 1 ||
           !["markdown", "sfc"].includes(vue.format ?? ""))
       ) return Response.json({ code: "invalid_request" }, { status: 400 });
-      const output = path === "/v1/vue"
+      const output = path === "/v1/assistant"
+        ? await renderer.renderAssistant(body.documentId, body.source, request.signal)
+        : path === "/v1/vue"
         ? await renderer.renderVue(
           body.documentId,
           body.source,

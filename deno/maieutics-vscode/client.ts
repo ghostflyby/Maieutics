@@ -137,9 +137,16 @@ export class FrontendClient {
     signal?: AbortSignal,
     template?: TemplateContext,
     vue?: VueRequest,
+    assistant = false,
   ): Promise<RenderedMarkdown> {
     const body = await this.post<unknown>(
-      vue ? "/v1/render/vue" : template ? "/v1/render/template" : "/v1/render/markdown",
+      assistant
+        ? "/v1/render/assistant"
+        : vue
+        ? "/v1/render/vue"
+        : template
+        ? "/v1/render/template"
+        : "/v1/render/markdown",
       {
         version: 1,
         documentId,
@@ -160,7 +167,7 @@ export class FrontendClient {
       throw new FrontendError("protocol_error", 0, "The renderer returned an invalid snapshot.");
     }
     if (
-      vue &&
+      (vue || (assistant && result.vue !== undefined)) &&
       (result.vue?.version !== 1 || typeof result.vue.code !== "string" ||
         result.vue.code.length > 400_000 || result.vue.scopeId !== `data-v-${documentId}`)
     ) throw new FrontendError("protocol_error", 0, "Invalid Vue component snapshot.");
@@ -169,7 +176,7 @@ export class FrontendClient {
       documentId,
       html: result.html,
       css: result.css,
-      ...(vue ? { vue: result.vue } : {}),
+      ...((vue || assistant) && result.vue ? { vue: result.vue } : {}),
     };
   }
 

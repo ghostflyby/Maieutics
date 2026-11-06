@@ -99,3 +99,37 @@ Deno.test("Vue client selects the live endpoint and rejects a component for anot
     await server.shutdown();
   }
 });
+
+Deno.test("assistant client explicitly selects the live route and accepts optional compiled Vue", async () => {
+  let component = true;
+  const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+    assertEquals(new URL(request.url).pathname, "/v1/render/assistant");
+    assertEquals(await request.json(), { version: 1, documentId: "doc", source: "source" });
+    return Response.json({
+      version: 1,
+      documentId: "doc",
+      html: "<p>0</p>",
+      css: "",
+      ...(component ? { vue: { version: 1, code: "return {};", scopeId: "data-v-doc" } } : {}),
+    });
+  });
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    assertEquals(
+      (await client.renderMarkdown("doc", "source", undefined, undefined, undefined, true)).vue
+        ?.version,
+      1,
+    );
+    component = false;
+    assertEquals(
+      (await client.renderMarkdown("doc", "source", undefined, undefined, undefined, true)).vue,
+      undefined,
+    );
+  } finally {
+    await server.shutdown();
+  }
+});

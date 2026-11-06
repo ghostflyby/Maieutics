@@ -165,6 +165,37 @@ public sealed class FrontendOutputRendererTests
         Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task SealedAssistantSelectsVueWithoutChangingPassiveMarkdownOrHistory()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        using var capabilities = await harness.Client.GetAsync("/v1/agent/capabilities", budget.Token);
+        using var advertised = JsonDocument.Parse(await capabilities.Content.ReadAsStringAsync(budget.Token));
+        Assert.Equal(1, advertised.RootElement.GetProperty("rendering").GetProperty("assistantVersion").GetInt32());
+        const string source = "---\ntitle: Counter\n---\n# Counter\n\n<script setup>import { ref, computed } from 'vue'; const count = ref(0); const isZero = computed(() => count.value === 0);</script>\n\n<button @click=\"count++\">+</button><button :disabled=\"isZero\">−</button><span>{{ count }}</span>\n\n<style scoped>button { color:red; }</style>";
+        var request = new FrontendRenderMarkdown(1, "assistant", source);
+        using var response = await harness.Client.PostAsJsonAsync("/v1/render/assistant", request,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(result);
+        Assert.Contains(">0</span>", result.Html);
+        Assert.Contains("disabled", result.Html);
+        Assert.DoesNotContain("title: Counter", result.Html);
+        Assert.NotNull(result.Vue);
+        Assert.Contains("--vp-c-brand-1", result.Css);
+        using var passive = await harness.Client.PostAsJsonAsync("/v1/render/markdown", request,
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        var plain = await passive.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token);
+        Assert.NotNull(plain);
+        Assert.Null(plain.Vue);
+        Assert.Contains("&lt;script setup&gt;", plain.Html);
+        Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
+    }
+
     private static async Task<FrontendRenderedMarkdown> RenderAsync(
         FrontendHarness harness, string source, CancellationToken cancellationToken)
     {

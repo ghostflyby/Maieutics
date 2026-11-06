@@ -2,18 +2,31 @@ import * as vscode from "vscode";
 import { FrontendClient } from "../../client.ts";
 import { OutputRenderingBridge } from "../../outputRendering.ts";
 import { emptyNotebook } from "../../notebookFormat.ts";
-import { bundleItems, MaieuticsNotebookSerializer } from "../../serializer.ts";
+import {
+  bundleItems,
+  MaieuticsNotebookSerializer,
+  timelineNotebookOutput,
+} from "../../serializer.ts";
 import { TurnOutputMime } from "../../turnView.ts";
 
-const VueDemoSource = `# Counter
+const VueDemoSource = `---
+title: Counter
+---
+# Counter
 
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 const count = ref<number>(0);
+const isZero = computed(() => count.value === 0);
+const increase = () => { count.value++; };
+const decrease = () => { if (!isZero.value) count.value--; };
+const reset = () => { count.value = 0; };
 onUnmounted(() => { globalThis.__maieuticsVueUnmounts = (globalThis.__maieuticsVueUnmounts ?? 0) + 1; });
 </script>
 
-<button class="counter-btn" @click="count++">Count</button><span class="counter-display">{{ count }}</span>
+<p><button class="counter-btn counter-decrease" @click="decrease" :disabled="isZero">−</button><button class="counter-btn counter-increase" @click="increase">+</button><span class="counter-display">{{ count }}</span><button class="counter-reset" @click="reset" :disabled="isZero">Reset</button></p>
+
+<p class="counter-hint" v-if="isZero">Not clicked</p><p class="counter-hint" v-else>Clicked {{ count }} times</p>
 
 <style scoped>.counter-btn { color: rgb(255, 0, 0); padding: 6px 14px; }</style>`;
 
@@ -48,11 +61,12 @@ export async function testNotebookSsrAsync(
   discovery: string,
   template = false,
   vue = false,
+  assistant = false,
 ): Promise<void> {
   const settings = vscode.workspace.getConfiguration("maieutics");
   const previous = settings.get<string>("discoveryFile");
   const channel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
-  const source = vue
+  const source = vue || assistant
     ? VueDemoSource
     : template
     ? "Total {{ report.total.toFixed(2) }}\n\nLater independent prose"
@@ -71,7 +85,7 @@ export async function testNotebookSsrAsync(
         if (message?.source !== "maieutics-output") return;
         if (message.type === "render" && message.text === source) requests.add(message.requestId);
         if (message.type === "applied" && requests.has(message.requestId)) {
-          if (message.engine === (vue ? "vue" : "ssr")) resolve();
+          if (message.engine === (vue || assistant ? "vue" : "ssr")) resolve();
           else {reject(
               new Error(
                 "Actual notebook kept its native fallback instead of using the live renderer",
@@ -107,7 +121,7 @@ export async function testNotebookSsrAsync(
       cancellation.token,
     );
     if (
-      !template && !vue &&
+      !template && !vue && !assistant &&
       !restored.cells[0].outputs?.some((output) =>
         output.items.some((item) =>
           item.mime === TurnOutputMime &&
@@ -131,6 +145,11 @@ export async function testNotebookSsrAsync(
           "text/plain": "Counter fallback",
         })),
       ];
+    }
+    if (assistant) {
+      restored.cells[0].outputs = [timelineNotebookOutput({
+        timeline: [{ kind: "text", messageId: "counter", text: source }],
+      }, true)];
     }
     const edit = new vscode.WorkspaceEdit();
     edit.set(notebook.uri, [
@@ -169,19 +188,21 @@ export async function testSsrRenderingAsync(): Promise<void> {
     preserveFocus: true,
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri, markdown.extensionUri] });
   const bridge = new OutputRenderingBridge({
-    render: async (documentId, text, signal, template, vue) =>
-      client ? await client.renderMarkdown(documentId, text, signal, template, vue) : vue
+    render: async (documentId, text, signal, template, vue, assistant) =>
+      client
+        ? await client.renderMarkdown(documentId, text, signal, template, vue, assistant)
+        : (vue || assistant)
         ? {
           version: 1,
           documentId,
           html:
-            `<div class="maieutics-output vp-doc" data-v-${documentId}><h1 data-v-${documentId}>Counter</h1><button class="counter-btn" data-v-${documentId}>Count</button><span class="counter-display" data-v-${documentId}>0</span></div>`,
+            `<div class="maieutics-output vp-doc" data-v-${documentId}><p data-v-${documentId}><button class="counter-btn counter-decrease" disabled data-v-${documentId}>−</button><button class="counter-btn counter-increase" data-v-${documentId}>+</button><span class="counter-display" data-v-${documentId}>0</span><button class="counter-reset" disabled data-v-${documentId}>Reset</button></p><p class="counter-hint" data-v-${documentId}>Not clicked</p></div>`,
           css: `.counter-btn[data-v-${documentId}] { color: rgb(255, 0, 0); padding: 6px 14px; }`,
           vue: {
             version: 1,
             scopeId: `data-v-${documentId}`,
             code:
-              `const {ref,onUnmounted,h}=Vue;return {__scopeId:"data-v-${documentId}",setup(){const count=ref(0);onUnmounted(()=>{globalThis.__maieuticsVueUnmounts=(globalThis.__maieuticsVueUnmounts??0)+1});return()=>h("div",{class:"maieutics-output vp-doc"},[h("h1",null,"Counter"),h("button",{class:"counter-btn",onClick:()=>count.value++},"Count"),h("span",{class:"counter-display"},String(count.value))])}};`,
+              `const {ref,onUnmounted,h,computed}=Vue;return {__scopeId:"data-v-${documentId}",setup(){const count=ref(0),isZero=computed(()=>count.value===0);onUnmounted(()=>{globalThis.__maieuticsVueUnmounts=(globalThis.__maieuticsVueUnmounts??0)+1});return()=>h("div",{class:"maieutics-output vp-doc"},[h("p",null,[h("button",{class:"counter-btn counter-decrease",disabled:isZero.value,onClick:()=>{if(!isZero.value)count.value--}},"−"),h("button",{class:"counter-btn counter-increase",onClick:()=>count.value++},"+"),h("span",{class:"counter-display"},String(count.value)),h("button",{class:"counter-reset",disabled:isZero.value,onClick:()=>{count.value=0}},"Reset")]),h("p",{class:"counter-hint"},isZero.value?"Not clicked":"Clicked "+count.value+" times")])}};`,
           },
         }
         : template
@@ -322,7 +343,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         let vueSource = ${
       JSON.stringify(VueDemoSource).replaceAll("<", String.fromCharCode(92) + "u003c")
     };
-        const vueOutput = () => ({ id: "vue-demo", mime: "application/vnd.maieutics.vue+json", json: () => ({ version: 1, format: "markdown", source: vueSource }) });
+        const vueOutput = () => ({ id: "vue-demo", mime: "application/vnd.maieutics.live-assistant+json", json: () => ({ text: vueSource }) });
         globalThis.__maieuticsVueUnmounts = 0;
         const mountVue = async () => {
           delivered = Promise.withResolvers();
@@ -338,9 +359,16 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const clickCounter = async (root) => {
           const value = root.querySelector(".counter-display");
           assert(value?.textContent === "0", "the SSR counter starts at zero");
-          root.querySelector(".counter-btn").click();
+          assert(root.querySelector(".counter-decrease").disabled && root.querySelector(".counter-reset").disabled, "computed bindings disable decrement and reset at zero");
+          root.querySelector(".counter-decrease").click();
+          assert(value.textContent === "0", "disabled decrement cannot produce a negative count");
+          root.querySelector(".counter-increase").click();
           await vueRuntime.vueUpdatesComplete();
           assert(value.textContent === "1", "Vue click events update reactive state");
+          assert(!root.querySelector(".counter-decrease").disabled && root.querySelector(".counter-hint").textContent.includes("Clicked 1"), "computed and v-if branches react to a click");
+          root.querySelector(".counter-reset").click(); await vueRuntime.vueUpdatesComplete();
+          assert(value.textContent === "0" && root.querySelector(".counter-hint").textContent === "Not clicked", "reset restores count and the conditional hint");
+          root.querySelector(".counter-increase").click(); await vueRuntime.vueUpdatesComplete();
         };
         assert(getComputedStyle(firstVue.querySelector(".counter-btn")).color === "rgb(255, 0, 0)", "compiled scoped CSS applies to hydrated nodes");
         await clickCounter(firstVue);
@@ -355,7 +383,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const replacingVue = mountVue();
         await deliveryHeld.promise;
         assert(beforeDuplicate.isConnected && globalThis.__maieuticsVueUnmounts === 0, "an outstanding SSR replacement keeps the existing Vue island mounted");
-        firstVue.querySelector(".counter-btn").click();
+        firstVue.querySelector(".counter-increase").click();
         await vueRuntime.vueUpdatesComplete();
         assert(firstVue.querySelector(".counter-display").textContent === "2", "the retained Vue island remains interactive while SSR is pending");
         holdDelivery = false; deliver(heldMessage);

@@ -61,7 +61,8 @@
         "mimeTypes": [
           "application/vnd.maieutics.turn+json",
           "application/vnd.maieutics.template+json",
-          "application/vnd.maieutics.vue+json"
+          "application/vnd.maieutics.vue+json",
+          "application/vnd.maieutics.live-assistant+json"
         ],
         "requiresMessaging": "always"
       },

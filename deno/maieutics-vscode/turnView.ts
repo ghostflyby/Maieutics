@@ -925,6 +925,7 @@ function formatDuration(ms: number): string {
  * text/markdown is retained as a legacy snapshot compatibility constant. */
 export const AgentOutputMime = "text/markdown";
 export const ToolOutputMime = "application/vnd.maieutics.tool+json";
+export const LiveAssistantOutputMime = "application/vnd.maieutics.live-assistant+json";
 export const TurnOutputMime = "application/vnd.maieutics.turn+json";
 
 /** A transport-neutral description of one item of a structured turn output:
@@ -948,8 +949,12 @@ export function turnOutputItems(snapshot: {
   truncated?: boolean;
   error?: { code: string; message: string };
   subagents?: readonly SubagentSnapshotView[];
-}): readonly [TurnOutputItemSpec] {
-  return [{ mime: TurnOutputMime, encoding: "json", value: snapshot }];
+}, liveAssistant = false): readonly [TurnOutputItemSpec] {
+  return [{
+    mime: liveAssistant ? LiveAssistantOutputMime : TurnOutputMime,
+    encoding: "json",
+    value: snapshot,
+  }];
 }
 
 function isFailureResult(result: unknown): boolean {

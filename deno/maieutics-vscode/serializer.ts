@@ -24,7 +24,12 @@ import {
   type TurnBinding,
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
-import { turnOutputItems, type TurnOutputItemSpec, TurnOutputMime } from "./turnView.ts";
+import {
+  LiveAssistantOutputMime,
+  turnOutputItems,
+  type TurnOutputItemSpec,
+  TurnOutputMime,
+} from "./turnView.ts";
 import { timelineOutputSnapshots } from "./timelineOutputs.ts";
 
 export const NotebookType = "maieutics-notebook";
@@ -36,8 +41,13 @@ export const ReplDisplayMetadataKey = "maieuticsRepl";
 export const TimelineSnapshotMetadataKey = "maieuticsTimelineNode";
 
 /** All timeline nodes use the turn renderer, which owns assistant SSR and native fallback. */
-export function timelineNotebookOutput(node: OutputSnapshot): vscode.NotebookCellOutput {
-  return new vscode.NotebookCellOutput(turnOutputItems(node).map(outputItemFromSpec));
+export function timelineNotebookOutput(
+  node: OutputSnapshot,
+  liveAssistant = false,
+): vscode.NotebookCellOutput {
+  return new vscode.NotebookCellOutput(
+    turnOutputItems(node, liveAssistant).map(outputItemFromSpec),
+  );
 }
 
 /** Read legacy Markdown-node bytes, since item updates did not replace output metadata. */
@@ -157,7 +167,7 @@ function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undef
       repl.push({ displayId: display.displayId, data: display.data });
     }
     for (const item of output.items) {
-      if (item.mime !== TurnOutputMime) continue;
+      if (item.mime !== TurnOutputMime && item.mime !== LiveAssistantOutputMime) continue;
       try {
         const snapshot = JSON.parse(new TextDecoder().decode(item.data)) as OutputSnapshot;
         if (typeof snapshot === "object" && snapshot !== null) {
@@ -191,7 +201,7 @@ export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCe
     new vscode.NotebookCellOutput(bundleItems(display.data), { [ReplDisplayMetadataKey]: display })
   );
   outputs.push(
-    ...timelineOutputSnapshots(output).map(timelineNotebookOutput),
+    ...timelineOutputSnapshots(output).map((node) => timelineNotebookOutput(node)),
   );
   return outputs;
 }

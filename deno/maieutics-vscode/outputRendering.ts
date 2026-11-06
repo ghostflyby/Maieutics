@@ -34,6 +34,7 @@ interface RenderRequest {
   text: string;
   template?: TemplateContext;
   vue?: VueRequest;
+  assistant?: boolean;
 }
 
 interface OutputRenderingOptions {
@@ -43,6 +44,7 @@ interface OutputRenderingOptions {
     signal: AbortSignal,
     template?: TemplateContext,
     vue?: VueRequest,
+    assistant?: boolean,
   ): Promise<RenderedMarkdown | undefined>;
   post(message: unknown): Promise<unknown>;
   log(message: string): void;
@@ -101,6 +103,10 @@ export class OutputRenderingBridge {
         !["markdown", "sfc"].includes(vue.format ?? "") || value.template !== undefined
       ) return;
     }
+    if (
+      value.assistant !== undefined &&
+      (value.assistant !== true || value.template !== undefined || value.vue !== undefined)
+    ) return;
     const request = value as unknown as RenderRequest;
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
       await this.options.post({ ...this.#identity(request), type: "unavailable" });
@@ -137,6 +143,7 @@ export class OutputRenderingBridge {
           controller.signal,
           request.template,
           request.vue,
+          request.assistant,
         );
       } catch (error) {
         if (!controller.signal.aborted) {

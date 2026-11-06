@@ -13,8 +13,9 @@ renderer parent. Portable notebook snapshots must not become executable because 
 
 Add an explicit live rich-output lane, `application/vnd.maieutics.vue+json`, with version 1, a complete
 source snapshot and `markdown` or `sfc` format. An authorized existing REPL producer publishes it
-with text fallback. Ordinary assistant Markdown and data-template evaluation keep their current
-policies. Add authenticated stateless `/v1/render/vue` and optional `rendering.vueVersion:1` to the
+with text fallback. The passive Markdown endpoint and data-template evaluation keep their current policies.
+ADR 0048 additionally enables this runtime for successful completed live assistant replies; saved
+notebook restoration remains passive. Add authenticated stateless `/v1/render/vue` and optional `rendering.vueVersion:1` to the
 existing frontend protocol v1; retain the existing request, admission and revision guards.
 
 Reuse public mdit-vue component/SFC plugins for Vue-in-Markdown, Vue 3.5.13's official SFC, template

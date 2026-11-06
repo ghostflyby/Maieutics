@@ -97,3 +97,20 @@ if (!vue.html.includes(">0</span>") || !vue.vue?.css.includes("data-v-vueoffline
   throw new Error("Offline Vue worker failed.");
 }
 console.log("Offline isolated Vue SSR passed.");
+
+const assistant = await renderer.renderAssistant(
+  "live",
+  `---
+title: Counter
+---
+<script setup>import { ref } from 'vue'; const count = ref(0);</script>
+
+<button @click="count++">+</button><span>{{ count }}</span>`,
+);
+if (
+  !assistant.vue || !assistant.html.includes(">0</span>") ||
+  assistant.html.includes("title: Counter")
+) {
+  throw new Error("Offline live assistant Vue failed");
+}
+console.log("Offline sealed assistant Vue passed.");

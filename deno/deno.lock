@@ -33,7 +33,8 @@
     "npm:@mdit-vue/plugin-sfc@2.1.3": "2.1.3",
     "npm:@vue/compiler-sfc@3.5.13": "3.5.13",
     "npm:@vue/runtime-dom@3.5.13": "3.5.13",
-    "npm:sucrase@3.35.0": "3.35.0"
+    "npm:sucrase@3.35.0": "3.35.0",
+    "npm:@mdit-vue/plugin-frontmatter@2.1.3": "2.1.3"
   },
   "jsr": {
     "@ghostflyby/aves@0.6.0": {
@@ -227,7 +228,7 @@
         "https-proxy-agent",
         "jszip",
         "ora",
-        "semver"
+        "semver@7.8.5"
       ]
     },
     "@vue/compiler-core@3.5.13": {
@@ -492,7 +493,7 @@
     "markdown-it@14.3.1": {
       "integrity": "sha512-4Ej49aYTDFIQ+uBkfX8GBvJGccoARxxPep+7aWTs55ozbjQJpW9M26Fe53vnGgvLeVzva/amzjQQaQu9w0vMhA==",
       "dependencies": [
-        "argparse",
+        "argparse@2.0.1",
         "entities",
         "linkify-it",
         "mdurl",
@@ -576,8 +577,8 @@
         "is-unicode-supported@2.1.0",
         "log-symbols",
         "stdin-discarder",
-        "string-width",
-        "strip-ansi"
+        "string-width@7.2.0",
+        "strip-ansi@7.2.0"
       ]
     },
     "pako@1.0.11": {
@@ -678,9 +679,9 @@
     "string-width@7.2.0": {
       "integrity": "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==",
       "dependencies": [
-        "emoji-regex",
-        "get-east-asian-width",
-        "strip-ansi"
+        "emoji-regex@10.6.0",
+        "get-east-asian-width@1.6.0",
+        "strip-ansi@7.2.0"
       ]
     },
     "string_decoder@1.1.1": {
@@ -699,7 +700,7 @@
     "strip-ansi@7.2.0": {
       "integrity": "sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w==",
       "dependencies": [
-        "ansi-regex"
+        "ansi-regex@6.3.0"
       ]
     },
     "trim-lines@3.0.1": {
@@ -1041,6 +1042,67 @@
         "string-width@5.1.2",
         "strip-ansi@7.2.0"
       ]
+    },
+    "@mdit-vue/plugin-frontmatter@2.1.3": {
+      "integrity": "sha512-KxsSCUVBEmn6sJcchSTiI5v9bWaoRxe68RBYRDGcSEY1GTnfQ5gQPMIsM48P4q1luLEIWurVGGrRu7u93//LDQ==",
+      "dependencies": [
+        "@mdit-vue/types",
+        "@types/markdown-it",
+        "gray-matter",
+        "markdown-it"
+      ]
+    },
+    "argparse@1.0.10": {
+      "integrity": "sha512-o5Roy6tNG4SL/FOkCAN6RzjiakZS25RLYFrcMttJqbdd8BWrnA+fGz57iN5Pb06pvBGvl5gQ0B48dJlslXvoTg==",
+      "dependencies": [
+        "sprintf-js"
+      ]
+    },
+    "esprima@4.0.1": {
+      "integrity": "sha512-eGuFFw7Upda+g4p+QHvnW0RyTX/SVeJBDM/gCtMARO0cLuT2HcEKnTPvhjV6aGeqrCB/sbNop0Kszm0jsaWU4A==",
+      "bin": true
+    },
+    "extend-shallow@2.0.1": {
+      "integrity": "sha512-zCnTtlxNoAiDc3gqY2aYAWFx7XWWiasuF2K8Me5WbN8otHKTUKBwjPtNpRs/rbUZm7KxWAaNj7P1a/p52GbVug==",
+      "dependencies": [
+        "is-extendable"
+      ]
+    },
+    "gray-matter@4.0.3": {
+      "integrity": "sha512-5v6yZd4JK3eMI3FqqCouswVqwugaA9r4dNZB1wwcmrD02QkV5H0y7XBQW8QwQqEaZY1pM9aqORSORhJRdNK44Q==",
+      "dependencies": [
+        "js-yaml",
+        "kind-of",
+        "section-matter",
+        "strip-bom-string"
+      ]
+    },
+    "is-extendable@0.1.1": {
+      "integrity": "sha512-5BMULNob1vgFX6EjQw5izWDxrecWK9AM72rugNr0TFldMOi0fj6Jk+zeKIt0xGj4cEfQIJth4w3OKWOJ4f+AFw=="
+    },
+    "js-yaml@3.15.2": {
+      "integrity": "sha512-6EuL879VkRA+1Cz578mKMiKvjPNEuk6+r1JaFzoSWejZmtf7xWbIyw1e3KkxlkzTIt9Taw6JBhEppG7utc1P+w==",
+      "dependencies": [
+        "argparse@1.0.10",
+        "esprima"
+      ],
+      "bin": true
+    },
+    "kind-of@6.0.3": {
+      "integrity": "sha512-dcS1ul+9tmeD95T+x28/ehLgd9mENa3LsvDTtzm3vyBEO7RPptvAD+t44WVXaUjTBRcrpFeFlC8WCruUR456hw=="
+    },
+    "section-matter@1.0.0": {
+      "integrity": "sha512-vfD3pmTzGpufjScBh50YHKzEu2lxBWhVEHsNGoEXmCmn2hKGfeNLYMzCJpe8cD7gqX7TJluOVpBkAequ6dgMmA==",
+      "dependencies": [
+        "extend-shallow",
+        "kind-of"
+      ]
+    },
+    "sprintf-js@1.0.3": {
+      "integrity": "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="
+    },
+    "strip-bom-string@1.0.0": {
+      "integrity": "sha512-uCC2VHvQRYu+lMh4My/sFNmF2klFymLX1wHJeXnbEJERpV/ZsVuonzerjfrGpIGF7LBVa1O7i9kjiWvJiFck8g=="
     }
   },
   "workspace": {
@@ -1063,6 +1125,7 @@
       "maieutics-output-renderer": {
         "dependencies": [
           "npm:@mdit-vue/plugin-component@2.1.3",
+          "npm:@mdit-vue/plugin-frontmatter@2.1.3",
           "npm:@mdit-vue/plugin-headers@2.1.3",
           "npm:@mdit-vue/plugin-sfc@2.1.3",
           "npm:@mdit-vue/plugin-toc@2.1.3",

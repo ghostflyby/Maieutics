@@ -26,8 +26,8 @@ internal sealed record FrontendCapabilities(
     bool? MultiSession = null,
     [property: JsonPropertyName("rendering")] FrontendRenderingCapability? Rendering = null);
 
-/// <summary>Versions of optional passive Markdown, data-template and explicit live Vue rendering.</summary>
-internal sealed record FrontendRenderingCapability(int Version, int? TemplateVersion = null, int? VueVersion = null);
+/// <summary>Versions of optional passive Markdown, data-template, explicit Vue and completed live-assistant rendering.</summary>
+internal sealed record FrontendRenderingCapability(int Version, int? TemplateVersion = null, int? VueVersion = null, int? AssistantVersion = null);
 
 /// <summary>A stateless display request; it does not submit a turn or change canonical history.</summary>
 internal sealed record FrontendRenderMarkdown(int Version, string? DocumentId, string? Source, FrontendTemplateContext? Template = null, FrontendVueRequest? Vue = null);

@@ -11,6 +11,22 @@ internal sealed partial class PluginHostManager
     /// prompt survives revocation, removal or hook failure; running profiles retain their own text.</summary>
     public async Task<IReadOnlyList<SystemPromptContribution>> GetSystemPromptsAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            return await CollectSystemPromptsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Stop can cancel and dispose the captured generation between admission and
+            // linking its token. Presentation instructions must fail as unavailable here.
+            cancellationToken.ThrowIfCancellationRequested();
+            _logger.LogWarning("Plugin host wait resources were disposed while collecting SystemPrompt instructions.");
+            return [];
+        }
+    }
+
+    private async Task<IReadOnlyList<SystemPromptContribution>> CollectSystemPromptsAsync(CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         (PluginDescriptor Descriptor, PluginRegistration[] Exports)[] sources;
         CancellationToken generation;

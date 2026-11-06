@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace Maieutics.Agent;
 
 /// <summary>Configures Agent session limits and instructions.</summary>
@@ -5,6 +7,10 @@ public sealed record AgentSessionOptions
 {
     /// <summary>Gets the system instructions sent with every model invocation.</summary>
     public string? SystemPrompt { get; init; }
+
+    /// <summary>Gets additional immutable system instruction messages. Each item is sent as
+    /// its own native system message, after the base instructions, and never enters history.</summary>
+    public ImmutableArray<string> SystemInstructions { get; init; } = [];
 
     /// <summary>Gets the maximum number of complete turns retained in committed history.</summary>
     public int MaxRetainedTurns { get; init; } = 50;
@@ -58,6 +64,9 @@ public sealed record AgentSessionOptions
 
     internal void Validate()
     {
+        if (SystemInstructions.IsDefault)
+            throw new ArgumentException("System instruction messages must be an initialized immutable array.", nameof(SystemInstructions));
+        foreach (var instruction in SystemInstructions) ArgumentException.ThrowIfNullOrWhiteSpace(instruction);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxRetainedTurns, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxHistoryBytes, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxInputCharacters, 1);

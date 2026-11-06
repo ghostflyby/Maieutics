@@ -44,14 +44,15 @@ public sealed class OutputRenderingPromptTests
         }
 
         Assert.Equal(2, client.Instructions.Count);
-        Assert.All(client.Instructions, instructions =>
+        Assert.All(client.Instructions, instructions => Assert.Equal(basePrompt, instructions));
+        Assert.All(client.Requests, request =>
         {
-            var prompt = Assert.IsType<string>(instructions);
+            var sections = request.Where(message => message.Role == ChatRole.System).ToArray();
+            var prompt = Assert.Single(sections, message => message.Text.Contains("VitePress-based Markdown", StringComparison.Ordinal)).Text;
             Assert.Contains("VitePress-based Markdown", prompt);
             Assert.Contains("only after successful completion", prompt);
-            Assert.Equal(2, prompt.Split("## Output rendering", StringSplitOptions.None).Length);
-            if (basePrompt is not null) Assert.StartsWith(basePrompt, prompt);
-            if (withSkills) Assert.Contains("skill://example", prompt);
+            Assert.Equal(2, prompt.Split("## Output rendering").Length);
+            if (withSkills) Assert.Contains(sections, message => message.Text.Contains("skill://example", StringComparison.Ordinal));
         });
         Assert.Equal(basePrompt, profile.Options.SystemPrompt);
         await using var metadata = await manager.AcquireTitleProfileAsync(manager.Id, budget.Token);

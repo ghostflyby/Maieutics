@@ -143,7 +143,7 @@ export interface SkillsContext {
 }
 
 /** Per-conversation-run instruction hook; no base prompt, transcript or secrets are provided.
- * The approved manifest must select its export with `extensions.SystemPrompt: [{provider: "./main"}]`.
+ * The approved manifest must select its export with `extensions.SystemPrompt: [{provider: "main"}]`.
  */
 export interface SystemPromptContext {
   readonly workspaceRoot: string | null;

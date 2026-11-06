@@ -468,6 +468,13 @@ conversation run acquires its selected profile. It preserves the configured `Sys
 client, tools, capabilities and limits, then composes with the existing skill and title decorators.
 New, resumed and forked product sessions use this same path, including session-selected models.
 Each run captures the section once; it never accumulates in configuration or canonical history.
+Each contribution is retained as an item in immutable `AgentSessionOptions.SystemInstructions`
+and delivered as an independent native system message. The configured base, skill catalog and
+title context are not concatenated with plugin bodies. OpenAI retains message items; Anthropic
+retains separate top-level `system` text blocks, including across tool continuations. Source/name
+attribution remains inside its own message; content cannot manufacture another protocol message by
+inserting a heading, code fence, JSON fragment or XML closing tag. These are API framing boundaries,
+not a guarantee of semantic isolation between same-role instructions.
 Metadata-only title requests bypass the conversation decorators. The provider-neutral Agent runtime
 does not acquire a dependency on the frontend or VitePress.
 
@@ -500,11 +507,14 @@ Plugin instruction contribution routes are:
 - `SystemPrompt` supplies actual system-level instructions (ADR
   [0049](architecture/decisions/0049-system-prompt-extensions.md)): static `{name, content}` manifest
   entries or a `defineExtensionPoint("SystemPrompt", ...)` worker hook explicitly selected by an
-  approved `{provider: "worker-export"}` declaration. Contributions append to the configured base,
+  approved `{provider: "worker-export"}` declaration. Contributions follow the base as native messages,
   in stable source/export order. Worker collection shares one five-second wait budget; errors and
   invalid output are logged and omitted with no stale cache. Explicit selectors route cold workers
   before their first registry frame. Revocation, provider removal, descriptor reload
   and host stop are rechecked before the snapshot is returned. An acquired run keeps its text.
+  Disposed generation wait resources produce an unavailable/empty contribution set, while explicit
+  caller cancellation still propagates. A provider selector must match the worker-map key exactly
+  (`main` for `entrypoints.worker.main`, not a module-relative path).
 
 The external plugin declarations and provider selectors join the existing extensions fingerprint
 domain, so their changes revoke approval. Code-shipped built-ins are registered by the composition
@@ -519,6 +529,9 @@ acquisition, and canonical history containing only the user's input and the mode
 Additional coverage exercises static approval/change/reapproval/revoke, explicit provider admission,
 worker failure without sticky text, cancellation/revocation during a hook, strict size/shape limits,
 inner-lease release on acquisition failure and real Deno worker discovery/invocation of the marker.
+Kernel/real-Deno integration also invokes the first hook before any registry frame, using the
+production host class and bus with eager startup/registry publication disabled by its owned test
+entry. Native-provider conformance checks delimiters and tool loops against all three APIs.
 
 ## Document state and presentation units
 

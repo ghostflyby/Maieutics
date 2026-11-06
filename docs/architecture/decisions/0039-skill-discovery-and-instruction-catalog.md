@@ -1,5 +1,9 @@
 # ADR 0039: Skill Discovery and the Skill Instruction Catalog
 
+Encoding update (ADR 0049): the composed catalog now occupies its own native system instruction
+message in `AgentSessionOptions.SystemInstructions`; it is no longer concatenated into the configured
+base `SystemPrompt`. Discovery, source precedence, per-run capture and on-demand reads are unchanged.
+
 Status: Draft
 
 Date: 2026-10-07

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Plugins.Contributions;
@@ -19,22 +18,21 @@ internal sealed class SystemPromptProfileProvider(
             cancellationToken.ThrowIfCancellationRequested();
             if (contributions.Count == 0) return lease;
             var profile = lease.Profile;
-            var composed = new StringBuilder(profile.Options.SystemPrompt?.TrimEnd() ?? string.Empty);
+            var composed = profile.Options.SystemInstructions.ToBuilder();
             var characters = 0;
             foreach (var entry in contributions)
             {
                 // Identity framing is kernel-authored; plugin-provided content is intentionally
                 // system-level instruction under declaration approval, never promoted from tool output.
-                var separator = composed.Length == 0 ? string.Empty : "\n\n";
-                var section = $"{separator}### SystemPrompt {JsonEncodedText.Encode(entry.Source)}/{entry.Name}\n\n{entry.Content}";
+                var section = $"SystemPrompt {JsonEncodedText.Encode(entry.Source)}/{entry.Name}\n\n{entry.Content}";
                 characters += section.Length;
                 if (characters > SystemPromptContributionKind.MaximumTotalCharacters)
                     throw new InvalidOperationException("SystemPrompt contributions exceed the per-run character budget.");
-                composed.Append(section);
+                composed.Add(section);
             }
             var adjusted = new AgentRunProfile(
                 profile.ChatClient,
-                profile.Options with { SystemPrompt = composed.ToString() },
+                profile.Options with { SystemInstructions = composed.ToImmutable() },
                 profile.ModelIdentity,
                 profile.Capabilities,
                 profile.HostedCapabilities,

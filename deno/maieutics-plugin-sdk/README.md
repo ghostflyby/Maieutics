@@ -58,13 +58,16 @@ plugin declaration must be approved; registering a hook alone grants no instruct
 Changing the text or provider selector changes its approval fingerprint. No additional Deno I/O
 permission is granted. A static-only contribution needs no worker or tool call.
 
-The configured base prompt stays first. Built-ins precede plugins; plugins and their providers sort
-ordinally, with static entries in declaration order before worker results. The hook sees only
-`workspaceRoot`, never the base prompt, transcript or secrets. It runs once per acquisition, under
-one five-second collection wait budget. Errors and invalid results are logged and omitted without
-stale cached instructions. Revocation/removal affects subsequent acquisitions; an active run keeps
-its captured instructions. Metadata-only title requests and child-agent task prompts keep their
-existing behavior.
+The configured base prompt stays first. Each contribution is sent as its own native system message
+(or Anthropic `system` text block), with source/name attribution. Bodies are never joined together
+by Markdown/XML delimiters. This preserves API framing rather than promising semantic isolation
+between instructions. Built-ins precede plugins; plugins and their providers sort ordinally, with
+static entries in declaration order before worker results. The hook sees only `workspaceRoot`, never
+the base prompt, transcript or secrets. It runs once per acquisition, under one five-second
+collection wait budget. Errors and invalid results are logged and omitted without stale cached
+instructions. Revocation/removal affects subsequent acquisitions; an active run keeps its captured
+instructions. Metadata-only title requests and child-agent task prompts keep their existing
+behavior.
 
 Return at most 32 unique `{name, content}` entries per plugin, totalling at most 32,768 UTF-16
 units. Names are 1–64 ASCII letters/digits/`-_.`; content is nonblank and at most 16,384 units per

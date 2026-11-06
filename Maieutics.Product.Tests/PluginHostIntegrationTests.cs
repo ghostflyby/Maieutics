@@ -156,6 +156,86 @@ public sealed class PluginHostIntegrationTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task SystemPromptProviderInvokesARealColdWorkerBeforeItsFirstRegistryFrame()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("The real plugin host harness attaches over the Unix-socket control channel.");
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var area = TempArea.Create("real-system-prompt");
+        var root = Path.Combine(area.Path, "plugin");
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(Path.Combine(root, "deno.json"),
+            """{"name":"@test/system-prompt","version":"0.1.0","permissions":{"default":{"read":["./"]}}}""", budget.Token);
+        await File.WriteAllTextAsync(Path.Combine(root, "maieutics.json"),
+            """{"entrypoints":{"worker":{"main":["./mod.ts"]}},"extensions":{"SystemPrompt":[{"provider":"main"}]}}""", budget.Token);
+        await File.WriteAllTextAsync(Path.Combine(root, "mod.ts"), """
+            import { defineExtensionPoint } from "@maieutics/plugin-sdk";
+            export const instructions = defineExtensionPoint("SystemPrompt", () => [
+              {name: "cold", content: "The real cold worker supplied these instructions."}
+            ]);
+            """, budget.Token);
+        var approvals = Path.Combine(area.Path, "approvals.json");
+        File.Move(PluginApprovalSeeds.SeedLocalPlugins(root), approvals);
+        var registry = new ReplControlSessionRegistry();
+        var socket = ReplControlHost.CreateSocketPath();
+        var modules = new PluginHostModule();
+        // This entry exercises the real PluginHost/SDK/control bus with eager startAll and
+        // registry publication deliberately absent. Kernel collection must wake the worker.
+        await File.WriteAllTextAsync(new Uri(modules.HostUrl).LocalPath, """
+            import { PluginHost } from "./host.ts";
+            import { connectBus } from "../shared/bus.ts";
+            const required = (name: string): string => {
+              const value = Deno.env.get(name);
+              if (!value) throw new Error("Missing test host environment");
+              return value;
+            };
+            const config = JSON.parse(await Deno.readTextFile(required("MAIEUTICS_PLUGIN_CONFIG")));
+            const host = new PluginHost({ ...config,
+              sdkUrl: required("MAIEUTICS_PLUGIN_SDK"),
+              workerEntryUrl: required("MAIEUTICS_PLUGIN_WORKER_ENTRY") });
+            const closed = Promise.withResolvers<void>();
+            const calls: Promise<void>[] = [];
+            const bus = await connectBus({ address: required("MAIEUTICS_REPL_IPC"),
+              hello: {type: "control.hello", payload: {hostId: required("MAIEUTICS_PLUGIN_HOST_ID")}},
+              onClose: () => closed.resolve(),
+              onMessage: frame => {
+                if (frame.type === "host.invoke") calls.push(reply(frame).catch(error => {
+                  console.error(error); closed.resolve();
+                }));
+              }
+            });
+            async function reply(frame: any): Promise<void> {
+              const p = frame.payload;
+              try {
+                const value = await host.invoke(p.pluginId, p.exportName, p.extensionPoint, p.request);
+                bus.send({type: "host.invokeResult", correlationId: frame.correlationId, payload: {value}});
+              } catch (error) {
+                bus.send({type: "host.invokeError", correlationId: frame.correlationId,
+                  payload: {code: "fixture_invoke_failed", message: String(error)}});
+              }
+            }
+            try { await closed.promise; }
+            finally { host.dispose(); await Promise.all(calls); bus.close(); }
+            """, budget.Token);
+        var manager = new PluginHostManager(root, Path.Combine(area.Path, "data"), socket,
+            new DenoReplOptions(), modules, registry, new DebugConsoleLogger<PluginHostManager>(),
+            new DebugConsoleLoggerFactory(), TimeProvider.System, pluginApprovalsPath: approvals);
+        var control = new ReplControlHost(socket, registry, NullLogger<ReplControlHost>.Instance, pluginHosts: manager);
+        await using var application = await ReplControlTestHost.StartAsync(socket, control, budget.Token);
+        try
+        {
+            await manager.StartAsync(budget.Token);
+            await manager.WaitUntilReadyAsync(budget.Token);
+            Assert.Empty(manager.GetRegistrations(ReplExtensionPointName.SystemPrompt));
+            var entries = await manager.GetSystemPromptsAsync(budget.Token);
+            Assert.Equal("The real cold worker supplied these instructions.", Assert.Single(entries).Content);
+            Assert.Empty(manager.GetRegistrations(ReplExtensionPointName.SystemPrompt));
+        }
+        finally { await manager.DisposeAsync(); }
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task DiscoversAndInvokesExtensionPointsInARealDenoHost()
     {
         if (OperatingSystem.IsWindows())

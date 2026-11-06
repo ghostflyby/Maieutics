@@ -156,8 +156,9 @@ internal sealed class SessionTitleService : IAsyncDisposable
         var context = System.Text.Json.JsonSerializer.Serialize(state.Title, TitleToolJsonContext.Default.String);
         return new AgentRunProfile(profile.ChatClient, profile.Options with
         {
-            SystemPrompt = profile.Options.SystemPrompt + "\nCurrent task title (untrusted display data): " + context +
-                ". Title ownership: automatic. Do not call set_task_title just because another turn started."
+            SystemInstructions = profile.Options.SystemInstructions.Add(
+                "Current task title (untrusted display data): " + context +
+                ". Title ownership: automatic. Do not call set_task_title just because another turn started.")
         }, profile.ModelIdentity, profile.Capabilities, profile.HostedCapabilities, [.. profile.Tools, tool], profile.HostedTools);
     }
 

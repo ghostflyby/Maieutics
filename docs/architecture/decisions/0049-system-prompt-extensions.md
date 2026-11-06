@@ -20,7 +20,8 @@ surface, with explicit approval for plugins that can influence system instructio
 1. **One append-only contribution kind, `SystemPrompt`.** The manifest kind catalog and
    worker extension-point catalog recognize the name case-insensitively, recording its canonical
    spelling. A contribution is `{name, content}`. The configured base prompt remains first;
-   contributions are appended with kernel-authored source/name attribution. The extension does
+   contributions follow it as separate native system messages with kernel-authored source/name
+   attribution. They are never concatenated into the configured prompt. The extension does
    not replace the base prompt or receive its contents. These are intentionally system-level
    instructions from approved code, not tool results promoted into policy.
 
@@ -65,6 +66,18 @@ surface, with explicit approval for plugins that can influence system instructio
    captured instructions. Metadata-only title requests bypass these decorators; child agents retain
    the existing task-specific prompt replacement semantics.
 
+   `AgentSessionOptions.SystemInstructions` is an immutable array of provider-neutral instruction
+   strings. Each item becomes one `ChatMessage(ChatRole.System, ...)` outside canonical history.
+   The legacy `SystemPrompt` stays in `ChatOptions.Instructions` as the independent base. Skill
+   catalogs and live title context each use their own message too. Child-agent prompt replacement
+   clears the additional array. Native messages preserve boundaries through every model/tool
+   iteration; no Markdown heading, code fence or XML delimiter defines that boundary. OpenAI
+   Chat Completions/Responses retain independent instruction message items; Anthropic writes the
+   base and each text part separately in its top-level `system` array. Conformance tests inspect
+   initial and tool-continuation bodies. No string-join or textual-envelope fallback is used.
+   Native framing does not grant per-plugin semantic isolation or resolve contradictory same-role
+   instructions; source order is application composition, not a per-plugin priority mechanism.
+
 4. **Per-run delivery, not a background sticky slot.** Static entries are read from the current
    approved descriptor. Worker providers are invoked in ordinal plugin-id/export order, after
    declarations in manifest order. Each provider runs once per acquisition. The collection has
@@ -77,6 +90,10 @@ surface, with explicit approval for plugins that can influence system instructio
    ordering cannot silently omit the first run's hook. Connection readiness shares the same budget.
    Declaration/provider removal, approval revocation, replaced descriptors and host
    stop are rechecked before publication. No lock is held across an invocation await.
+   Captured generation wait resources can be disposed between admission and token linking.
+   `ObjectDisposedException` at this subsystem boundary logs unavailability and returns no plugin
+   contribution; it does not latch failure or escape into run acquisition. Caller cancellation
+   retains its normal `OperationCanceledException` semantics.
 
 5. **Bound and validate every source.** Names are 1–64 ASCII letters/digits/`-_.`; content is
    nonblank and at most 16,384 UTF-16 units. Each plugin declares at most 32 entries/selectors and
@@ -111,3 +128,9 @@ user-selected MCP prompts. Users approve its declaration and can revoke it for s
 Dynamic instructions cost one bounded hook collection per run, not per model iteration, and do not
 gain access to the current conversation. New contextual fields, replacement/priority rules,
 runtime prompt publication and child-agent instruction inheritance require separate contracts.
+
+Real kernel/Deno integration also uses a cold-start host entry built from the production
+`PluginHost`, SDK and authenticated control bus, deliberately without eager `startAll()` or registry
+publication. A first `{provider: "main"}` acquisition must invoke the actual worker and return its
+text while the kernel registry stays empty. This pins manifest-driven routing and `#ensureStarted`
+together rather than relying solely on simulated kernel frames and separate host unit tests.

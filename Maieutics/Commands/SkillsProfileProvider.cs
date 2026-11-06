@@ -19,13 +19,13 @@ internal sealed class SkillsProfileProvider(
     {
         var lease = await inner.AcquireAsync(cancellationToken).ConfigureAwait(false) ??
                     throw new InvalidOperationException("The Agent run profile provider returned a null lease.");
-        var composed = SkillPromptComposer.Compose(lease.Profile.Options.SystemPrompt, catalog.Current);
+        var composed = SkillPromptComposer.Compose(null, catalog.Current);
         if (composed is null) return lease;
 
         var profile = lease.Profile;
         var adjusted = new AgentRunProfile(
             profile.ChatClient,
-            profile.Options with { SystemPrompt = composed },
+            profile.Options with { SystemInstructions = profile.Options.SystemInstructions.Add(composed) },
             profile.ModelIdentity,
             profile.Capabilities,
             profile.HostedCapabilities,

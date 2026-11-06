@@ -107,6 +107,30 @@ public sealed class PluginSystemPromptTests
     }
 
     [Fact(Timeout = 60_000)]
+    public async Task DisposedWaitResourcesAreUnavailableWithoutLatchingFailureOrHidingCancellation()
+    {
+        RequireSimulatedHost();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        await using var root = TempArea.Create("system-prompt-disposed");
+        await using var approvals = TempArea.Create("system-prompt-approvals");
+        await WritePluginAsync(root.Path,
+            """{"extensions":{"SystemPrompt":[{"name":"one","content":"active"}]}}""", budget.Token);
+        var clock = new DisposedTimerTimeProvider();
+        await using var harness = await PluginHostInvokeTests.CreateHarnessAsync(root.Path, budget.Token,
+            SeedApprovals(root.Path, approvals.Path), clock);
+        clock.ThrowOnTimerCreation = true;
+        try
+        {
+            Assert.Empty(await harness.Manager.GetSystemPromptsAsync(budget.Token));
+        }
+        finally { clock.ThrowOnTimerCreation = false; }
+        Assert.Equal("active", Assert.Single(await harness.Manager.GetSystemPromptsAsync(budget.Token)).Content);
+        using var canceled = new CancellationTokenSource();
+        await canceled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => harness.Manager.GetSystemPromptsAsync(canceled.Token));
+    }
+
+    [Fact(Timeout = 60_000)]
     public async Task AllWorkerProvidersShareOneCollectionBudget()
     {
         RequireSimulatedHost();
@@ -186,6 +210,16 @@ public sealed class PluginSystemPromptTests
     private static void RequireSimulatedHost()
     {
         if (OperatingSystem.IsWindows()) Assert.Skip("The simulated host uses the Unix fake-Deno harness.");
+    }
+
+    private sealed class DisposedTimerTimeProvider : TimeProvider
+    {
+        internal bool ThrowOnTimerCreation { get; set; }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (ThrowOnTimerCreation) throw new ObjectDisposedException("generation wait source");
+            return base.CreateTimer(callback, state, dueTime, period);
+        }
     }
 
     private static async Task WritePluginAsync(string root, string manifest, CancellationToken token)

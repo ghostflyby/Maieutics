@@ -1,6 +1,7 @@
 using Maieutics.Agent;
 using Maieutics.Configuration;
 using Maieutics.Persistence;
+using Maieutics.Plugins.Contributions;
 using Maieutics.Skills;
 using Microsoft.Extensions.Logging;
 
@@ -42,6 +43,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
     private readonly ILogger<MaieuticsAgentSessionManager> _logger;
     private readonly AgentSubagentOptions? _subagents;
     private readonly SkillCatalog? _skillCatalog;
+    private readonly ISystemPromptSource? _systemPrompts;
     private readonly Lock _gate = new();
     private readonly Dictionary<string, LiveSession> _live = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SqliteTranscriptStore> _stores = new(StringComparer.Ordinal);
@@ -60,7 +62,8 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
         IMaieuticsRuntimeConfiguration? runtimeConfiguration = null,
         AgentSubagentOptions? subagents = null,
         SkillCatalog? skillCatalog = null,
-        string titleMode = "manual")
+        string titleMode = "manual",
+        ISystemPromptSource? systemPrompts = null)
     {
         _profileProvider = profileProvider ?? throw new ArgumentNullException(nameof(profileProvider));
         _runtimeConfiguration = runtimeConfiguration;
@@ -73,6 +76,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _subagents = subagents;
         _skillCatalog = skillCatalog;
+        _systemPrompts = systemPrompts;
         Titles = new SessionTitleService(this, titleMode, logger);
         _foreground = CreateLive(AgentSessionId.Create());
     }
@@ -622,7 +626,7 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
     private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper, AgentSessionId sessionId)
     {
         var inner = wrapper ?? _profileProvider;
-        IAgentRunProfileProvider output = new OutputRenderingProfileProvider(inner);
+        var output = _systemPrompts is null ? inner : new SystemPromptProfileProvider(inner, _systemPrompts);
         var composed = _subagents is null ? output : new SubagentsProfileProvider(output, _subagents);
         // Compose after session selection; each run keeps its captured output instructions
         // and skill catalog without mutating configured profiles or metadata-only requests.

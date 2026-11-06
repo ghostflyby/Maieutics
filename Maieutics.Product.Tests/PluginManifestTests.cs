@@ -708,13 +708,14 @@ public sealed class PluginManifestTests
         // exactly at it: data-entry-only kinds (whose names are not extensions kinds)
         // never join, while any newly catalogued extensions kind joins by claiming its
         // name — with or without a compute form.
-        Assert.EndsWith($"(known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}).", diagnostic);
+        Assert.EndsWith($"(known kinds: {McpDiscoverContributionKind.ExtensionKind}, {SkillsContributionKind.ExtensionKind}, SystemPrompt).", diagnostic);
     }
 
     [Fact]
     public void TheKindCatalogRoutesLookupsByTheirDeclaredNames()
     {
         Assert.Equal(SkillsContributionKind.Instance, ContributionKindCatalog.ByExtensionKind("skills"));
+        Assert.Equal(SystemPromptContributionKind.Instance, ContributionKindCatalog.ByExtensionKind("systemprompt"));
         Assert.Equal(McpDiscoverContributionKind.Instance, ContributionKindCatalog.ByExtensionKind("MCPDISCOVER"));
         Assert.Null(ContributionKindCatalog.ByExtensionKind("FutureKind"));
 

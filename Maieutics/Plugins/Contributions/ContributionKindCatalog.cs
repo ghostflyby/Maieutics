@@ -20,6 +20,7 @@ internal static class ContributionKindCatalog
     [
         McpDiscoverContributionKind.Instance,
         SkillsContributionKind.Instance,
+        SystemPromptContributionKind.Instance,
         UiContributionKind.Instance,
     ];
 

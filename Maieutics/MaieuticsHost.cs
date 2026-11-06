@@ -14,6 +14,7 @@ using Maieutics.Mcp;
 using Maieutics.Permissions;
 using Maieutics.Persistence;
 using Maieutics.Plugins;
+using Maieutics.Plugins.Contributions;
 using Maieutics.Providers;
 using Maieutics.Providers.Anthropic;
 using Maieutics.Providers.OpenAI;
@@ -454,6 +455,9 @@ public static class MaieuticsHost
         // session factory pre-caches a REPL's policy through it before the host derives the REPL.
         builder.Services.AddSingleton<IReplPolicyRegistrar>(static services =>
             services.GetRequiredService<PluginHostManager>());
+        builder.Services.AddSingleton<ISystemPromptSource>(static services => new SystemPromptCatalog(
+            SystemPromptCatalog.ReadEmbeddedDeclaration("Deno/maieutics-output-renderer/system-prompt.json", "builtin:output-rendering"),
+            services.GetRequiredService<PluginHostManager>()));
         builder.Services.AddHostedService(static services => services.GetRequiredService<PluginHostManager>());
         builder.Services.AddSingleton(services =>
         {
@@ -788,7 +792,8 @@ public static class MaieuticsHost
                 familiesRoot: null,
                 storeFactory: null,
                 logger,
-                subagents: subagents, titleMode: titleMode);
+                subagents: subagents, titleMode: titleMode,
+                systemPrompts: services.GetRequiredService<ISystemPromptSource>());
         }
 
         // Session rows stamp the workspace root current at row creation; a %workspace switch
@@ -807,7 +812,8 @@ public static class MaieuticsHost
             paths.AgentObjectsRoot,
             services.GetService<IMaieuticsRuntimeConfiguration>(),
             subagents,
-            services.GetService<Skills.SkillCatalog>(), titleMode);
+            services.GetService<Skills.SkillCatalog>(), titleMode,
+            services.GetRequiredService<ISystemPromptSource>());
     }
 
     /// <summary>Reads the composition-root subagent configuration (ADR 0030). Disabled by

@@ -125,7 +125,7 @@ internal readonly record struct ReplDeriveOutcome(bool Failed, string Message)
 ///     host connections are attached here so the kernel can call into plugin workers without a
 ///     reverse dependency. The generic host starts and stops this same instance.
 /// </summary>
-internal sealed class PluginHostManager(
+internal sealed partial class PluginHostManager(
     string pluginsRoot,
     string pluginDataRoot,
     string socketPath,
@@ -142,7 +142,7 @@ internal sealed class PluginHostManager(
     SkillCatalog? skillCatalog = null,
     VariableTable? manifestVariables = null,
     Func<string?>? workspaceRootAccessor = null)
-    : IHostedService, IAsyncDisposable, IReplPolicyRegistrar
+    : IHostedService, IAsyncDisposable, IReplPolicyRegistrar, ISystemPromptSource
 {
     /// <summary>The read-only IDE tools `ide.query` may invoke (ADR 0042 decision 8's
     /// read group, as tool names): hover, navigation, symbols, the aggregate and

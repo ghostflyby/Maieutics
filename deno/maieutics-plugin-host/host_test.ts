@@ -262,6 +262,29 @@ Deno.test("scans object and function extension points", async () => {
   }
 });
 
+Deno.test("scans and invokes SystemPrompt through a real owned plugin worker", async () => {
+  const dir = Deno.makeTempDirSync();
+  const plugin = createPlugin(
+    dir,
+    pluginSource(`
+    export const instructions = defineExtensionPoint("SystemPrompt", ({ workspaceRoot }) => [
+      { name: "project", content: "Workspace: " + workspaceRoot },
+    ]);
+  `),
+  );
+  const host = makeHost(plugin);
+  try {
+    const registered = await host.startAll();
+    assertEquals(registered.map((entry) => entry.extensionPoint), ["SystemPrompt"]);
+    assertEquals(await host.invoke("test", "./main", "SystemPrompt", { workspaceRoot: "/work" }), [
+      { name: "project", content: "Workspace: /work" },
+    ]);
+  } finally {
+    host.dispose();
+    Deno.removeSync(dir, { recursive: true });
+  }
+});
+
 Deno.test("capability requests relay the derived plugin identity and correlate answers", async () => {
   const dir = Deno.makeTempDirSync();
   // The hook performs the worker-side capability call through the SDK and hands

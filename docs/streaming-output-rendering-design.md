@@ -463,7 +463,7 @@ InspectCode has no error-level findings (two existing non-gating warnings).
 
 ### Model-facing output instructions (implemented 2026-11-06)
 
-`Commands/OutputRenderingProfileProvider` appends a built-in output authoring section when a
+The generic `Commands/SystemPromptProfileProvider` captures system-instruction contributions when a
 conversation run acquires its selected profile. It preserves the configured `SystemPrompt`,
 client, tools, capabilities and limits, then composes with the existing skill and title decorators.
 New, resumed and forked product sessions use this same path, including session-selected models.
@@ -479,7 +479,14 @@ restore and unavailable site/resource/async features. These describe the product
 not a guarantee that every connected or older frontend supports interaction; readable prose remains
 part of interactive output. User-requested output formats take precedence over optional presentation.
 
-Existing plugin instruction contribution routes remain unchanged:
+The VitePress instructions are now a static `extensions.SystemPrompt` contribution in the embedded
+`deno/maieutics-output-renderer/system-prompt.json` manifest. The composition root registers this
+code-shipped contribution with `SystemPromptCatalog`, alongside approved external plugin contributions.
+There is no renderer-specific profile decorator or unconditional output instruction in the session
+manager. This data resource is embedded separately; it is not part of `bundle/service.js` and changes
+to its text do not require rebuilding the SSR bundle.
+
+Plugin instruction contribution routes are:
 
 - Approved plugins can declare `extensions.skills` roots, return inline skills through the `Skills`
   extension point, or publish them with the declared/granted `skills.publish` capability (ADR 0039).
@@ -490,14 +497,28 @@ Existing plugin instruction contribution routes remain unchanged:
   `mcp-prompt://` user references expand at submission as framed user-side instructions, not system
   instructions. Approval/revocation and the existing content budgets still apply.
 
-There is no direct plugin `Prompt` extension point or prompt-fragment contribution kind. The
-built-in output capability description does not require a plugin, a skill read, or an MCP request,
-and this change introduces no new plugin approval surface, wire format or persisted format.
+- `SystemPrompt` supplies actual system-level instructions (ADR
+  [0049](architecture/decisions/0049-system-prompt-extensions.md)): static `{name, content}` manifest
+  entries or a `defineExtensionPoint("SystemPrompt", ...)` worker hook explicitly selected by an
+  approved `{provider: "worker-export"}` declaration. Contributions append to the configured base,
+  in stable source/export order. Worker collection shares one five-second wait budget; errors and
+  invalid output are logged and omitted with no stale cache. Explicit selectors route cold workers
+  before their first registry frame. Revocation, provider removal, descriptor reload
+  and host stop are rechecked before the snapshot is returned. An acquired run keeps its text.
+
+The external plugin declarations and provider selectors join the existing extensions fingerprint
+domain, so their changes revoke approval. Code-shipped built-ins are registered by the composition
+root and create no exemption for external plugins. The additive hook uses existing `host.invoke`
+IPC with `{workspaceRoot}` context and `{name, content}[]` results; frontend wire and persisted
+formats remain unchanged. Unlike a skill, these instructions need no on-demand body read.
 
 Product integration coverage checks actual provider requests across consecutive turns with empty
 and configured base prompts, with and without a skill catalog. It verifies one output section per
 request, preserved base instructions/catalog entries, unchanged configured profiles and title-model
 acquisition, and canonical history containing only the user's input and the model's response.
+Additional coverage exercises static approval/change/reapproval/revoke, explicit provider admission,
+worker failure without sticky text, cancellation/revocation during a hook, strict size/shape limits,
+inner-lease release on acquisition failure and real Deno worker discovery/invocation of the marker.
 
 ## Document state and presentation units
 

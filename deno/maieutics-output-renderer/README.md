@@ -181,6 +181,12 @@ It does not suppress bundler diagnostics or add unused native build dependencies
 
 ## Verification
 
+The renderer's model-facing instructions live in `system-prompt.json`, a static
+`extensions.SystemPrompt` declaration. The kernel composition root registers it through the generic
+system-instruction contribution pipeline. It is embedded separately from `bundle/service.js`;
+editing this prompt does not require rebuilding the SSR JavaScript bundle. External plugins can
+provide the same contribution under declaration approval (ADR 0049).
+
 Run from this directory after installing the workspace's locked dependencies:
 
 ```sh

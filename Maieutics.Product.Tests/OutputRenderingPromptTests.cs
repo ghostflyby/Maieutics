@@ -1,5 +1,6 @@
 using Maieutics.Agent;
 using Maieutics.Commands;
+using Maieutics.Plugins.Contributions;
 using Maieutics.Skills;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,7 +31,9 @@ public sealed class OutputRenderingPromptTests
         var profile = new AgentRunProfile(client, new AgentSessionOptions { SystemPrompt = basePrompt });
         await using var manager = new MaieuticsAgentSessionManager(new FixedProfileProvider(profile),
             familiesRoot: null, storeFactory: null, NullLogger<MaieuticsAgentSessionManager>.Instance,
-            skillCatalog: withSkills ? catalog : null);
+            skillCatalog: withSkills ? catalog : null,
+            systemPrompts: new SystemPromptCatalog(SystemPromptCatalog.ReadEmbeddedDeclaration(
+                "Deno/maieutics-output-renderer/system-prompt.json", "builtin:output-rendering")));
 
         for (var index = 0; index < 2; index++)
         {

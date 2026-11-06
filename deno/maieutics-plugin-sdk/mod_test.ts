@@ -41,6 +41,29 @@ Deno.test("defineExtensionPoint accepts a callable function", () => {
   assertEquals(typeof impl, "function");
 });
 
+Deno.test("SystemPrompt supports typed callable and object hooks with the shared marker", async () => {
+  const fn = defineExtensionPoint("SystemPrompt", ({ workspaceRoot }) => [
+    { name: "project", content: `Workspace: ${workspaceRoot}` },
+  ]);
+  const object = defineExtensionPoint("SystemPrompt", {
+    handler: async () => await Promise.resolve([{ name: "style", content: "Use concise prose." }]),
+  });
+  assertEquals(
+    ExtensionPoint.SystemPrompt,
+    Symbol.for("maieutics/extensionPoint/v1/system.prompt"),
+  );
+  assertEquals((fn as Record<symbol, unknown>)[ExtensionPoint.SystemPrompt], true);
+  assertEquals((object as Record<symbol, unknown>)[ExtensionPoint.SystemPrompt], true);
+  assert(typeof fn === "function");
+  assert(typeof object !== "function");
+  assertEquals(await fn({ workspaceRoot: "/workspace" }), [
+    { name: "project", content: "Workspace: /workspace" },
+  ]);
+  assertEquals(await object.handler({ workspaceRoot: null }), [
+    { name: "style", content: "Use concise prose." },
+  ]);
+});
+
 Deno.test("defineExtensionPoint rejects a bare object without a handler", () => {
   assertThrows(
     () => defineExtensionPoint("ToolPreInvoke", { marker: true } as never),

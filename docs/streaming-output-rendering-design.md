@@ -4,7 +4,8 @@ Status: Passive SSR integrated with the kernel and actual Notebook renderer; ups
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
 explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
 assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts. The streaming document
-runtime and revisioned presentation protocol remain proposed.
+runtime and revisioned presentation protocol remain proposed. Built-in per-run instructions now
+advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
@@ -459,6 +460,44 @@ output factory and the new endpoint against a published osx-arm64 NativeAOT kern
 All 708 Deno workspace tests and 20 Node scenarios pass. Four published-process rendering
 smoke tests and the offline assistant component probe pass. Release build has no warnings and
 InspectCode has no error-level findings (two existing non-gating warnings).
+
+### Model-facing output instructions (implemented 2026-11-06)
+
+`Commands/OutputRenderingProfileProvider` appends a built-in output authoring section when a
+conversation run acquires its selected profile. It preserves the configured `SystemPrompt`,
+client, tools, capabilities and limits, then composes with the existing skill and title decorators.
+New, resumed and forked product sessions use this same path, including session-selected models.
+Each run captures the section once; it never accumulates in configuration or canonical history.
+Metadata-only title requests bypass the conversation decorators. The provider-neutral Agent runtime
+does not acquire a dependency on the frontend or VitePress.
+
+The instructions advertise the shipped VitePress Markdown subset and optional direct Vue-in-Markdown,
+with valid multiline container and counter examples. They distinguish live source from fenced
+examples, passive streaming from successful completed Vue compilation, and deterministic SSR setup
+from authorized external tool work. They describe the `vue`-only import surface, passive notebook
+restore and unavailable site/resource/async features. These describe the product's rendering path,
+not a guarantee that every connected or older frontend supports interaction; readable prose remains
+part of interactive output. User-requested output formats take precedence over optional presentation.
+
+Existing plugin instruction contribution routes remain unchanged:
+
+- Approved plugins can declare `extensions.skills` roots, return inline skills through the `Skills`
+  extension point, or publish them with the declared/granted `skills.publish` capability (ADR 0039).
+  The catalog supplies names, descriptions and `skill://` pointers to subsequent run prompts;
+  skill bodies are read on demand or included through explicit user selection. They are plugin
+  context, not arbitrary unconditional system-prompt fragments.
+- A plugin-declared MCP server can supply `prompts/list` and `prompts/get` (ADR 0041). Explicit
+  `mcp-prompt://` user references expand at submission as framed user-side instructions, not system
+  instructions. Approval/revocation and the existing content budgets still apply.
+
+There is no direct plugin `Prompt` extension point or prompt-fragment contribution kind. The
+built-in output capability description does not require a plugin, a skill read, or an MCP request,
+and this change introduces no new plugin approval surface, wire format or persisted format.
+
+Product integration coverage checks actual provider requests across consecutive turns with empty
+and configured base prompts, with and without a skill catalog. It verifies one output section per
+request, preserved base instructions/catalog entries, unchanged configured profiles and title-model
+acquisition, and canonical history containing only the user's input and the model's response.
 
 ## Document state and presentation units
 

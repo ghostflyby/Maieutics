@@ -622,9 +622,10 @@ internal sealed class MaieuticsAgentSessionManager : IAgentSession, IDisposable,
     private IAgentRunProfileProvider ProviderFor(MaieuticsSessionProfileProvider? wrapper, AgentSessionId sessionId)
     {
         var inner = wrapper ?? _profileProvider;
-        var composed = _subagents is null ? inner : new SubagentsProfileProvider(inner, _subagents);
-        // The skills decorator is outermost so both record rewrites (`with`) compose: the
-        // catalog rides every lease regardless of the per-session override path.
+        IAgentRunProfileProvider output = new OutputRenderingProfileProvider(inner);
+        var composed = _subagents is null ? output : new SubagentsProfileProvider(output, _subagents);
+        // Compose after session selection; each run keeps its captured output instructions
+        // and skill catalog without mutating configured profiles or metadata-only requests.
         var skilled = _skillCatalog is null ? composed : new SkillsProfileProvider(composed, _skillCatalog);
         return new TitleProfileProvider(skilled, Titles, sessionId);
     }

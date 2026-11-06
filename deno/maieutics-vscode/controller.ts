@@ -2522,7 +2522,12 @@ class RunExecution {
       this.segmentNodes.set(key, node);
       this.cacheSegment(
         key,
-        timelineNotebookOutput(node),
+        timelineNotebookOutput(
+          node,
+          this.view.terminalState?.kind === "completed" && !snapshot.truncated &&
+            !snapshot.timelineTruncated &&
+            node.timeline?.[0]?.kind === "text",
+        ),
       );
       changed.add(key);
     }

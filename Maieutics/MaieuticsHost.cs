@@ -411,6 +411,7 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<IFrontendPluginSurface>(static services =>
             services.GetRequiredService<FrontendPluginSurfaceAdapter>());
         builder.Services.AddSingleton<FrontendHost>();
+        builder.Services.AddSingleton<FrontendOutputRenderer>();
         builder.Services.AddHostedService<FrontendHostedService>();
         if (OperatingSystem.IsWindows())
             builder.Services.AddSingleton<IWindowsPipeBootstrap>(static services =>

@@ -24,7 +24,22 @@ internal sealed class DenoReplFunctions
                 "repl_execute",
                 "Executes TypeScript in a stateful Deno REPL (Jupyter-compatible display API). console output and the final expression are " +
                 "private reasoning results. Show rich output to the notebook user with " +
-                "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). For updates, " +
+                "Deno.jupyter.display({ 'text/html': html, 'text/plain': fallback }, { raw: true }). " +
+                "For data-bound Markdown use MIME application/vnd.maieutics.template+json with " +
+                "{version:1,source:'Total {{ report.total.toFixed(2) }}',bindings:[{name:'report',state:'pending'}]}. " +
+                "Publish ready data with {name:'report',state:'ready',value:{total:42}} or ready undefined " +
+                "with {name:'report',state:'ready',undefined:true}; failed/cancelled are terminal binding states. " +
+                "Completed live assistant replies can render Vue-in-Markdown directly: write top-level script setup, " +
+                "Vue markup and scoped CSS outside code fences; fenced examples remain literal. Components wait for " +
+                "successful turn completion before compilation, so partial/cancelled scripts do not execute. " +
+                "For explicit rich output or producer-driven Vue updates publish application/vnd.maieutics.vue+json with " +
+                "{version:1,format:'markdown',source:vueMarkdown} (or format:'sfc' for a complete Vue SFC). " +
+                "Use Vue script setup imports, event handlers and scoped CSS there; only imports from vue are supported. " +
+                "This explicit live output runs isolated SSR and mounts a Vue client island; setup runs in each realm, " +
+                "so keep initial state deterministic and put external producers here. Pair with text/plain fallback. " +
+                "Saved Vue outputs retain only the fallback and do not rerun component scripts. " +
+                "The data template evaluates only bounded expressions, not arbitrary JS or scripts; execute producers here " +
+                "and publish new complete binding snapshots. Pair templates with a text/plain fallback. For updates, " +
                 "first display with { raw: true, display_id: id }, then display the replacement with " +
                 "{ raw: true, display_id: id, update: true }. The property is display_id, not displayId, and every " +
                 "rich MIME bundle should include a text/plain fallback."),

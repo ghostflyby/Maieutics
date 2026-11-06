@@ -202,3 +202,17 @@ Deno.test("expanded tool data is detached and bounded, including on cancellation
   argumentsValue.path = "mutated";
   assertEquals(view.finalOutput().tools[0].arguments, { path: "a.ts" });
 });
+
+Deno.test("sealing live text invalidates its cached output even when the final text is unchanged", () => {
+  const cache = new TimelineOutputCache();
+  const snapshot = {
+    timeline: [{ kind: "text" as const, messageId: "m", text: "<script setup>const n=1</script>" }],
+  };
+  const active = cache.update(snapshot, true);
+  const sealed = cache.update(snapshot, false);
+  assert(active[1] !== sealed[1]);
+  assertEquals(active[1].streaming, true);
+  assertEquals(sealed[1].streaming, false);
+  assert(cache.update(snapshot, false)[1] === sealed[1]);
+  assertEquals(mergeOutputSnapshots(sealed)?.streaming, undefined);
+});

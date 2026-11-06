@@ -412,6 +412,7 @@ async function mainAsync(): Promise<number> {
       folders: [{ path: workspaceDir }],
       settings: {
         "maieutics.executablePath": join(scratch, "not-a-real-kernel"),
+        "maieutics.testRenderingDiscovery": Deno.env.get("MAIEUTICS_RENDERING_DEMO_DISCOVERY"),
       },
     }),
   );
@@ -419,6 +420,9 @@ async function mainAsync(): Promise<number> {
   console.log(`VS Code: ${install.target} (${install.source})`);
   console.log(`scratch: ${scratch}`);
   console.log(`timeout: ${timeoutMs}ms`);
+  if (Deno.env.get("MAIEUTICS_RENDERING_DEMO_DISCOVERY")) {
+    console.log("SSR probe target: live kernel (required).");
+  }
 
   try {
     const launch = await launchAsync(

@@ -4,6 +4,7 @@
     "./maieutics-deno-repl",
     "./maieutics-plugin-sdk",
     "./maieutics-plugin-host",
+    "./maieutics-output-renderer",
     "./maieutics-vscode"
   ],
   "fmt": {
@@ -11,13 +12,15 @@
     "indentWidth": 2,
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
-      "maieutics-vscode/media/viewRenderer.js"
+      "maieutics-vscode/media/viewRenderer.js",
+      "maieutics-vscode/media/vueIslands.js"
     ]
   },
   "lint": {
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
-      "maieutics-vscode/media/viewRenderer.js"
+      "maieutics-vscode/media/viewRenderer.js",
+      "maieutics-vscode/media/vueIslands.js"
     ]
   },
   "imports": {

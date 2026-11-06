@@ -20,6 +20,139 @@ namespace Maieutics.Product.Tests;
 public sealed class FrontendProcessSmokeTests
 {
     [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersThroughItsEmbeddedOfflineChild()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("rendering-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(url);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.PostAsJsonAsync("/v1/render/markdown",
+            new { version = 1, documentId = "published", source = "# Demo\n\n[[toc]]\n\n## Contents {#contents}\n\n> [!NOTE]\n> Alert\n\n::: tip\nSSR from Deno\n:::\n\n::: code-group\n```ts:line-numbers=7 {2} [report.ts]\n// [!code highlight]\nconst total = 42;\n```\n\n```json [report.json]\n{}\n```\n:::" }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Equal(1, result.GetProperty("version").GetInt32());
+        Assert.Contains("published-demo", result.GetProperty("html").GetString());
+        Assert.Contains("custom-block tip", result.GetProperty("html").GetString());
+        Assert.Contains("href=\"#published-contents\">Contents</a>", result.GetProperty("html").GetString());
+        Assert.Contains("custom-block note github-alert", result.GetProperty("html").GetString());
+        Assert.Contains("shiki", result.GetProperty("html").GetString());
+        Assert.Contains("vp-code-group", result.GetProperty("html").GetString());
+        Assert.Contains("data-line=\"7\"", result.GetProperty("html").GetString());
+        Assert.Contains("--vscode", result.GetProperty("css").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableEvaluatesExplicitTemplateSnapshots()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("template-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/template", new {
+            version = 1, documentId = "published", source = "{{ report.total.toFixed(2) }} {{ empty }}\n\nLater prose",
+            template = new { version = 1, bindings = new object[] {
+                new { name = "report", state = "ready", value = new { total = 42 } },
+                new { name = "empty", state = "ready", undefined = true }
+            } }
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">42.00</span>", result.GetProperty("html").GetString());
+        Assert.Contains("Later prose", result.GetProperty("html").GetString());
+        Assert.Equal("ready", result.GetProperty("expressions")[1].GetProperty("state").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersLiveVueComponentThroughIsolatedWorker()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("vue-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "published", vue = new { version = 1, format = "markdown" },
+            source = "# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">Count</button><span>{{ count }}</span>\n\n<style scoped>button {color:red;}</style>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">0</span>", result.GetProperty("html").GetString());
+        Assert.Contains("[data-v-published]", result.GetProperty("css").GetString());
+        Assert.Equal(1, result.GetProperty("vue").GetProperty("version").GetInt32());
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableRendersSealedLiveAssistantVue()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("assistant-vue-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        using var response = await client.PostAsJsonAsync("/v1/render/assistant", new {
+            version = 1, documentId = "published",
+            source = "---\ntitle: Counter\n---\n# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">+</button><span>{{ count }}</span>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains(">0</span>", result.GetProperty("html").GetString());
+        Assert.DoesNotContain("title: Counter", result.GetProperty("html").GetString());
+        Assert.Equal(1, result.GetProperty("vue").GetProperty("version").GetInt32());
+    }
+
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedRendererRejectsKernelSignalsAndRecoversFromWorkerSelfSignals()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("renderer-process-control-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        var kernelPid = discovery.GetProperty("pid").GetInt32();
+        using var attempt = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "control", vue = new { version = 1, format = "sfc" },
+            source = $"<script setup>Deno.kill({kernelPid}, 'SIGKILL')</script><template/>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, attempt.StatusCode);
+        using var selfSignal = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "self", vue = new { version = 1, format = "sfc" },
+            source = "<script setup>Deno.kill(Deno.pid, 'SIGKILL')</script><template/>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, selfSignal.StatusCode);
+        using var recovered = await client.PostAsJsonAsync("/v1/render/markdown", new {
+            version = 1, documentId = "after", source = "Kernel survived worker signal"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+        var result = await recovered.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains("Kernel survived worker signal", result.GetProperty("html").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

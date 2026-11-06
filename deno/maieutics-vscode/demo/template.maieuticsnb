@@ -1,0 +1,69 @@
+{
+  "maieutics": "maieutics-notebook",
+  "version": 1,
+  "cells": [
+    {
+      "kind": "agent",
+      "text": "Frozen pending template snapshot; no producer runs on restore.",
+      "output": {
+        "repl": [
+          {
+            "displayId": "pending",
+            "data": {
+              "application/vnd.maieutics.template+json": {
+                "version": 1,
+                "source": "[[toc]]\n\n## Report {#report}\n\nTotal {{ report.total.toFixed(2) }}\n\nLater independent prose. Ready undefined: {{ empty }}\n\nFalse remains false: {{ false }}.\n",
+                "sourceSealed": true,
+                "bindings": [
+                  {
+                    "name": "report",
+                    "state": "pending"
+                  },
+                  {
+                    "name": "empty",
+                    "state": "ready",
+                    "undefined": true
+                  }
+                ]
+              },
+              "text/plain": "Report: pending"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "kind": "agent",
+      "text": "Frozen ready template snapshot; no producer runs on restore.",
+      "output": {
+        "repl": [
+          {
+            "displayId": "ready",
+            "data": {
+              "application/vnd.maieutics.template+json": {
+                "version": 1,
+                "source": "[[toc]]\n\n## Report {#report}\n\nTotal {{ report.total.toFixed(2) }}\n\nLater independent prose. Ready undefined: {{ empty }}\n\nFalse remains false: {{ false }}.\n",
+                "sourceSealed": true,
+                "bindings": [
+                  {
+                    "name": "report",
+                    "state": "ready",
+                    "value": {
+                      "total": 42
+                    }
+                  },
+                  {
+                    "name": "empty",
+                    "state": "ready",
+                    "undefined": true
+                  }
+                ]
+              },
+              "text/plain": "Report: ready"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

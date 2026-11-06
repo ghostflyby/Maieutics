@@ -42,6 +42,7 @@ import {
   parseAttachmentMarkers,
 } from "./attachments.ts";
 import { UiBridge } from "./uiBridge.ts";
+import { OutputRenderingBridge } from "./outputRendering.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
 import {
   MaieuticsFileSystemProvider,
@@ -216,6 +217,29 @@ export function activate(context: vscode.ExtensionContext): void {
   // UI models through this bridge; the comms socket opens lazily on the first
   // mount so plain notebooks never pay for it (ADR 0024, ADR 0038).
   const widgetChannel = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
+  const turnChannel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
+  const renderingBridge = new OutputRenderingBridge({
+    render: async (documentId, text, signal, template, vue, assistant) => {
+      // Opening an offline snapshot must never launch a kernel just to format its output.
+      const attached = connection;
+      if (attached === undefined || attached.isDisposed) return undefined;
+      const capabilities = await attached.capabilities(signal);
+      if (capabilities.rendering?.version !== 1) return undefined;
+      if (template && capabilities.rendering?.templateVersion !== 1) return undefined;
+      if (vue && capabilities.rendering?.vueVersion !== 1) return undefined;
+      // Older kernels retain passive SSR, never guess client execution support.
+      return await attached.client.renderMarkdown(
+        documentId,
+        text,
+        signal,
+        template,
+        vue,
+        assistant && capabilities.rendering?.assistantVersion === 1,
+      );
+    },
+    post: async (message) => await turnChannel.postMessage(message),
+    log: (message) => output?.appendLine(message),
+  });
   const viewChannel = vscode.notebooks.createRendererMessaging("maieutics-view-renderer");
   const uiBridge = new UiBridge({
     connect: async () => {
@@ -246,8 +270,16 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(
     // The turn timeline's retry anchor (requiresMessaging: always).
-    vscode.notebooks.createRendererMessaging("maieutics-turn-renderer").onDidReceiveMessage(
+    turnChannel.onDidReceiveMessage(
       ({ message }) => {
+        if (
+          typeof message === "object" && message !== null && message.source === "maieutics-output"
+        ) {
+          void renderingBridge.handle(message).catch(() =>
+            output?.appendLine("Output rendering bridge failed.")
+          );
+          return;
+        }
         const envelope = message as {
           source?: unknown;
           type?: unknown;
@@ -280,6 +312,12 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
     { dispose: () => void uiBridge.dispose().catch(() => {}) },
+    {
+      dispose: () =>
+        void renderingBridge.dispose().catch(() =>
+          output?.appendLine("Output rendering cleanup failed.")
+        ),
+    },
   );
 
   context.subscriptions.push(

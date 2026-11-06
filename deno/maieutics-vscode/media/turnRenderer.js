@@ -1,3 +1,4 @@
+import { mountVueIsland } from "./vueIslands.js";
 // Maieutics turn timeline renderer for `application/vnd.maieutics.turn+json`.
 // Dependency-free DOM/HTML only: this entry is hand-written (no bundler), but
 // it is an ES module — VS Code loads renderer entrypoints with a native
@@ -553,33 +554,219 @@ export async function activate(context) {
   if (markdown === undefined) throw new Error("VS Code Markdown renderer is unavailable.");
   markdown.extendMarkdownIt(protectMarkdownHtml);
   const states = new Map();
+  const pending = new Map();
+  const releaseRegion = (region) => {
+    region?.interactions?.abort();
+    region?.dispose?.();
+  };
+  const releaseState = (state) => {
+    state.interactions?.abort();
+    for (const region of state.regions.values()) releaseRegion(region);
+    state.regions.clear();
+  };
+  const current = (outputId, state, revision, signal) =>
+    states.get(outputId) === state && state.revision === revision && !signal?.aborted;
+  const rememberCodeTabs = (element, state) => {
+    for (const node of element.querySelectorAll('[data-render-engine="ssr"]')) {
+      const root = node.shadowRoot ?? node;
+      for (const input of root.querySelectorAll('.vp-code-group input[type="radio"]:checked')) {
+        const title = input.nextElementSibling?.textContent;
+        state.codeTabs.delete(input.name);
+        if (!input.defaultChecked && title !== undefined && title.length <= 512) {
+          state.codeTabs.set(input.name, { id: input.id, title });
+          if (state.codeTabs.size > 128) state.codeTabs.delete(state.codeTabs.keys().next().value);
+        }
+      }
+    }
+  };
+  const forgetPending = (id, cancel) => {
+    for (const [requestId, request] of pending) {
+      if (id !== undefined && request.outputId !== id) continue;
+      pending.delete(requestId);
+      if (cancel) {
+        context.postMessage?.({
+          source: "maieutics-output",
+          type: "cancel",
+          documentId: request.documentId,
+          requestId,
+        });
+      }
+    }
+  };
+  context.onDidReceiveMessage?.((message) => {
+    if (message?.source !== "maieutics-output" || typeof message.requestId !== "string") return;
+    const request = pending.get(message.requestId);
+    if (request === undefined || message.documentId !== request.documentId) return;
+    pending.delete(message.requestId);
+    const state = states.get(request.outputId);
+    if (!state || !current(request.outputId, state, request.revision, request.signal)) return;
+    const acknowledge = (engine) =>
+      context.postMessage?.({
+        source: "maieutics-output",
+        type: "applied",
+        documentId: request.documentId,
+        requestId: message.requestId,
+        engine,
+      });
+    const fallback = () => {
+      releaseRegion(state.regions.get(request.node));
+      state.regions.delete(request.node);
+      request.node.replaceWith(request.fallback);
+      state.regions.set(request.fallback, { mode: request.mode, key: request.key });
+      acknowledge("native");
+    };
+    if (message.type === "unavailable") {
+      fallback();
+      return;
+    }
+    if (
+      message.type !== "rendered" || typeof message.html !== "string" ||
+      message.html.length > 4_000_000 ||
+      typeof message.css !== "string" || message.css.length > 64_000 ||
+      states.get(request.outputId)?.revision !== request.revision
+    ) return;
+    const component = request.vue || (request.assistant && message.vue !== undefined);
+    if (
+      component && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
+        message.vue.code.length > 400_000 || message.vue.scopeId !== `data-v-${request.documentId}`)
+    ) return;
+    rememberCodeTabs(state.element, state);
+    const style = document.createElement("style");
+    style.textContent = message.css;
+    const rendered = document.createElement("div");
+    rendered.innerHTML = message.html;
+    const interactions = new AbortController();
+    rendered.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      const link = event.target instanceof Element ? event.target.closest('a[href^="#"]') : null;
+      if (link === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      let id;
+      try {
+        id = decodeURIComponent(link.getAttribute("href").slice(1));
+      } catch {
+        return;
+      }
+      if (!id) return;
+      const target = rendered.querySelector(`#${CSS.escape(id)}`);
+      if (target === null) return;
+      for (let parent = target.parentElement; parent !== null; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      target.scrollIntoView({ block: "nearest" });
+      target.focus({ preventScroll: true });
+    }, { signal: interactions.signal });
+    for (const input of rendered.querySelectorAll('.vp-code-group input[type="radio"]')) {
+      const selection = state.codeTabs.get(input.name);
+      if (selection?.id === input.id && selection.title === input.nextElementSibling?.textContent) {
+        input.checked = true;
+      }
+    }
+    // The default renderer's shadow boundary also scopes SSR styles and inherits host variables.
+    const root = request.node.shadowRoot ?? request.node;
+    releaseRegion(state.regions.get(request.node));
+    state.regions.delete(request.node);
+    root.replaceChildren(style, rendered);
+    let dispose;
+    if (component) {
+      try {
+        dispose = mountVueIsland(rendered, message.vue.code);
+      } catch {
+        interactions.abort();
+        fallback();
+        return;
+      }
+    }
+    state.regions.set(request.node, {
+      mode: request.mode,
+      key: request.key,
+      ready: true,
+      interactions,
+      dispose,
+    });
+    const engine = component ? "vue" : "ssr";
+    request.node.dataset.renderEngine = engine;
+    acknowledge(engine);
+  });
   return {
-    renderOutputItem(output, element) {
+    async renderOutputItem(output, element, signal) {
       if (element.querySelector("style") === null) {
         const style = document.createElement("style");
         style.textContent = STYLE;
         element.appendChild(style);
       }
 
-      const turn = output.json();
-      const state = states.get(output.id) ?? { openNodes: new Set() };
+      const payload = output.json();
+      const assistant = output.mime === "application/vnd.maieutics.live-assistant+json";
+      const isVue = output.mime === "application/vnd.maieutics.vue+json";
+      const vue = isVue && payload?.version === 1 && ["markdown", "sfc"].includes(payload.format)
+        ? { version: 1, format: payload.format }
+        : undefined;
+      const isTemplate = output.mime === "application/vnd.maieutics.template+json";
+      const template = isTemplate && payload?.version === 1 && typeof payload.source === "string"
+        ? { version: 1, bindings: payload.bindings, sourceSealed: payload.sourceSealed }
+        : undefined;
+      const turn = isVue
+        ? {
+          text: vue && typeof payload.source === "string"
+            ? payload.source
+            : "[invalid_vue_component]",
+        }
+        : isTemplate
+        ? { text: template ? payload.source : "[invalid_template]" }
+        : payload;
+      let state = states.get(output.id);
+      if (state && state.element !== element) {
+        forgetPending(output.id, true);
+        releaseState(state);
+        state = undefined;
+      }
+      state ??= {
+        element,
+        openNodes: new Set(),
+        documents: [],
+        codeTabs: new Map(),
+        regions: new Map(),
+        revision: 0,
+      };
+      rememberCodeTabs(element, state);
+      state.revision++;
+      const revision = state.revision;
+      forgetPending(output.id, false);
       states.set(output.id, state);
       for (const detail of element.querySelectorAll("details.timeline-node")) {
         if (detail.open) state.openNodes.add(detail.dataset.nodeId);
         else state.openNodes.delete(detail.dataset.nodeId);
       }
-      element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
       const blocks = [];
       const markdownToHtml = (text) => {
         const index = blocks.push(text) - 1;
         return `<div data-markdown-index="${index}"></div>`;
       };
-      const content = document.createElement("div");
-      content.className = "maieutics-turn";
-      content.innerHTML = render(turn, markdownToHtml);
-      const hydrate = (root) => {
+      const markup = render(turn, markdownToHtml);
+      const content = state.markup === markup && state.content?.parentNode === element
+        ? state.content
+        : document.createElement("div");
+      const retained = content === state.content;
+      if (!retained) {
+        content.className = "maieutics-turn";
+        content.innerHTML = markup;
+      }
+      const mode = assistant
+        ? "assistant"
+        : vue
+        ? `vue:${vue.format}`
+        : template
+        ? "template"
+        : "markdown";
+      const outgoing = [];
+      const regions = retained ? state.regions : new Map();
+      const hydrate = async (root) => {
         for (const node of root.querySelectorAll("[data-markdown-index]")) {
-          if (node.dataset.rendered) continue;
+          if (!current(output.id, state, revision, signal)) return;
           let hidden = false;
           for (
             let detail = node.closest("details");
@@ -593,19 +780,105 @@ export async function activate(context) {
           }
           if (hidden) continue;
           const index = Number(node.getAttribute("data-markdown-index"));
-          markdown.renderOutputItem(markdownOutputItem(output, blocks[index], index), node);
-          node.dataset.rendered = "true";
+          const key = JSON.stringify([blocks[index], template, vue, assistant]);
+          const previous = regions.get(node);
+          if (previous?.ready && previous.mode === mode && previous.key === key) continue;
+          if (previous?.requestRevision === revision || previous?.preparingRevision === revision) {
+            continue;
+          }
+          const preparing = previous ?? { mode, key };
+          preparing.preparingRevision = revision;
+          regions.set(node, preparing);
+          const fallback = document.createElement("div");
+          fallback.dataset.markdownIndex = String(index);
+          try {
+            await markdown.renderOutputItem(
+              markdownOutputItem(output, blocks[index], index),
+              fallback,
+              signal,
+            );
+          } catch {
+            fallback.textContent = blocks[index];
+          }
+          if (!current(output.id, state, revision, signal)) return;
+          const reply = node.closest(".assistant-reply");
+          let target = node;
+          if (!reply || !previous?.ready || previous.mode !== mode) {
+            releaseRegion(previous);
+            regions.delete(node);
+            node.replaceWith(fallback);
+            target = fallback;
+            regions.set(target, { mode, key, ready: !reply });
+          }
+          if (!reply) continue;
+          const region = regions.get(target);
+          region.requestRevision = revision;
+          const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
+          const requestId = `${documentId}:${revision}`;
+          outgoing.push({
+            request: {
+              vue,
+              assistant,
+              mode,
+              key,
+              signal,
+              fallback,
+              outputId: output.id,
+              documentId,
+              revision,
+              node: target,
+            },
+            message: {
+              source: "maieutics-output",
+              type: "render",
+              requestId,
+              documentId,
+              text: blocks[index],
+              ...(template ? { template } : {}),
+              ...(vue ? { vue } : {}),
+              ...(assistant ? { assistant: true } : {}),
+            },
+          });
         }
       };
+      const flush = () => {
+        if (!current(output.id, state, revision, signal)) return;
+        for (const { request, message } of outgoing.splice(0)) {
+          pending.set(message.requestId, request);
+          context.postMessage?.(message);
+        }
+      };
+      // Prepare the native representation without clearing the visible committed document.
+      // Restore expanded activity before hydration, otherwise its Markdown is intentionally deferred.
+      for (const detail of content.querySelectorAll("details.timeline-node")) {
+        detail.open = state.openNodes.has(detail.dataset.nodeId);
+      }
+      await hydrate(content);
+      if (!current(output.id, state, revision, signal)) return;
+      if (!retained) {
+        for (const region of state.regions.values()) releaseRegion(region);
+        state.regions = regions;
+        if (state.content?.parentNode === element) state.content.replaceWith(content);
+        else {
+          element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
+          element.appendChild(content);
+        }
+      }
+      state.content = content;
+      state.markup = markup;
+      state.interactions?.abort();
+      state.interactions = new AbortController();
       for (const detail of content.querySelectorAll("details.timeline-node")) {
         detail.open = state.openNodes.has(detail.dataset.nodeId);
         detail.addEventListener("toggle", () => {
           if (!detail.isConnected) return;
           if (detail.open) {
             state.openNodes.add(detail.dataset.nodeId);
-            hydrate(detail);
+            void hydrate(detail).then(flush).catch(() =>
+              console.error("Output Markdown hydration failed.")
+            );
           } else state.openNodes.delete(detail.dataset.nodeId);
-        });
+        }, { signal: state.interactions.signal });
       }
       content.addEventListener("click", (event) => {
         const action = event.target instanceof Element
@@ -625,13 +898,21 @@ export async function activate(context) {
             cellIndex: args[1],
           });
         } catch { /* Malformed notebook retry links are inert. */ }
-      });
-      element.appendChild(content);
-      hydrate(content);
+      }, { signal: state.interactions.signal });
+      flush();
     },
     disposeOutputItem(id) {
-      if (id === undefined) states.clear();
-      else states.delete(id);
+      forgetPending(id, true);
+      if (id === undefined) {
+        for (const state of states.values()) {
+          releaseState(state);
+        }
+        states.clear();
+      } else {
+        const state = states.get(id);
+        if (state) releaseState(state);
+        states.delete(id);
+      }
     },
   };
 }

@@ -48,6 +48,9 @@ internal sealed record ApplicationPaths(
     /// <summary>Same-volume ingest staging for atomic blob publication.</summary>
     public string AgentStagingRoot => Path.Combine(AgentObjectsRoot, ".staging");
 
+    /// <summary>Private, rebuildable renderer staging; each process removes its own child directory.</summary>
+    public string OutputRendererStagingRoot => Path.Combine(DataRoot, ".rendering");
+
     /// <summary>Creates the directory that backs <see cref="AgentFamiliesRoot" /> when persistence is enabled.</summary>
     public void EnsureAgentRoot()
     {

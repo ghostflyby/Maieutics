@@ -1,0 +1,221 @@
+.maieutics-output {
+  --vp-c-brand-1: var(--vscode-textLink-foreground, #3451b2);
+  --vp-c-brand-soft: var(--vscode-list-hoverBackground, #3451b21a);
+  --vp-c-bg-soft: var(--vscode-textCodeBlock-background, #f6f8fa);
+  --vp-c-text-1: var(--vscode-editor-foreground, #24292e);
+  --vp-c-text-2: var(--vscode-descriptionForeground, #656d76);
+  --vp-c-divider: var(--vscode-panel-border, #d1d9e0);
+  color: var(--vscode-editor-foreground, #24292e);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.maieutics-output pre {
+  overflow: auto;
+  padding: 0.75em 1em;
+  border-radius: 6px;
+  background: var(--vscode-textCodeBlock-background, #f6f8fa);
+}
+
+.maieutics-output code {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.maieutics-output .code-block {
+  margin: 1em 0;
+  min-width: 0;
+}
+
+.maieutics-output .code-title {
+  padding: 0.4em 1em;
+  font-family: var(--vscode-editor-font-family, monospace);
+  background: var(--vscode-textBlockQuote-background, #f6f8fa);
+  border-bottom: 1px solid var(--vscode-panel-border, #d0d7de);
+}
+
+.maieutics-output .code-block pre {
+  margin: 0;
+}
+
+.maieutics-output .shiki .line {
+  position: relative;
+  display: inline-block;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.maieutics-output .line[data-line]::before {
+  content: attr(data-line);
+  display: inline-block;
+  min-width: 4ch;
+  padding-inline-end: 1ch;
+  text-align: end;
+  color: var(--vscode-editorLineNumber-foreground, #6e7781);
+  user-select: none;
+}
+
+.maieutics-output .line.highlighted {
+  background: var(--vscode-editor-lineHighlightBackground, #0969da18);
+}
+
+.maieutics-output .line.diff.add {
+  background: var(--vscode-diffEditor-insertedTextBackground, #2da44e26);
+}
+
+.maieutics-output .line.diff.remove,
+.maieutics-output .line.highlighted.error {
+  background: var(--vscode-diffEditor-removedTextBackground, #cf222e26);
+}
+
+.maieutics-output .line.highlighted.warning {
+  background: var(--vscode-editorWarning-background, #bf870026);
+}
+
+.maieutics-output .line.diff::after {
+  position: absolute;
+  inset-inline-start: -0.9em;
+}
+
+.maieutics-output .line.diff.add::after {
+  content: "+";
+}
+
+.maieutics-output .line.diff.remove::after {
+  content: "−";
+}
+
+.maieutics-output .has-focused-lines .line:not(.has-focus) {
+  opacity: 0.65;
+}
+
+.maieutics-output .has-focused-lines:hover .line,
+.maieutics-output .has-focused-lines:focus-within .line {
+  opacity: 1;
+}
+
+.maieutics-output .vp-code-group {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--code-tabs), minmax(0, 1fr));
+  min-inline-size: 0;
+  margin: 1em 0;
+  padding: 0;
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  border-radius: 6px;
+}
+
+.maieutics-output .vp-code-group > legend,
+.maieutics-output .code-tab > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.maieutics-output .code-tab {
+  display: contents;
+}
+
+.maieutics-output .code-tab > label {
+  grid-row: 1;
+  padding: 0.5em 1em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.maieutics-output .code-tab > input:checked + label {
+  color: var(--vscode-textLink-foreground, #0969da);
+  border-color: currentColor;
+}
+
+.maieutics-output .code-tab > input:focus-visible + label {
+  outline: 1px solid var(--vscode-focusBorder, #0969da);
+  outline-offset: -2px;
+}
+
+.maieutics-output .code-panel {
+  display: none;
+  grid-row: 2;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.maieutics-output .code-tab > input:checked ~ .code-panel {
+  display: block;
+}
+
+.maieutics-output .vp-code-group .code-block {
+  margin: 0;
+}
+
+.maieutics-output .shiki span {
+  color: var(--shiki-light);
+}
+
+.vscode-dark .maieutics-output .shiki span,
+.vscode-high-contrast .maieutics-output .shiki span {
+  color: var(--shiki-dark);
+}
+
+.maieutics-output .custom-block {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-inline-start: 3px solid var(--vscode-textLink-foreground, #0969da);
+  background: var(--vscode-textBlockQuote-background, #f6f8fa);
+}
+
+.maieutics-output .custom-block-title {
+  font-weight: 600;
+}
+
+.maieutics-output .warning,
+.maieutics-output .caution {
+  border-color: var(--vscode-editorWarning-foreground, #9a6700);
+}
+
+.maieutics-output table {
+  border-collapse: collapse;
+}
+
+.maieutics-output th,
+.maieutics-output td {
+  padding: 0.25em 0.75em;
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+}
+
+.maieutics-output .danger {
+  border-color: var(--vscode-editorError-foreground, #cf222e);
+}
+
+.maieutics-output .important {
+  border-color: var(--vscode-charts-purple, #8250df);
+}
+
+.maieutics-output .table-of-contents {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-inline-start: 2px solid var(--vscode-panel-border, #d0d7de);
+}
+
+.maieutics-output a {
+  color: var(--vscode-textLink-foreground, #0969da);
+}
+
+.maieutics-output :is(h1, h2, h3, h4, h5, h6):focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #0969da);
+}
+
+.maieutics-output .template-value[data-template-state="pending"],
+.maieutics-output .template-value[data-template-state="incomplete"] {
+  color: var(--vscode-descriptionForeground, #6e7781);
+}
+
+.maieutics-output .template-value[data-template-state="failed"],
+.maieutics-output .template-value[data-template-state="cancelled"] {
+  color: var(--vscode-editorError-foreground, #cf222e);
+}

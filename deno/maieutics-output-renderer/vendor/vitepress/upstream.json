@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/vuejs/vitepress",
+  "tag": "v1.6.4",
+  "commit": "1fc537b78cda287fa23c1129a815ad9455fd8106",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "src/node/markdown/plugins/containers.ts",
+      "sha256": "0195e11ba15af5c9752432e36e6bfe3b6cb94c02469ab67f87768c51ef94b13c"
+    },
+    {
+      "path": "src/node/markdown/plugins/githubAlerts.ts",
+      "sha256": "3180294956454f81fc54472fdffa5ea1d46d97fb4519fb360019f02b251337dd"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6db2f08c2112251083b26df3117dde40c5589d337195953531e7e677d1a600e5"
+    }
+  ],
+  "adaptations": [
+    "Deno imports and formatting; CJS/ESM type boundary adaptation.",
+    "containers.ts extracts ordinary containers only; raw/v-pre and upstream code groups are excluded. Existing native code groups retain their own coherent markup and styles.",
+    "Container inline title environment includes documentId and the captured template snapshot so titles share local link scope, binding values and expression limits; existing custom-block class order is retained.",
+    "githubAlerts.ts parsing is retained; contentPlugins.ts overrides title rendering to escape text."
+  ]
+}

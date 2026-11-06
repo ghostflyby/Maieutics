@@ -10,7 +10,7 @@ export interface TimelineOutputSnapshot extends OutputSnapshot {
 /** Retains immutable output identities so unchanged payloads never need serialization. */
 export class TimelineOutputCache {
   private header: TimelineOutputSnapshot | undefined;
-  private answer: { text: string; value: TimelineOutputSnapshot } | undefined;
+  private answer: { text: string; streaming: boolean; value: TimelineOutputSnapshot } | undefined;
   private readonly entries = new Map<
     string,
     { entry: TimelineEntry; source: object; value: TimelineOutputSnapshot }
@@ -36,10 +36,14 @@ export class TimelineOutputCache {
     return next;
   }
 
-  answerNode(text: string): TimelineOutputSnapshot {
-    if (this.answer?.text === text) return this.answer.value;
-    const value = { nodeId: "answer", timeline: [{ kind: "text" as const, messageId: "", text }] };
-    this.answer = { text, value };
+  answerNode(text: string, streaming: boolean): TimelineOutputSnapshot {
+    if (this.answer?.text === text && this.answer.streaming === streaming) return this.answer.value;
+    const value = {
+      nodeId: "answer",
+      streaming,
+      timeline: [{ kind: "text" as const, messageId: "", text }],
+    };
+    this.answer = { text, streaming, value };
     return value;
   }
 
@@ -50,7 +54,10 @@ export class TimelineOutputCache {
     fragment: OutputSnapshot,
   ): TimelineOutputSnapshot {
     const previous = this.entries.get(id);
-    if (previous?.entry === entry && previous.source === source) return previous.value;
+    if (
+      previous?.entry === entry && previous.source === source &&
+      previous.value.streaming === fragment.streaming
+    ) return previous.value;
     const value = { ...fragment, nodeId: id };
     this.entries.set(id, { entry, source, value });
     return value;
@@ -86,7 +93,7 @@ export function timelineOutputSnapshots(
     let source: object = entry;
     switch (entry.kind) {
       case "text":
-        if (entry.text) fragment = { timeline: [{ ...entry }] };
+        if (entry.text) fragment = { streaming, timeline: [{ ...entry }] };
         break;
       case "reasoning": {
         const summary = reasoning?.find((summary) => summary.messageId === entry.messageId);
@@ -123,8 +130,9 @@ export function timelineOutputSnapshots(
     !entries.some((entry) => entry.kind === "text" && entry.text === snapshot.text)
   ) {
     outputs.push(
-      cache?.answerNode(snapshot.text) ?? {
+      cache?.answerNode(snapshot.text, streaming) ?? {
         nodeId: "answer",
+        streaming,
         timeline: [{ kind: "text", messageId: "", text: snapshot.text }],
       },
     );

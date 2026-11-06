@@ -17,6 +17,13 @@ export interface Capabilities {
   /** The server keeps multiple sessions live and serves every session-addressed
    * route directly; absent means the legacy single-active-server semantics. */
   multiSession?: boolean;
+  /** Optional stateless, kernel-side passive Markdown SSR. */
+  rendering?: {
+    version: number;
+    templateVersion?: number;
+    vueVersion?: number;
+    assistantVersion?: number;
+  };
 }
 
 export interface SessionInfo {

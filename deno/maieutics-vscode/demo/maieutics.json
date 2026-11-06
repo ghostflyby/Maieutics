@@ -1,0 +1,13 @@
+{
+  "Maieutics": {
+    "Model": { "Provider": "OpenAI", "Name": "rendering-demo" },
+    "Providers": {
+      "OpenAI": {
+        "ApiFlavor": "ChatCompletions",
+        "ApiKey": "local-demo-unused",
+        "Endpoint": "http://127.0.0.1:1"
+      }
+    },
+    "Agent": { "AutoTitle": false }
+  }
+}

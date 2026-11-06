@@ -31,6 +31,7 @@ import type {
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
 import { IdeCapabilityVersion } from "./ide.ts";
+import type { RenderedMarkdown, TemplateContext, VueRequest } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
  * import surface with the client's queue API). */
@@ -127,6 +128,56 @@ export class FrontendClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return await this.get("/v1/agent/capabilities", signal);
+  }
+
+  /** Requests a display snapshot; an explicit template context selects data expression evaluation. */
+  async renderMarkdown(
+    documentId: string,
+    source: string,
+    signal?: AbortSignal,
+    template?: TemplateContext,
+    vue?: VueRequest,
+    assistant = false,
+  ): Promise<RenderedMarkdown> {
+    const body = await this.post<unknown>(
+      assistant
+        ? "/v1/render/assistant"
+        : vue
+        ? "/v1/render/vue"
+        : template
+        ? "/v1/render/template"
+        : "/v1/render/markdown",
+      {
+        version: 1,
+        documentId,
+        source,
+        ...(template ? { template } : {}),
+        ...(vue ? { vue } : {}),
+      },
+      signal,
+    );
+    if (typeof body !== "object" || body === null) {
+      throw new FrontendError("protocol_error", 0, "The renderer returned no snapshot.");
+    }
+    const result = body as Partial<RenderedMarkdown>;
+    if (
+      result.version !== 1 || result.documentId !== documentId || typeof result.html !== "string" ||
+      result.html.length > 4_000_000 || typeof result.css !== "string" || result.css.length > 64_000
+    ) {
+      throw new FrontendError("protocol_error", 0, "The renderer returned an invalid snapshot.");
+    }
+    if (
+      (vue || (assistant && result.vue !== undefined)) &&
+      (result.vue?.version !== 1 || typeof result.vue.code !== "string" ||
+        result.vue.code.length > 400_000 || result.vue.scopeId !== `data-v-${documentId}`)
+    ) throw new FrontendError("protocol_error", 0, "Invalid Vue component snapshot.");
+    return {
+      version: 1,
+      documentId,
+      html: result.html,
+      css: result.css,
+      ...((vue || assistant) && result.vue ? { vue: result.vue } : {}),
+    };
   }
 
   async session(signal?: AbortSignal): Promise<SessionInfo> {

@@ -43,10 +43,12 @@ export async function testTurnRendererAsync(): Promise<void> {
         const module = await import(${JSON.stringify(rendererUri.toString())});
         const markdown = native.activate({ workspace: { isTrusted: true } });
         const messages = [];
+        let receiveMessage;
         const api = await module.activate({ getRenderer: async (id) => {
           assert(id === "vscode.markdown-it-renderer", "use the native Markdown renderer");
           return markdown;
-        }, postMessage: (message) => messages.push(message) });
+        }, postMessage: (message) => messages.push(message),
+          onDidReceiveMessage: (handler) => { receiveMessage = handler; } });
         const answer = "# Answer\\n\\n| Key | Value |\\n| --- | --- |\\n| a | **bold** |\\n\\n1. outer\\n   - nested\\n\\n~~~ts\\nconst answer = 42;\\n~~~\\n\\n[reference][ref]\\n\\n[ref]: https://example.com";
         const snapshot = { text: answer, tools: [{ tool: "list_directory", status: "ok" }],
           reasoning: [{ messageId: "m1", text: "First summary" }, { messageId: "m2", text: "Second summary" }],
@@ -65,6 +67,81 @@ export async function testTurnRendererAsync(): Promise<void> {
         const baseline = document.createElement("div"); document.body.appendChild(baseline);
         markdown.renderOutputItem(module.markdownOutputItem(output, answer, 9), baseline);
         assert(finalMarkdown.getElementById("preview").innerHTML === baseline.shadowRoot.getElementById("preview").innerHTML, "reply matches the default Markdown renderer");
+        const streamed = document.createElement("div"); document.body.appendChild(streamed);
+        const streamedOutput = (text) => ({ id: "streamed", json: () => ({ text }) });
+        await api.renderOutputItem(streamedOutput("old source"), streamed);
+        const oldRequest = messages.at(-1);
+        await api.renderOutputItem(streamedOutput("new source"), streamed);
+        const newRequest = messages.at(-1);
+        assert(oldRequest.documentId === newRequest.documentId && oldRequest.requestId !== newRequest.requestId, "streamed text keeps a stable document identity and advances its request revision");
+        receiveMessage({ ...oldRequest, type: "rendered", html: "<p>obsolete result</p>", css: "" });
+        assert(!streamed.querySelector('[data-render-engine="ssr"]'), "late results cannot replace a newer source revision");
+        receiveMessage({ ...newRequest, type: "rendered", html: '<div class="maieutics-output">new SSR result</div>', css: ".maieutics-output {}" });
+        const ssrNode = streamed.querySelector('[data-render-engine="ssr"]');
+        assert((ssrNode.shadowRoot ?? ssrNode).textContent.includes("new SSR result"), "the matching SSR result replaces the fallback");
+        const beforeDuplicate = messages.length;
+        await api.renderOutputItem(streamedOutput("new source"), streamed);
+        assert(messages.length === beforeDuplicate && ssrNode.isConnected, "identical output neither re-requests SSR nor rebuilds the committed boundary");
+        const retainedContent = streamed.querySelector(".maieutics-turn");
+        const retainedRoot = ssrNode.shadowRoot ?? ssrNode;
+        const retainedParagraph = retainedRoot.querySelector("p, .maieutics-output");
+        const fallbackStarted = Promise.withResolvers();
+        const releaseFallback = Promise.withResolvers();
+        const nativeRender = markdown.renderOutputItem;
+        markdown.renderOutputItem = async (...args) => {
+          fallbackStarted.resolve(); await releaseFallback.promise;
+          return nativeRender(...args);
+        };
+        const preparing = api.renderOutputItem(streamedOutput("pending replacement source"), streamed);
+        await fallbackStarted.promise;
+        assert(ssrNode.isConnected && retainedParagraph.isConnected, "asynchronous native preparation never clears committed SSR");
+        releaseFallback.resolve(); await preparing;
+        markdown.renderOutputItem = nativeRender;
+        assert(streamed.querySelector(".maieutics-turn") === retainedContent && streamed.querySelector('[data-render-engine="ssr"]') === ssrNode, "streaming updates retain the committed SSR boundary instead of reverting to native Markdown");
+        assert(retainedParagraph.isConnected && retainedRoot.textContent.includes("new SSR result"), "the committed content remains attached throughout an outstanding render");
+        const supersededRequest = messages.at(-1);
+        await api.renderOutputItem(streamedOutput("latest replacement source"), streamed);
+        receiveMessage({ ...supersededRequest, type: "rendered", html: "<p>stale intermediate</p>", css: "" });
+        assert(retainedParagraph.isConnected && !retainedRoot.textContent.includes("stale intermediate"), "obsolete replies cannot replace retained content");
+        const failedRequest = messages.at(-1);
+        receiveMessage({ ...failedRequest, type: "unavailable" });
+        assert(!streamed.querySelector('[data-render-engine="ssr"]'), "an unavailable replacement commits the latest native fallback rather than stale SSR");
+        const fallbackNode = streamed.querySelector("[data-markdown-index]");
+        assert((fallbackNode.shadowRoot ?? fallbackNode).textContent.includes("latest replacement source"), "the latest fallback is fully rendered before it becomes visible");
+        const olderStarted = Promise.withResolvers();
+        const releaseOlder = Promise.withResolvers();
+        markdown.renderOutputItem = async (...args) => {
+          olderStarted.resolve(); await releaseOlder.promise; return nativeRender(...args);
+        };
+        const olderPaint = api.renderOutputItem(streamedOutput("slow obsolete native"), streamed);
+        await olderStarted.promise;
+        markdown.renderOutputItem = nativeRender;
+        await api.renderOutputItem(streamedOutput("newest source"), streamed);
+        receiveMessage({ ...messages.at(-1), type: "rendered", html: "<p>newest committed</p>", css: "" });
+        const newestNode = streamed.querySelector('[data-render-engine="ssr"]');
+        releaseOlder.resolve(); await olderPaint;
+        assert(streamed.querySelector('[data-render-engine="ssr"]') === newestNode && (newestNode.shadowRoot ?? newestNode).textContent.includes("newest committed"), "a late native preparation cannot overwrite a newer committed SSR revision");
+        await api.renderOutputItem(streamedOutput("disposed source"), streamed);
+        const disposedRequest = messages.at(-1);
+        api.disposeOutputItem("streamed");
+        receiveMessage({ ...disposedRequest, type: "rendered", html: "<p>late disposed result</p>", css: "" });
+        assert(streamed.querySelector('[data-render-engine="ssr"]') === newestNode && !(newestNode.shadowRoot ?? newestNode).textContent.includes("late disposed result"), "disposed output ignores late SSR messages without repainting retained content");
+        const nativeStarted = Promise.withResolvers();
+        const releaseNative = Promise.withResolvers();
+        const originalRender = markdown.renderOutputItem;
+        markdown.renderOutputItem = async (...args) => {
+          nativeStarted.resolve();
+          await releaseNative.promise;
+          return originalRender(...args);
+        };
+        const beforeDisposedRender = messages.length;
+        const pendingNative = api.renderOutputItem({ id: "disposed-during-native", json: () => ({ text: "disposed while native rendering awaits" }) }, streamed);
+        await nativeStarted.promise;
+        api.disposeOutputItem("disposed-during-native");
+        releaseNative.resolve();
+        await pendingNative;
+        markdown.renderOutputItem = originalRender;
+        assert(messages.length === beforeDisposedRender, "disposal during native rendering must not enqueue a new SSR request");
         const setOpen = async (detail, value) => {
           const toggle = new Promise((resolve) => detail.addEventListener("toggle", resolve, { once: true }));
           detail.open = value; await toggle;
@@ -92,7 +169,8 @@ export async function testTurnRendererAsync(): Promise<void> {
         await api.renderOutputItem({ id: "retry", json: () => ({ text: '[Retry](command:maieutics.retryTurn?' + encodeURIComponent(JSON.stringify(["notebook:test", 3])) + ')', error: { code: "failed", message: "Failure" } }) }, retry);
         await setOpen(retry.querySelector("details.timeline-node"), true);
         retry.querySelector("[data-retry]").click();
-        assert(messages.length === 1 && messages[0].notebookUri === "notebook:test" && messages[0].cellIndex === 3, "retry uses the owning renderer context and JSON arguments");
+        const retries = messages.filter((message) => message.type === "retry");
+        assert(retries.length === 1 && retries[0].notebookUri === "notebook:test" && retries[0].cellIndex === 3, "retry uses the owning renderer context and JSON arguments");
         api.disposeOutputItem();
         vscode.postMessage({ ok: true });
       } catch (error) { vscode.postMessage({ ok: false, error: error.stack ?? String(error) }); }

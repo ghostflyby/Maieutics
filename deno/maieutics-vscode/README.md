@@ -35,11 +35,15 @@ Jupyter kernel involved (ADR 0023).
   there only discards the local view until the next sync re-materializes it.
 - Agent output follows one **Timeline**. Every message, permitted reasoning summary, tool invocation
   and child run is a separate notebook output block, in first-appearance order. Assistant replies
-  fill their output block and use VS Code’s default Markdown renderer directly, always expanded.
-  Activity nodes remain compact and collapsed by default. Click a node to expand its original
-  content; the expanded state survives streaming updates. Answer Markdown uses VS Code's native
-  renderer (including tables, nested lists, code and Markdown extensions); model-supplied HTML stays
-  escaped. Tool nodes retain structured arguments, latest progress and results, capped at 20,000
+  fill their output block, always expanded. They show native Markdown immediately, then use shared
+  passive SSR from an attached kernel when supported, including containers, code groups, code
+  titles, line numbers, line highlights, and Shiki diff/focus/error annotations. Code groups switch
+  through native controls; selections survive text updates when the group, tab position, and title
+  still match. Activity nodes remain compact and collapsed by default. Click a node to expand its
+  original content; the expanded state survives streaming updates. Native Markdown remains the
+  offline and error fallback; opening a snapshot never starts a kernel solely for rendering.
+  Model-supplied HTML stays escaped. See the [SSR demo](demo/README.md) for the current subset and
+  limitations. Tool nodes retain structured arguments, latest progress and results, capped at 20,000
   characters per detail and 256 tools per run, with an explicit truncation note. Saving rejoins
   blocks into one portable turn snapshot; reopening restores expanded replies and collapsed activity
   nodes. Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;

@@ -10,6 +10,65 @@ All JSON uses camelCase and is serialized with source-generated contexts on
 the NativeAOT path. No Jupyter type and no Microsoft.Extensions.AI type
 crosses the wire (invariant 11).
 
+## Passive Markdown rendering demo
+
+Capabilities may advertise `rendering: {"version":1}`. `POST /v1/render/markdown` is an authenticated,
+stateless request/reply endpoint for derived presentation, independently of run event sequencing:
+
+```json
+{"version":1,"documentId":"message1","source":"# Result\n\n**Ready**"}
+```
+
+The response is `{"version":1,"documentId":"message1","html":"…","css":"…"}`. HTML is passive
+server-rendered content; CSS is the renderer's host-scoped stylesheet. A document ID begins with an
+ASCII letter and contains at most 64 ASCII letters, digits, underscores, or hyphens. The source limit
+is 200,000 UTF-16 units; request bodies are capped at 2 MiB, and HTML at 4,000,000 UTF-16 units. The
+kernel admits at most eight rendering requests and gives each a 30-second total budget. Unknown JSON
+fields are tolerated. Invalid requests return `400 invalid_request`, saturated admission returns
+`429 render_busy`, and renderer failure returns `503 render_unavailable`; clients retain the original
+Markdown. A cancelled request does not cancel its Agent run or change canonical history.
+
+Clients correlate answers with their own source revision and ignore superseded results. This demo
+returns complete snapshots, with no patch or server-owned document revision contract. It does not
+execute document scripts, Vue expressions, includes, or filesystem snippets. Product resource links
+are preserved; frontend resource delivery and interactive components remain separate work.
+
+`POST /v1/render/ready` is an internal child-to-kernel readiness notification on the shared host. It
+requires the frontend bearer plus the child scope's nonce and accepts `{version:1,port,nonce}`. An
+accepted notification returns `204`; forged or repeated notifications return `409`. It is not a
+frontend registration API. The owned child serves authenticated, bounded request/reply
+`POST /v1/markdown` on an ephemeral loopback port using its separate scope credential.
+
+The VS Code extension uses its already attached connection for rendering; opening an offline
+snapshot does not start a kernel. Its renderer messaging bridge assigns stable document IDs and
+local request IDs, coalesces pending source updates, and rejects obsolete replies. Native Markdown
+appears on first presentation and remains the fallback. On unchanged-layout updates, committed SSR
+stays attached until the next matching response or a fully prepared latest native fallback commits;
+intermediate native renders do not replace it. Identical committed source/mode/bindings need no new
+request. This is a frontend presentation policy; server requests remain stateless. A local `applied`
+acknowledgement follows DOM application for verification; it is not a frontend event frame or an Agent completion signal.
+SSR HTML is derived presentation and is not saved into notebook v1 snapshots.
+Live assistant text nodes and restored snapshots carry `application/vnd.maieutics.turn+json` so they
+enter this renderer; native Markdown fallback happens inside it. Legacy Markdown-node metadata
+remains readable when saving older in-memory outputs.
+
+The passive content subset also includes `[[toc]]` (top-level H2/H3 headings), heading-only `{#id}`
+attributes, inline Markdown container titles, and quoted GitHub Alerts (TIP/NOTE/INFO/IMPORTANT/
+WARNING/CAUTION/DANGER). Heading IDs and local links are document-scoped, including TOC targets.
+Explicit IDs accept `[\p{L}_][\p{L}\p{N}_.:-]{0,127}`; invalid IDs fall back to generated slugs.
+Duplicate IDs and collisions with code controls receive deterministic numeric suffixes in source
+order. Full-source rendering updates earlier TOCs and container-title references when later source
+arrives. Attribute handlers/styles are rejected; alert titles are escaped literal text. VS Code owns
+local-fragment navigation within the rendered Shadow DOM and removes its handlers on replacement
+and disposal. This content expansion does not change rendering API version 1 or the notebook format.
+
+The passive content subset includes `::: code-group` with direct fenced-code children, literal fence
+titles, line numbers and selected-line highlighting, and VitePress-style Shiki comment notations for
+diff/focus/highlight/error/warning. Code groups use document-scoped native radio controls and the
+returned stylesheet; they require no executable document code. Mixed groups retain their normal
+visible Markdown. Frontends may preserve tab choices locally; neither choice nor derived HTML enters
+canonical history or notebook v1 persistence. The rendering API shapes and version remain unchanged.
+
 ## Discovery and authentication
 
 The frontend spawns the executable and passes the discovery file location:
@@ -845,7 +904,10 @@ does not reconstruct them; event replay or a saved notebook supplies them.
 
 VS Code keeps one ordered timeline throughout streaming and completion. Each assistant
 message, permitted summary, tool invocation and child run gets an independent notebook
-output block in first-appearance order. Assistant reply blocks are always expanded and use VS Code’s default Markdown renderer directly. Activity nodes default to collapsed summaries; expanding one reveals the original content. Expansion
+output block in first-appearance order. Assistant reply blocks are always expanded, initially use
+VS Code's default Markdown renderer, and replace their text region with shared passive SSR when the
+connected kernel supports it. Source revisions reject obsolete responses; failure or offline viewing
+retains native Markdown. Activity nodes default to collapsed summaries; expanding one reveals the original content. Expansion
 survives output updates. Saving joins node fragments into one portable snapshot; reopening
 restores separate collapsed outputs. Tool parameters, latest progress and results retain
 up to 20,000 characters per detail and mark truncation explicitly. Notebook v1 snapshots
@@ -907,3 +969,181 @@ never reads or writes it. Save/load must not mutate the live session
   ]
 }
 ```
+
+## Renderer process failure and retry
+
+A supervised renderer generation has its own private readiness nonce, readiness task, process and
+port. Readiness callbacks authenticate only the current non-retired generation. Unexpected exit is
+observed, logged at Warning and invalidates the port; affected work returns `503 render_unavailable`.
+Transport/startup failures are recoverable: a subsequent admitted request can start a fresh process.
+There is no permanent failure latch and no automatic replay of the failed request. This is derived
+presentation recovery, independent of run event sequencing and canonical history.
+
+Caller cancellation does not retire a healthy renderer. Shutdown rejects new admission and cancels/
+joins admitted operations before disposing the generation and its transport/resources. No wire shape
+or protocol-version change is introduced. A permissionless SSR worker can end its entire Deno
+renderer via Deno's allowed self-signal; generation recovery handles that case. Separate kernel PID
+signal attempts are denied and covered by a separately owned process smoke test. These limits do not
+constitute a complete process-liveness or untrusted-code sandbox.
+
+## Explicit template rendering (v1)
+
+`rendering: {"version":1,"templateVersion":1}` advertises an additional authenticated, stateless
+`POST /v1/render/template` request/reply endpoint. The Markdown endpoint remains passive. Request:
+
+```json
+{
+  "version": 1,
+  "documentId": "report1",
+  "source": "Total {{ report.total.toFixed(2) }}\n\nLater prose. {{ empty }}",
+  "template": {
+    "version": 1,
+    "sourceSealed": false,
+    "bindings": [
+      {"name":"report","state":"pending"},
+      {"name":"empty","state":"ready","undefined":true}
+    ]
+  }
+}
+```
+
+Bindings have unique ASCII identifier names (maximum 64 characters). States are `pending`, `ready`,
+`failed`, and `cancelled`; only ready bindings carry `value` or `undefined:true`, exclusively. JSON
+null is a real ready value. `undefined`, `constructor`, `prototype`, and `__proto__` are reserved names.
+Unknown fields are tolerated; unknown states/versions and invalid data fail with `400 invalid_request`.
+Data is JSON-only: finite numbers, strings, booleans, null, arrays and records, with no prototype keys.
+Limits: 128 bindings, 8,192 data values, 16 data nesting levels, and 64,000 aggregate UTF-16 units in
+string values and object keys; keys are at most 128 UTF-16 units. Existing 2 MiB request, 200,000 source,
+4,000,000 HTML, eight-request admission and 30-second total rendering limits apply.
+
+The response extends the Markdown response with `expressions`, each containing `state`,
+`dependencies` (names actually read), and an optional fixed `code`. State additionally includes
+`incomplete` for unfinished syntax. The zero-based index matches `data-template-index` spans for that
+snapshot, including container titles registered during rendering; it is not a stable source identity.
+Ready undefined/null produce empty text, false produces `false`, and zero produces `0`; pending
+produces an ellipsis. Binding failures/cancellation and invalid expressions produce local diagnostics.
+Expression source and producer error details are not echoed in metadata.
+
+Only the data-expression subset in [the design](streaming-output-rendering-design.md#explicit-template-snapshots-implemented-2026-11-05)
+is supported. Interpolations are not recognized inside code spans/fences or Markdown escapes. Values
+are inserted as escaped text without reparsing. Missing names stay pending until `sourceSealed:true`,
+then fail as unresolved; explicitly pending names stay pending. Short-circuit branches depend only on
+values they read, and pending never acts as false or undefined. Each snapshot allows 256 interpolations,
+2,048 UTF-16 units per expression, 256 interpreter steps and 32 AST traversal levels. Exceeding the
+interpolation-count or data limit rejects the request; per-expression failures remain local.
+
+The supervised child exposes authenticated `POST /v1/template` with the same request and HTML/state
+response (CSS remains kernel-owned). It uses the existing child lifecycle and permissions and does
+not retain documents or call a producer. Requests and answers are correlated by the client request
+revision; no server document revisions, publication stream or automatic producer settlement is implied.
+
+A REPL rich display can carry `application/vnd.maieutics.template+json`:
+
+```json
+{"version":1,"source":"{{ report.total }}","sourceSealed":true,"bindings":[{"name":"report","state":"ready","value":{"total":42}}]}
+```
+
+Pair it with `text/plain` fallback. It travels through existing `repl.display`/`repl.updateDisplay`
+frames and notebook-v1 MIME snapshots unchanged. A later update with the same display ID replaces
+source and the complete binding list; it never merges partial binding lists. VS Code recognizes this
+MIME through the production serializer/renderer and requests the explicit template API when supported;
+otherwise it retains native Markdown. The bridge additionally bounds serialized template context to
+128,000 UTF-16 units. Persistence includes source/data, not rendered HTML or producer code. Opening or
+re-rendering a snapshot never launches a producer. An interrupted producer may leave a frozen pending
+snapshot; automatic producer registration, cancellation settlement and late subscriptions are not
+part of this stateless version.
+
+## Explicit live Vue rendering (v1)
+
+`rendering: {"version":1,"vueVersion":1}` additionally advertises authenticated, stateless
+`POST /v1/render/vue`. This route alone selects component compilation and evaluation:
+
+```json
+{"version":1,"documentId":"counter1","source":"<script setup>import { ref } from 'vue'; const count = ref(0)</script>\n\n<button @click=\"count++\">{{ count }}</button>","vue":{"version":1,"format":"markdown"}}
+```
+
+`format` is `markdown` (Vue-in-Markdown) or `sfc` (complete Vue single-file component). Version and
+format are required. Only static imports from `vue` are supported. Other imports, dynamic imports,
+`import.meta`, external blocks, custom blocks, CSS modules and non-CSS style preprocessors fail with
+`400 invalid_request`. Source must form a complete compilable component. Unknown fields remain
+tolerated. Ordinary Markdown and data-template routes do not evaluate component scripts.
+
+The response extends the Markdown shape with
+`"vue":{"version":1,"code":"…","scopeId":"data-v-counter1"}`. `html` is initial SSR output;
+`code` is a compiled component factory body taking the shipped Vue runtime as its `Vue` argument.
+`css` includes the baseline stylesheet and compiled component styles. Source, HTML and document ID
+limits remain unchanged; compiled code is capped at 400,000 UTF-16 units and component styles at
+48,000. Existing 2 MiB request, eight-request admission and 30-second total budgets apply. SSR runs
+in a fresh permissionless worker with a five-second deadline and private reply port. Worker failure
+or timeout returns `503 render_unavailable`; authored errors and compiler details are not echoed.
+The internal child exposes authenticated `POST /v1/vue` with the same request and component metadata;
+its CSS contains component styles only, with the baseline added by the executable.
+
+The live frontend hydrates with the matching bundled Vue runtime and owns/unmounts one app per output.
+A changed-source replacement resets component state when it commits. Identical source/mode/binding
+redelivery on an unchanged layout keeps the live app and client state. While the next render is
+pending, the committed app stays mounted; failed rendering commits the latest native fallback.
+Local Vue event/reactivity updates do not generate Agent events or modify canonical history. The client revision guard rejects obsolete responses before
+mounting. The current contract verifies synchronous deterministic setup; setup executes in both SSR
+and hydration. External operations remain authorized producer work. Async setup/Suspense and resource
+hydration are not specified. This is executable live output under ADR 0038/0047, not a browser sandbox.
+
+The corresponding rich-display MIME is `application/vnd.maieutics.vue+json`:
+
+```json
+{"version":1,"format":"markdown","source":"<script setup>import { ref } from 'vue'; const count = ref(0)</script>\n\n<button @click=\"count++\">{{ count }}</button>"}
+```
+
+Publish through the existing explicitly selected REPL rich-display API and include `text/plain`
+fallback. Live output delivery and updates use existing display identities. VS Code selects this MIME
+only for live output, requests the explicit endpoint, and hydrates successful SSR. Unsupported or
+failed rendering retains native source/fallback. Streaming partials and restored assistant snapshots
+do not select execution; the completed live-assistant policy below separately opts into this runtime. The compiled factory is not accepted from a saved notebook or a MIME bundle.
+Notebook v1 reading and saving both discard the Vue MIME and preserve its other fallback items;
+reading also strips executable `esmSource`/`cssSource` from existing bundled-view MIME. Reopening a
+snapshot executes no component; a live producer must redisplay it. Data-template snapshots remain
+persistable. No document revision protocol, producer subscription or patch stream is introduced.
+
+## Completed live assistant rendering (v1)
+
+`rendering: {"version":1,"assistantVersion":1}` advertises authenticated, stateless
+`POST /v1/render/assistant`. Clients select it for a successfully completed **live assistant** source:
+
+```json
+{"version":1,"documentId":"reply1","source":"# Counter\n\n<script setup>import { ref } from 'vue'; const count = ref(0);</script>\n\n<button @click=\"count++\">{{ count }}</button>"}
+```
+
+The request has the same bounds and unknown-field tolerance as Markdown v1; no Vue format selector
+is required. Response is the existing `{version,documentId,html,css}` snapshot, optionally with
+`vue:{version:1,code,scopeId}` under the same component bounds. Plain source uses passive SSR.
+Top-level authored script blocks select Vue-in-Markdown compilation using the existing isolated
+worker/runtime. Fenced, inline, escaped and quoted examples, and script text inside frontmatter, do
+not select component execution. Invalid source is `400 invalid_request`; worker failure/timeout is
+`503 render_unavailable`. Existing auth, queue admission, budgets and request-revision rules apply.
+The internal child endpoint is authenticated `POST /v1/assistant` and returns component-only CSS;
+the executable adds baseline styling. This endpoint does not change Agent history or event order.
+
+VS Code emits local `application/vnd.maieutics.live-assistant+json` for text nodes only after a
+successful run terminal frame. Payload remains the existing turn snapshot. Streaming text continues
+through passive turn MIME, and failed/cancelled/truncated executions never receive live provenance. The final
+text cache invalidates even if text bytes match its last streaming delta. The renderer sends the
+local bridge request with `assistant:true`; template/Vue selectors cannot be combined with that
+flag. The extension selects the endpoint only when advertised; older kernels retain passive SSR.
+Optional compiled metadata is accepted only for the current selected assistant/component request.
+
+Notebook v1 saving recognizes this local MIME and extracts ordinary source/timeline data. Restoration
+always emits passive turn MIME; a stored marker or source text cannot select execution. The notebook
+format and canonical transcript are unchanged. Opening a saved notebook runs no component. An
+explicit live replay from the authenticated kernel can recreate presentation state. Component setup
+still runs for SSR and hydration and must have deterministic initial state; external producers remain
+explicit tools. This version waits for full source/turn completion and introduces no partial-script
+execution, automatic binding subscriptions or document patches. The dedicated Vue-rich-display MIME
+and explicit SFC format remain available for producer-driven output.
+
+The shared content pipeline recognizes bounded frontmatter headers through the public mdit-vue plugin
+with explicit uncached parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) are omitted without
+parsing/evaluating their values or expanding aliases. JavaScript/CoffeeScript engines are rejected.
+An unfinished header remains readable passive source and cannot authorize a component.
+Metadata values and `$frontmatter` bindings are not exposed. CSS additionally provides common
+`--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`, `--vp-c-text-1`, `--vp-c-text-2`, and
+`--vp-c-divider` host aliases. This adds no site page context or resource loader.

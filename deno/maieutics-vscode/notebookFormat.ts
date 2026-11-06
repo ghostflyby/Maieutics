@@ -157,11 +157,14 @@ export function serializeNotebook(notebook: MaieuticsNotebook): Uint8Array {
   );
 }
 
+/** Executable Vue sources are live-only and never replay from notebook snapshots. */
+export const VueOutputMime = "application/vnd.maieutics.vue+json";
+
 /** The display-mime member native view-family announcements ride. */
 export const NativeViewMime = "application/vnd.maieutics.view+json";
 
 /**
- * Strip bundled-family component sources (esmSource/cssSource) from a
+ * Strip executable Vue MIME and bundled-family sources (esmSource/cssSource) from a
  * snapshot's REPL displays before it is persisted: a `.maieuticsnb` file is
  * untrusted input (AGENTS.md), and bundled code must only ever reach the
  * renderer as live output of a running session (ADR 0038 stage 1b's trust
@@ -172,14 +175,21 @@ export function stripBundledDisplaySources(output: OutputSnapshot): OutputSnapsh
   if (output.repl === undefined) return output;
   let changed = false;
   const repl = output.repl.map((display) => {
-    const announcement = display.data[NativeViewMime];
-    if (!isRecord(announcement)) return display;
-    if (!("esmSource" in announcement) && !("cssSource" in announcement)) return display;
-    changed = true;
-    const cleaned = { ...announcement };
-    delete cleaned.esmSource;
-    delete cleaned.cssSource;
-    return { ...display, data: { ...display.data, [NativeViewMime]: cleaned } };
+    let data = display.data;
+    if (VueOutputMime in data) {
+      changed = true;
+      data = { ...data };
+      delete data[VueOutputMime];
+    }
+    const announcement = data[NativeViewMime];
+    if (isRecord(announcement) && ("esmSource" in announcement || "cssSource" in announcement)) {
+      changed = true;
+      const cleaned = { ...announcement };
+      delete cleaned.esmSource;
+      delete cleaned.cssSource;
+      data = { ...data, [NativeViewMime]: cleaned };
+    }
+    return data === display.data ? display : { ...display, data };
   });
   return changed ? { ...output, repl } : output;
 }
@@ -203,7 +213,7 @@ function parseOutput(value: Record<string, unknown>): OutputSnapshot {
   const repl = Array.isArray(value.repl)
     ? value.repl.filter(isRecord).map((display) => ({
       displayId: typeof display.displayId === "string" ? display.displayId : "",
-      data: isRecord(display.data) ? display.data : {},
+      data: frozenDisplayData(display.data),
     }))
     : undefined;
   const subagents = Array.isArray(value.subagents)
@@ -365,4 +375,18 @@ export function mergeOutputSnapshots(
     );
   if (merged.text === undefined && streamedText !== undefined) merged.text = streamedText;
   return merged;
+}
+
+/** Executable Vue sources never gain authority from an untrusted notebook file. */
+function frozenDisplayData(value: unknown): Record<string, unknown> {
+  const data = isRecord(value) ? { ...value } : {};
+  delete data[VueOutputMime];
+  const announcement = data[NativeViewMime];
+  if (isRecord(announcement)) {
+    const cleaned = { ...announcement };
+    delete cleaned.esmSource;
+    delete cleaned.cssSource;
+    data[NativeViewMime] = cleaned;
+  }
+  return data;
 }

@@ -50,6 +50,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     private readonly Func<IReadOnlyList<McpPromptServerAccess>>? _promptServersAccessor;
     private readonly IdeRequestRegistry? _ideRequests;
     private readonly FrontendIdeSockets? _ideSockets;
+    private readonly FrontendOutputRenderer? _outputRenderer;
     private readonly ILogger<FrontendHost> _logger;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly byte[] _expectedToken;
@@ -68,13 +69,15 @@ internal sealed class FrontendHost : IAsyncDisposable
         Func<IReadOnlyList<McpPromptServerAccess>>? promptServersAccessor = null,
         IdeRequestRegistry? ideRequests = null,
         FrontendIdeSockets? ideSockets = null,
-        FrontendToolApprovalPresenter? toolApprovalPresenter = null)
+        FrontendToolApprovalPresenter? toolApprovalPresenter = null,
+        FrontendOutputRenderer? outputRenderer = null)
     {
         _service = service;
         _turnQueue = turnQueue;
         _logger = logger;
         _ideRequests = ideRequests;
         _ideSockets = ideSockets;
+        _outputRenderer = outputRenderer;
         _elicitationPresenter = elicitationPresenter
                                      ?? new FrontendElicitationPresenter(
                                          NoFramesPublisher.Instance,
@@ -97,6 +100,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     internal void BeginShutdown()
     {
         _service.BeginShutdown();
+        _outputRenderer?.BeginShutdown();
         _ = ObserveShutdownCancelAsync();
     }
 
@@ -148,6 +152,11 @@ internal sealed class FrontendHost : IAsyncDisposable
         var frontend = endpoints.MapGroup(string.Empty);
         frontend.WithMetadata(FrontendRouteMetadata.Instance);
         frontend.MapGet("/v1/agent/capabilities", HandleCapabilities);
+        frontend.MapPost("/v1/render/markdown", HandleRenderMarkdown);
+        frontend.MapPost("/v1/render/template", HandleRenderTemplate);
+        frontend.MapPost("/v1/render/vue", HandleRenderVue);
+        frontend.MapPost("/v1/render/assistant", HandleRenderAssistant);
+        frontend.MapPost("/v1/render/ready", HandleRendererReady);
         frontend.MapGet("/v1/skills", HandleSkills);
         frontend.MapGet("/v1/prompts", HandlePrompts);
         frontend.MapGet("/v1/agent/session", HandleSession);
@@ -403,7 +412,41 @@ internal sealed class FrontendHost : IAsyncDisposable
                 : new FrontendUiCapability(
                     FrontendUiCapabilityVersion,
                     [FrontendUiWire.FormFamily]),
-            MultiSession: true), FrontendJsonContext.Default.FrontendCapabilities);
+            MultiSession: true,
+            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1)),
+            FrontendJsonContext.Default.FrontendCapabilities);
+    }
+
+    private Task HandleRenderMarkdown(HttpContext context) => HandleRender(context, template: false);
+
+    private Task HandleRenderTemplate(HttpContext context) => HandleRender(context, template: true);
+
+    private Task HandleRenderVue(HttpContext context) => HandleRender(context, template: false, vue: true);
+
+    private Task HandleRenderAssistant(HttpContext context) => HandleRender(context, template: false, assistant: true);
+
+    private async Task HandleRender(HttpContext context, bool template, bool vue = false, bool assistant = false)
+    {
+        if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+            limit.MaxRequestBodySize = 2 * 1024 * 1024;
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendRenderMarkdown);
+        if (request is null) return;
+        await GuardAsync(context, async () => Results.Json(
+            await (_outputRenderer ?? throw new FrontendFailureException(
+                "render_unavailable", "This server does not expose Markdown rendering."))
+                .RenderAsync(request, context.RequestAborted, template, vue, assistant).ConfigureAwait(false),
+            FrontendJsonContext.Default.FrontendRenderedMarkdown));
+    }
+
+    private async Task HandleRendererReady(HttpContext context)
+    {
+        if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit)
+            limit.MaxRequestBodySize = 4096;
+        var request = await ReadJsonAsync(context, FrontendJsonContext.Default.FrontendRendererReady);
+        if (request is null) return;
+        context.Response.StatusCode = _outputRenderer?.RegisterReady(request) == true
+            ? StatusCodes.Status204NoContent
+            : StatusCodes.Status409Conflict;
     }
 
     private IResult HandleSession()
@@ -1689,6 +1732,8 @@ internal sealed class FrontendHost : IAsyncDisposable
             FrontendErrors.McpPromptUnknown => StatusCodes.Status404NotFound,
             FrontendErrors.McpPromptUnavailable => StatusCodes.Status409Conflict,
             FrontendErrors.SkillBudgetExceeded => StatusCodes.Status413PayloadTooLarge,
+            "render_unavailable" => StatusCodes.Status503ServiceUnavailable,
+            "render_busy" => StatusCodes.Status429TooManyRequests,
             _ => StatusCodes.Status400BadRequest
         };
         context.Response.ContentType = "application/json";

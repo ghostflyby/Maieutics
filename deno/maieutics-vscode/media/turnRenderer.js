@@ -555,6 +555,17 @@ export async function activate(context) {
   markdown.extendMarkdownIt(protectMarkdownHtml);
   const states = new Map();
   const pending = new Map();
+  const releaseRegion = (region) => {
+    region?.interactions?.abort();
+    region?.dispose?.();
+  };
+  const releaseState = (state) => {
+    state.interactions?.abort();
+    for (const region of state.regions.values()) releaseRegion(region);
+    state.regions.clear();
+  };
+  const current = (outputId, state, revision, signal) =>
+    states.get(outputId) === state && state.revision === revision && !signal?.aborted;
   const rememberCodeTabs = (element, state) => {
     for (const node of element.querySelectorAll('[data-render-engine="ssr"]')) {
       const root = node.shadowRoot ?? node;
@@ -588,15 +599,24 @@ export async function activate(context) {
     if (request === undefined || message.documentId !== request.documentId) return;
     pending.delete(message.requestId);
     const state = states.get(request.outputId);
-    if (state?.revision !== request.revision) return;
-    if (message.type === "unavailable") {
+    if (!state || !current(request.outputId, state, request.revision, request.signal)) return;
+    const acknowledge = (engine) =>
       context.postMessage?.({
         source: "maieutics-output",
         type: "applied",
         documentId: request.documentId,
         requestId: message.requestId,
-        engine: "native",
+        engine,
       });
+    const fallback = () => {
+      releaseRegion(state.regions.get(request.node));
+      state.regions.delete(request.node);
+      request.node.replaceWith(request.fallback);
+      state.regions.set(request.fallback, { mode: request.mode, key: request.key });
+      acknowledge("native");
+    };
+    if (message.type === "unavailable") {
+      fallback();
       return;
     }
     if (
@@ -609,10 +629,12 @@ export async function activate(context) {
       request.vue && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
         message.vue.code.length > 400_000 || message.vue.scopeId !== `data-v-${request.documentId}`)
     ) return;
+    rememberCodeTabs(state.element, state);
     const style = document.createElement("style");
     style.textContent = message.css;
     const rendered = document.createElement("div");
     rendered.innerHTML = message.html;
+    const interactions = new AbortController();
     rendered.addEventListener("click", (event) => {
       if (event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
         return;
@@ -635,7 +657,7 @@ export async function activate(context) {
       }
       target.scrollIntoView({ block: "nearest" });
       target.focus({ preventScroll: true });
-    }, { signal: state.interactions.signal });
+    }, { signal: interactions.signal });
     for (const input of rendered.querySelectorAll('.vp-code-group input[type="radio"]')) {
       const selection = state.codeTabs.get(input.name);
       if (selection?.id === input.id && selection.title === input.nextElementSibling?.textContent) {
@@ -644,26 +666,29 @@ export async function activate(context) {
     }
     // The default renderer's shadow boundary also scopes SSR styles and inherits host variables.
     const root = request.node.shadowRoot ?? request.node;
-    const previous = request.vue ? [...root.childNodes] : [];
+    releaseRegion(state.regions.get(request.node));
+    state.regions.delete(request.node);
     root.replaceChildren(style, rendered);
-    let engine = "ssr";
+    let dispose;
     if (request.vue) {
       try {
-        state.vueDisposers.push(mountVueIsland(rendered, message.vue.code));
-        engine = "vue";
+        dispose = mountVueIsland(rendered, message.vue.code);
       } catch {
-        root.replaceChildren(...previous);
-        engine = "native";
+        interactions.abort();
+        fallback();
+        return;
       }
     }
-    request.node.dataset.renderEngine = engine;
-    context.postMessage?.({
-      source: "maieutics-output",
-      type: "applied",
-      documentId: request.documentId,
-      requestId: message.requestId,
-      engine,
+    state.regions.set(request.node, {
+      mode: request.mode,
+      key: request.key,
+      ready: true,
+      interactions,
+      dispose,
     });
+    const engine = request.vue ? "vue" : "ssr";
+    request.node.dataset.renderEngine = engine;
+    acknowledge(engine);
   });
   return {
     async renderOutputItem(output, element, signal) {
@@ -691,17 +716,21 @@ export async function activate(context) {
         : isTemplate
         ? { text: template ? payload.source : "[invalid_template]" }
         : payload;
-      const state = states.get(output.id) ?? {
+      let state = states.get(output.id);
+      if (state && state.element !== element) {
+        forgetPending(output.id, true);
+        releaseState(state);
+        state = undefined;
+      }
+      state ??= {
+        element,
         openNodes: new Set(),
         documents: [],
         codeTabs: new Map(),
-        vueDisposers: [],
+        regions: new Map(),
         revision: 0,
       };
-      for (const dispose of state.vueDisposers.splice(0)) dispose();
       rememberCodeTabs(element, state);
-      state.interactions?.abort();
-      state.interactions = new AbortController();
       state.revision++;
       const revision = state.revision;
       forgetPending(output.id, false);
@@ -710,18 +739,26 @@ export async function activate(context) {
         if (detail.open) state.openNodes.add(detail.dataset.nodeId);
         else state.openNodes.delete(detail.dataset.nodeId);
       }
-      element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
       const blocks = [];
       const markdownToHtml = (text) => {
         const index = blocks.push(text) - 1;
         return `<div data-markdown-index="${index}"></div>`;
       };
-      const content = document.createElement("div");
-      content.className = "maieutics-turn";
-      content.innerHTML = render(turn, markdownToHtml);
+      const markup = render(turn, markdownToHtml);
+      const content = state.markup === markup && state.content?.parentNode === element
+        ? state.content
+        : document.createElement("div");
+      const retained = content === state.content;
+      if (!retained) {
+        content.className = "maieutics-turn";
+        content.innerHTML = markup;
+      }
+      const mode = vue ? `vue:${vue.format}` : template ? "template" : "markdown";
+      const outgoing = [];
+      const regions = retained ? state.regions : new Map();
       const hydrate = async (root) => {
         for (const node of root.querySelectorAll("[data-markdown-index]")) {
-          if (node.dataset.rendered) continue;
+          if (!current(output.id, state, revision, signal)) return;
           let hidden = false;
           for (
             let detail = node.closest("details");
@@ -735,45 +772,103 @@ export async function activate(context) {
           }
           if (hidden) continue;
           const index = Number(node.getAttribute("data-markdown-index"));
-          node.dataset.rendered = "true";
+          const key = JSON.stringify([blocks[index], template, vue]);
+          const previous = regions.get(node);
+          if (previous?.ready && previous.mode === mode && previous.key === key) continue;
+          if (previous?.requestRevision === revision || previous?.preparingRevision === revision) {
+            continue;
+          }
+          const preparing = previous ?? { mode, key };
+          preparing.preparingRevision = revision;
+          regions.set(node, preparing);
+          const fallback = document.createElement("div");
+          fallback.dataset.markdownIndex = String(index);
           try {
             await markdown.renderOutputItem(
               markdownOutputItem(output, blocks[index], index),
-              node,
+              fallback,
               signal,
             );
           } catch {
-            node.textContent = blocks[index];
+            fallback.textContent = blocks[index];
           }
-          if (
-            !node.closest(".assistant-reply") || states.get(output.id) !== state ||
-            state.revision !== revision || signal?.aborted
-          ) {
-            continue;
+          if (!current(output.id, state, revision, signal)) return;
+          const assistant = node.closest(".assistant-reply");
+          let target = node;
+          if (!assistant || !previous?.ready || previous.mode !== mode) {
+            releaseRegion(previous);
+            regions.delete(node);
+            node.replaceWith(fallback);
+            target = fallback;
+            regions.set(target, { mode, key, ready: !assistant });
           }
+          if (!assistant) continue;
+          const region = regions.get(target);
+          region.requestRevision = revision;
           const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
           const requestId = `${documentId}:${revision}`;
-          pending.set(requestId, { vue, outputId: output.id, documentId, revision, node });
-          context.postMessage?.({
-            source: "maieutics-output",
-            type: "render",
-            requestId,
-            documentId,
-            text: blocks[index],
-            ...(template ? { template } : {}),
-            ...(vue ? { vue } : {}),
+          outgoing.push({
+            request: {
+              vue,
+              mode,
+              key,
+              signal,
+              fallback,
+              outputId: output.id,
+              documentId,
+              revision,
+              node: target,
+            },
+            message: {
+              source: "maieutics-output",
+              type: "render",
+              requestId,
+              documentId,
+              text: blocks[index],
+              ...(template ? { template } : {}),
+              ...(vue ? { vue } : {}),
+            },
           });
         }
       };
+      const flush = () => {
+        if (!current(output.id, state, revision, signal)) return;
+        for (const { request, message } of outgoing.splice(0)) {
+          pending.set(message.requestId, request);
+          context.postMessage?.(message);
+        }
+      };
+      // Prepare the native representation without clearing the visible committed document.
+      // Restore expanded activity before hydration, otherwise its Markdown is intentionally deferred.
+      for (const detail of content.querySelectorAll("details.timeline-node")) {
+        detail.open = state.openNodes.has(detail.dataset.nodeId);
+      }
+      await hydrate(content);
+      if (!current(output.id, state, revision, signal)) return;
+      if (!retained) {
+        for (const region of state.regions.values()) releaseRegion(region);
+        state.regions = regions;
+        if (state.content?.parentNode === element) state.content.replaceWith(content);
+        else {
+          element.querySelectorAll(".maieutics-turn").forEach((node) => node.remove());
+          element.appendChild(content);
+        }
+      }
+      state.content = content;
+      state.markup = markup;
+      state.interactions?.abort();
+      state.interactions = new AbortController();
       for (const detail of content.querySelectorAll("details.timeline-node")) {
         detail.open = state.openNodes.has(detail.dataset.nodeId);
         detail.addEventListener("toggle", () => {
           if (!detail.isConnected) return;
           if (detail.open) {
             state.openNodes.add(detail.dataset.nodeId);
-            void hydrate(detail);
+            void hydrate(detail).then(flush).catch(() =>
+              console.error("Output Markdown hydration failed.")
+            );
           } else state.openNodes.delete(detail.dataset.nodeId);
-        });
+        }, { signal: state.interactions.signal });
       }
       content.addEventListener("click", (event) => {
         const action = event.target instanceof Element
@@ -793,21 +888,19 @@ export async function activate(context) {
             cellIndex: args[1],
           });
         } catch { /* Malformed notebook retry links are inert. */ }
-      });
-      element.appendChild(content);
-      await hydrate(content);
+      }, { signal: state.interactions.signal });
+      flush();
     },
     disposeOutputItem(id) {
       forgetPending(id, true);
       if (id === undefined) {
         for (const state of states.values()) {
-          state.interactions?.abort();
-          for (const dispose of state.vueDisposers.splice(0)) dispose();
+          releaseState(state);
         }
         states.clear();
       } else {
-        states.get(id)?.interactions?.abort();
-        for (const dispose of states.get(id)?.vueDisposers.splice(0) ?? []) dispose();
+        const state = states.get(id);
+        if (state) releaseState(state);
         states.delete(id);
       }
     },

@@ -7,7 +7,7 @@ runtime and revisioned presentation protocol remain proposed.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-05
+Last updated: 2026-11-06
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -211,8 +211,16 @@ documents, coalescing intermediate source updates per document. Superseded compu
 applied; output disposal cancels its request and prevents late replies from changing the DOM.
 This coalesces derived formatting requests, not canonical Agent events or committed protocol frames.
 
-The browser first finishes native rendering, then requests SSR. A matching response replaces the
-assistant text region, including its scoped stylesheet, and emits a local application acknowledgement.
+The first presentation finishes native rendering, then requests SSR. For subsequent source or binding
+updates with the same output layout, the browser keeps the committed SSR boundary attached while
+preparing the new native fallback offscreen and awaiting its matching SSR response. Styles and HTML
+commit together without clearing the visible document or reverting it to native Markdown on every
+text delta. Existing fragment handlers and Vue apps remain active until that commit. If SSR is
+unavailable, the fully prepared latest native fallback replaces the retained content; obsolete or
+disposed responses still cannot commit. A changed outer activity layout is staged before a single
+shell replacement. This retains the existing layout for ordinary text streaming, not arbitrary
+structural DOM reconciliation. The initial native-to-SSR transition remains available for immediate
+readability; no fixed delay hides output. A matching commit emits a local application acknowledgement.
 The extension-host tests verify actual DOM output under CSP, require the live controller to produce
 structured text nodes, and round-trip updated text through the production serializer. An optional
 live-kernel test restores output through that serializer and waits for the application acknowledgement
@@ -355,9 +363,12 @@ The deadline is a CPU/lifetime bound, not a memory quota or a claim of protectio
 The response carries SSR HTML, baseline plus component CSS, and the same compiled component factory
 used by SSR. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
 one app per output boundary. Reactive refs, computed values, directives and event handlers then
-update that app locally. The renderer unmounts the old app before source replacement and on output
-or renderer disposal; `onUnmounted` runs and owned Vue effects stop. A complete output replacement
-creates fresh component state. This is not HMR or state-preserving structural patching. Browser
+update that app locally. The renderer unmounts the old app when a changed-source replacement commits,
+and on output or renderer disposal; `onUnmounted` runs and owned Vue effects stop. A complete output replacement
+creates fresh component state. Identical source/mode/binding redelivery on an unchanged layout keeps
+the committed DOM and Vue app, sends no redundant SSR request and preserves client state. Pending
+source changes keep the old app interactive until their replacement commits; they do not unmount it
+in anticipation of a response. This is not HMR or state-preserving structural patching. Browser
 coverage checks initial SSR state, a real button click/reactive flush, computed scoped styles, and
 unmount on replacement/disposal through both webview and actual notebook paths.
 
@@ -612,6 +623,17 @@ lock installation, offline smoke and diff checks pass. InspectCode reports no er
 and the two existing non-gating test warnings. These checks validate complete live component
 snapshots, not automatic producer subscriptions or revisioned streaming patches. Linux and Windows
 verification is delegated to the PR's platform jobs; local evidence is macOS arm64.
+
+The 2026-11-06 presentation fix adds browser regressions with explicit native-render and reply-delivery
+barriers: a committed SSR subtree remains connected throughout replacement preparation, stale replies
+leave it intact, unavailable rendering commits the latest complete fallback, duplicate Vue delivery
+preserves reactive state, and a changed-source Vue app remains interactive until the replacement
+commits. These assertions fail on the previous implementation. The change is frontend-local and
+introduces no wire, IPC, notebook format or executable change. Release build passes without warnings,
+all 702 Deno tests and 20 Node scenarios pass, and the .NET suite passes 1,583 tests with the eight
+existing platform/external-service skips. Real VS Code verification uses the installed NativeAOT
+kernel. Format, lint, types and diff checks pass. NativeAOT is not republished for this frontend-only
+fix. Full subtree diffing and stable streaming document nodes remain separate work.
 
 ## Open decisions
 

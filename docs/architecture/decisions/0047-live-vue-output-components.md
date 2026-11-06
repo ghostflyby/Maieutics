@@ -31,7 +31,11 @@ are granted. The worker budget is not a memory quota or a security claim about r
 
 Return initial SSR HTML, compiled styles and the same component factory to the live frontend. Each
 output owns a hydrated Vue app and unmounts it on replacement or disposal. Client reactive updates
-stay local; complete source replacement resets component state. Setup executes for both SSR and
+stay local; changed-source replacement resets component state when it commits. The old app remains
+mounted and interactive while its replacement is pending. Identical source/mode/binding delivery on
+an unchanged layout preserves the committed app and avoids a redundant render request. Native
+fallback is prepared offscreen and commits only on unavailable/failed rendering, rather than replacing
+committed SSR at the beginning of each source update. Setup executes for both SSR and
 hydration and must produce deterministic initial state. External operations and producers stay in
 the authorized REPL. Async setup/Suspense, client-only resource hydration, cross-output component
 registries and state-preserving source patches remain outside this verified contract.

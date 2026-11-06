@@ -42,8 +42,11 @@ frontend registration API. The owned child serves authenticated, bounded request
 The VS Code extension uses its already attached connection for rendering; opening an offline
 snapshot does not start a kernel. Its renderer messaging bridge assigns stable document IDs and
 local request IDs, coalesces pending source updates, and rejects obsolete replies. Native Markdown
-appears immediately and remains the fallback. A local `applied` acknowledgement follows DOM
-application for verification; it is not a frontend event frame or an Agent completion signal.
+appears on first presentation and remains the fallback. On unchanged-layout updates, committed SSR
+stays attached until the next matching response or a fully prepared latest native fallback commits;
+intermediate native renders do not replace it. Identical committed source/mode/bindings need no new
+request. This is a frontend presentation policy; server requests remain stateless. A local `applied`
+acknowledgement follows DOM application for verification; it is not a frontend event frame or an Agent completion signal.
 SSR HTML is derived presentation and is not saved into notebook v1 snapshots.
 Live assistant text nodes and restored snapshots carry `application/vnd.maieutics.turn+json` so they
 enter this renderer; native Markdown fallback happens inside it. Legacy Markdown-node metadata
@@ -1061,8 +1064,10 @@ The internal child exposes authenticated `POST /v1/vue` with the same request an
 its CSS contains component styles only, with the baseline added by the executable.
 
 The live frontend hydrates with the matching bundled Vue runtime and owns/unmounts one app per output.
-A replacement snapshot resets component state. Local Vue event/reactivity updates do not generate
-Agent events or modify canonical history. The client revision guard rejects obsolete responses before
+A changed-source replacement resets component state when it commits. Identical source/mode/binding
+redelivery on an unchanged layout keeps the live app and client state. While the next render is
+pending, the committed app stays mounted; failed rendering commits the latest native fallback.
+Local Vue event/reactivity updates do not generate Agent events or modify canonical history. The client revision guard rejects obsolete responses before
 mounting. The current contract verifies synchronous deterministic setup; setup executes in both SSR
 and hydration. External operations remain authorized producer work. Async setup/Suspense and resource
 hydration are not specified. This is executable live output under ADR 0038/0047, not a browser sandbox.

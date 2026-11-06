@@ -144,9 +144,11 @@ The button updates the hydrated Vue component locally.
 Expect initial count 0 from kernel SSR, then 1 after clicking. The official Vue compiler handles
 script setup, TypeScript, template interpolation, event handlers and scoped CSS. Only `vue` imports
 are supported; setup must have deterministic initial state because SSR and hydration both run it.
-External operations should run in the REPL and publish new snapshots. Replacing the display resets
-client state and unmounts the old app. Use `format:"sfc"` with a complete `<template>` block for
-ordinary Vue SFC input. Async setup/Suspense and external resources are not verified.
+External operations should run in the REPL and publish new snapshots. Changing the displayed source
+resets client state and unmounts the old app when the replacement is ready. Identical redelivery
+preserves client state; while SSR is pending, the existing app stays visible and interactive. Use
+`format:"sfc"` with a complete `<template>` block for ordinary Vue SFC input. Async setup/Suspense
+and external resources are not verified.
 
 This MIME intentionally cannot be a frozen executable demo: notebook saving and reading remove its
 source and retain the plain-text fallback. Reopening runs no component; redisplay from a live

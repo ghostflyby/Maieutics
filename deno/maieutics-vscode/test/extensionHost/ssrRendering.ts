@@ -247,14 +247,23 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const renderer = await import(${JSON.stringify(rendererUri.toString())});
         const markdown = native.activate({ workspace: { isTrusted: true } });
         let delivered = Promise.withResolvers();
+        let holdDelivery = false, heldMessage, deliver;
+        let deliveryHeld = Promise.withResolvers();
         const api = await renderer.activate({
           getRenderer: async () => markdown,
           postMessage: (message) => vscode.postMessage(message),
-          onDidReceiveMessage: (handler) => window.addEventListener("message", (event) => {
-            handler(event.data);
-            if (event.data.type === "rendered") delivered.resolve();
-            if (event.data.type === "unavailable") delivered.reject(new Error("SSR snapshot unavailable"));
-          })
+          onDidReceiveMessage: (handler) => {
+            deliver = (message) => {
+              handler(message);
+              if (message.type === "rendered") delivered.resolve();
+              if (message.type === "unavailable") delivered.reject(new Error("SSR snapshot unavailable"));
+            };
+            window.addEventListener("message", (event) => {
+              if (holdDelivery && event.data.type === "rendered") {
+                heldMessage = event.data; deliveryHeld.resolve();
+              } else deliver(event.data);
+            });
+          }
         });
         const element = document.createElement("div"); document.body.appendChild(element);
         const source = ${JSON.stringify(CodeDemoSource)};
@@ -310,9 +319,10 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(readyRoot.querySelector('[data-template-state="ready"]')?.textContent === "42.00" && !readyRoot.querySelector('[data-template-state="pending"]'), "a binding-only update resolves earlier interpolation through the live kernel");
         assert(readyRoot.textContent.includes("Later independent prose"), "later content survives a binding-only update");
         const vueElement = document.createElement("div"); document.body.appendChild(vueElement);
-        const vueOutput = () => ({ id: "vue-demo", mime: "application/vnd.maieutics.vue+json", json: () => ({ version: 1, format: "markdown", source: ${
+        let vueSource = ${
       JSON.stringify(VueDemoSource).replaceAll("<", String.fromCharCode(92) + "u003c")
-    } }) });
+    };
+        const vueOutput = () => ({ id: "vue-demo", mime: "application/vnd.maieutics.vue+json", json: () => ({ version: 1, format: "markdown", source: vueSource }) });
         globalThis.__maieuticsVueUnmounts = 0;
         const mountVue = async () => {
           delivered = Promise.withResolvers();
@@ -335,7 +345,21 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(getComputedStyle(firstVue.querySelector(".counter-btn")).color === "rgb(255, 0, 0)", "compiled scoped CSS applies to hydrated nodes");
         await clickCounter(firstVue);
         vscode.postMessage({ trace: "vue-clicked" });
-        const secondVue = await mountVue();
+        const beforeDuplicate = vueElement.querySelector('[data-render-engine="vue"]');
+        await api.renderOutputItem(vueOutput(), vueElement);
+        assert(vueElement.querySelector('[data-render-engine="vue"]') === beforeDuplicate && globalThis.__maieuticsVueUnmounts === 0, "duplicate delivery retains the live Vue app");
+        assert(firstVue.querySelector(".counter-display").textContent === "1", "duplicate delivery preserves client state");
+        vueSource += "\\n\\nUpdated prose";
+        holdDelivery = true;
+        deliveryHeld = Promise.withResolvers();
+        const replacingVue = mountVue();
+        await deliveryHeld.promise;
+        assert(beforeDuplicate.isConnected && globalThis.__maieuticsVueUnmounts === 0, "an outstanding SSR replacement keeps the existing Vue island mounted");
+        firstVue.querySelector(".counter-btn").click();
+        await vueRuntime.vueUpdatesComplete();
+        assert(firstVue.querySelector(".counter-display").textContent === "2", "the retained Vue island remains interactive while SSR is pending");
+        holdDelivery = false; deliver(heldMessage);
+        const secondVue = await replacingVue;
         assert(globalThis.__maieuticsVueUnmounts === 1, "source replacement unmounts the previous component exactly once");
         await clickCounter(secondVue);
         api.disposeOutputItem("vue-demo");

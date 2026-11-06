@@ -187,6 +187,7 @@ Run from this directory after installing the workspace's locked dependencies:
 deno task check
 deno task test
 deno task build
+git diff --exit-code --stat -- bundle/
 deno task smoke:offline
 ```
 
@@ -199,7 +200,9 @@ builds a browser-ESM worker using the separate `deno.worker.json`/`deno.worker.l
 JavaScript source into committed `bundle/vue_worker_source.js`, and regenerates the committed
 `bundle/service.js` embedded by the executable. The separate worker lock prevents its standalone
 bundle graph from pruning workspace dependencies. Offline smoke also executes real Vue SSR. Rebuild
-and commit it whenever its source or dependencies change.
+and commit it whenever its source or dependencies change. CI uses Deno 2.9.6 and rejects a tracked
+bundle diff after rebuilding, before running offline smoke; use the pinned runtime to reproduce the
+check.
 
 ## Deno permissions
 
@@ -225,3 +228,19 @@ Readiness and internal render requests use authenticated HTTP. No binary data or
 travels through stdout. The child belongs to the executable's presentation scope independently of
 Agent runs and frontend subscribers. Its private module/cache directory lives under the configured
 data root's `.rendering` directory and is removed on deterministic service disposal.
+
+## Process control and recovery
+
+Permissionless workers isolate I/O, not every process-control effect. Deno 2.9.6/2.9.8 worker exit
+ends the worker, but `Deno.kill(Deno.pid, "SIGKILL")` can end the entire renderer as a permitted
+self-signal. This is a known runtime constraint, not a claim of a complete untrusted-code sandbox.
+Real child-process regressions pin worker exit behavior, self-signal recovery and rejection of a
+signal to a separately owned kernel PID. OS-process isolation below the renderer remains future
+work.
+
+The executable observes each generation continuously, warns on unexpected death, invalidates its
+port/readiness and fails the affected request with typed unavailable. A later request lazily starts
+a new generation with fresh nonce/readiness, without replaying the failed render or a producer.
+Transient launch failures do not latch rendering off. Retirement and host shutdown join owned
+observers/processes, drain admitted requests and remove staging state. API and notebook versions
+remain unchanged. See the design for cancellation and concurrency semantics.

@@ -122,6 +122,37 @@ public sealed class FrontendProcessSmokeTests
     }
 
     [Fact(Timeout = 120_000)]
+    public async Task PublishedRendererRejectsKernelSignalsAndRecoversFromWorkerSelfSignals()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("renderer-process-control-smoke");
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", discovery.GetProperty("token").GetString());
+        var kernelPid = discovery.GetProperty("pid").GetInt32();
+        using var attempt = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "control", vue = new { version = 1, format = "sfc" },
+            source = $"<script setup>Deno.kill({kernelPid}, 'SIGKILL')</script><template/>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, attempt.StatusCode);
+        using var selfSignal = await client.PostAsJsonAsync("/v1/render/vue", new {
+            version = 1, documentId = "self", vue = new { version = 1, format = "sfc" },
+            source = "<script setup>Deno.kill(Deno.pid, 'SIGKILL')</script><template/>"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, selfSignal.StatusCode);
+        using var recovered = await client.PostAsJsonAsync("/v1/render/markdown", new {
+            version = 1, documentId = "after", source = "Kernel survived worker signal"
+        }, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+        var result = await recovered.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        Assert.Contains("Kernel survived worker signal", result.GetProperty("html").GetString());
+    }
+
+    [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableGeneratesAndPublishesASessionTitle()
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

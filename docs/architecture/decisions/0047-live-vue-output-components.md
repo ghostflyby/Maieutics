@@ -28,7 +28,14 @@ Each evaluation owns a fresh Deno worker with no permissions, a private transfer
 a five-second deadline. Its trusted runtime is prebundled as JavaScript text and loaded as a module
 data URL. The compiler parent never evaluates authored code; cancellation/disposal terminates the
 worker and closes its ports. Worker exceptions return fixed diagnostics. No new process permissions
-are granted. The worker budget is not a memory quota or a security claim about runtime defects.
+are granted. The worker budget is not a memory quota or a security claim about runtime defects. Worker
+permissions also do not prevent Deno's permitted self-signal from terminating the renderer process:
+`Deno.exit` ends the worker, whereas `Deno.kill(Deno.pid, "SIGKILL")` can end the shared renderer.
+The executable observes/invalidates that generation and the next request may lazily restart it with
+fresh nonce/readiness. Failed requests are not automatically replayed. Isolating evaluations into
+separate OS processes would be needed to contain self-signals below the shared renderer; that is not
+a shipped guarantee. Dedicated process tests pin exit/self-signal behavior and denial of signals to
+the separately owned kernel PID.
 
 Return initial SSR HTML, compiled styles and the same component factory to the live frontend. Each
 output owns a hydrated Vue app and unmounts it on replacement or disposal. Client reactive updates

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
@@ -6,6 +7,7 @@ using System.Text.Json.Nodes;
 using Maieutics.DenoRepl;
 using Maieutics.Frontend;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using static Maieutics.Product.Tests.FrontendApiIntegrationTests;
 
 namespace Maieutics.Product.Tests;
@@ -194,6 +196,173 @@ public sealed class FrontendOutputRendererTests
         Assert.Null(plain.Vue);
         Assert.Contains("&lt;script setup&gt;", plain.Html);
         Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task MissingExecutableCanBeRetriedWithoutRestartingTheHost()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        var options = new DenoReplOptions { Executable = "maieutics-missing-renderer-executable" };
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false,
+            configureBuilder: builder => builder.Services.AddSingleton(services =>
+                ActivatorUtilities.CreateInstance<FrontendOutputRenderer>(services, options)));
+        using var first = await harness.Client.PostAsJsonAsync("/v1/render/markdown", new FrontendRenderMarkdown(1, "demo", "Before retry"),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, first.StatusCode);
+        Assert.Null(harness.OutputRenderer.ProcessId);
+        options.Executable = "deno";
+        var recovered = await RenderAsync(harness, "After transient startup failure", budget.Token);
+        Assert.Contains("After transient startup failure", recovered.Html);
+        Assert.NotNull(harness.OutputRenderer.ProcessId);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task UnexpectedExitInvalidatesThePortAndRestartsWithFreshReadiness()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        var logger = new RendererLogger();
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false,
+            configureBuilder: builder => builder.Services.AddSingleton<ILogger<FrontendOutputRenderer>>(logger));
+        await RenderAsync(harness, "Before exit", budget.Token);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+            var observation = Assert.IsAssignableFrom<Task>(harness.OutputRenderer.ProcessCompletion);
+            using var process = Process.GetProcessById(pid);
+            process.Kill(entireProcessTree: true);
+            await observation.WaitAsync(budget.Token);
+            Assert.Null(harness.OutputRenderer.ProcessId);
+            Assert.Contains(logger.Records, entry => entry.Level == LogLevel.Warning && entry.Text.Contains("exited unexpectedly", StringComparison.Ordinal));
+            var recovered = await RenderAsync(harness, $"Recovered generation {attempt}", budget.Token);
+            Assert.Contains($"Recovered generation {attempt}", recovered.Html);
+            Assert.NotNull(harness.OutputRenderer.ProcessId);
+            Assert.NotSame(observation, harness.OutputRenderer.ProcessCompletion);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ExitDuringAnActiveRequestFailsThatRequestAndAllowsTheNextOne()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        await RenderAsync(harness, "Ready", budget.Token);
+        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        var observation = Assert.IsAssignableFrom<Task>(harness.OutputRenderer.ProcessCompletion);
+        var pending = harness.OutputRenderer.RenderAsync(new FrontendRenderMarkdown(1, "active",
+                "<script setup>while(true){}</script><template/>", Vue: new FrontendVueRequest(1, "sfc")),
+            budget.Token, vue: true);
+        using var process = Process.GetProcessById(pid);
+        process.Kill(entireProcessTree: true);
+        await observation.WaitAsync(budget.Token);
+        var failure = await Assert.ThrowsAsync<FrontendFailureException>(() => pending.WaitAsync(budget.Token));
+        Assert.Equal("render_unavailable", failure.Code);
+        Assert.Contains("After active exit", (await RenderAsync(harness, "After active exit", budget.Token)).Html);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task CallerCancellationDoesNotRetireAHealthyGeneration()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        await RenderAsync(harness, "Ready", budget.Token);
+        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        var pending = harness.OutputRenderer.RenderAsync(new FrontendRenderMarkdown(1, "cancel",
+            "<script setup>while(true){}</script><template/>", Vue: new FrontendVueRequest(1, "sfc")), caller.Token, vue: true);
+        await caller.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(budget.Token));
+        Assert.Contains("After caller cancellation", (await RenderAsync(harness, "After caller cancellation", budget.Token)).Html);
+        Assert.Equal(pid, harness.OutputRenderer.ProcessId);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ConcurrentDisposalDrainsActiveAndQueuedRequestsAndNeverRestarts()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        await RenderAsync(harness, "Ready", budget.Token);
+        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        using var process = Process.GetProcessById(pid);
+        var request = new FrontendRenderMarkdown(1, "shutdown", "<script setup>while(true){}</script><template/>", Vue: new FrontendVueRequest(1, "sfc"));
+        var pending = Enumerable.Range(0, 3).Select(_ => harness.OutputRenderer.RenderAsync(request, budget.Token, vue: true)).ToArray();
+        var first = harness.OutputRenderer.DisposeAsync().AsTask();
+        var second = harness.OutputRenderer.DisposeAsync().AsTask();
+        foreach (var operation in pending)
+        {
+            var failure = await Assert.ThrowsAsync<FrontendFailureException>(() => operation.WaitAsync(budget.Token));
+            Assert.Equal("render_unavailable", failure.Code);
+        }
+        await Task.WhenAll(first, second).WaitAsync(budget.Token);
+        harness.OutputRenderer.BeginShutdown();
+        Assert.True(process.HasExited, "Renderer disposal must join the child before returning.");
+        Assert.False(Directory.Exists(harness.OutputRenderer.ModuleDirectory));
+        var late = await Assert.ThrowsAsync<FrontendFailureException>(() => harness.OutputRenderer.RenderAsync(request, budget.Token, vue: true));
+        Assert.Equal("render_unavailable", late.Code);
+        Assert.Null(harness.OutputRenderer.ProcessId);
+    }
+
+    [Theory(Timeout = 60_000)]
+    [InlineData("Deno.exit(73)")]
+    [InlineData("self.close()")]
+    [InlineData("await Function(\"return import('node:process')\")().then(p => p.exit(73))")]
+    [InlineData("Deno.exitCode = 73; throw new Error('worker exit code probe')")]
+    public async Task WorkerExitStaysWithinItsIsolateAndKeepsTheRendererUsable(string control)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        await RenderAsync(harness, "Before worker control", budget.Token);
+        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        var completion = Assert.IsAssignableFrom<Task>(harness.OutputRenderer.ProcessCompletion);
+        using var result = await harness.Client.PostAsJsonAsync("/v1/render/vue",
+            new FrontendRenderMarkdown(1, "control", $"<script setup>{control}</script><template><p>unreachable</p></template>",
+                Vue: new FrontendVueRequest(1, "sfc")), FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, result.StatusCode);
+        Assert.False(completion.IsCompleted, "Worker process-control attempts must not terminate the renderer generation.");
+        Assert.Equal(pid, harness.OutputRenderer.ProcessId);
+        Assert.Contains("After worker control", (await RenderAsync(harness, "After worker control", budget.Token)).Html);
+        Assert.Equal(pid, harness.OutputRenderer.ProcessId);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task WorkerSelfSignalCanKillItsRendererButTheNextRequestRestartsIt()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        await RenderAsync(harness, "Before worker self signal", budget.Token);
+        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        var completion = Assert.IsAssignableFrom<Task>(harness.OutputRenderer.ProcessCompletion);
+        using var result = await harness.Client.PostAsJsonAsync("/v1/render/vue",
+            new FrontendRenderMarkdown(1, "control", "<script setup>Deno.kill(Deno.pid, 'SIGKILL')</script><template/>",
+                Vue: new FrontendVueRequest(1, "sfc")), FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, result.StatusCode);
+        await completion.WaitAsync(budget.Token);
+        Assert.Null(harness.OutputRenderer.ProcessId);
+        Assert.Contains("After worker self signal", (await RenderAsync(harness, "After worker self signal", budget.Token)).Html);
+        Assert.NotNull(harness.OutputRenderer.ProcessId);
+        Assert.NotSame(completion, harness.OutputRenderer.ProcessCompletion);
+    }
+
+    private sealed class RendererLogger : ILogger<FrontendOutputRenderer>
+    {
+        internal ConcurrentQueue<(LogLevel Level, string Text)> Records { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Records.Enqueue((logLevel, formatter(state, exception)));
     }
 
     private static async Task<FrontendRenderedMarkdown> RenderAsync(

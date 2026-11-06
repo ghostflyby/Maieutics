@@ -970,6 +970,22 @@ never reads or writes it. Save/load must not mutate the live session
 }
 ```
 
+## Renderer process failure and retry
+
+A supervised renderer generation has its own private readiness nonce, readiness task, process and
+port. Readiness callbacks authenticate only the current non-retired generation. Unexpected exit is
+observed, logged at Warning and invalidates the port; affected work returns `503 render_unavailable`.
+Transport/startup failures are recoverable: a subsequent admitted request can start a fresh process.
+There is no permanent failure latch and no automatic replay of the failed request. This is derived
+presentation recovery, independent of run event sequencing and canonical history.
+
+Caller cancellation does not retire a healthy renderer. Shutdown rejects new admission and cancels/
+joins admitted operations before disposing the generation and its transport/resources. No wire shape
+or protocol-version change is introduced. A permissionless SSR worker can end its entire Deno
+renderer via Deno's allowed self-signal; generation recovery handles that case. Separate kernel PID
+signal attempts are denied and covered by a separately owned process smoke test. These limits do not
+constitute a complete process-liveness or untrusted-code sandbox.
+
 ## Explicit template rendering (v1)
 
 `rendering: {"version":1,"templateVersion":1}` advertises an additional authenticated, stateless

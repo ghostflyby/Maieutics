@@ -26,7 +26,10 @@
 - `maieutics-output-renderer/` — executable-owned passive Markdown, explicit data-template and Vue
   SSR primitives for `docs/streaming-output-rendering-design.md`. Owns offline content rendering and
   highlighter lifetime. The executable embeds its committed `bundle/service.js`; regenerate that
-  bundle when its sources change. Update the design document as integration lands.
+  bundle when its sources change. CI rebuilds with the pinned Deno toolchain and requires
+  `git diff --exit-code --stat -- bundle/` to be clean before offline smoke. Worker permissions
+  constrain I/O but do not prevent a self-signal from terminating the shared renderer; the kernel
+  owns generation recovery (see the design). Update the design document as integration lands.
 - `shared/` — Control channel wire contract used by `maieutics-repl-client` and
   `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version constant;
   `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches envelopes. The

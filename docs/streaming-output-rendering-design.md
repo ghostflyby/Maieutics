@@ -189,7 +189,7 @@ the frontend protocol document.
 The process-scoped service admits at most eight requests, serializes rendering, and applies one
 30-second request budget including startup and queueing. It materializes the offline bundle, acquires
 the app/workspace effective policy, and launches through `DenoRunProcess`. An authenticated,
-nonce-bound readiness callback reports the child's actual loopback port. The internal child endpoint
+generation-specific nonce-bound readiness callback reports the child's actual loopback port. The internal child endpoint
 authenticates every bounded render request. Host shutdown cancels requests, stops the child, and
 removes its private module/cache directory under the configured data root's `.rendering` directory.
 Cancellation may additionally await the owned process's bounded cleanup. Session overrides do not govern this shared passive
@@ -358,7 +358,8 @@ bindings or execute partially received script text.
 The compiler parent never evaluates authored code. Each SSR evaluation runs in a fresh owned Deno
 worker with `deno.permissions:"none"`, a five-second deadline and a private transferred MessagePort.
 Authored global `postMessage` cannot forge the private result. The worker has no filesystem,
-network, environment or process permissions; failures expose fixed diagnostics. Cancellation and
+network, environment or process-launch permissions; failures expose fixed diagnostics. Deno's
+self-signal exception can nevertheless terminate the renderer process, as documented below. Cancellation and
 renderer disposal terminate the worker and close its ports. Only one request is active under the
 existing service gate. The trusted worker runtime is bundled ahead of time, embedded as JavaScript
 text, and loaded from a module data URL: there is no runtime download or binary-to-text transfer.
@@ -625,6 +626,58 @@ renderer crash invalidates its generation, fails or cancels pending operations e
 the executable expose raw Markdown or a typed unavailable state. Reconstruction uses retained results
 without repeating side effects. Sanitize output and validate URLs under the content policy; server
 rendering does not make model content or raw HTML trusted.
+
+### Renderer generation recovery and runtime process controls (implemented 2026-11-06)
+
+The executable continuously observes each renderer process through an owned generation task.
+Every generation has fresh readiness state, nonce, process reference, port and cancellation source.
+Unexpected completion invalidates its port, cancels its active request and records a Warning with
+PID/exit status or failure category. The observer and request-side completion check coordinate one
+exit warning, including the race where a request notices completion before the observer is scheduled.
+Retiring an old generation cannot clear or authenticate readiness for its replacement.
+
+A failed launch, readiness failure or transport failure retires that attempt without a permanent
+failure latch. The next admitted rendering request may start a new child, after the old child's
+process/observer resources are joined. The failed request is not automatically replayed. This is
+on-demand recovery, not an autonomous restart loop or re-execution of an external producer. Each
+launch still captures policy through the existing permission module; no start builds its own grants.
+Caller cancellation preserves a healthy service. Shutdown closes admission, cancels and drains all
+admitted requests, then joins the generation before disposing HTTP/semaphore/token resources and
+removing staging files. Retirement cancels its observer wait before the supervised process's bounded
+stop, so an inherited output pipe cannot turn observer joining into an unbounded shutdown wait.
+
+**Worker permissions do not guarantee that the renderer process remains alive.** Real process tests
+on macOS arm64 with the CI-pinned Deno 2.9.6 and local 2.9.8 establish these separate behaviors:
+`Deno.exit()`/worker close end the worker; Node's worker exit path and exit-code attempts do not kill
+the parent renderer. A missing private reply becomes a bounded component failure. However,
+`Deno.kill(Deno.pid, "SIGKILL")` is permitted as a self-signal and can terminate the entire Deno
+renderer despite `permissions:"none"`. That request becomes typed unavailable and the next request
+starts a fresh generation. An isolated kernel-process smoke test verifies that the worker cannot
+signal the kernel PID, and also verifies recovery after the worker signals its own renderer PID.
+These facts replace any implication that no I/O permissions means no process-control effects.
+Per-evaluation OS-process separation would be required to contain that self-signal below the shared
+renderer; it is not implemented or claimed here. The existing worker boundary is not a complete
+untrusted-code or memory/liveness sandbox.
+
+Regression coverage includes transient executable failure followed by success, repeated unexpected
+exit and fresh readiness, exit during an active request, caller cancellation without retirement,
+concurrent disposal with active/queued requests and post-close rejection, worker exits/self-signals,
+and a separately owned kernel target. Assertions wait on generation completion or protocol replies,
+not sleeps. Platform test jobs run the pinned runtime and retain their own outcome.
+
+The Deno CI job now rebuilds and runs `git diff --exit-code --stat -- bundle/` from the renderer
+module before offline smoke. Both committed service and embedded worker-source artifacts must match;
+the .NET job can no longer silently embed a stale committed service while source tests pass against
+a freshly overwritten file. The check has been exercised with a deliberately modified artifact
+(rejected) and a clean Deno 2.9.6 rebuild (accepted). Renderer wire/API and notebook formats are unchanged.
+
+The recovery increment passes 17 focused renderer integration cases on pinned Deno 2.9.6. The full
+.NET suite on local Deno 2.9.8 passes 1,596 tests with eight existing platform/external-service skips
+(1,604 total). All 708 Deno tests plus 20 Node scenarios pass on 2.9.6; its rebuild/freshness/offline
+checks, format, lint, types and diff checks pass. osx-arm64 NativeAOT publish and five real-process
+rendering/signal-boundary smoke tests pass with the pinned runtime. InspectCode reports no errors
+and the two existing test warnings. Linux/Windows behavior is delegated to the PR platform jobs;
+no frontend UI contract changed in this increment.
 
 ## Persistence and compatibility
 

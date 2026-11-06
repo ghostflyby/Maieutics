@@ -15,7 +15,8 @@ public sealed class DenoRunProcessTests
         ProcessStartInfo startInfo,
         InternalDenoProcessKind kind,
         ILogger logger,
-        bool captureStandardError = false)
+        bool captureStandardError = false,
+        TimeSpan? stopBudget = null)
     {
         // The process tests exercise drain/stop/exit observation, not permissions; the broker is
         // required by the launch surface, so reuse one class-level broker with the empty policy.
@@ -32,6 +33,7 @@ public sealed class DenoRunProcessTests
                 SharedBroker,
                 EffectivePolicy.Default,
                 captureStandardError,
+                stopBudget,
                 slot: slot);
         }
         catch
@@ -174,54 +176,28 @@ public sealed class DenoRunProcessTests
                 $"await Deno.writeTextFile(\"{pidFilePath}\", String(c.pid));");
             var logger = new CollectingLogger();
 
-            var process = DenoRunProcess.Start(
+            var process = await StartChildAsync(
                 startInfo,
                 InternalDenoProcessKind.DenoRepl,
                 logger,
-                SharedBroker,
-                EffectivePolicy.Default,
-                stopBudget: TimeSpan.FromSeconds(2),
-                slot: await TestChildProcessGate.AcquireAsync(deadline.Token));
+                stopBudget: TimeSpan.FromSeconds(2));
 
             try
             {
-                // Wait until the eval finished spawning (and is about to exit) before stopping.
-                var grandchildPid = 0;
-                var spawnDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
-                while (grandchildPid == 0)
-                {
-                    if (DateTime.UtcNow >= spawnDeadline)
-                        throw new TimeoutException("the eval never spawned its grandchild");
-                    if (File.Exists(pidFilePath) &&
-                        int.TryParse(await File.ReadAllTextAsync(pidFilePath, deadline.Token), out var parsed))
-                        grandchildPid = parsed;
-                    else
-                    {
-                        using var pidWatcher = new FileSystemWatcher(
-                            Path.GetDirectoryName(pidFilePath) ?? ".",
-                            Path.GetFileName(pidFilePath));
-                        pidWatcher.EnableRaisingEvents = true;
-                        pidWatcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
-                        var pidArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        pidWatcher.Created += (_, _) => pidArrived.TrySetResult();
-                        pidWatcher.Changed += (_, _) => pidArrived.TrySetResult();
-                        if (File.Exists(pidFilePath)) pidArrived.TrySetResult();
-                        await pidArrived.Task.WaitAsync(deadline.Token);
-                    }
-                }
-
-                // The parent exit has a completion signal: the eval task completing IS the
-                // parent finishing its own exit (the helper observes and forwards it).
-                // The grandchild liveness check is synchronous after that completion.
+                // The pid file precedes the eval's exit. Waiting only for the file races
+                // StopAsync's Kill(true), which can still kill sleep and close the drains.
+                // Completion also waits for those drains, so await the process-only signal.
+                await process.ProcessExited.WaitAsync(deadline.Token);
+                var pidText = await File.ReadAllTextAsync(pidFilePath, deadline.Token);
+                Assert.True(int.TryParse(pidText, out var grandchildPid), "the exited eval must publish its grandchild pid");
                 using (var grandchild = Process.GetProcessById(grandchildPid))
                 {
                     Assert.False(grandchild.HasExited, "the test requires a live drain holder");
                 }
+                Assert.False(process.Completion.IsCompleted, "the orphan must keep the inherited output drains open");
 
                 // Stop must return within the 2s budget even though the grandchild holds stdout.
-                var stopDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-                await process.StopAsync().WaitAsync(deadline.Token);
-                Assert.True(DateTime.UtcNow < stopDeadline);
+                await process.StopAsync().WaitAsync(TimeSpan.FromSeconds(10), deadline.Token);
                 Assert.Contains(logger.Messages, message =>
                     message.Text.Contains("abandoning its completion", StringComparison.Ordinal));
             }
@@ -234,6 +210,64 @@ public sealed class DenoRunProcessTests
         {
             TryKillPid(pidFilePath);
             TryDelete(pidFilePath);
+        }
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task StopDrainsTheProcessTreeWhenTheParentHasNotExited()
+    {
+        if (OperatingSystem.IsWindows())
+            Assert.Skip("Uses `sleep` as the grandchild with inherited output pipes.");
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(50));
+        const string marker = "grandchild-ready:";
+        var ready = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new CollectingLogger(message =>
+        {
+            var index = message.IndexOf(marker, StringComparison.Ordinal);
+            if (index >= 0 && int.TryParse(message.AsSpan(index + marker.Length), out var pid))
+                ready.TrySetResult(pid);
+        });
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "deno",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("eval");
+        startInfo.ArgumentList.Add("--allow-run");
+        startInfo.ArgumentList.Add(
+            "const c = new Deno.Command('sleep', { args: ['120'], stdin: 'null', " +
+            "stdout: 'inherit', stderr: 'inherit' }).spawn(); c.unref(); " +
+            $"console.log('{marker}' + c.pid); " +
+            // An open, unread stdin pipe keeps the parent alive until StopAsync kills it.
+            "await Deno.stdin.read(new Uint8Array(1));");
+
+        await using var process = await StartChildAsync(
+            startInfo,
+            InternalDenoProcessKind.DenoRepl,
+            logger,
+            stopBudget: TimeSpan.FromSeconds(2));
+        using var grandchild = Process.GetProcessById(await ready.Task.WaitAsync(deadline.Token));
+        try
+        {
+            Assert.False(process.ProcessExited.IsCompleted, "the stdin gate must keep the parent alive before stop");
+            Assert.False(grandchild.HasExited, "the tree must contain a live drain holder before stop");
+
+            await process.StopAsync().WaitAsync(TimeSpan.FromSeconds(10), deadline.Token);
+            await process.Completion.WaitAsync(deadline.Token);
+            Assert.True(process.ProcessExited.IsCompletedSuccessfully);
+            Assert.DoesNotContain(logger.Messages, message =>
+                message.Text.Contains("abandoning its completion", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (!grandchild.HasExited) grandchild.Kill();
+            await grandchild.WaitForExitAsync(deadline.Token);
         }
     }
 
@@ -267,7 +301,7 @@ public sealed class DenoRunProcessTests
         }
     }
 
-    private sealed class CollectingLogger : ILogger
+    private sealed class CollectingLogger(Action<string>? onMessage = null) : ILogger
     {
         internal ConcurrentQueue<LogMessage> Messages { get; } = new();
 
@@ -288,7 +322,9 @@ public sealed class DenoRunProcessTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Messages.Enqueue(new LogMessage(formatter(state, exception)));
+            var message = formatter(state, exception);
+            Messages.Enqueue(new LogMessage(message));
+            onMessage?.Invoke(message);
         }
     }
 

@@ -51,6 +51,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
         _standardError = standardError;
         var stdoutDrain = DrainAsync(process.StandardOutput, "stdout", null);
         var stderrDrain = DrainAsync(process.StandardError, "stderr", standardError);
+        ProcessExited = process.WaitForExitAsync();
         Completion = ObserveCompletionAsync(stdoutDrain, stderrDrain);
         if (slot.HasSlot)
         {
@@ -96,6 +97,10 @@ internal sealed class DenoRunProcess : IAsyncDisposable
     /// <summary>What a child's completion must retire from the permission broker: the policy
     /// registration is keyed by pid, so it has to leave with the process that owns it.</summary>
     private sealed record PolicyRegistration(DenoPermissionBroker Broker, int ProcessId);
+
+    /// <summary>Observes the process exit independently of inherited stdout/stderr handles
+    /// that surviving descendants may still hold open.</summary>
+    internal Task ProcessExited { get; }
 
     internal Task Completion { get; }
 
@@ -327,7 +332,7 @@ internal sealed class DenoRunProcess : IAsyncDisposable
 
     private async Task ObserveCompletionAsync(Task stdoutDrain, Task stderrDrain)
     {
-        await _process.WaitForExitAsync().ConfigureAwait(false);
+        await ProcessExited.ConfigureAwait(false);
         await Task.WhenAll(stdoutDrain, stderrDrain).ConfigureAwait(false);
         Volatile.Write(ref _exitCode, _process.ExitCode);
     }

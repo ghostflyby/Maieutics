@@ -1173,6 +1173,7 @@ export async function run(): Promise<void> {
       });
     }
     for (const test of selected) {
+      console.log("  START -", test.name);
       try {
         await test.run();
         console.log("  ok -", test.name);

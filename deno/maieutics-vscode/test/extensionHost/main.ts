@@ -478,9 +478,13 @@ async function testQueueExecutionAsync(
       new vscode.NotebookCellData(vscode.NotebookCellKind.Code, "Question", "maieutics"),
     ]);
     data.metadata = { maieuticsSessionId: sessionId };
+    console.log(`${id}: opening notebook`);
     const notebook = await vscode.workspace.openNotebookDocument("maieutics-notebook", data);
+    console.log(`${id}: showing notebook`);
     await vscode.window.showNotebookDocument(notebook);
+    console.log(`${id}: selecting kernel`);
     await vscode.commands.executeCommand("notebook.selectKernel", { id, extension: ExtensionId });
+    console.log(`${id}: running queue`);
     const budget = AbortSignal.timeout(15_000);
     let outputChanged: vscode.Disposable | undefined;
     const visibleOutput = new Promise<void>((resolve) => {
@@ -673,7 +677,9 @@ async function testQueueExecutionAsync(
       outputChanged?.dispose();
     }
   } finally {
+    console.log(`${id}: disposing controller`);
     await owner.dispose();
+    console.log(`${id}: disposed controller`);
     output.dispose();
   }
 }

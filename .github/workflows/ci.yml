@@ -11,6 +11,10 @@ on:
         description: "Times the Test job repeats the suite (flake hunting)"
         required: false
         default: "1"
+      extension_repeat:
+        description: "Times the Extension job repeats the real editor suite (1-20)"
+        required: false
+        default: "1"
       test_filter:
         description: "Optional fully-qualified test class name for the Test job (--filter-class)"
         required: false
@@ -349,10 +353,31 @@ jobs:
       # Electron needs a display server: wrap with xvfb on Linux, macOS runs headed directly.
       - name: Test in VS Code
         shell: bash
+        env:
+          MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs
+          EXTENSION_REPEATS: ${{ inputs.extension_repeat || '1' }}
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]
-          then
-            xvfb-run -a deno task --config deno/maieutics-vscode/deno.json test:vscode
-          else
-            deno task --config deno/maieutics-vscode/deno.json test:vscode
+          if ! [[ "$EXTENSION_REPEATS" =~ ^([1-9]|1[0-9]|20)$ ]]; then
+            echo "extension_repeat must be an integer from 1 to 20" >&2
+            exit 1
           fi
+          diagnostics_root="$MAIEUTICS_VSCODE_DIAGNOSTICS_DIR"
+          for pass in $(seq 1 "$EXTENSION_REPEATS"); do
+            echo "Extension test pass $pass/$EXTENSION_REPEATS"
+            export MAIEUTICS_VSCODE_DIAGNOSTICS_DIR="$diagnostics_root/pass-$pass"
+            if [ "$RUNNER_OS" = "Linux" ]
+            then
+              xvfb-run -a deno task --config deno/maieutics-vscode/deno.json test:vscode
+            else
+              deno task --config deno/maieutics-vscode/deno.json test:vscode
+            fi
+          done
+
+      - name: Upload VS Code diagnostics
+        if: failure() || github.event_name == 'schedule'
+        uses: actions/upload-artifact@v7
+        with:
+          name: extension-test-logs-${{ matrix.os }}
+          path: extension-test-logs/
+          if-no-files-found: warn
+          retention-days: 14

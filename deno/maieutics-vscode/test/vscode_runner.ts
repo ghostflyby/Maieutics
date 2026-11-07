@@ -366,6 +366,42 @@ async function killInstanceAsync(userDataDir: string): Promise<void> {
   }
 }
 
+/** Copy only this isolated test instance's diagnostics, never workspace
+ * fixtures or unrelated user settings. Do not follow symlinks. */
+async function copyDiagnosticsAsync(source: string, target: string): Promise<void> {
+  await Deno.mkdir(target, { recursive: true });
+  for await (const entry of Deno.readDir(source)) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.isDirectory) await copyDiagnosticsAsync(from, to);
+    else if (entry.isFile) await Deno.copyFile(from, to);
+  }
+}
+
+async function collectDiagnosticsAsync(scratch: string, result: string): Promise<void> {
+  const workspace = join(scratch, "workspace");
+  const progress = join(workspace, "progress.log");
+  if (await isFileAsync(progress)) {
+    const text = await Deno.readTextFile(progress);
+    console.log(`extension-host progress (last 8000 characters):\n${text.slice(-8000)}`);
+  } else {
+    console.error("extension-host progress is absent: the test entry did not record suite start");
+  }
+  const destination = Deno.env.get("MAIEUTICS_VSCODE_DIAGNOSTICS_DIR");
+  if (destination === undefined) return;
+  await Deno.mkdir(destination, { recursive: true });
+  await Deno.writeTextFile(join(destination, "runner-result.txt"), result);
+  for (const name of ["progress.log", SentinelFileName]) {
+    const source = join(workspace, name);
+    if (await isFileAsync(source)) await Deno.copyFile(source, join(destination, name));
+  }
+  const logs = join(scratch, "user-data-dir", "logs");
+  if (await isDirectoryAsync(logs)) {
+    await copyDiagnosticsAsync(logs, join(destination, "vscode-logs"));
+  }
+  console.log(`VS Code diagnostics saved to ${destination}`);
+}
+
 async function mainAsync(): Promise<number> {
   // The extension root is the runner's parent directory, independent of the
   // working directory the task was invoked from.
@@ -424,28 +460,40 @@ async function mainAsync(): Promise<number> {
     console.log("SSR probe target: live kernel (required).");
   }
 
+  let result = "VS Code launch did not complete";
   try {
     const launch = await launchAsync(
       install,
       launchFlags(extensionRoot, testsPath, userDataDir, extensionsDir),
       workspaceFile,
     );
+    result = "VS Code launched; waiting for extension-host verdict";
     const verdict = await waitForVerdictAsync(
       join(workspaceDir, SentinelFileName),
       timeoutMs,
       launch.child,
     );
     if (!verdict.ok) {
+      result = verdict.reason;
       console.error(`vscode_runner: ${verdict.reason}`);
       return 1;
     }
+    result = "extension-host tests passed";
     console.log("vscode_runner: extension-host tests passed");
     return 0;
+  } catch (error) {
+    result = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    throw error;
   } finally {
     await killInstanceAsync(userDataDir);
     // Give the reaped instance a moment to finish writing before the tree
     // under it disappears.
     await delay(500);
+    try {
+      await collectDiagnosticsAsync(scratch, result);
+    } catch (error) {
+      console.error(`vscode_runner: could not collect diagnostics: ${String(error)}`);
+    }
     await Deno.remove(scratch, { recursive: true }).catch((error: unknown) => {
       console.error(`vscode_runner: could not remove ${scratch}: ${String(error)}`);
     });

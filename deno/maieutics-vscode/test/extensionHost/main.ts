@@ -1010,7 +1010,7 @@ async function testCommandCompletionAsync(): Promise<void> {
       trigger: "/",
     },
   ];
-  for (const entry of cases) {
+  for (const [index, entry] of cases.entries()) {
     let calls = 0;
     const logs: string[] = [];
     const registration = registerCommandCompletion(
@@ -1032,11 +1032,19 @@ async function testCommandCompletionAsync(): Promise<void> {
       (message) => logs.push(message),
     );
     try {
-      const notebook = await vscode.workspace.openNotebookDocument(
-        "maieutics-notebook",
-        new vscode.NotebookData([
-          new vscode.NotebookCellData(vscode.NotebookCellKind.Code, entry.text, "markdown"),
-        ]),
+      // VS Code auto-opens dirty notebooks after a debounce. Untitled
+      // fixtures would leave unawaited editor opens racing the next test.
+      const uri = vscode.Uri.joinPath(workspaceRoot(), `completion-${index}.maieuticsnb`);
+      const fixture = emptyNotebook();
+      fixture.cells[0].text = entry.text;
+      await vscode.workspace.fs.writeFile(
+        uri,
+        new TextEncoder().encode(JSON.stringify(fixture)),
+      );
+      const notebook = await vscode.workspace.openNotebookDocument(uri);
+      assert(
+        !notebook.isUntitled && !notebook.isDirty,
+        "completion fixtures stay clean so VS Code cannot schedule background editor opens",
       );
       const cell = notebook.cellAt(0);
       const completions = await vscode.commands.executeCommand<vscode.CompletionList>(

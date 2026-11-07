@@ -480,9 +480,9 @@ async function testQueueExecutionAsync(
     data.metadata = { maieuticsSessionId: sessionId };
     console.log(`${id}: opening notebook`);
     const notebook = await vscode.workspace.openNotebookDocument("maieutics-notebook", data);
-    console.log(`${id}: showing notebook`);
+    console.log(`${id}: showing notebook ${new Date().toISOString()}`);
     await vscode.window.showNotebookDocument(notebook);
-    console.log(`${id}: selecting kernel`);
+    console.log(`${id}: selecting kernel ${new Date().toISOString()}`);
     await vscode.commands.executeCommand("notebook.selectKernel", { id, extension: ExtensionId });
     console.log(`${id}: running queue`);
     const budget = AbortSignal.timeout(15_000);

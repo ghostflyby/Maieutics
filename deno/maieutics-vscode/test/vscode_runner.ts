@@ -324,7 +324,10 @@ async function waitForVerdictAsync(
   sentinelPath: string,
   timeoutMs: number,
   child: Deno.ChildProcess | undefined,
+  revealProbe?: () => Promise<void>,
 ): Promise<Verdict> {
+  const probeAt = Date.now() + 30_000;
+  let probed = false;
   const deadline = Date.now() + timeoutMs;
   let exitCode: number | undefined;
   for (;;) {
@@ -347,6 +350,10 @@ async function waitForVerdictAsync(
     }
     if (Date.now() >= deadline) {
       return { ok: false, reason: `timed out after ${timeoutMs}ms without ${sentinelPath}` };
+    }
+    if (revealProbe !== undefined && !probed && Date.now() >= probeAt) {
+      probed = true;
+      await revealProbe();
     }
     const tick = delay(PollIntervalMs).then(() => "tick" as const);
     if (child === undefined) {
@@ -407,7 +414,9 @@ async function collectDiagnosticsAsync(scratch: string, result: string): Promise
     const source = join(scratch, name);
     if (await isFileAsync(source)) {
       await Deno.copyFile(source, join(destination, name));
-      console.log(`${name} (last 8000 characters):\n${(await Deno.readTextFile(source)).slice(-8000)}`);
+      console.log(
+        `${name} (last 8000 characters):\n${(await Deno.readTextFile(source)).slice(-8000)}`,
+      );
     }
   }
   for (const name of ["progress.log", SentinelFileName]) {
@@ -491,6 +500,23 @@ async function mainAsync(): Promise<number> {
       join(workspaceDir, SentinelFileName),
       timeoutMs,
       launch.child,
+      Deno.build.os === "darwin" && Deno.env.get("MAIEUTICS_VSCODE_REVEAL_PROBE") === "1"
+        ? async () => {
+          const stdout = await Deno.readTextFile(join(scratch, "vscode-stdout.log"));
+          if (
+            stdout.includes("queue-replay-test: showing notebook") &&
+            !stdout.includes("queue-replay-test: selecting kernel")
+          ) {
+            console.log(`${new Date().toISOString()} reveal probe: activating the existing editor`);
+            const activation = await new Deno.Command("open", {
+              args: ["-a", install.target],
+              stdout: "inherit",
+              stderr: "inherit",
+            }).output();
+            console.log(`${new Date().toISOString()} reveal probe: open exited ${activation.code}`);
+          }
+        }
+        : undefined,
     );
     if (!verdict.ok) {
       result = verdict.reason;

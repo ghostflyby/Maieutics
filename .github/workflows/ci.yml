@@ -54,6 +54,7 @@ jobs:
         env:
           MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs
           MAIEUTICS_VSCODE_TIMEOUT_MS: "120000"
+          MAIEUTICS_VSCODE_REVEAL_PROBE: "1"
           EXTENSION_REPEATS: ${{ inputs.extension_repeat || '1' }}
         run: |
           if ! [[ "$EXTENSION_REPEATS" =~ ^([1-9]|1[0-9]|20)$ ]]; then

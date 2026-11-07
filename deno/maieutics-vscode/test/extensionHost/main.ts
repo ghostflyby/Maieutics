@@ -17,7 +17,7 @@
  */
 
 import * as vscode from "vscode";
-import { appendFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionTitles } from "../../sessionTitles.ts";
 import { MaieuticsSessionsProvider } from "../../sessionsTree.ts";
@@ -1144,7 +1144,7 @@ export async function run(): Promise<void> {
   const failed: string[] = [];
   let firstError: string | null = null;
   try {
-    await writeProgressAsync("suite started");
+    writeProgress("suite started");
     const selected = [...tests];
     const liveRenderer = vscode.workspace.getConfiguration("maieutics").get<string>(
       "testRenderingDiscovery",
@@ -1168,16 +1168,16 @@ export async function run(): Promise<void> {
       });
     }
     for (const test of selected) {
-      await writeProgressAsync(`START ${test.name}`);
+      writeProgress(`START ${test.name}`);
       try {
         await test.run();
-        await writeProgressAsync(`PASS ${test.name}`);
+        writeProgress(`PASS ${test.name}`);
         console.log("  ok -", test.name);
       } catch (error) {
         failed.push(test.name);
         const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
         firstError ??= `${test.name}: ${message}`;
-        await writeProgressAsync(`FAIL ${test.name}\n${message}`);
+        writeProgress(`FAIL ${test.name}\n${message}`);
         console.log("  FAIL -", test.name);
         console.log(message);
       }
@@ -1191,7 +1191,7 @@ export async function run(): Promise<void> {
     firstError ??= error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
-    await writeProgressAsync("suite finished");
+    writeProgress("suite finished");
     await writeSentinelAsync({
       ok: firstError === null && failed.length === 0,
       error: firstError,
@@ -1202,9 +1202,11 @@ export async function run(): Promise<void> {
 
 /** Persist before entering a test so a hung test remains identifiable even
  * when Launch Services detached the extension host's console. */
-async function writeProgressAsync(message: string): Promise<void> {
+function writeProgress(message: string): void {
   try {
-    await appendFile(
+    // Synchronous metadata writes preserve the suite's original Promise
+    // scheduling; diagnostics must not insert yields between adjacent tests.
+    appendFileSync(
       join(workspaceRoot().fsPath, "progress.log"),
       `${new Date().toISOString()} ${message}\n`,
     );

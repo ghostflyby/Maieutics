@@ -69,7 +69,18 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            // Bound diagnostic parsing even when an upstream proxy returns an oversized body.
+            await using var errorStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var buffer = new byte[ProviderErrors.MaximumErrorBodyBytes + 1];
+            var length = await errorStream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false,
+                cancellationToken).ConfigureAwait(false);
+            var code = length <= ProviderErrors.MaximumErrorBodyBytes
+                ? ProviderErrors.ReadCode(buffer.AsMemory(0, length)) : null;
+            throw ProviderErrors.FromResponse((int)response.StatusCode, code,
+                new HttpRequestException("The provider rejected the request.", null, response.StatusCode));
+        }
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8, false);
 
@@ -130,13 +141,8 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         {
             case "error":
             {
-                var error = root.GetProperty("error");
-                var errorType = error.TryGetProperty("type", out var type)
-                    ? type.GetString()
-                    : null;
-                throw new InvalidDataException(string.IsNullOrWhiteSpace(errorType)
-                    ? "Anthropic reported a streaming error."
-                    : $"Anthropic reported the streaming error '{errorType}'.");
+                throw ProviderErrors.FromResponse(null, ProviderErrors.ReadCode(root),
+                    new InvalidDataException("The provider reported a streaming error."));
             }
             case "message_start":
                 RecordMessageStartUsage(root, messageUsage);

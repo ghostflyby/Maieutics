@@ -19,6 +19,53 @@ namespace Maieutics.Product.Tests;
 [Trait("Category", "Smoke")]
 public sealed class FrontendProcessSmokeTests
 {
+    [Theory(Timeout = 120_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublishedExecutableClassifiesProviderFailures(bool streaming)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("provider-error-smoke");
+        const string secret = "provider-private-text";
+        var body = streaming
+            ? "data: {\"error\":{\"code\":\"insufficient_quota\",\"message\":\"" + secret + "\"}}\n\n"
+            : "{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"" + secret + "\"}}";
+        await using var provider = new ProviderErrorTests.ErrorServer(streaming ? 200 : 401, body, streaming);
+        await using var process = StartHostProcess(new Uri(provider.Endpoint, "v1/"), workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString() ?? throw new InvalidOperationException("Missing token");
+        using var client = new HttpClient { BaseAddress = new Uri(url) };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var id = session.GetProperty("id").GetString();
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        await socket.ConnectAsync(new Uri($"ws://{new Uri(url).Authority}/v1/agent/sessions/{id}/events"), budget.Token);
+        try
+        {
+            Assert.Equal("hello", (await ReceiveEventFrameAsync(socket, budget.Token)).GetProperty("type").GetString());
+            using var submitted = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/queue",
+                new { items = new[] { new { text = "hello" } } }, budget.Token);
+            Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, budget.Token);
+                var type = frame.GetProperty("type").GetString();
+                Assert.NotEqual("run.completed", type);
+                if (type != "run.failed") continue;
+                Assert.Equal(streaming ? "agent_provider_quota_exceeded" : "agent_provider_authentication",
+                    frame.GetProperty("code").GetString());
+                var message = frame.GetProperty("message").GetString() ?? "";
+                Assert.Contains(streaming ? "quota" : "HTTP 401", message);
+                Assert.DoesNotContain(secret, message);
+                break;
+            }
+        }
+        finally { socket.Abort(); }
+    }
+
     [Fact(Timeout = 120_000)]
     public async Task PublishedExecutableRendersThroughItsEmbeddedOfflineChild()
     {

@@ -33,8 +33,56 @@ public sealed class AgentResponseLimitExceededException(int maximumCharacters)
 }
 
 /// <summary>Wraps a non-cancellation model-provider failure.</summary>
-public sealed class AgentProviderException(Exception innerException)
-    : AgentException("The model provider failed while producing a response.", innerException);
+public sealed class AgentProviderException : AgentException
+{
+    /// <summary>Wraps an unclassified failure without exposing its original message.</summary>
+    public AgentProviderException(Exception innerException)
+        : this(AgentProviderFailureKind.Unknown, innerException) { }
+
+    /// <summary>Wraps a provider failure with normalized, safe diagnostic metadata.</summary>
+    /// <param name="kind">The provider-neutral failure category.</param>
+    /// <param name="innerException">The original failure, for local diagnostics only.</param>
+    /// <param name="statusCode">The upstream HTTP failure status, when available.</param>
+    /// <param name="providerCode">A provider adapter's allowlisted error code, never a raw response message.</param>
+    public AgentProviderException(AgentProviderFailureKind kind, Exception innerException,
+        int? statusCode = null, string? providerCode = null)
+        : base(CreateMessage(kind, statusCode, providerCode), innerException)
+    {
+        Kind = kind;
+        StatusCode = statusCode;
+        ProviderCode = providerCode;
+    }
+
+    /// <summary>Gets the provider-neutral failure category.</summary>
+    public AgentProviderFailureKind Kind { get; }
+    /// <summary>Gets the upstream HTTP failure status, when available.</summary>
+    public int? StatusCode { get; }
+    /// <summary>Gets the adapter's recognized provider error code, when available.</summary>
+    public string? ProviderCode { get; }
+
+    private static string CreateMessage(AgentProviderFailureKind kind, int? statusCode, string? providerCode)
+    {
+        var message = kind switch
+        {
+            AgentProviderFailureKind.Authentication => "The model provider rejected the credentials. Check the API key.",
+            AgentProviderFailureKind.PermissionDenied => "The model provider denied access. Check the account's model and project permissions.",
+            AgentProviderFailureKind.InvalidRequest => "The model provider rejected the request. Check the model settings and supported input or tools.",
+            AgentProviderFailureKind.NotFound => "The requested model or provider endpoint was not found. Check the model name and endpoint.",
+            AgentProviderFailureKind.ContextLimit => "The request exceeds the model's context window. Reduce the conversation or input size.",
+            AgentProviderFailureKind.RateLimited => "The model provider's rate limit was reached. Wait before retrying or reduce request volume.",
+            AgentProviderFailureKind.QuotaExceeded => "The model provider account has insufficient quota or credits. Check billing and usage limits.",
+            AgentProviderFailureKind.Timeout => "The model provider request timed out. Retry or check the provider's availability.",
+            AgentProviderFailureKind.Connection => "The connection to the model provider failed. Check the endpoint, network, proxy, and TLS configuration.",
+            AgentProviderFailureKind.Unavailable => "The model provider is unavailable or overloaded. Retry later.",
+            AgentProviderFailureKind.InvalidResponse => "The model provider returned an invalid or incomplete response. Check endpoint compatibility or retry.",
+            _ => "The model provider failed while producing a response.",
+        };
+        var details = new List<string>(2);
+        if (statusCode is { } status) details.Add($"HTTP {status}");
+        if (providerCode is { } code) details.Add(code);
+        return details.Count == 0 ? message : $"{message} ({string.Join("; ", details)})";
+    }
+}
 
 /// <summary>Indicates that the selected model profile lacks behavior required by the Agent run.</summary>
 public sealed class AgentModelCapabilityException(

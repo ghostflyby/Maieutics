@@ -366,6 +366,7 @@ internal sealed class AgentSubagentHost(
             var childOptions = baseOptions with
             {
                 SystemPrompt = spec.Instructions,
+                SystemInstructions = [],
                 MaxTurnDuration = spec.MaxTurnDuration ?? subagents.MaxChildTurnDuration,
                 Subagents = subagents with { MaxDepth = subagents.MaxDepth - 1 }
             };
@@ -652,6 +653,7 @@ internal sealed class AgentSubagentHost(
                 var childOptions = parentOptions with
                 {
                     SystemPrompt = spec.Instructions,
+                    SystemInstructions = [],
                     MaxTurnDuration = spec.MaxTurnDuration ?? subagents.MaxChildTurnDuration,
                     Subagents = subagents with { MaxDepth = subagents.MaxDepth - 1 }
                 };

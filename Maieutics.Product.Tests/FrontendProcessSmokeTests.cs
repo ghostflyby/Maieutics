@@ -197,6 +197,10 @@ public sealed class FrontendProcessSmokeTests
             }
             Assert.True(titled, "Generated metadata must reach the session socket independently of run completion.");
             await provider.Completion.WaitAsync(budget.Token);
+            var requests = provider.RequestBodies.ToArray();
+            Assert.Equal(2, requests.Length);
+            Assert.Contains("VitePress-based Markdown", requests[0].GetRawText());
+            Assert.DoesNotContain("VitePress-based Markdown", requests[1].GetRawText());
             var metadata = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}", budget.Token);
             Assert.Equal("修复工作区诊断", metadata.GetProperty("title").GetString());
             var transcript = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}/transcript", budget.Token);
@@ -405,6 +409,9 @@ public sealed class FrontendProcessSmokeTests
                 // asserts "smoke.txt" rode in the follow-up request) and the
                 // canonical transcript records the structured result envelope.
                 Assert.Contains("smoke.txt", transcript.GetRawText());
+                Assert.NotEmpty(provider.RequestBodies);
+                Assert.All(provider.RequestBodies, request =>
+                    Assert.Contains("VitePress-based Markdown", request.GetRawText()));
             }
             finally
             {

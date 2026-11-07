@@ -91,6 +91,7 @@ export const ExtensionPoint: {
   readonly Tool: symbol;
   readonly UiEvent: symbol;
   readonly Skills: symbol;
+  readonly SystemPrompt: symbol;
 } = {
   McpDiscover: Symbol.for(`${NAMESPACE}/mcp.discover`),
   McpAdjust: Symbol.for(`${NAMESPACE}/mcp.adjust`),
@@ -100,6 +101,7 @@ export const ExtensionPoint: {
   Tool: Symbol.for(`${NAMESPACE}/tool`),
   UiEvent: Symbol.for(`${NAMESPACE}/ui.event`),
   Skills: Symbol.for(`${NAMESPACE}/skills.generate`),
+  SystemPrompt: Symbol.for(`${NAMESPACE}/system.prompt`),
 };
 
 export type ExtensionPointName = keyof typeof ExtensionPoint;
@@ -139,6 +141,40 @@ export interface DiscoverContext {
 export interface SkillsContext {
   readonly workspaceRoot: string | null;
 }
+
+/** Per-conversation-run instruction hook; no base prompt, transcript or secrets are provided.
+ * The approved manifest must select its export with `extensions.SystemPrompt: [{provider: "main"}]`.
+ */
+export interface SystemPromptContext {
+  readonly workspaceRoot: string | null;
+}
+
+/** A system-level instruction, active only while the declaring plugin remains approved.
+ * Names are unique ASCII letters/digits/`-_.` (1–64 characters); content is 1–16,384 characters.
+ */
+export interface SystemPromptEntry {
+  readonly name: string;
+  readonly content: string;
+}
+
+export interface SystemPromptObjectInput {
+  handler(context: SystemPromptContext): SystemPromptEntry[] | Promise<SystemPromptEntry[]>;
+}
+
+export interface SystemPromptObject extends SystemPromptObjectInput {
+  readonly [ExtensionPoint.SystemPrompt]: true;
+}
+
+export type SystemPromptFunctionInput = (
+  context: SystemPromptContext,
+) => SystemPromptEntry[] | Promise<SystemPromptEntry[]>;
+
+export type SystemPromptFunction = SystemPromptFunctionInput & {
+  readonly [ExtensionPoint.SystemPrompt]: true;
+};
+
+export type SystemPromptInput = SystemPromptObjectInput | SystemPromptFunctionInput;
+export type SystemPrompt = SystemPromptObject | SystemPromptFunction;
 
 /** One generated skill: the catalog entry plus an inline bounded body. */
 export interface SkillGeneration {
@@ -416,6 +452,7 @@ interface ExtensionPointShape<K extends ExtensionPointName> {
     : K extends "ToolPreInvoke" ? ToolInvokeContext
     : K extends "Tool" ? ToolRequest
     : K extends "Skills" ? SkillsContext
+    : K extends "SystemPrompt" ? SystemPromptContext
     : ToolPostInvokeContext;
   input: K extends "McpDiscover" ? McpDiscoverInput
     : K extends "McpAdjust" ? McpAdjustInput
@@ -423,6 +460,7 @@ interface ExtensionPointShape<K extends ExtensionPointName> {
     : K extends "ToolPreInvoke" ? ToolPreInvokeInput
     : K extends "Tool" ? ToolImplementationInput
     : K extends "Skills" ? SkillsInput
+    : K extends "SystemPrompt" ? SystemPromptInput
     : ToolPostInvokeInput;
   impl: K extends "McpDiscover" ? McpDiscover
     : K extends "McpAdjust" ? McpAdjust
@@ -430,6 +468,7 @@ interface ExtensionPointShape<K extends ExtensionPointName> {
     : K extends "ToolPreInvoke" ? ToolPreInvoke
     : K extends "Tool" ? ToolImplementation
     : K extends "Skills" ? Skills
+    : K extends "SystemPrompt" ? SystemPrompt
     : ToolPostInvoke;
 }
 

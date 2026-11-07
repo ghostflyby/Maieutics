@@ -259,7 +259,9 @@ public sealed class AgentSession : IAgentSession
         if (budget is not null) budget.CancelAfter(options.MaxTurnDuration);
 
         var loopToken = budget?.Token ?? cancellationToken;
-        var requestMessages = GetCommittedChatMessages(options).ToList();
+        var requestMessages = options.SystemInstructions
+            .Select(static instruction => new ChatMessage(ChatRole.System, instruction)).ToList();
+        requestMessages.AddRange(GetCommittedChatMessages(options));
         requestMessages.Add(run.UserMessage);
         // Hosted tools are declared alongside the local functions but executed by the provider;
         // they never enter the local registry and no call for them reaches the runtime.

@@ -79,11 +79,15 @@ internal sealed record SubagentUsagePayload(int? Input, int? Output, int? Total)
 [JsonSerializable(typeof(HostReplDeriveFailedPayload))]
 [JsonSerializable(typeof(HostReplPermissions))]
 [JsonSerializable(typeof(SkillsInvokePayload))]
+[JsonSerializable(typeof(SystemPromptInvokePayload))]
 internal sealed partial class ReplControlJsonContext : JsonSerializerContext;
 
 /// <summary>The request the kernel sends a worker's <c>Skills</c> generator export
 /// (ADR 0039 stage 2b): the live workspace root, never arbitrary environment.</summary>
 internal sealed record SkillsInvokePayload(string? WorkspaceRoot);
+
+/// <summary>Bounded per-run system-instruction context; no transcript, credentials or base prompt.</summary>
+internal sealed record SystemPromptInvokePayload(string? WorkspaceRoot);
 
 internal static class ReplControlJson
 {
@@ -198,6 +202,8 @@ internal static class PluginCapabilityCatalog
 
 internal static class ReplExtensionPointName
 {
+    /// <summary>Collects approved plugin system instructions when a conversation run acquires its profile.</summary>
+    public const string SystemPrompt = "SystemPrompt";
     public const string McpDiscover = "McpDiscover";
     public const string McpAdjust = "McpAdjust";
     public const string ToolPreInvoke = "ToolPreInvoke";
@@ -228,7 +234,8 @@ internal static class ReplExtensionPointName
                name.Equals(ToolPostInvoke, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(Tool, StringComparison.OrdinalIgnoreCase) ||
                name.Equals(UiEvent, StringComparison.OrdinalIgnoreCase) ||
-               name.Equals(Skills, StringComparison.OrdinalIgnoreCase);
+               name.Equals(Skills, StringComparison.OrdinalIgnoreCase) ||
+               name.Equals(SystemPrompt, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The canonical constant for a known name (any spelling), or null.
@@ -236,7 +243,7 @@ internal static class ReplExtensionPointName
     /// correct regardless of what the reporting side spelled.</summary>
     public static string? Canonicalize(string name)
     {
-        foreach (var candidate in (string[])[McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, Tool, UiEvent, Skills])
+        foreach (var candidate in (string[])[McpDiscover, McpAdjust, ToolPreInvoke, ToolPostInvoke, Tool, UiEvent, Skills, SystemPrompt])
             if (name.Equals(candidate, StringComparison.OrdinalIgnoreCase))
                 return candidate;
         return null;

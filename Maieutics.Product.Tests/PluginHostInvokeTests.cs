@@ -453,7 +453,8 @@ public sealed class PluginHostInvokeTests
     /// <summary>Same harness over a caller-supplied plugins root, so lifecycle tests can seed
     /// or mutate the watched plugin set (the restart seam) before and after the manager starts
     /// watching it.</summary>
-    internal static async Task<HostHarness> CreateHarnessAsync(string pluginsRoot, CancellationToken cancellationToken)
+    internal static async Task<HostHarness> CreateHarnessAsync(string pluginsRoot, CancellationToken cancellationToken,
+        string? approvalsPath = null, TimeProvider? timeProvider = null)
     {
         var manager = new PluginHostManager(
             pluginsRoot,
@@ -464,7 +465,8 @@ public sealed class PluginHostInvokeTests
             new ReplControlSessionRegistry(),
             NullLogger<PluginHostManager>.Instance,
             NullLoggerFactory.Instance,
-            TimeProvider.System);
+            timeProvider ?? TimeProvider.System,
+            pluginApprovalsPath: approvalsPath);
         await manager.StartAsync(cancellationToken);
 
         var fakeSocket = new FakeHostWebSocket();

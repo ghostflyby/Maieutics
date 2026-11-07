@@ -657,7 +657,7 @@ public sealed class SkillsProfileProviderTests : IAsyncDisposable
         await SkillCatalogTestWaits.AwaitAsync(
             catalog, clock, snapshot => !snapshot.Skills.IsEmpty, deadline.Token);
 
-        var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
+        var composed = Assert.Single((await AcquireAsync(provider)).Options.SystemInstructions);
 
         Assert.Contains("## Skills", composed);
         Assert.Contains("skill://alpha", composed);
@@ -674,9 +674,10 @@ public sealed class SkillsProfileProviderTests : IAsyncDisposable
             NullLogger<SkillCatalog>.Instance);
         var provider = new SkillsProfileProvider(new FixedProfileProvider("base instructions"), catalog);
 
-        var composed = (await AcquireAsync(provider)).Options.SystemPrompt;
+        var acquired = await AcquireAsync(provider);
+        var composed = Assert.Single(acquired.Options.SystemInstructions);
 
-        Assert.StartsWith("base instructions", composed ?? throw new InvalidOperationException("the assertion subject is null"));
+        Assert.Equal("base instructions", acquired.Options.SystemPrompt);
         Assert.Contains("skill://alpha", composed);
     }
 

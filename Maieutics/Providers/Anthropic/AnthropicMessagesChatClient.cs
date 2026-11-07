@@ -421,11 +421,23 @@ internal sealed class AnthropicMessagesChatClient : IChatClient
         writer.WriteNumber("max_tokens", options?.MaxOutputTokens ?? DefaultMaxOutputTokens);
         writer.WriteBoolean("stream", true);
 
-        var systemText = string.Join('\n', materialized
+        var systemBlocks = materialized
             .Where(static message => message.Role == ChatRole.System)
             .SelectMany(static message => message.Contents.OfType<TextContent>())
-            .Select(static content => content.Text));
-        if (systemText.Length > 0) writer.WriteString("system", systemText);
+            .Select(static content => content.Text).Where(static text => !string.IsNullOrEmpty(text)).ToList();
+        if (options?.Instructions is { Length: > 0 } instructions) systemBlocks.Insert(0, instructions);
+        if (systemBlocks.Count > 0)
+        {
+            writer.WriteStartArray("system");
+            foreach (var text in systemBlocks)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("type", "text");
+                writer.WriteString("text", text);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
 
         writer.WritePropertyName("messages");
         writer.WriteStartArray();

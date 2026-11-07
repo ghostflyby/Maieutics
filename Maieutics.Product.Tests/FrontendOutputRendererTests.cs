@@ -22,7 +22,7 @@ public sealed class FrontendOutputRendererTests
         budget.CancelAfter(TimeSpan.FromSeconds(50));
         var harness = await FrontendHarness.StartAsync(budget.Token,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
-        Process? child = null;
+        Process child;
         var directory = harness.OutputRenderer.ModuleDirectory;
         try
         {
@@ -66,13 +66,12 @@ public sealed class FrontendOutputRendererTests
         }
         try
         {
-            Assert.NotNull(child);
             Assert.True(child.HasExited, "Host disposal must stop its renderer child before returning.");
             Assert.False(Directory.Exists(directory), "Host disposal must remove its materialized rendering bundle.");
         }
         finally
         {
-            child?.Dispose();
+            child.Dispose();
         }
     }
 
@@ -343,7 +342,7 @@ public sealed class FrontendOutputRendererTests
         await using var harness = await FrontendHarness.StartAsync(budget.Token,
             new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
         await RenderAsync(harness, "Before worker self signal", budget.Token);
-        var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
+        Assert.IsType<int>(harness.OutputRenderer.ProcessId);
         var completion = Assert.IsAssignableFrom<Task>(harness.OutputRenderer.ProcessCompletion);
         using var result = await harness.Client.PostAsJsonAsync("/v1/render/vue",
             new FrontendRenderMarkdown(1, "control", "<script setup>Deno.kill(Deno.pid, 'SIGKILL')</script><template/>",

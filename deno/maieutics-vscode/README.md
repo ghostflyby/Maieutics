@@ -96,6 +96,13 @@ libs because the tests use the Deno CLI runtime (`Deno.test`, `Deno.serve`).
 Debug: open this folder in VS Code and use "Run Extension" (F5) after `deno task build` —
 `launch.json` points the extension host at `dist/`.
 
+`deno task test:vscode` runs the real editor with isolated settings and a scratch workspace. On
+macOS the runner captures the detached editor's stdout/stderr and prints their final output, so test
+starts, results, and startup errors remain visible after a timeout. Set
+`MAIEUTICS_VSCODE_DIAGNOSTICS_DIR` to enable debug logging and preserve the editor logs and verdict
+before termination and scratch cleanup. CI uploads these diagnostics for failed extension jobs and
+scheduled runs.
+
 ## Permissions
 
 The extension does not turn an editor folder into the Agent home. Launched kernels select their

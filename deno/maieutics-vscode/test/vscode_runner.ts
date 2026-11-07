@@ -22,7 +22,8 @@
  *   activates and the sentinel lands even in the hidden instance. `open`
  *   cannot carry the child's exit code, so the verdict is the
  *   `<workspace>/sentinel.json` the entry writes in its finally block
- *   (test/extensionHost/main.ts).
+ *   (test/extensionHost/main.ts). Native stdout/stderr redirection retains
+ *   the detached editor's test output and startup errors.
  * - Linux (CI) starts the binary directly, wrapped in an external
  *   `xvfb-run -a` when one is installed — the exit code is reliable there;
  *   the sentinel is still the primary verdict and doubles as diagnostics.
@@ -240,6 +241,7 @@ function launchFlags(
     "--skip-welcome",
     "--skip-release-notes",
     "--disable-workspace-trust",
+    ...(Deno.env.get("MAIEUTICS_VSCODE_DIAGNOSTICS_DIR") !== undefined ? ["--log=debug"] : []),
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
   ];
@@ -255,7 +257,19 @@ async function launchAsync(
     // code says the bundle launched, nothing about the tests. The verdict
     // travels through the sentinel instead.
     const open = new Deno.Command("open", {
-      args: ["-n", "-g", "-j", install.target, "--args", ...flags, workspaceDir],
+      args: [
+        "-n",
+        "-g",
+        "-j",
+        "--stdout",
+        join(dirname(workspaceDir), "vscode-stdout.log"),
+        "--stderr",
+        join(dirname(workspaceDir), "vscode-stderr.log"),
+        install.target,
+        "--args",
+        ...flags,
+        workspaceDir,
+      ],
       stdin: "null",
       stdout: "inherit",
       stderr: "inherit",
@@ -366,6 +380,38 @@ async function killInstanceAsync(userDataDir: string): Promise<void> {
   }
 }
 
+/** Copy only the isolated editor's logs and verdict, without following symlinks. */
+async function copyLogsAsync(source: string, destination: string): Promise<void> {
+  await Deno.mkdir(destination, { recursive: true });
+  for await (const entry of Deno.readDir(source)) {
+    const from = join(source, entry.name);
+    const to = join(destination, entry.name);
+    if (entry.isDirectory) await copyLogsAsync(from, to);
+    else if (entry.isFile) await Deno.copyFile(from, to);
+  }
+}
+
+async function collectDiagnosticsAsync(scratch: string, result: string): Promise<void> {
+  const destination = Deno.env.get("MAIEUTICS_VSCODE_DIAGNOSTICS_DIR");
+  if (destination !== undefined) {
+    await Deno.mkdir(destination, { recursive: true });
+    await Deno.writeTextFile(join(destination, "runner-result.txt"), result);
+    const sentinel = join(scratch, "workspace", SentinelFileName);
+    if (await isFileAsync(sentinel)) {
+      await Deno.copyFile(sentinel, join(destination, SentinelFileName));
+    }
+    const logs = join(scratch, "user-data-dir", "logs");
+    if (await isDirectoryAsync(logs)) await copyLogsAsync(logs, join(destination, "vscode-logs"));
+  }
+  for (const name of ["vscode-stdout.log", "vscode-stderr.log"]) {
+    const source = join(scratch, name);
+    if (!await isFileAsync(source)) continue;
+    if (destination !== undefined) await Deno.copyFile(source, join(destination, name));
+    const text = await Deno.readTextFile(source);
+    console.log(`${name} (last 8000 characters):\n${text.slice(-8000)}`);
+  }
+}
+
 async function mainAsync(): Promise<number> {
   // The extension root is the runner's parent directory, independent of the
   // working directory the task was invoked from.
@@ -424,24 +470,36 @@ async function mainAsync(): Promise<number> {
     console.log("SSR probe target: live kernel (required).");
   }
 
+  let result = "Editor launch request did not complete";
   try {
     const launch = await launchAsync(
       install,
       launchFlags(extensionRoot, testsPath, userDataDir, extensionsDir),
       workspaceFile,
     );
+    result = "Editor launch request accepted; waiting for extension-host verdict";
     const verdict = await waitForVerdictAsync(
       join(workspaceDir, SentinelFileName),
       timeoutMs,
       launch.child,
     );
+    result = verdict.ok ? "extension-host tests passed" : verdict.reason;
     if (!verdict.ok) {
       console.error(`vscode_runner: ${verdict.reason}`);
       return 1;
     }
     console.log("vscode_runner: extension-host tests passed");
     return 0;
+  } catch (error) {
+    result = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    throw error;
   } finally {
+    try {
+      // Preserve the failure before termination adds its own exit messages.
+      await collectDiagnosticsAsync(scratch, result);
+    } catch (error) {
+      console.error(`vscode_runner: could not collect diagnostics: ${String(error)}`);
+    }
     await killInstanceAsync(userDataDir);
     // Give the reaped instance a moment to finish writing before the tree
     // under it disappears.

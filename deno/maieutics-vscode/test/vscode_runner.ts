@@ -255,7 +255,19 @@ async function launchAsync(
     // code says the bundle launched, nothing about the tests. The verdict
     // travels through the sentinel instead.
     const open = new Deno.Command("open", {
-      args: ["-n", "-g", "-j", install.target, "--args", ...flags, workspaceDir],
+      args: [
+        "-n",
+        "-g",
+        "-j",
+        "--stdout",
+        join(dirname(workspaceDir), "vscode-stdout.log"),
+        "--stderr",
+        join(dirname(workspaceDir), "vscode-stderr.log"),
+        install.target,
+        "--args",
+        ...flags,
+        workspaceDir,
+      ],
       stdin: "null",
       stdout: "inherit",
       stderr: "inherit",
@@ -391,6 +403,13 @@ async function collectDiagnosticsAsync(scratch: string, result: string): Promise
   if (destination === undefined) return;
   await Deno.mkdir(destination, { recursive: true });
   await Deno.writeTextFile(join(destination, "runner-result.txt"), result);
+  for (const name of ["vscode-stdout.log", "vscode-stderr.log"]) {
+    const source = join(scratch, name);
+    if (await isFileAsync(source)) {
+      await Deno.copyFile(source, join(destination, name));
+      console.log(`${name} (last 8000 characters):\n${(await Deno.readTextFile(source)).slice(-8000)}`);
+    }
+  }
   for (const name of ["progress.log", SentinelFileName]) {
     const source = join(workspace, name);
     if (await isFileAsync(source)) await Deno.copyFile(source, join(destination, name));

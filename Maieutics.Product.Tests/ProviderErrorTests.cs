@@ -37,8 +37,8 @@ public sealed class ProviderErrorTests
                 (400, SensitiveText, AgentProviderFailureKind.InvalidRequest),
             ];
             foreach (var flavor in Enum.GetValues<ModelApiFlavor>())
-            foreach (var (status, code, kind) in cases)
-                data.Add(flavor, status, code, kind);
+                foreach (var (status, code, kind) in cases)
+                    data.Add(flavor, status, code, kind);
             return data;
         }
     }
@@ -161,10 +161,11 @@ public sealed class ProviderErrorTests
             AgentProviderFailureKind.Unknown];
         for (var i = 0; i < exceptions.Length; i++)
         {
-            using var client = new ProviderErrorChatClient(new ScriptedChatClient((_, _) => FailAsync(exceptions[i])));
+            var exception = exceptions[i];
+            using var client = new ProviderErrorChatClient(new ScriptedChatClient((_, _) => FailAsync(exception)));
             var failure = await Assert.ThrowsAsync<AgentProviderException>(() => ConsumeAsync(client, TestContext.Current.CancellationToken));
             Assert.Equal(kinds[i], failure.Kind);
-            Assert.Same(exceptions[i], failure.InnerException);
+            Assert.Same(exception, failure.InnerException);
             Assert.DoesNotContain("sk-test-secret", failure.Message);
         }
     }

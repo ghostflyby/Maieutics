@@ -70,7 +70,7 @@ internal static class ProviderErrors
                 408 or 504 => AgentProviderFailureKind.Timeout,
                 429 => AgentProviderFailureKind.RateLimited,
                 >= 500 => AgentProviderFailureKind.Unavailable,
-                >= 400 and < 500 => AgentProviderFailureKind.InvalidRequest,
+                >= 400 => AgentProviderFailureKind.InvalidRequest,
                 _ => kind,
             };
         return new AgentProviderException(kind, exception, status, code);

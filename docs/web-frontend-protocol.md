@@ -112,6 +112,39 @@ user-owned state with default-restrictive permissions.
 - A concurrent turn on a session is rejected with `409` + `agent_busy`. Turns can also be queued
   explicitly on the session's server-owned turn queue (below); `POST /turns` itself never queues.
 
+### Model provider failures
+
+Model request failures use the existing `run.failed` frame's `code` and `message` fields.
+Provider adapters classify upstream failures before they enter the provider-neutral Agent runtime;
+frontends display the supplied message and preserve any output received before failure.
+
+| Code | Meaning |
+|---|---|
+| `agent_provider_authentication` | Credentials were rejected; check the API key. |
+| `agent_provider_permission_denied` | The account cannot access the requested resource. |
+| `agent_provider_invalid_request` | Request parameters, input, or tools were rejected. |
+| `agent_provider_not_found` | The model or endpoint was not found. |
+| `agent_provider_context_limit` | The request exceeds the model's context window. |
+| `agent_provider_rate_limited` | Request or token throughput is limited. |
+| `agent_provider_quota_exceeded` | Account quota, credits, or billing allowance are exhausted. |
+| `agent_provider_timeout` | A provider request timed out. |
+| `agent_provider_connection` | The connection could not be established or was interrupted. |
+| `agent_provider_unavailable` | The provider is unavailable or overloaded. |
+| `agent_provider_invalid_response` | The response is malformed or incomplete. |
+| `agent_provider_error` | No recognized failure category is available (compatibility fallback). |
+
+Messages contain a category-specific explanation and suggested action, plus the upstream HTTP
+failure status and an allowlisted provider error code when available. Arbitrary provider messages,
+unknown error codes, response bodies, credentials, and request content are not copied to the wire.
+Non-JSON proxy errors still classify by HTTP status. Streaming error events classify
+without an HTTP failure status because the stream was already accepted. OpenAI Chat error
+objects and Responses `error` / `response.failed` events terminate the run with a classified
+failure; they are not treated as successful empty responses or displayed as raw error content.
+Caller cancellation remains cancellation; expiration of the Agent turn budget remains
+`agent_turn_duration_exceeded`. Neither is reclassified as a provider timeout.
+These codes are additive: clients must continue to accept unknown error codes and display their
+message. The frontend protocol version and frame shape are unchanged.
+
 ## Session turn queue (server-owned)
 
 Each session carries a bounded, server-owned queue of agent turn items. Queued items run in

@@ -28,7 +28,7 @@ internal sealed class AnthropicChatClientFactory : IConfiguredChatClientFactory
         // apply_patch is an OpenAI Responses wire concept; the Anthropic
         // Messages adapter only sees the general edit functions.
         return new ToolVisibilityChatClient(
-            new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint),
+            new ProviderErrorChatClient(new AnthropicMessagesChatClient(model, source.ApiKey, source.Endpoint)),
             ApplyPatchFunctions.NonResponsesHiddenToolNames);
     }
 

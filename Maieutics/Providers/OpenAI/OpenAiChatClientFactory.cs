@@ -107,7 +107,7 @@ internal sealed class OpenAiChatClientFactory : IConfiguredChatClientFactory
 #pragma warning restore OPENAI001
 
             return new ToolVisibilityChatClient(
-                client,
+                new ProviderErrorChatClient(client),
                 options.ApiFlavor == OpenAiApiFlavor.Responses
                     ? ApplyPatchFunctions.ResponsesHiddenToolNames
                     : ApplyPatchFunctions.NonResponsesHiddenToolNames);

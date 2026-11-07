@@ -179,6 +179,20 @@ Deno.test("failed terminal carries code and message", () => {
   });
 });
 
+Deno.test("classified provider failure preserves details and the partial answer", () => {
+  const view = new TurnView("run-1");
+  const error = {
+    code: "agent_provider_quota_exceeded",
+    message:
+      "The model provider account has insufficient quota or credits. Check billing and usage limits. (HTTP 429; insufficient_quota)",
+  };
+  view.apply({ type: "text.delta", runId: "run-1", sequence: 1, text: "Partial answer" });
+  view.apply({ type: "run.failed", runId: "run-1", sequence: 2, ...error });
+  assertEquals(view.terminalState, { kind: "failed", ...error });
+  assertEquals(view.finalOutput().error, error);
+  assertEquals(view.markdown(), "Partial answer");
+});
+
 Deno.test("frames of other runs are ignored", () => {
   const view = new TurnView("run-1");
   assertEquals(view.apply({ type: "text.delta", runId: "run-2", sequence: 1, text: "no" }), false);

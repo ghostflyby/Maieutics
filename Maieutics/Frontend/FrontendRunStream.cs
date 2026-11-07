@@ -859,7 +859,21 @@ internal static class FrontendErrors
     {
         return exception switch
         {
-            AgentProviderException => "agent_provider_error",
+            AgentProviderException provider => provider.Kind switch
+            {
+                AgentProviderFailureKind.Authentication => "agent_provider_authentication",
+                AgentProviderFailureKind.PermissionDenied => "agent_provider_permission_denied",
+                AgentProviderFailureKind.InvalidRequest => "agent_provider_invalid_request",
+                AgentProviderFailureKind.NotFound => "agent_provider_not_found",
+                AgentProviderFailureKind.ContextLimit => "agent_provider_context_limit",
+                AgentProviderFailureKind.RateLimited => "agent_provider_rate_limited",
+                AgentProviderFailureKind.QuotaExceeded => "agent_provider_quota_exceeded",
+                AgentProviderFailureKind.Timeout => "agent_provider_timeout",
+                AgentProviderFailureKind.Connection => "agent_provider_connection",
+                AgentProviderFailureKind.Unavailable => "agent_provider_unavailable",
+                AgentProviderFailureKind.InvalidResponse => "agent_provider_invalid_response",
+                _ => "agent_provider_error",
+            },
             AgentInputLimitExceededException => InputTooLarge,
             AgentResponseLimitExceededException => "agent_response_too_large",
             AgentToolLimitExceededException => "agent_tool_limit_exceeded",

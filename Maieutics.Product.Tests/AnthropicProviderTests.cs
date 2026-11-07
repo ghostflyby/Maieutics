@@ -3,11 +3,13 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Maieutics.Agent;
 using Maieutics.Providers.Anthropic;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Product.Tests;
 
+[Collection(ProductIntegrationCollection.Name)]
 public sealed class AnthropicProviderTests
 {
     [Fact(Timeout = 15_000)]
@@ -68,8 +70,10 @@ public sealed class AnthropicProviderTests
             "claude-test",
             new AnthropicSourceOptions("configured-key", server.Endpoint));
 
-        var assertion1 = await Assert.ThrowsAnyAsync<InvalidDataException>(async () => { await ConsumeAsync(client, TestContext.Current.CancellationToken); });
-        Assert.Matches("(?is)^.*overloaded_error.*$", assertion1.Message);
+        var failure = await Assert.ThrowsAsync<AgentProviderException>(() => ConsumeAsync(client, TestContext.Current.CancellationToken));
+        Assert.Equal(AgentProviderFailureKind.Unavailable, failure.Kind);
+        Assert.Equal("overloaded_error", failure.ProviderCode);
+        Assert.Null(failure.StatusCode);
         await server.Request.WaitAsync(TestContext.Current.CancellationToken);
     }
 

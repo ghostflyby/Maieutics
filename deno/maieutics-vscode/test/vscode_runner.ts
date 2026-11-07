@@ -240,6 +240,7 @@ function launchFlags(
     "--skip-welcome",
     "--skip-release-notes",
     "--disable-workspace-trust",
+    "--log=debug",
     `--user-data-dir=${userDataDir}`,
     `--extensions-dir=${extensionsDir}`,
   ];
@@ -430,6 +431,39 @@ async function collectDiagnosticsAsync(scratch: string, result: string): Promise
   console.log(`VS Code diagnostics saved to ${destination}`);
 }
 
+async function sampleInstanceAsync(userDataDir: string): Promise<void> {
+  const destination = Deno.env.get("MAIEUTICS_VSCODE_DIAGNOSTICS_DIR");
+  if (Deno.build.os !== "darwin" || destination === undefined) return;
+  await Deno.mkdir(destination, { recursive: true });
+  const processes = await new Deno.Command("pgrep", {
+    args: ["-fl", userDataDir],
+    stdout: "piped",
+    stderr: "piped",
+    signal: AbortSignal.timeout(10_000),
+  }).output();
+  const text = new TextDecoder().decode(processes.stdout);
+  await Deno.writeTextFile(join(destination, "processes.txt"), text);
+  for (
+    const [label, match] of [
+      ["main", "/Contents/MacOS/Code "],
+      ["renderer", "Code Helper (Renderer)"],
+      ["extension-host", "Code Helper (Plugin)"],
+    ]
+  ) {
+    const pid = text.split("\n").find((line) => line.includes(match))?.match(/^\d+/)?.[0];
+    if (pid === undefined) continue;
+    const sample = await new Deno.Command("sample", {
+      args: [pid, "1", "1", "-file", join(destination, `sample-${label}.txt`)],
+      stdout: "null",
+      stderr: "piped",
+      signal: AbortSignal.timeout(10_000),
+    }).output();
+    if (!sample.success) {
+      await Deno.writeFile(join(destination, `sample-${label}-error.txt`), sample.stderr);
+    }
+  }
+}
+
 async function mainAsync(): Promise<number> {
   // The extension root is the runner's parent directory, independent of the
   // working directory the task was invoked from.
@@ -530,6 +564,13 @@ async function mainAsync(): Promise<number> {
     result = error instanceof Error ? (error.stack ?? error.message) : String(error);
     throw error;
   } finally {
+    if (result !== "extension-host tests passed") {
+      try {
+        await sampleInstanceAsync(userDataDir);
+      } catch (error) {
+        console.error(`vscode_runner: could not sample editor: ${String(error)}`);
+      }
+    }
     await killInstanceAsync(userDataDir);
     // Give the reaped instance a moment to finish writing before the tree
     // under it disappears.

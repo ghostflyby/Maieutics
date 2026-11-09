@@ -65,6 +65,15 @@ export class OutputRenderingBridge {
     if (this.#closed || typeof message !== "object" || message === null) return;
     const value = message as Record<string, unknown>;
     if (value.source !== "maieutics-output" || typeof value.documentId !== "string") return;
+    if (value.type === "applied" && value.engine === "native") {
+      if (
+        typeof value.native === "object" && value.native !== null && "error" in value.native &&
+        typeof value.native.error === "string"
+      ) {
+        this.options.log("Native Markdown rendering failed; displaying plain source.");
+      }
+      return;
+    }
     if (value.type === "cancel") {
       if (
         value.requestId === undefined ||

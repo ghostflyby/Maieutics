@@ -205,6 +205,18 @@ export async function testTurnRendererAsync(): Promise<void> {
         retry.querySelector("[data-retry]").click();
         const retries = messages.filter((message) => message.type === "retry");
         assert(retries.length === 1 && retries[0].notebookUri === "notebook:test" && retries[0].cellIndex === 3, "retry uses the owning renderer context and JSON arguments");
+        const failed = document.createElement("div"); document.body.appendChild(failed);
+        markdown.renderOutputItem = (_output, target) => {
+          target.attachShadow({ mode: "open" });
+          throw new Error("native renderer fixture failure");
+        };
+        await api.renderOutputItem({ id: "failed-native", json: () => ({ text: "# Still readable" }) }, failed);
+        const nativeFailureRequest = messages.at(-1);
+        receiveMessage({ ...nativeFailureRequest, type: "unavailable" });
+        const failedRegion = failed.querySelector("[data-markdown-index]");
+        assert(failedRegion.shadowRoot.textContent === "# Still readable", "native failure after attaching a shadow root must leave visible source, not hidden light DOM");
+        assert(messages.at(-1).native.error === "Error", "native failure reports a diagnostic category without the source or exception message");
+        markdown.renderOutputItem = originalRender;
         api.disposeOutputItem();
         vscode.postMessage({ ok: true });
       } catch (error) { vscode.postMessage({ ok: false, error: error.stack ?? String(error) }); }

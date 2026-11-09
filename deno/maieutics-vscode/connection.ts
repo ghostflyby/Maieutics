@@ -41,6 +41,26 @@ export interface Connection {
   dispose(): Promise<void>;
 }
 
+/** Join existing startup without starting a kernel or transferring connection ownership. */
+export async function renderingConnection(
+  current: Connection | undefined,
+  starting: Promise<Connection> | undefined,
+  signal: AbortSignal,
+): Promise<Connection | undefined> {
+  signal.throwIfAborted();
+  if (current !== undefined || starting === undefined) return current;
+  let abort = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([starting, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 export async function connect(options: ConnectionOptions): Promise<Connection> {
   if (options.discoveryFile) return await attach(options.discoveryFile, options.signal);
 

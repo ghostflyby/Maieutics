@@ -15,6 +15,34 @@ const snapshot = (text: string): RenderedMarkdown => ({
   css: "",
 });
 
+Deno.test("native fallback failures are diagnosed without copying untrusted error text", async () => {
+  const logs: string[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: () => Promise.resolve(undefined),
+    post: () => Promise.resolve(),
+    log: (message) => logs.push(message),
+  });
+  try {
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: "doc",
+      engine: "native",
+      native: { error: "private source in an untrusted error" },
+    });
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: "doc",
+      engine: "native",
+      native: { headings: 1, tables: 1 },
+    });
+    assertEquals(logs, ["Native Markdown rendering failed; displaying plain source."]);
+  } finally {
+    await bridge.dispose();
+  }
+});
+
 Deno.test("render bridge coalesces intermediate updates and never publishes stale source", async () => {
   const first = Promise.withResolvers<RenderedMarkdown>();
   const started = Promise.withResolvers<void>();

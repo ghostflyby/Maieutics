@@ -10,7 +10,7 @@ advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-09
+Last updated: 2026-11-10
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -505,6 +505,32 @@ output factory and the new endpoint against a published osx-arm64 NativeAOT kern
 All 708 Deno workspace tests and 20 Node scenarios pass. Four published-process rendering
 smoke tests and the offline assistant component probe pass. Release build has no warnings and
 InspectCode has no error-level findings (two existing non-gating warnings).
+
+### Restored Markdown during connection startup (implemented 2026-11-10)
+
+A restored output can request formatting before the extension has published its connection.
+The bridge now joins an existing startup promise instead of immediately returning unavailable.
+This does not start a kernel for an offline notebook. Rendering cancellation stops only that
+request's wait; connection startup retains its owner, deadline and failure observation. Startup
+failure still selects the prepared native fallback.
+
+The real VS Code regression holds the capabilities response until the saved notebook's renderer
+requests formatting. Before the fix, that output applied native fallback with zero SSR requests
+and never upgraded after startup. With the fix it receives one passive SSR result. A separate
+saved-notebook test forces unavailable rendering and checks actual native heading and table nodes,
+including Markdown following a script block. Restore retains passive MIME and does not execute Vue.
+
+Native rendering failures now report a content-free diagnostic through the existing application
+acknowledgement. If the native renderer fails after attaching a shadow root, plain source is placed
+inside that root so it remains visible. The bridge logs this failure without logging source or
+exception messages. No public HTTP protocol or notebook snapshot format changes.
+
+Verification on macOS arm64 with VS Code 1.144.1 passes all 22 extension-host scenarios,
+335 frontend unit tests, types, lint and formatting checks. The cold-start regression was first
+run against the unchanged connection path and failed with `engine=native, SSR requests=0`.
+The Release solution build passes with warnings as errors; all 1,668 .NET tests pass with eight
+existing platform/external-service skips. This frontend-only change does not republish NativeAOT;
+Linux/Windows and CI validation were not run locally.
 
 ### Model-facing output instructions (implemented 2026-11-06)
 

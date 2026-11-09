@@ -650,6 +650,18 @@ export async function activate(context) {
         documentId: request.documentId,
         requestId: message.requestId,
         engine,
+        ...(engine === "native"
+          ? {
+            native: {
+              headings: (request.fallback.shadowRoot ?? request.fallback).querySelectorAll(
+                "h1,h2,h3,h4,h5,h6",
+              ).length,
+              tables:
+                (request.fallback.shadowRoot ?? request.fallback).querySelectorAll("table").length,
+              error: request.fallback.dataset.nativeRenderError,
+            },
+          }
+          : {}),
       });
     const fallback = () => {
       releaseRegion(state.regions.get(request.node));
@@ -847,8 +859,13 @@ export async function activate(context) {
               fallback,
               signal,
             );
-          } catch {
-            fallback.textContent = blocks[index];
+          } catch (error) {
+            // A failed native renderer may already have attached a shadow root.
+            (fallback.shadowRoot ?? fallback).replaceChildren(
+              document.createTextNode(blocks[index]),
+            );
+            fallback.style.whiteSpace = "pre-wrap";
+            fallback.dataset.nativeRenderError = error instanceof Error ? error.name : "Error";
           }
           if (!current(output.id, state, revision, signal)) return;
           const reply = node.closest(".assistant-reply");

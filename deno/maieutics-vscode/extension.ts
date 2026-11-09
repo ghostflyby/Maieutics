@@ -17,7 +17,7 @@ import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
 import { registerCommandCompletion } from "./completion.ts";
 import { registerSkillInteraction } from "./skillInteraction.ts";
-import { connect, type Connection } from "./connection.ts";
+import { connect, type Connection, renderingConnection } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
@@ -221,7 +221,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const renderingBridge = new OutputRenderingBridge({
     render: async (documentId, text, signal, template, vue, assistant) => {
       // Opening an offline snapshot must never launch a kernel just to format its output.
-      const attached = connection;
+      const attached = await renderingConnection(connection, connecting, signal);
       if (attached === undefined || attached.isDisposed) return undefined;
       const capabilities = await attached.capabilities(signal);
       if (capabilities.rendering?.version !== 1) return undefined;

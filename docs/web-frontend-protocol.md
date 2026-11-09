@@ -1130,8 +1130,9 @@ The corresponding rich-display MIME is `application/vnd.maieutics.vue+json`:
 Publish through the existing explicitly selected REPL rich-display API and include `text/plain`
 fallback. Live output delivery and updates use existing display identities. VS Code selects this MIME
 only for live output, requests the explicit endpoint, and hydrates successful SSR. Unsupported or
-failed rendering retains native source/fallback. Streaming partials and restored assistant snapshots
-do not select execution; the completed live-assistant policy below separately opts into this runtime. The compiled factory is not accepted from a saved notebook or a MIME bundle.
+failed rendering retains native source/fallback. Streaming partials and unverified restored assistant snapshots
+do not select execution; the completed-assistant policy below separately covers live and verified
+canonical historical answers. The compiled factory is not accepted from a saved notebook or a MIME bundle.
 Notebook v1 reading and saving both discard the Vue MIME and preserve its other fallback items;
 reading also strips executable `esmSource`/`cssSource` from existing bundled-view MIME. Reopening a
 snapshot executes no component; a live producer must redisplay it. Data-template snapshots remain
@@ -1165,9 +1166,18 @@ flag. The extension selects the endpoint only when advertised; older kernels ret
 Optional compiled metadata is accepted only for the current selected assistant/component request.
 
 Notebook v1 saving recognizes this local MIME and extracts ordinary source/timeline data. Restoration
-always emits passive turn MIME; a stored marker or source text cannot select execution. The notebook
-format and canonical transcript are unchanged. Opening a saved notebook runs no component. An
-explicit live replay from the authenticated kernel can recreate presentation state. Component setup
+through the pure codec emits passive turn MIME; a stored marker or source text alone cannot select
+execution. A VS Code client may renew assistant provenance for session/run-bound history by reconnecting the
+kernel and reading the
+session-addressed canonical transcript: session ID, run ID, submitted input and the entire
+assistant text node must match a committed non-truncated turn. Only that verified text node is
+reconstructed as runtime assistant MIME; tool/user text and additional file-authored fields are not
+promoted. The transcript `version` is a changing history revision, not a protocol selector.
+Missing/unavailable history, changed source and offline files stay passive. This applies
+to saved files and virtual session notebooks, including older history; it changes no notebook or
+HTTP payload shape. Recovery re-compiles and hydrates the component with initial local state, without
+submitting Agent turns, calling models/tools or starting external producers. An explicit live replay
+from the authenticated kernel can also recreate presentation state. Component setup
 still runs for SSR and hydration and must have deterministic initial state; external producers remain
 explicit tools. This version waits for full source/turn completion and introduces no partial-script
 execution, automatic binding subscriptions or document patches. The dedicated Vue-rich-display MIME

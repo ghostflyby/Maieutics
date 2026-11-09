@@ -41,7 +41,7 @@ Jupyter kernel involved (ADR 0023).
   through native controls; selections survive text updates when the group, tab position, and title
   still match. Activity nodes remain compact and collapsed by default. Click a node to expand its
   original content; the expanded state survives streaming updates. Native Markdown remains the
-  offline and error fallback; opening a snapshot never starts a kernel solely for rendering. While
+  offline and error fallback; unbound snapshots never start a kernel solely for rendering. While
   assistant text streams, completed passive SSR prefixes can commit before the newest snapshot
   finishes, so rendering does not stall until the model stops. Partial Vue/HTML tags stay inert
   without consuming adjacent Markdown; rewrites and completion invalidate older prefixes. Vue
@@ -49,10 +49,14 @@ Jupyter kernel involved (ADR 0023).
   HTML stays escaped. See the [SSR demo](demo/README.md) for the current subset and limitations.
   Tool nodes retain structured arguments, latest progress and results, capped at 20,000 characters
   per detail and 256 tools per run, with an explicit truncation note. Saving rejoins blocks into one
-  portable turn snapshot; reopening restores expanded replies and collapsed activity nodes.
-  Cancellation and failure preserve the same timeline. Older snapshots use grouped activity;
-  server-history restoration reconstructs model/tool order, but display-only reasoning summaries
-  require saved notebook output or event replay.
+  portable turn snapshot; reopening restores expanded replies and collapsed activity nodes. History
+  tied to a session/run reconnects the kernel and regains Vue rendering and interaction after exact
+  source verification against the committed transcript. Component-local state restarts from its
+  initial value. Edited, unbound, unavailable and offline history remains passive source; a file
+  cannot grant execution authority by storing a live marker or compiled code. Cancellation and
+  failure preserve the same timeline. Older snapshots use grouped activity; server-history
+  restoration reconstructs model/tool order, but display-only reasoning summaries require saved
+  notebook output or event replay.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the
   session's server-owned turn queue behind anything already queued or running (queued cells show
   `queued #N` markers with per-cell dequeue and clear-queue); a status-bar badge totals the provider

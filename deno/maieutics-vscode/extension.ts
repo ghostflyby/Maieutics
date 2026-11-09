@@ -22,7 +22,7 @@ import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
 import { QueueProjection } from "./queueProjection.ts";
-import { MaieuticsNotebookSerializer, NotebookType, readStoredSessionId } from "./serializer.ts";
+import { NotebookType, readStoredSessionId } from "./serializer.ts";
 import { NotebookLanguage } from "./notebookFormat.ts";
 import {
   FrontendError,
@@ -43,6 +43,7 @@ import {
 } from "./attachments.ts";
 import { UiBridge } from "./uiBridge.ts";
 import { OutputRenderingBridge } from "./outputRendering.ts";
+import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
 import {
   MaieuticsFileSystemProvider,
@@ -59,6 +60,7 @@ const CurrentOnlyStateKey = "maieutics.currentOnlySessions";
 let output: vscode.OutputChannel | undefined;
 let connection: Connection | undefined;
 let connecting: Promise<Connection> | undefined;
+let connectionStartup: AbortController | undefined;
 let controller: MaieuticsNotebookController | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
@@ -119,7 +121,17 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(
       "maieutics-notebook",
-      new MaieuticsNotebookSerializer(),
+      connectedNotebookSerializer({
+        connection: (signal) => {
+          signal.throwIfAborted();
+          return renderingConnection(
+            connection,
+            connection === undefined ? startConnection() : undefined,
+            signal,
+          );
+        },
+        log: (message) => output?.appendLine(message),
+      }),
       { transientOutputs: false },
     ),
   );
@@ -517,9 +529,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.window.showInformationMessage(`Maieutics: ${markdown.replace(/\*\*/g, "")}`);
     }),
     vscode.commands.registerCommand("maieutics.restartServer", async () => {
-      if (connection) await connection.dispose();
-      connection = undefined;
-      connecting = undefined;
+      await stopConnection();
       fsProvider?.reset();
       await controller?.resetConnections();
       treeProvider.refresh();
@@ -811,9 +821,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  connectionStartup?.abort();
   await controller?.dispose();
-  if (connection) await connection.dispose();
-  connection = undefined;
+  await stopConnection();
 }
 
 /** What session-scoped commands accept: an explicit id string (tree item
@@ -1440,14 +1450,45 @@ function createBridge(): NotebookBridge {
 }
 
 async function clientOf(): Promise<FrontendClient> {
-  connection ??= await (connecting ??= openConnection().catch((error) => {
+  const attached = connection ?? await startConnection();
+  await syncEditorProjects(attached);
+  return attached.client;
+}
+
+/** The extension owns startup even when a notebook cancels its own wait. */
+function startConnection(): Promise<Connection> {
+  if (connecting !== undefined) return connecting;
+  const startup = new AbortController();
+  connectionStartup = startup;
+  return connecting = openConnection(startup.signal).then((attached) => {
+    connection = attached;
+    return attached;
+  }).catch((error) => {
     // Forget the failed attempt so the next command retries instead of
     // replaying a stale rejection until an explicit restart.
     connecting = undefined;
     throw error;
-  }));
-  await syncEditorProjects(connection);
-  return connection.client;
+  }).finally(() => {
+    if (connectionStartup === startup) connectionStartup = undefined;
+  });
+}
+
+async function stopConnection(): Promise<void> {
+  const startup = connectionStartup;
+  startup?.abort();
+  try {
+    await connecting;
+  } catch {
+    if (!startup?.signal.aborted) {
+      output?.appendLine("Kernel startup failed before connection shutdown.");
+    }
+  }
+  try {
+    await connection?.dispose();
+  } finally {
+    connection = undefined;
+    connecting = undefined;
+  }
 }
 
 const projectWarnings = new WeakMap<Connection, string>();
@@ -1471,14 +1512,14 @@ function editorProjectPaths(): string[] {
   return localProjectPaths(vscode.workspace.workspaceFolders ?? []);
 }
 
-async function openConnection(): Promise<Connection> {
+async function openConnection(cancellation: AbortSignal): Promise<Connection> {
   const settings = vscode.workspace.getConfiguration();
   const discoveryFile = settings.get<string>(DiscoveryFileSetting);
   const executablePath = settings.get<string>(ExecutablePathSetting) ?? "maieutics";
   // Editor folders are project targets, while capabilities.workspaceRoot is the fixed Agent home.
   // They normally differ and must never be compared as a connection mismatch.
   treeEnvironment.caseInsensitive = platform() === "win32" || platform() === "darwin";
-  const signal = AbortSignal.timeout(20_000);
+  const signal = AbortSignal.any([cancellation, AbortSignal.timeout(20_000)]);
   const handle = await connect({
     executablePath,
     discoveryFile: discoveryFile || undefined,

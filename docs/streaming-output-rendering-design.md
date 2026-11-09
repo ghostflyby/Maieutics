@@ -3,7 +3,9 @@
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
 explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
-assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts. The streaming document
+assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts.
+Connected history restoration can renew this selection after verifying exact assistant source against
+the kernel-owned committed transcript. The streaming document
 runtime and revisioned presentation protocol remain proposed. Append-only passive previews now commit
 completed SSR prefixes while newer text continues arriving. Built-in per-run instructions now
 advertise the supported output syntax and completion boundary to the model.
@@ -47,7 +49,8 @@ Markdown-node output metadata remains readable for snapshot compatibility.
 
 The renderer replaces assistant Markdown inside these existing output boundaries. Successful live
 turn completion now selects the assistant endpoint described below; streaming partials and restored
-notebook snapshots retain the passive lane.
+notebook snapshots decode through the passive lane; connected history can renew assistant provenance
+only after canonical transcript verification as described below.
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
 retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
 not implicitly become a Vue application.
@@ -477,12 +480,13 @@ identity, out-of-order responses, rewrite epochs, sealed transitions and rejecti
 streaming metadata. Independent component units, state-preserving incremental Vue hydration and
 late-binding dependency scheduling remain later document-runtime work.
 
-Live provenance is frontend runtime state: notebook serialization reads the new local MIME but
-saves only the ordinary source/timeline snapshot. Restore always reconstructs passive turn MIME and
-never the live marker. A forged marker field in a file cannot turn its text into a component. Opening
-or formatting a saved notebook does not execute scripts or start a producer. An explicitly resumed
-live run/replay is a new delivery from the authenticated kernel, subject to the same live completion
-policy; it can recreate derived component state. No producer executes during rendering or replay.
+Assistant provenance is frontend runtime state: notebook serialization reads the local MIME but
+saves only the ordinary source/timeline snapshot. The pure codec reconstructs passive turn MIME and
+never trusts a persisted live marker. The connected restoration adapter can renew provenance only
+by verifying the session, run, submitted input and exact assistant text against the authenticated
+kernel transcript (see historical recovery below). Offline or unverifiable snapshots remain passive.
+An explicitly resumed live run/replay can also recreate derived component state. No external producer
+executes during rendering, history recovery or replay.
 
 Frontmatter extraction now reuses `@mdit-vue/plugin-frontmatter` 2.1.3 with explicit uncached engine
 options. YAML/YML/JSON header content is bounded to 16,000 UTF-16 units, omitted and never evaluated
@@ -531,6 +535,48 @@ run against the unchanged connection path and failed with `engine=native, SSR re
 The Release solution build passes with warnings as errors; all 1,668 .NET tests pass with eight
 existing platform/external-service skips. This frontend-only change does not republish NativeAOT;
 Linux/Windows and CI validation were not run locally.
+
+### Historical Vue recovery from canonical session history (implemented 2026-11-10)
+
+Dropping the local live MIME on save correctly prevents files from granting execution authority, but
+previously also meant that every reloaded historical component became literal source. The connected
+notebook serializer now separates decoding from renewing provenance: it first uses the unchanged
+passive codec, then reconnects the kernel for a valid session/run binding and reads that session's
+canonical transcript when `assistantVersion:1` is supported. Unbound portable snapshots do not
+launch a kernel. Connection startup is owned by the extension and shared with commands; notebook
+cancellation only stops verification waiting. Restart/shutdown cancel and observe startup before
+releasing its handle. Verification has one 20-second budget and observes notebook cancellation
+without cancelling the connection owner; failure retains readable passive output.
+
+Only a single assistant text node can be promoted. Its persisted turn binding must match a committed
+non-truncated kernel turn's run ID and submitted user text, and its complete source must match the
+joined text parts of one assistant message byte-for-byte. The returned transcript must match the
+requested session and carry a valid nonnegative history revision. Its `version` is a changing
+history revision, not the frontend wire version; recovery does not require it to equal one.
+Tool/user text, altered source, missing bindings, truncated history, and file-authored live markers
+cannot grant provenance. Promotion reconstructs only the verified text node, discarding other
+file-authored payload fields. Compiled factories remain response-only. This covers both portable
+files tied to a session and the virtual session notebooks materialized from canonical history,
+including history written before this fix. No snapshot or HTTP shape changes.
+
+Verified nodes use the same assistant compiler, isolated SSR worker, factory validation and owned
+Vue hydration/disposal as newly completed replies. Components regain their UI and interactivity.
+Setup reruns and local reactive state starts from its declared initial value; previously clicked
+counts, timers and browser-local state are not persisted. This does not re-submit an Agent turn,
+call a model, execute tools, launch external producers or modify canonical history.
+
+The real VS Code regression opens saved and virtual history through the activated extension and
+requires a `vue` application acknowledgement. It also checks altered/unbound source, truncated
+turns, session mismatch and transcript failure stay passive. Its baseline run fails with `ssr`
+instead of `vue`. The optional history-rendering discovery fixture exercises the same restoration
+path against the actual NativeAOT executable and Deno compiler without any model request.
+
+Verification passes 337 frontend unit tests and all 23 real VS Code scenarios on macOS arm64
+(VS Code 1.144.1), including the actual NativeAOT/Deno history compiler path with history revision
+17 and no pre-established connection. Types, lint, formatting and diff checks pass. Release build
+has no warnings; the .NET suite passes 1,668 tests with eight existing platform/external-service
+skips. No executable source changed, so NativeAOT is not republished. Multi-platform CI is not
+run locally.
 
 ### Model-facing output instructions (implemented 2026-11-06)
 

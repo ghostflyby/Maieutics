@@ -19,7 +19,9 @@ scripts through the public Markdown/SFC pipeline after frontmatter removal. Fenc
 quoted and metadata examples do not select execution. Plain content retains passive SSR. Standalone
 SFC input remains available through the existing explicit format selection.
 
-Default execution applies only to assistant text from a successful completed live run. The VS Code
+Default execution applies to assistant text from a successful completed live run, and (as amended
+on 2026-11-10) canonical historical assistant text verified against the connected kernel.
+Session/run-bound history reconnects the kernel when needed; unbound files remain passive. The VS Code
 controller marks that output with local MIME `application/vnd.maieutics.live-assistant+json`. Its
 stream-to-complete cache transition must produce an update even if final text bytes are unchanged.
 Streaming partials, failures, cancellation, tool results, reasoning and child reports do not acquire
@@ -35,9 +37,15 @@ work. Compiled metadata is mounted only for a current explicitly selected compon
 request. Unsupported kernels fall back to passive SSR.
 
 The local live MIME is not a notebook format capability. Saving extracts ordinary source/timeline
-state from it; restoring reconstructs passive MIME. Opening a file never reproduces execution
-provenance. Explicit authenticated live replay can recreate derived component state; rendering never
-runs an external producer. No Agent contract, canonical transcript or notebook version changes.
+state from it; the pure codec reconstructs passive MIME. A file cannot reproduce execution
+provenance on its own. The connected restoration adapter can renew it only after verifying the
+session, run ID, submitted input and exact assistant source against a committed non-truncated turn
+in the authenticated canonical transcript. It reconstructs only the verified text node; altered,
+unbound, unavailable or offline snapshots remain passive. This applies to both portable files and
+virtual session views and restores already existing history. Setup reruns with initial reactive
+state; browser-local interaction state is not persisted. Explicit authenticated live replay can also
+recreate derived component state. Recovery never submits an Agent turn, calls a model, runs tools
+or starts external producers. No Agent contract, canonical transcript or notebook version changes.
 
 Use the public frontmatter plugin with explicit uncached, non-evaluating parsers: bounded YAML/YML/
 JSON header bodies are omitted and their values currently ignored. Executable engines are rejected.
@@ -49,6 +57,6 @@ site runtime, filesystem imports, page resources or metadata bindings.
 A complete Vue-in-Markdown counter can render directly from the assistant's response. A tool remains
 available for explicit rich displays and producer-driven updates. Components appear after successful
 turn completion; progressive component compilation and late producer subscription require the later
-document runtime. Saved answers remain readable source snapshots, and existing passive clients and
-APIs retain their behavior. The design, normative protocol and browser/controller regressions own
+document runtime. Unavailable history remains readable source; verified history regains Vue UI and
+interactivity. Existing passive clients and APIs retain their behavior. The design, normative protocol and browser/controller regressions own
 the compatibility and lifecycle details.

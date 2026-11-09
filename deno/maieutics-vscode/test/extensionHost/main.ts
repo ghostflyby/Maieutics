@@ -40,6 +40,7 @@ import { testProjectRegistrationAsync } from "./projectRegistration.ts";
 import { testDocumentEditing } from "./documentEditing.ts";
 import { testWorkspaceSaving } from "./workspaceSaving.ts";
 import { testRenderingDuringConnectionAsync } from "./renderingRecovery.ts";
+import { testHistoricalVueAsync } from "./historyRendering.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -1132,6 +1133,10 @@ const tests: HostTest[] = [
   {
     name: "the actual extension tolerates broken projects and registers folder changes",
     run: () => testProjectRegistrationAsync(workspaceRoot()),
+  },
+  {
+    name: "verified historical Vue restores from saved files and virtual sessions",
+    run: () => testHistoricalVueAsync(workspaceRoot()),
   },
   {
     name: "all projects in a real VS Code multi-root workspace register individually",

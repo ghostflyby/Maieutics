@@ -84,6 +84,55 @@ Deno.test("render bridge cancellation observes its active operation and emits no
   assertEquals(messages, []);
 });
 
+Deno.test("append-only streaming commits a completed prefix before the newest snapshot finishes", async () => {
+  const first = Promise.withResolvers<RenderedMarkdown>();
+  const second = Promise.withResolvers<RenderedMarkdown>();
+  const started = Promise.withResolvers<void>();
+  const continued = Promise.withResolvers<void>();
+  const messages: unknown[] = [];
+  const prefix = "# Visible Markdown\n\n<script setup>\nconst count =";
+  const latest = prefix + " ref(0)\n</script>\n\n## More Markdown";
+  const bridge = new OutputRenderingBridge({
+    render: async (_id, text) => {
+      if (text === prefix) {
+        started.resolve();
+        return await first.promise;
+      }
+      continued.resolve();
+      return await second.promise;
+    },
+    post: (message) => {
+      messages.push(message);
+      return Promise.resolve();
+    },
+    log: () => {},
+  });
+  try {
+    const one = bridge.handle({ ...request(1, prefix), streaming: true });
+    await started.promise;
+    const two = bridge.handle({ ...request(2, latest), streaming: true });
+    first.resolve(snapshot("<h1>Visible Markdown</h1>"));
+    await continued.promise;
+    assertEquals(messages, [{
+      source: "maieutics-output",
+      type: "rendered",
+      documentId: "doc",
+      requestId: "r1",
+      streaming: true,
+      renderedSource: prefix,
+      html: "<h1>Visible Markdown</h1>",
+      css: "",
+    }]);
+    second.resolve(snapshot("<h2>More Markdown</h2>"));
+    await Promise.all([one, two]);
+    assertEquals(messages.length, 2);
+  } finally {
+    first.resolve(snapshot("cleanup"));
+    second.resolve(snapshot("cleanup"));
+    await bridge.dispose();
+  }
+});
+
 Deno.test("unsupported rendering keeps fallback visible and malformed requests never reach the client", async () => {
   const messages: unknown[] = [];
   let calls = 0;
@@ -108,6 +157,70 @@ Deno.test("unsupported rendering keeps fallback visible and malformed requests n
       documentId: "doc",
       requestId: "r2",
     }]);
+  } finally {
+    await bridge.dispose();
+  }
+});
+
+Deno.test("streaming progress is invalidated by rewriting, sealing or explicit cancellation", async () => {
+  for (
+    const replacement of [
+      { ...request(2, "rewritten"), streaming: true },
+      { ...request(2, "prefix sealed"), assistant: true },
+      { source: "maieutics-output", type: "cancel", documentId: "doc" },
+    ]
+  ) {
+    const first = Promise.withResolvers<RenderedMarkdown>();
+    const started = Promise.withResolvers<void>();
+    const messages: { requestId?: string }[] = [];
+    const bridge = new OutputRenderingBridge({
+      render: async (_id, text) => {
+        if (text === "prefix") {
+          started.resolve();
+          return await first.promise;
+        }
+        return snapshot(text);
+      },
+      post: (message) => {
+        messages.push(message as { requestId?: string });
+        return Promise.resolve();
+      },
+      log: () => {},
+    });
+    try {
+      const one = bridge.handle({ ...request(1, "prefix"), streaming: true });
+      await started.promise;
+      const two = bridge.handle(replacement);
+      first.resolve(snapshot("obsolete"));
+      await Promise.all([one, two]);
+      assert(!messages.some((message) => message.requestId === "r1"));
+    } finally {
+      first.resolve(snapshot("cleanup"));
+      await bridge.dispose();
+    }
+  }
+});
+
+Deno.test("streaming requests cannot select template or executable evaluation", async () => {
+  let calls = 0;
+  const bridge = new OutputRenderingBridge({
+    render: () => {
+      calls++;
+      return Promise.resolve(snapshot("unexpected"));
+    },
+    post: () => Promise.resolve(),
+    log: () => {},
+  });
+  try {
+    for (
+      const mode of [
+        { assistant: true },
+        { vue: { version: 1, format: "markdown" } },
+        { template: { version: 1, bindings: [] } },
+      ]
+    ) await bridge.handle({ ...request(1), ...mode, streaming: true });
+    await bridge.handle({ ...request(1), streaming: "true" });
+    assertEquals(calls, 0);
   } finally {
     await bridge.dispose();
   }

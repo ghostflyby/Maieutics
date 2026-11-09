@@ -4,12 +4,13 @@ Status: Passive SSR integrated with the kernel and actual Notebook renderer; ups
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
 explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
 assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts. The streaming document
-runtime and revisioned presentation protocol remain proposed. Built-in per-run instructions now
+runtime and revisioned presentation protocol remain proposed. Append-only passive previews now commit
+completed SSR prefixes while newer text continues arriving. Built-in per-run instructions now
 advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-06
+Last updated: 2026-11-09
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -431,6 +432,50 @@ presentation and Vue lifecycle apply. Identical completed redelivery reuses the 
 replaces it when ready. Setup still runs in SSR and hydration and must be deterministic. External
 producers remain explicit tool work. Source completion here is not automatic producer settlement or
 the proposed streaming document protocol.
+
+### Passive streaming progress around Vue source (implemented 2026-11-09)
+
+Vue compilation still waits for successful source completion. Ordinary Markdown must continue
+rendering while that source is incomplete: a Vue component does not make the entire reply an
+executable unit during streaming.
+
+The frontend rendering bridge previously discarded every SSR result whose request identity was
+older than the latest text. When text arrived faster than rendering, every completed snapshot
+could be discarded until the model stopped. Retaining the previous SSR DOM to avoid flicker then
+made the entire answer appear frozen. The native fallback had a separate parsing problem: escaping
+an `html_block` after parsing did not restore the Markdown that an unfinished HTML/Vue block had
+already consumed.
+
+Passive streaming requests now opt into the extension/webview bridge with `streaming:true`.
+The bridge still coalesces queued updates and owns one active render, but also publishes a completed
+snapshot when its source is an exact prefix of the latest streaming source. Its response includes
+`streaming:true` and `renderedSource`, the bounded source of that rendered snapshot. This is local
+frontend messaging; the authenticated kernel Markdown API and its version remain unchanged.
+These previews always use passive Markdown, never the template, explicit Vue or sealed assistant
+evaluation lanes. A rendered prefix is reparsed as one Markdown document, so later reference
+definitions and TOC targets can update earlier content; this does not render detached text tails.
+
+The browser validates document identity, source-prefix ancestry, monotonically increasing request
+revisions and the current output lifetime before committing progress into the existing SSR boundary.
+A source rewrite starts a new revision epoch even if later text returns to the old prefix. Sealing,
+mode changes, cancellation and disposal invalidate the streaming ancestry. Old prefixes cannot
+replace a completed component or execute a Vue factory. Source and binding replacements outside
+the passive streaming lane retain exact-revision matching. Only the latest unavailable result may
+commit its native fallback.
+
+For synthetic Maieutics Markdown items the native parser uses `html:false`, matching the kernel's
+passive parser, before tokenization. Raw Vue/HTML remains escaped readable source, while adjacent
+Markdown headings, lists and other syntax continue to parse, including after cancellation or
+passive snapshot restore. The policy is scoped to Maieutics output items; fenced/inline code
+examples stay literal and ordinary notebook Markdown retains its own HTML policy. Vue setup is
+not executed with guessed closing tags or undefined future bindings.
+
+Deterministic bridge tests hold a newer render open and require the completed prefix to be posted
+before releasing it. Native parser tests pin Markdown swallowed by an unfinished Vue/HTML block.
+Real VS Code webview coverage checks prefix commits while rendering continues, stable SSR boundary
+identity, out-of-order responses, rewrite epochs, sealed transitions and rejection of executable
+streaming metadata. Independent component units, state-preserving incremental Vue hydration and
+late-binding dependency scheduling remain later document-runtime work.
 
 Live provenance is frontend runtime state: notebook serialization reads the new local MIME but
 saves only the ordinary source/timeline snapshot. Restore always reconstructs passive turn MIME and

@@ -35,6 +35,7 @@ interface RenderRequest {
   template?: TemplateContext;
   vue?: VueRequest;
   assistant?: boolean;
+  streaming?: boolean;
 }
 
 interface OutputRenderingOptions {
@@ -53,7 +54,7 @@ interface OutputRenderingOptions {
 /** One owned request pump; pending updates coalesce per document and never queue every token. */
 export class OutputRenderingBridge {
   readonly #pending = new Map<string, RenderRequest>();
-  readonly #latest = new Map<string, string>();
+  readonly #latest = new Map<string, RenderRequest>();
   #active: { documentId: string; requestId: string; controller: AbortController } | undefined;
   #pump: Promise<void> | undefined;
   #closed = false;
@@ -65,7 +66,10 @@ export class OutputRenderingBridge {
     const value = message as Record<string, unknown>;
     if (value.source !== "maieutics-output" || typeof value.documentId !== "string") return;
     if (value.type === "cancel") {
-      if (value.requestId === undefined || this.#latest.get(value.documentId) === value.requestId) {
+      if (
+        value.requestId === undefined ||
+        this.#latest.get(value.documentId)?.requestId === value.requestId
+      ) {
         this.#pending.delete(value.documentId);
         this.#latest.delete(value.documentId);
       }
@@ -107,12 +111,17 @@ export class OutputRenderingBridge {
       value.assistant !== undefined &&
       (value.assistant !== true || value.template !== undefined || value.vue !== undefined)
     ) return;
+    if (
+      value.streaming !== undefined &&
+      (value.streaming !== true || value.assistant !== undefined ||
+        value.vue !== undefined || value.template !== undefined)
+    ) return;
     const request = value as unknown as RenderRequest;
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
       await this.options.post({ ...this.#identity(request), type: "unavailable" });
       return;
     }
-    this.#latest.set(request.documentId, request.requestId);
+    this.#latest.set(request.documentId, request);
     this.#pending.set(request.documentId, request);
     this.#startPump();
     await this.#pump;
@@ -154,9 +163,15 @@ export class OutputRenderingBridge {
         }
       }
       try {
+        const latest = this.#latest.get(request.documentId);
+        // A finished prefix is useful progress while an append-only stream continues. Edits,
+        // bindings, completion and executable Vue still require the exact latest request.
+        const progress = result !== undefined && result.vue === undefined &&
+          request.streaming === true && latest?.streaming === true &&
+          latest.text.startsWith(request.text);
         if (
           !this.#closed && !controller.signal.aborted &&
-          this.#latest.get(request.documentId) === request.requestId
+          (latest?.requestId === request.requestId || progress)
         ) {
           await this.options.post(
             result === undefined ? { ...this.#identity(request), type: "unavailable" } : {
@@ -164,6 +179,7 @@ export class OutputRenderingBridge {
               type: "rendered",
               html: result.html,
               css: result.css,
+              ...(request.streaming ? { streaming: true, renderedSource: request.text } : {}),
               ...(result.vue ? { vue: result.vue } : {}),
             },
           );
@@ -171,7 +187,7 @@ export class OutputRenderingBridge {
       } catch {
         this.options.log("Output renderer message delivery failed.");
       } finally {
-        if (this.#latest.get(request.documentId) === request.requestId) {
+        if (this.#latest.get(request.documentId)?.requestId === request.requestId) {
           this.#latest.delete(request.documentId);
         }
         this.#active = undefined;

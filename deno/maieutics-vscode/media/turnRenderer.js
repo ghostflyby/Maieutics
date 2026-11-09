@@ -142,6 +142,28 @@ function plainMarkdown(text) {
 /** Scope the HTML guard to our synthetic output items, leaving ordinary notebook
  * Markdown and renderer extensions untouched. Executable links stay inert. */
 function protectMarkdownHtml(markdownIt) {
+  const originalParse = markdownIt.parse;
+  if (!originalParse.maieuticsGuard) {
+    const parse = (source, env) => {
+      if (
+        env?.outputItem?.maieuticsSafeMarkdown !== true &&
+        env?.outputItem?.metadata?.maieuticsSafeMarkdown !== true
+      ) {
+        return originalParse.call(markdownIt, source, env);
+      }
+      // Match the kernel's passive html:false parser. Escaping an html_block afterwards
+      // is too late: it has already swallowed Markdown following a partial Vue tag.
+      const options = markdownIt.options;
+      try {
+        markdownIt.options = { ...options, html: false };
+        return originalParse.call(markdownIt, source, env);
+      } finally {
+        markdownIt.options = options;
+      }
+    };
+    parse.maieuticsGuard = true;
+    markdownIt.parse = parse;
+  }
   for (const name of ["html_inline", "html_block"]) {
     const original = markdownIt.renderer.rules[name];
     if (original?.maieuticsGuard) continue;
@@ -555,6 +577,7 @@ export async function activate(context) {
   markdown.extendMarkdownIt(protectMarkdownHtml);
   const states = new Map();
   const pending = new Map();
+  const streams = new Map();
   const releaseRegion = (region) => {
     region?.interactions?.abort();
     region?.dispose?.();
@@ -563,6 +586,7 @@ export async function activate(context) {
     state.interactions?.abort();
     for (const region of state.regions.values()) releaseRegion(region);
     state.regions.clear();
+    for (const documentId of state.documents) streams.delete(documentId);
   };
   const current = (outputId, state, revision, signal) =>
     states.get(outputId) === state && state.revision === revision && !signal?.aborted;
@@ -595,7 +619,26 @@ export async function activate(context) {
   };
   context.onDidReceiveMessage?.((message) => {
     if (message?.source !== "maieutics-output" || typeof message.requestId !== "string") return;
-    const request = pending.get(message.requestId);
+    let request = pending.get(message.requestId);
+    let progress;
+    if (message.type === "rendered" && message.streaming === true) {
+      const stream = streams.get(message.documentId);
+      const revision = typeof message.documentId === "string" &&
+          message.requestId.startsWith(`${message.documentId}:`)
+        ? Number(message.requestId.slice(message.documentId.length + 1))
+        : NaN;
+      if (
+        !stream || !Number.isSafeInteger(revision) || revision < stream.minimumRevision ||
+        revision <= stream.committedRevision || revision > stream.request.revision ||
+        typeof message.renderedSource !== "string" || message.renderedSource.length > 200_000 ||
+        !stream.text.startsWith(message.renderedSource) || message.vue !== undefined
+      ) return;
+      request = {
+        ...stream.request,
+        key: JSON.stringify([message.renderedSource, undefined, undefined, false, true]),
+      };
+      progress = { stream, revision };
+    }
     if (request === undefined || message.documentId !== request.documentId) return;
     pending.delete(message.requestId);
     const state = states.get(request.outputId);
@@ -689,6 +732,7 @@ export async function activate(context) {
     });
     const engine = component ? "vue" : "ssr";
     request.node.dataset.renderEngine = engine;
+    if (progress) progress.stream.committedRevision = progress.revision;
     acknowledge(engine);
   });
   return {
@@ -718,6 +762,7 @@ export async function activate(context) {
         : isTemplate
         ? { text: template ? payload.source : "[invalid_template]" }
         : payload;
+      const streaming = turn.streaming === true && !assistant && !vue && !template;
       let state = states.get(output.id);
       if (state && state.element !== element) {
         forgetPending(output.id, true);
@@ -737,6 +782,9 @@ export async function activate(context) {
       const revision = state.revision;
       forgetPending(output.id, false);
       states.set(output.id, state);
+      if (!streaming) {
+        for (const documentId of state.documents) streams.delete(documentId);
+      }
       for (const detail of element.querySelectorAll("details.timeline-node")) {
         if (detail.open) state.openNodes.add(detail.dataset.nodeId);
         else state.openNodes.delete(detail.dataset.nodeId);
@@ -755,7 +803,9 @@ export async function activate(context) {
         content.className = "maieutics-turn";
         content.innerHTML = markup;
       }
-      const mode = assistant
+      const mode = streaming
+        ? "streaming"
+        : assistant
         ? "assistant"
         : vue
         ? `vue:${vue.format}`
@@ -780,7 +830,7 @@ export async function activate(context) {
           }
           if (hidden) continue;
           const index = Number(node.getAttribute("data-markdown-index"));
-          const key = JSON.stringify([blocks[index], template, vue, assistant]);
+          const key = JSON.stringify([blocks[index], template, vue, assistant, streaming]);
           const previous = regions.get(node);
           if (previous?.ready && previous.mode === mode && previous.key === key) continue;
           if (previous?.requestRevision === revision || previous?.preparingRevision === revision) {
@@ -815,19 +865,30 @@ export async function activate(context) {
           region.requestRevision = revision;
           const documentId = state.documents[index] ??= `md-${crypto.randomUUID()}`;
           const requestId = `${documentId}:${revision}`;
+          const request = {
+            vue,
+            assistant,
+            mode,
+            key,
+            signal,
+            fallback,
+            outputId: output.id,
+            documentId,
+            revision,
+            node: target,
+          };
+          if (streaming) {
+            const previousStream = streams.get(documentId);
+            const append = previousStream && blocks[index].startsWith(previousStream.text);
+            streams.set(documentId, {
+              request,
+              text: blocks[index],
+              minimumRevision: append ? previousStream.minimumRevision : revision,
+              committedRevision: append ? previousStream.committedRevision : 0,
+            });
+          }
           outgoing.push({
-            request: {
-              vue,
-              assistant,
-              mode,
-              key,
-              signal,
-              fallback,
-              outputId: output.id,
-              documentId,
-              revision,
-              node: target,
-            },
+            request,
             message: {
               source: "maieutics-output",
               type: "render",
@@ -837,6 +898,7 @@ export async function activate(context) {
               ...(template ? { template } : {}),
               ...(vue ? { vue } : {}),
               ...(assistant ? { assistant: true } : {}),
+              ...(streaming ? { streaming: true } : {}),
             },
           });
         }

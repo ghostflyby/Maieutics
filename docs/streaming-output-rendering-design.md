@@ -36,6 +36,21 @@ output across frontends. The passive content subset and stateless kernel API are
 Complete Vue SFC/Markdown authoring is implemented through an explicit live-output lane. The document
 runtime and revisioned update operations remain proposed and require the validation stages below. The initial demo API has its own normative frontend contract.
 
+### Content scope, not a site runtime (2026-11-10)
+
+The rendering unit is one output document in a host frontend, not a page in a renderer-owned site.
+VitePress site generation, page collections, routing, site navigation/default-theme layouts, SEO
+and document `<head>` management are intentionally out of scope, rather than compatibility gaps
+waiting to be filled. The host owns its enclosing document, navigation and presentation shell.
+One output must not change the enclosing document's title, metadata, scripts or styles through
+frontmatter `head` declarations. Such fields can remain ordinary inert data.
+
+Frontmatter is useful as output-local presentation data independent of site features. Future data
+helpers, if needed, should expose the current output's data without inventing a site/page context.
+Cross-references within an output and late TS bindings remain core work. If a frontend later groups
+multiple output documents, that needs an explicit frontend/document navigation design; it does not
+implicitly require adopting VitePress's site runtime or ownership of the host `<head>`.
+
 ## Existing integration boundary
 
 The VS Code frontend currently projects events into ordered timeline entries in
@@ -508,8 +523,8 @@ Live Vue Markdown also receives a readonly `$frontmatter` global from its compon
 identically in the isolated SSR worker and browser factory. The wrapper preserves Vue's two-argument
 setup contract so expose/context injection remains available. Pre-resolved metadata spans use
 `v-pre`, preventing metadata containing mustaches from becoming Vue source. Runtime Vue expressions
-and bound attributes can read the same metadata. No site runtime is installed: `useData()`,
-frontmatter-driven document head, layouts, navigation and resource loading remain unsupported.
+and bound attributes can read the same metadata. `useData()` is not implemented. Site generation, frontmatter-driven document head, site layouts
+and navigation are intentional scope exclusions; resource loading needs its own explicit contract.
 Metadata does not itself authorize component execution, start producers or modify conversation state.
 
 Frontmatter validation passes 54 renderer/interpreter/worker tests and 27 real VS Code scenarios
@@ -972,7 +987,7 @@ fix. Full subtree diffing and stable streaming document nodes remain separate wo
 
 ## Open decisions
 
-- How much VitePress page/compiler compatibility is needed beyond the composed passive subset, and
+- Which additional VitePress content/compiler capabilities are useful within an output document, and
   can those additions retain offline packaging and independent ownership?
 - How should authorized producer/component registration extend the shipped data-expression subset
   with automatic late binding, cancellation settlement and stable document scope?

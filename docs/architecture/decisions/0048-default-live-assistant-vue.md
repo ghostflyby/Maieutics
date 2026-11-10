@@ -51,10 +51,11 @@ Use the public frontmatter plugin with explicit uncached, non-evaluating parsers
 JSON header bodies were initially omitted with their values ignored. The 2026-11-10 frontmatter
 increment now exposes bounded JSON-shaped data through `$frontmatter`, with data-path interpolation
 before heading extraction and identical readonly data in SSR/browser Vue. Metadata text cannot
-inject template source; executable engines remain rejected. `useData()` and site/head/layout
-configuration remain outside this content renderer. See the current rendering design for limits.
+inject template source; executable engines remain rejected. `useData()` is not implemented. Site/head/layout configuration is intentionally outside this
+output-document renderer, not a pending compatibility requirement; its enclosing document belongs
+to the host frontend. See the current rendering design for limits.
 Common VitePress content color variables map to host theme variables. Neither addition installs a
-site runtime, filesystem imports, page resources or metadata bindings.
+site runtime, filesystem imports or page resources.
 
 ## Consequences
 

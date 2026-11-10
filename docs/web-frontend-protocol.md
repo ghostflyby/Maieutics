@@ -1199,5 +1199,6 @@ before heading/TOC extraction. Explicit templates reserve `$frontmatter` for doc
 Vue Markdown receives the same readonly data during SSR and hydration; metadata spans cannot inject
 Vue syntax. Malformed or excessive headers return `invalid_frontmatter`; executable engines remain
 rejected. Unclosed streaming headers remain readable until sealed. No HTTP, IPC or notebook shape
-changes; metadata alone never selects Vue execution. `useData()` and VitePress site/head/layout
-configuration remain unsupported. See the rendering design for data limits and exact subset.
+changes; metadata alone never selects Vue execution. `useData()` is not implemented. VitePress site generation, site layouts/navigation and document
+`head` management are intentionally out of scope: the host frontend owns its enclosing document.
+Frontmatter fields such as `head` remain inert data and cannot change the host document. See the rendering design for data limits and exact subset.

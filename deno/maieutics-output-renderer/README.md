@@ -162,8 +162,9 @@ execution. Frontmatter uses the public `@mdit-vue/plugin-frontmatter` 2.1.3 adap
 uncached engines: bounded YAML/YML/JSON data supplies `$frontmatter`. Dot/bracket path interpolation
 works in passive Markdown and headings; other passive expressions stay literal. Vue Markdown
 receives identical readonly data in SSR and hydration. Values cannot inject markup or Vue syntax.
-`useData()` and site/head/layout options are not implemented; JS/CoffeeScript engines are rejected.
-Common VitePress content color variables map to host colors.
+`useData()` is not implemented. Site generation, site layouts/navigation and host document `head`
+management are intentionally out of scope; frontmatter remains output-local data; JS/CoffeeScript
+engines are rejected. Common VitePress content color variables map to host colors.
 
 The live controller selects this lane only after successful turn completion; streaming partials and
 failed/cancelled output remain passive. Saving/reopening removes live provenance and retains source.

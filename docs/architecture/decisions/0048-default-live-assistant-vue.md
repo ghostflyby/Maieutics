@@ -48,7 +48,11 @@ recreate derived component state. Recovery never submits an Agent turn, calls a 
 or starts external producers. No Agent contract, canonical transcript or notebook version changes.
 
 Use the public frontmatter plugin with explicit uncached, non-evaluating parsers: bounded YAML/YML/
-JSON header bodies are omitted and their values currently ignored. Executable engines are rejected.
+JSON header bodies were initially omitted with their values ignored. The 2026-11-10 frontmatter
+increment now exposes bounded JSON-shaped data through `$frontmatter`, with data-path interpolation
+before heading extraction and identical readonly data in SSR/browser Vue. Metadata text cannot
+inject template source; executable engines remain rejected. `useData()` and site/head/layout
+configuration remain outside this content renderer. See the current rendering design for limits.
 Common VitePress content color variables map to host theme variables. Neither addition installs a
 site runtime, filesystem imports, page resources or metadata bindings.
 

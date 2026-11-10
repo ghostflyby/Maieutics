@@ -23,6 +23,7 @@
 }
 
 .maieutics-output .code-block {
+  position: relative;
   margin: 1em 0;
   min-width: 0;
 }
@@ -218,4 +219,39 @@
 .maieutics-output .template-value[data-template-state="failed"],
 .maieutics-output .template-value[data-template-state="cancelled"] {
   color: var(--vscode-editorError-foreground, #cf222e);
+}
+
+.maieutics-output .code-copy {
+  position: absolute;
+  inset-block-start: 0.3em;
+  inset-inline-end: 0.4em;
+  z-index: 1;
+  padding: 0.2em 0.6em;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 4px;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-soft);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8em;
+}
+
+.maieutics-output .code-copy:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #0969da);
+}
+
+.maieutics-output .code-block pre {
+  padding-block-start: 2em;
+}
+.maieutics-output .math-block {
+  overflow-x: auto;
+  padding: 0.5em 0;
+}
+.maieutics-output mjx-container {
+  display: inline-block;
+  max-width: 100%;
+}
+.maieutics-output mjx-container svg {
+  max-width: 100%;
+  height: auto;
 }

@@ -191,3 +191,31 @@ Deno.test("progressive wire fixtures preserve render-only code and reject unrela
     await server.shutdown();
   }
 });
+
+Deno.test("render client preserves bounded diagnostics on snapshots and typed failures", async () => {
+  let fail = false;
+  const diagnostics = [{ code: "unclosed_code_fence", line: 3, column: 1 }];
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen() {} },
+    () =>
+      Response.json(
+        fail
+          ? { code: "invalid_request", message: "Invalid render input.", diagnostics }
+          : { version: 1, documentId: "doc", html: "", css: "", diagnostics },
+        { status: fail ? 400 : 200 },
+      ),
+  );
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    assertEquals((await client.renderMarkdown("doc", "# Title\n\n~~~md")).diagnostics, diagnostics);
+    fail = true;
+    const error = await assertRejects(() => client.renderMarkdown("doc", "x"), FrontendError);
+    assertEquals(error.diagnostics, diagnostics);
+  } finally {
+    await server.shutdown();
+  }
+});

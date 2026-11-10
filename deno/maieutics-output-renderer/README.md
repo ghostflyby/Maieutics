@@ -45,10 +45,11 @@ notes; the MIT license is retained in source and the shipped bundle. Raw/v-pre c
 excluded. VS Code handles local-fragment scrolling/focus inside the output's shadow root and removes
 these handlers on replacement/disposal; other Shadow DOM hosts need an equivalent frontend adapter.
 
-TypeScript, JavaScript, and JSON grammars and both GitHub light and dark themes are bundled
-statically. Other code languages use escaped plain text without dynamically loading packages or
-starting workers. `styles.css` provides host-scoped baseline styles using VS Code variables with
-browser fallbacks.
+TypeScript, JavaScript, JSON, Python, Bash, C#, C/C++, Java, Go, Rust, SQL, YAML, TOML, HTML, CSS,
+Markdown, diff, Dockerfile, XML, PowerShell, Ruby, Swift and Kotlin grammars and both GitHub light
+and dark themes are bundled statically. Unknown languages use escaped plain text without dynamically
+loading packages or starting workers. `styles.css` provides host-scoped baseline styles using VS
+Code variables with browser fallbacks.
 
 Fences accept literal filename titles (`ts [report.ts]`), line numbers (`ts:line-numbers`,
 `ts:line-numbers=7`, `ts:no-line-numbers`), and highlighted line lists or ranges (`ts{1,3-5}`).
@@ -89,10 +90,10 @@ directives are never installed. Product resource schemes are retained for a futu
 resource retrieval and rewriting are not implemented here.
 
 This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
-Frontmatter value exposure, automatic late-binding subscriptions, HTML patches and host resource
-delivery remain later work. Complete Vue components use the separate explicit lane below.
-Re-rendering with a later link definition corrects earlier references in a complete snapshot; stable
-incremental nodes require the document runtime.
+Automatic late-binding subscriptions, HTML patches and host resource delivery remain later work.
+Frontmatter data exposure is implemented below. Complete Vue components use the separate explicit
+lane below. Re-rendering with a later link definition corrects earlier references in a complete
+snapshot; stable incremental nodes require the document runtime.
 
 ## Explicit data templates
 
@@ -166,12 +167,12 @@ receives identical readonly data in SSR and hydration. Values cannot inject mark
 management are intentionally out of scope; frontmatter remains output-local data; JS/CoffeeScript
 engines are rejected. Common VitePress content color variables map to host colors.
 
-The live controller selects this lane only after successful turn completion; streaming partials and
-failed/cancelled output remain passive. Saving/reopening removes live provenance and retains source.
-The [protocol](../../docs/web-frontend-protocol.md#completed-live-assistant-rendering-v1) defines
-the additive capability, endpoint and local MIME. Standalone SFCs keep their explicit format
-selector. This enables default direct assistant components without running incomplete scripts or
-producers.
+The live controller selects this lane for trusted streaming output on progressive-capable kernels
+and successful terminal snapshots. Failed/cancelled output returns to passive rendering.
+Saving/reopening removes live provenance and retains source. The
+[protocol](../../docs/web-frontend-protocol.md#completed-live-assistant-rendering-v1) defines the
+additive capability, endpoint and local MIME. Standalone SFCs keep their explicit format selector.
+This enables default direct assistant components without running incomplete scripts or producers.
 
 ## Why compose the underlying packages
 
@@ -263,3 +264,31 @@ executing setup/SSR and returns empty HTML/full factory code. Refs/computed/clos
 retained client instance. Async setup and undeclared template context names are rejected; at most 16
 blank-line prefix candidates are attempted. Existing source, worker and output limits apply. The
 renderer retains no producer or JS document VM. See the protocol for capability negotiation.
+
+## Math, copy controls and diagnostics
+
+Inline `$...$` and block `$$...$$` formulas render as offline SVG using MathJax 3.2.2. The dollar
+syntax rules are extracted from the MIT-licensed `markdown-it-mathjax3` 4.3.2 used by the VitePress
+ecosystem; its dependency on Juice and its global handler registration are not shipped. Each formula
+owns a fresh document and TeX macro state. Only base, AMS and local newcommand packages are enabled;
+resource loading, HTML/link commands, autoload and require are unavailable. SVG uses inline paths,
+without font or script downloads. Limits are 128 formulas per snapshot, 4,096 code units per
+formula, 1,000 macro substitutions, and 200,000 SVG characters per formula. Failed or excessive
+formulas remain escaped source with bounded diagnostics; incomplete block math waits for its closing
+delimiter. Code/escaped dollars remain literal. Formula output is `v-pre` in live Vue templates.
+
+Code fences expose an accessible copy button. VS Code delegates explicit clicks to its clipboard
+API; it copies original fenced code (including original comments and trailing newline), without
+generated line numbers or diff decorations. There is no clipboard read, automatic copy or text in
+logs. A failed write has local feedback. Other frontend adapters may bind these controls to their
+own clipboard API.
+
+Responses may contain up to 32 `diagnostics`: fixed `code` plus one-based `line`/`column`. Codes are
+`unclosed_code_fence`, `component_compile_failed`, `math_invalid`, and `math_limit`. Fence positions
+include frontmatter lines; inline math identifies its containing source paragraph, block math its
+opening line. Component errors identify the authored component/script start, not a full template
+source map. Errors contain no original code or compiler exception messages. Warnings do not change
+Markdown parsing or silently repair delimiters. VS Code shows diagnostics after sealing, outside
+Vue-owned DOM, and preserves the previous valid interactive presentation on update failure. The same
+optional field crosses the internal child API and the public rendering API, including typed 400
+component failures. Older clients ignore it. No extra Deno permissions are needed.

@@ -1,4 +1,4 @@
-import { FrontendError } from "./protocol.ts";
+import { FrontendError, type RenderDiagnostic } from "./protocol.ts";
 /** Explicit, versioned data snapshot from a template rich display. */
 export interface TemplateContext {
   version: 1;
@@ -25,6 +25,7 @@ export interface RenderedMarkdown {
   html: string;
   css: string;
   renderedSource?: string;
+  diagnostics?: RenderDiagnostic[];
   vue?: { version: 1; code: string; scopeId: string; setupKey?: string; renderCode?: string };
 }
 
@@ -52,6 +53,7 @@ interface OutputRenderingOptions {
     assistant?: boolean,
     progressive?: { compileOnly: boolean; streaming: boolean },
   ): Promise<RenderedMarkdown | undefined>;
+  writeClipboard?(text: string): Promise<void>;
   post(message: unknown): Promise<unknown>;
   log(message: string): void;
 }
@@ -72,7 +74,30 @@ export class OutputRenderingBridge {
   async handle(message: unknown): Promise<void> {
     if (this.#closed || typeof message !== "object" || message === null) return;
     const value = message as Record<string, unknown>;
-    if (value.source !== "maieutics-output" || typeof value.documentId !== "string") return;
+    if (value.source !== "maieutics-output") return;
+    if (value.type === "copy") {
+      if (
+        typeof value.requestId !== "string" || value.requestId.length > 128 ||
+        typeof value.text !== "string" || value.text.length > 200000
+      ) return;
+      let ok = false;
+      try {
+        if (this.options.writeClipboard) {
+          await this.options.writeClipboard(value.text);
+          ok = true;
+        }
+      } catch { /* Fixed local feedback; clipboard contents never enter logs. */ }
+      if (!this.#closed) {
+        await this.options.post({
+          source: "maieutics-output",
+          type: "copy-result",
+          requestId: value.requestId,
+          ok,
+        });
+      }
+      return;
+    }
+    if (typeof value.documentId !== "string") return;
     if (value.type === "applied" && value.engine === "native") {
       if (
         typeof value.native === "object" && value.native !== null && "error" in value.native &&
@@ -187,6 +212,7 @@ export class OutputRenderingBridge {
       const controller = new AbortController();
       this.#active = { documentId: request.documentId, requestId: request.requestId, controller };
       let result: RenderedMarkdown | undefined;
+      let failureDiagnostics: RenderDiagnostic[] | undefined;
       try {
         result = await this.options.render(
           request.documentId,
@@ -206,6 +232,7 @@ export class OutputRenderingBridge {
             : undefined,
         );
       } catch (error) {
+        if (error instanceof FrontendError) failureDiagnostics = error.diagnostics;
         const pending = request.progressive && request.streaming &&
           error instanceof FrontendError && error.status === 400;
         if (!controller.signal.aborted && !pending) {
@@ -230,19 +257,26 @@ export class OutputRenderingBridge {
           (latest?.requestId === request.requestId || progress)
         ) {
           await this.options.post(
-            result === undefined ? { ...this.#identity(request), type: "unavailable" } : {
-              ...this.#identity(request),
-              type: "rendered",
-              html: result.html,
-              css: result.css,
-              ...(request.streaming
-                ? { streaming: true, renderedSource: result.renderedSource ?? request.text }
-                : {}),
-              ...(request.progressive && result.renderedSource !== undefined
-                ? { renderedSource: result.renderedSource }
-                : {}),
-              ...(result.vue ? { vue: result.vue } : {}),
-            },
+            result === undefined
+              ? {
+                ...this.#identity(request),
+                type: "unavailable",
+                ...(failureDiagnostics ? { diagnostics: failureDiagnostics } : {}),
+              }
+              : {
+                ...this.#identity(request),
+                type: "rendered",
+                html: result.html,
+                css: result.css,
+                ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+                ...(request.streaming
+                  ? { streaming: true, renderedSource: result.renderedSource ?? request.text }
+                  : {}),
+                ...(request.progressive && result.renderedSource !== undefined
+                  ? { renderedSource: result.renderedSource }
+                  : {}),
+                ...(result.vue ? { vue: result.vue } : {}),
+              },
           );
           const active = this.#latest.get(request.documentId);
           if (

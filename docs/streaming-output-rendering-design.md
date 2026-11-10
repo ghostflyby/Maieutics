@@ -759,6 +759,49 @@ platform/external-service skips. The Deno workspace passes 731 tests plus 20 Nod
 Release build is warning-free; NativeAOT publishing, offline
 smoke, types/lint/format and diff checks pass. Linux/Windows CI is not run locally.
 
+## Math, code controls and source diagnostics (implemented 2026-11-10)
+
+The content pipeline now renders inline/block dollar math as offline SVG with MathJax 3.2.2.
+Reuse is deliberate: extract only the MIT dollar-tokenization rules from markdown-it-mathjax3 4.3.2,
+and use MathJax's public TeX/SVG/document APIs directly. The original plugin's Juice/resource graph,
+all-package loader and repeated global HTML-handler registration are excluded. The dependency review
+pins MathJax and adds no native binary, runtime I/O or permission. Its Apache-2.0 license and the
+extracted-rule license ship in the service bundle. Every formula creates its own document and macro
+state, so earlier formulas/documents cannot mutate later compilation. Base/AMS/local newcommand
+support is bounded: 128 formulas, 4,096 source units, 1,000 macro expansions and 200,000 output units
+per formula; excess/errors remain literal. No URL/HTML/require/autoload package is enabled. SVG paths
+need no remote fonts or scripts. Incomplete block delimiters remain literal until closed; Vue math
+wrappers use v-pre. General output/compiler limits still apply.
+
+The statically bundled highlighter expands from TS/JS/JSON to common programming, shell, data and
+markup languages; unknown grammars remain escaped text. Code fences carry escaped original-source
+copy payloads. An explicit button click delegates to the frontend clipboard owner, bounded to the
+existing 200,000 source limit. Copy contains original comments/newlines and no synthetic line numbers;
+status is request-correlated and disposal removes pending UI references. The VS Code clipboard API
+is used without reading clipboard contents or logging code. No kernel request is needed for copying.
+
+Rendering snapshots and typed 400 component errors add optional diagnostics (at most 32): fixed code
+and one-based source line/column, without source fragments or compiler exception messages. The kernel
+validates their bounds before forwarding, the client validates the shape, and old clients ignore the
+additive field. Fence diagnostics use parser token ranges and include stripped frontmatter offsets.
+They point to the unterminated opening fence and advise longer outer fences for nested examples;
+parsing is not changed or repaired. Math diagnostics identify the paragraph/block start. Component
+errors identify the actual authored script/component start (fenced examples cannot claim this
+position); precise generated-template source maps remain future work. Current codes are
+unclosed_code_fence, component_compile_failed, math_invalid and math_limit.
+
+The notebook displays diagnostics only after sealing, outside Vue-owned DOM, with stale request
+checks and explicit node ownership. Streaming incompleteness remains quiet, while a failed sealed
+update preserves its last valid interactive component. This does not add document-unit patches,
+producer subscriptions, cross-cell state, resource delivery or arbitrary component imports.
+
+Validation passes 739 Deno tests plus 20 Node scenarios, 1,669 .NET tests (eight existing
+platform/external-MCP skips), and 27 real VS Code scenarios on macOS arm64. The browser coverage
+includes actual NativeAOT/Deno output, SVG namespaces and clipboard controls in passive, completed
+Vue and progressive Vue paths, source-line diagnostics, and existing ref/computed state retention.
+Warning-free Release build, NativeAOT publishing, offline smoke, bundle freshness, types/lint/format
+and diff checks pass. Linux/Windows CI remains to be run.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

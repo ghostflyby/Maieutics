@@ -204,12 +204,36 @@ export interface TaskListEntry {
   agent?: AgentSubagentDetail;
 }
 
+/** Fixed rendering codes and one-based coordinates; no source snippets. */
+export interface RenderDiagnostic {
+  code: "unclosed_code_fence" | "component_compile_failed" | "math_invalid" | "math_limit";
+  line: number;
+  column: number;
+}
+
+/** Validates the bounded optional diagnostic extension on success and error responses. */
+export function readRenderDiagnostics(value: unknown): RenderDiagnostic[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (
+    !Array.isArray(value) || value.length > 32 || value.some((item) =>
+      !item ||
+      !["unclosed_code_fence", "component_compile_failed", "math_invalid", "math_limit"].includes(
+        item.code,
+      ) ||
+      !Number.isSafeInteger(item.line) || item.line < 1 || item.line > 200001 ||
+      !Number.isSafeInteger(item.column) || item.column < 1 || item.column > 200001
+    )
+  ) throw new Error("invalid_render_diagnostics");
+  return value.map(({ code, line, column }) => ({ code, line, column }));
+}
+
 /** Typed protocol error carried by non-2xx REST responses. */
 export class FrontendError extends Error {
   constructor(
     readonly code: string,
     readonly status: number,
     message: string,
+    readonly diagnostics?: RenderDiagnostic[],
   ) {
     super(message);
     this.name = "FrontendError";

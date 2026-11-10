@@ -5,6 +5,27 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import typescript from "@shikijs/langs/typescript";
 import javascript from "@shikijs/langs/javascript";
 import json from "@shikijs/langs/json";
+import python from "@shikijs/langs/python";
+import bash from "@shikijs/langs/bash";
+import csharp from "@shikijs/langs/csharp";
+import cpp from "@shikijs/langs/cpp";
+import c from "@shikijs/langs/c";
+import java from "@shikijs/langs/java";
+import go from "@shikijs/langs/go";
+import rust from "@shikijs/langs/rust";
+import sql from "@shikijs/langs/sql";
+import yamlLanguage from "@shikijs/langs/yaml";
+import toml from "@shikijs/langs/toml";
+import html from "@shikijs/langs/html";
+import css from "@shikijs/langs/css";
+import markdown from "@shikijs/langs/markdown";
+import diff from "@shikijs/langs/diff";
+import dockerfile from "@shikijs/langs/dockerfile";
+import xml from "@shikijs/langs/xml";
+import powershell from "@shikijs/langs/powershell";
+import ruby from "@shikijs/langs/ruby";
+import swift from "@shikijs/langs/swift";
+import kotlin from "@shikijs/langs/kotlin";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
@@ -20,6 +41,8 @@ import {
 import { renderVueComponent } from "./vueSsr.ts";
 import { renderToString } from "vue/server-renderer";
 import { installCodeFences } from "./codeFences.ts";
+import { installDiagnostics, type RenderDiagnostic } from "./diagnostics.ts";
+import { installMath } from "./math.ts";
 import { installCodeGroups } from "./codeGroups.ts";
 import { installContentPlugins } from "./contentPlugins.ts";
 import { installInterpolation, type TemplateEnvironment } from "./interpolation.ts";
@@ -33,6 +56,7 @@ export interface RenderedOutput {
   readonly expressions?: readonly TemplateResult[];
   readonly vue?: CompiledVueComponent;
   readonly renderedSource?: string;
+  readonly diagnostics?: readonly RenderDiagnostic[];
 }
 
 /** Heading metadata collected by the same plugin family as VitePress. */
@@ -96,7 +120,32 @@ export const MaximumHtmlCharacters = 4_000_000;
 export async function createOutputRenderer(): Promise<OutputRenderer> {
   const highlighter = await createHighlighterCore({
     themes: [githubLight, githubDark],
-    langs: [typescript, javascript, json],
+    langs: [
+      typescript,
+      javascript,
+      json,
+      python,
+      bash,
+      csharp,
+      cpp,
+      c,
+      java,
+      go,
+      rust,
+      sql,
+      yamlLanguage,
+      toml,
+      html,
+      css,
+      markdown,
+      diff,
+      dockerfile,
+      xml,
+      powershell,
+      ruby,
+      swift,
+      kotlin,
+    ],
     engine: createJavaScriptRegexEngine(),
   });
   try {
@@ -142,6 +191,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       });
       const withMetadata = md.render.bind(md);
       md.render = (source, env = {}) => {
+        env.originalSource = source;
         const opening = /^(?:\uFEFF)?---(?:[ \t]*([A-Za-z][\w-]*))?[ \t]*(?:\r?\n|$)/.exec(source);
         if (!opening) return withoutMetadata(source, env);
         if (opening[1] && !["yaml", "yml", "json"].includes(opening[1])) {
@@ -155,6 +205,8 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       };
       installCodeFences(md, highlighter);
       installCodeGroups(md);
+      installMath(md);
+      installDiagnostics(md);
       const validateLink = md.validateLink;
       md.validateLink = (url) => {
         const scheme = /^([a-z][a-z\d+.-]*):/i.exec(url)?.[1].toLowerCase();
@@ -197,10 +249,15 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       if (html) {
         md.use(componentPlugin).use(sfcPlugin);
         md.core.ruler.after("block", "maieutics-script-source", (state) => {
-          state.env.authoredScript = state.tokens.some((token) =>
+          const script = state.tokens.find((token) =>
             token.type === "html_block" &&
             token.level === 0 && /^\s*<script(?:\s|>)/i.test(token.content)
           );
+          state.env.authoredScript = script !== undefined;
+          const original = state.env.originalSource ?? state.src;
+          state.env.scriptLine =
+            original.slice(0, original.length - state.src.length).split("\n").length +
+            (script?.map?.[0] ?? 0);
         });
         const htmlBlock = md.renderer.rules.html_block;
         md.renderer.rules.html_block = (tokens, index, options, env, renderer) => {
@@ -241,6 +298,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       const env: {
         documentId: string;
         headers?: RenderedHeading[];
+        diagnostics?: RenderDiagnostic[];
         template?: TemplateEnvironment;
       } = { documentId, template };
       const body = md.render(source, env);
@@ -266,6 +324,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       return {
         documentId,
         html,
+        diagnostics: env.diagnostics,
         headings: scopeHeadings(env.headers ?? []),
         ...(template ? { expressions: template.expressions } : {}),
       };
@@ -274,6 +333,8 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       const env: {
         documentId: string;
         authoredScript?: boolean;
+        scriptLine?: number;
+        diagnostics?: RenderDiagnostic[];
         unsealedFrontmatter?: boolean;
         frontmatter?: Record<string, unknown>;
         sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
@@ -281,13 +342,35 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       const body = vueMd.render(source, env);
       if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
       return {
+        diagnostics: env.diagnostics,
         frontmatter: env.frontmatter ?? {},
         scripted: env.authoredScript === true,
+        scriptLine: env.scriptLine ?? 1,
         unsealedFrontmatter: env.unsealedFrontmatter === true,
         source: `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
           env.sfcBlocks?.scripts.map((block) => block.content).join("\n") ?? ""
         }\n${env.sfcBlocks?.styles.map((block) => block.content).join("\n") ?? ""}`,
       };
+    };
+    const compileLocated = (
+      documentId: string,
+      source: string,
+      frontmatter?: Record<string, unknown>,
+      progressive = false,
+      line = 1,
+    ) => {
+      try {
+        return compileVueComponent(documentId, source, frontmatter, progressive);
+      } catch (error) {
+        if (error instanceof VueComponentError) {
+          throw new VueComponentError(error.code, [{
+            code: "component_compile_failed",
+            line,
+            column: 1,
+          }]);
+        }
+        throw error;
+      }
     };
     const renderVue = async (
       documentId: string,
@@ -296,6 +379,8 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       signal?: AbortSignal,
       prepared?: string,
       frontmatter?: Record<string, unknown>,
+      diagnostics?: RenderDiagnostic[],
+      scriptLine?: number,
     ): Promise<RenderedOutput> => {
       signal?.throwIfAborted();
       if (disposed) throw new OutputRenderingError("disposed");
@@ -306,14 +391,26 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         ? prepareVueMarkdown(documentId, source)
         : undefined;
       const sfc = prepared ?? markdown?.source ?? source;
-      const component = compileVueComponent(documentId, sfc, frontmatter ?? markdown?.frontmatter);
+      const component = compileLocated(
+        documentId,
+        sfc,
+        frontmatter ?? markdown?.frontmatter,
+        false,
+        scriptLine ?? markdown?.scriptLine ?? 1,
+      );
       const active = signal
         ? AbortSignal.any([signal, componentLifetime.signal])
         : componentLifetime.signal;
       const html = await renderVueComponent(component, active);
       signal?.throwIfAborted();
       if (disposed) throw new OutputRenderingError("disposed");
-      return { documentId, html, headings: [], vue: component };
+      return {
+        documentId,
+        html,
+        headings: [],
+        vue: component,
+        diagnostics: diagnostics ?? markdown?.diagnostics,
+      };
     };
     return {
       render,
@@ -335,18 +432,21 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
           let candidate = source;
           for (let attempt = 0; attempt < 16; attempt++) {
             let component: CompiledVueComponent | undefined;
+            let diagnostics: RenderDiagnostic[] | undefined;
             try {
               const prepared = prepareVueMarkdown(documentId, candidate);
+              diagnostics = prepared.diagnostics;
               if (!prepared.scripted) return await render(documentId, source, signal);
               if (prepared.unsealedFrontmatter) {
                 throw new VueComponentError("invalid_component");
               }
               // One closed setup module owns all later template bindings.
-              component = compileVueComponent(
+              component = compileLocated(
                 documentId,
                 prepared.source,
                 prepared.frontmatter,
                 true,
+                prepared.scriptLine,
               );
             } catch (error) {
               if (!(error instanceof VueComponentError)) throw error;
@@ -366,6 +466,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
               html,
               headings: [],
               renderedSource: candidate,
+              diagnostics,
               vue: progressive.compileOnly ? { ...component, code: "" } : component,
             };
           }
@@ -392,6 +493,8 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
             signal,
             prepared.source,
             prepared.frontmatter,
+            prepared.diagnostics,
+            prepared.scriptLine,
           )
           : await render(documentId, source, signal);
       },

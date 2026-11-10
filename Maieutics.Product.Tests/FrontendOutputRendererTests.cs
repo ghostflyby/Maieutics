@@ -55,6 +55,19 @@ public sealed class FrontendOutputRendererTests
             Assert.Contains("{{ report.total }}", output.Html);
             Assert.Contains("--vscode", output.Css);
             Assert.Equal("demo", output.DocumentId);
+            var math = await RenderAsync(harness, "$x^2$\n\n~~~py\nprint(42)\n~~~\n\n~~~md\nunclosed", budget.Token);
+            Assert.Contains("<svg ", math.Html);
+            Assert.Contains("code-copy", math.Html);
+            Assert.Contains("--shiki-light", math.Html);
+            var diagnostic = Assert.Single(Assert.IsType<FrontendRenderDiagnostic[]>(math.Diagnostics));
+            Assert.Equal("unclosed_code_fence", diagnostic.Code);
+            Assert.Equal(7, diagnostic.Line);
+            using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+                new FrontendRenderMarkdown(1, "demo", "# Heading\n\n<script setup>const broken = ;</script>\n\n<p>Template</p>"),
+                FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            using var failure = JsonDocument.Parse(await invalid.Content.ReadAsStringAsync(budget.Token));
+            Assert.Equal(3, failure.RootElement.GetProperty("diagnostics")[0].GetProperty("line").GetInt32());
             Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
             var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
             child = Process.GetProcessById(pid);

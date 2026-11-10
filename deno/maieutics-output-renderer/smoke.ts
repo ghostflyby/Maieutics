@@ -117,3 +117,13 @@ if (
   throw new Error("Offline live assistant Vue failed");
 }
 console.log("Offline sealed assistant Vue passed.");
+
+const math = await renderer.render(
+  "mathoffline",
+  "$x^2$\n\n~~~py\nprint(42)\n~~~\n\n~~~md\nunclosed",
+);
+if (
+  !math.html.includes("<svg ") || !math.html.includes('class="code-copy"') ||
+  math.diagnostics?.[0]?.line !== 7
+) throw new Error("Offline math/code/diagnostic contract failed.");
+console.log("Offline SVG math, multilingual code and source diagnostics passed.");

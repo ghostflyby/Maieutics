@@ -93,6 +93,7 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         documentId: output.documentId,
         html: output.html,
         renderedSource: output.renderedSource,
+        diagnostics: output.diagnostics,
         css: output.vue?.css,
         vue: output.vue
           ? {
@@ -117,7 +118,10 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
       if (error instanceof VueComponentError) {
-        return Response.json({ code: error.code }, {
+        return Response.json({
+          code: error.code,
+          diagnostics: error.diagnostics,
+        }, {
           status: error.code.startsWith("component_") ? 503 : 400,
         });
       }

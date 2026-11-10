@@ -1,0 +1,12 @@
+{
+  "package": "markdown-it-mathjax3",
+  "version": "4.3.2",
+  "source": "index.js",
+  "sha256": "28b725bc9c975bc5acd0b064c8b8d42dc8c334b75d387dc6fd567bfb3ea554d4",
+  "adaptations": [
+    "Extract dollar delimiter tokenization only; TypeScript state annotations.",
+    "MathJax conversion uses per-formula owned documents, restricted packages, bounded work and no global HTML handlers.",
+    "Do not ship juice, dynamic resource loading, all TeX packages or plugin dependencies.",
+    "Record whether block delimiters closed so incomplete streams never invent a closing marker."
+  ]
+}

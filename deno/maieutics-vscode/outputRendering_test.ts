@@ -422,3 +422,52 @@ Deno.test("a rewrite invalidates pending Vue initialization even if source retur
     await bridge.dispose();
   }
 });
+
+Deno.test("code copy requests are bounded and report clipboard failure without logging contents", async () => {
+  const copied: string[] = [];
+  const posted: unknown[] = [];
+  const logs: string[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: () => Promise.resolve(undefined),
+    post: (message) => {
+      posted.push(message);
+      return Promise.resolve();
+    },
+    log: (message) => logs.push(message),
+    writeClipboard: (text) => {
+      if (text === "fail") return Promise.reject(new Error("private"));
+      copied.push(text);
+      return Promise.resolve();
+    },
+  });
+  try {
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "copy",
+      requestId: "copy-1",
+      text: '<tag>\n"&',
+    });
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "copy",
+      requestId: "copy-2",
+      text: "fail",
+    });
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "copy",
+      requestId: "copy-3",
+      text: "x".repeat(200001),
+    });
+    assertEquals(copied, ['<tag>\n"&']);
+    assertEquals(posted, [{
+      source: "maieutics-output",
+      type: "copy-result",
+      requestId: "copy-1",
+      ok: true,
+    }, { source: "maieutics-output", type: "copy-result", requestId: "copy-2", ok: false }]);
+    assertEquals(logs, []);
+  } finally {
+    await bridge.dispose();
+  }
+});

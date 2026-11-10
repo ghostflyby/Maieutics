@@ -48,7 +48,10 @@ internal sealed record FrontendTemplateBinding(string? Name, string? State, Json
 internal sealed record FrontendTemplateExpression(string State, string[] Dependencies, string? Code = null);
 
 /// <summary>Derived HTML, host-scoped CSS and optional live component metadata for the requested identity.</summary>
-internal sealed record FrontendRenderedMarkdown(int Version, string? DocumentId, string? Html, string? Css = null, FrontendTemplateExpression[]? Expressions = null, FrontendVueComponent? Vue = null, string? RenderedSource = null);
+internal sealed record FrontendRenderedMarkdown(int Version, string? DocumentId, string? Html, string? Css = null, FrontendTemplateExpression[]? Expressions = null, FrontendVueComponent? Vue = null, string? RenderedSource = null, FrontendRenderDiagnostic[]? Diagnostics = null);
+
+/// <summary>A fixed rendering diagnostic with one-based original source coordinates.</summary>
+internal sealed record FrontendRenderDiagnostic(string Code, int Line, int Column);
 
 /// <summary>Authenticated readiness notification from the owned renderer child.</summary>
 internal sealed record FrontendRendererReady(int Version, int Port, string? Nonce);
@@ -300,7 +303,8 @@ internal sealed record FrontendIdeError(
 internal sealed record FrontendError(
     [property: JsonPropertyName("code")] string Code,
     [property: JsonPropertyName("message")]
-    string Message);
+    string Message,
+    [property: JsonPropertyName("diagnostics")] FrontendRenderDiagnostic[]? Diagnostics = null);
 
 /// <summary>One provider-neutral transcript content part.</summary>
 internal sealed record FrontendMessagePart(

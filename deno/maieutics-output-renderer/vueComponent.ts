@@ -1,3 +1,4 @@
+import type { RenderDiagnostic } from "./diagnostics.ts";
 // @deno-types="npm:@vue/compiler-sfc@3.5.13/dist/compiler-sfc.d.ts"
 import { compileScript, compileStyle, compileTemplate, parse as parseSfc } from "@vue/compiler-sfc";
 import { type Node, parse } from "acorn";
@@ -21,6 +22,7 @@ export class VueComponentError extends Error {
       | "unsupported_import"
       | "component_failed"
       | "component_timeout",
+    readonly diagnostics?: readonly RenderDiagnostic[],
   ) {
     super(code);
     this.name = "VueComponentError";

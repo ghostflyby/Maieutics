@@ -44,6 +44,10 @@ if (import.meta.main) {
   await Deno.writeTextFile(
     path,
     `/*! VitePress v1.6.4 extracted content plugins\n${license}*/\n` +
+      `/*! markdown-it-mathjax3 4.3.2 delimiter rules\n${await Deno.readTextFile(
+        "vendor/markdown-it-mathjax3/LICENSE",
+      )}*/\n` +
+      `/*! MathJax 3.2.2 (Apache-2.0)\n${await Deno.readTextFile("vendor/mathjax/LICENSE")}*/\n` +
       normalizeBundle(await Deno.readTextFile(path)),
   );
 }

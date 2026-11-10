@@ -1,3 +1,4 @@
+import { readRenderDiagnostics } from "./protocol.ts";
 /**
  * HTTP + WebSocket client for the Maieutics frontend protocol (version 1).
  * Web platform standards only — `fetch` and `WebSocket` — so the module runs
@@ -189,6 +190,9 @@ export class FrontendClient {
         : {}),
       html: result.html,
       css: result.css,
+      ...(result.diagnostics === undefined
+        ? {}
+        : { diagnostics: readRenderDiagnostics(result.diagnostics) }),
       ...((vue || assistant) && result.vue ? { vue: result.vue } : {}),
     };
   }
@@ -927,16 +931,22 @@ export class FrontendClient {
   }
 
   private async errorOf(response: Response): Promise<FrontendError> {
+    let diagnostics;
     let code = "protocol_error";
     let message = `The server answered ${response.status}.`;
     try {
-      const body = await response.json() as { code?: string; message?: string };
+      const body = await response.json() as {
+        code?: string;
+        message?: string;
+        diagnostics?: unknown;
+      };
+      diagnostics = readRenderDiagnostics(body.diagnostics);
       if (typeof body.code === "string") code = body.code;
       if (typeof body.message === "string") message = body.message;
     } catch {
       // A non-JSON error body keeps the generic message.
     }
-    return new FrontendError(code, response.status, message);
+    return new FrontendError(code, response.status, message, diagnostics);
   }
 }
 /** Reconnect backoff bounds, in milliseconds. */

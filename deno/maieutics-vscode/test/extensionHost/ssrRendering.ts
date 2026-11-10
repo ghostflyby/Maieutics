@@ -29,7 +29,13 @@ onUnmounted(() => { globalThis.__maieuticsVueUnmounts = (globalThis.__maieuticsV
 
 <p class="counter-hint" v-if="isZero">Not clicked</p><p class="counter-hint" v-else>Clicked {{ count }} times</p>
 
-<style scoped>.counter-btn { color: rgb(255, 0, 0); padding: 6px 14px; }</style>`;
+<style scoped>.counter-btn { color: rgb(255, 0, 0); padding: 6px 14px; }</style>
+
+$x^2$
+
+~~~py
+print(42)
+~~~`;
 
 const CodeDemoSource = [
   "# Demo",
@@ -44,6 +50,8 @@ const CodeDemoSource = [
   "::: tip",
   "Shared SSR",
   ":::",
+  "",
+  "$x^2$",
   "",
   "::: code-group",
   "~~~ts:line-numbers=7 {2} [report.ts]",
@@ -192,7 +200,12 @@ export async function testSsrRenderingAsync(): Promise<void> {
     `return function(_ctx,_cache,$props,$setup){const {h}=Vue;return h("div",{class:"maieutics-output vp-doc"},[h("button",{class:"progressive-counter",onClick:()=>{$setup.count++}},String($setup.count)),${
       showDouble ? 'h("p",{class:"progressive-double"},String($setup.doubled)),' : ""
     }${showSection ? 'h("section",null,String($setup.doubled)),' : ""}]);};`;
+  let copiedText = "";
   const bridge = new OutputRenderingBridge({
+    writeClipboard: (text) => {
+      copiedText = text;
+      return Promise.resolve();
+    },
     render: async (documentId, text, signal, template, vue, assistant, progressive) =>
       client
         ? await client.renderMarkdown(
@@ -263,15 +276,24 @@ export async function testSsrRenderingAsync(): Promise<void> {
           version: 1,
           documentId,
           html:
-            `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div>
+            `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div><span class="math-inline"><svg viewBox="0 0 10 10" role="img"><path d="M0 0L1 1"/></svg></span>
           <fieldset class="vp-code-group"><legend>Code examples</legend>
-          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div>
+          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><div class="code-block"><button type="button" class="code-copy" data-code-copy="// [!code highlight]&#10;const total = 42;&#10;">复制</button><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div></div>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
           </fieldset></div>`,
+          diagnostics: text.includes("unclosed-demo")
+            ? [{ code: "unclosed_code_fence" as const, line: 3, column: 1 }]
+            : [],
           css: `.maieutics-output { color: var(--vscode-editor-foreground); }
           .code-panel { display: none; } .code-tab > input:checked ~ .code-panel { display: block; }`,
         },
-    post: async (message) => await panel.webview.postMessage(message),
+    post: async (message) =>
+      await panel.webview.postMessage(
+        typeof message === "object" && message !== null && "type" in message &&
+          message.type === "copy-result"
+          ? { ...message, copiedText }
+          : message,
+      ),
     log: (message) => console.log(message),
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -311,6 +333,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const renderer = await import(${JSON.stringify(rendererUri.toString())});
         const markdown = native.activate({ workspace: { isTrusted: true } });
         let delivered = Promise.withResolvers();
+        let copied = Promise.withResolvers();
         let holdDelivery = false, heldMessage, deliver;
         let deliveryHeld = Promise.withResolvers();
         const api = await renderer.activate({
@@ -318,6 +341,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           postMessage: (message) => vscode.postMessage(message),
           onDidReceiveMessage: (handler) => {
             deliver = (message) => {
+              if (message.type === "copy-result") copied.resolve(message);
               Promise.resolve(handler(message)).then(() => {
                 if (message.type === "rendered") delivered.resolve();
               }, delivered.reject);
@@ -341,6 +365,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(node, "the actual turn renderer switches to SSR");
         const root = node.shadowRoot ?? node;
         assert(root.querySelector(".custom-block.tip")?.textContent.includes("Shared SSR"), "SSR containers reach the browser");
+        assert(root.querySelector(".math-inline svg path"), "offline SVG math reaches the browser without font downloads");
         assert(root.querySelector("pre.shiki code")?.textContent.includes("const total"), "SSR code output remains visible");
         assert(root.querySelector("style")?.textContent.includes("--vscode"), "host-scoped styles are delivered through messaging");
         assert(root.querySelector('.line.highlighted[data-line="7"]'), "line metadata reaches the actual browser");
@@ -352,6 +377,12 @@ export async function testSsrRenderingAsync(): Promise<void> {
         heading.scrollIntoView = () => { scrolled++; };
         tocLink.click();
         assert(scrolled === 1 && root.activeElement === heading, "TOC clicks scroll and focus inside the actual Markdown shadow root");
+        const copyButton = root.querySelector("button.code-copy");
+        assert(copyButton,"code fences expose an accessible copy button");
+        copyButton.click();
+        const copyResult = await copied.promise;
+        assert(copyResult.ok && copyResult.copiedText === "// [!code highlight]\\nconst total = 42;\\n", "copy uses exact source without synthetic line numbers");
+        assert(copyButton.textContent === "已复制" && !copyButton.disabled, "copy completion is acknowledged by the extension host");
         const labels = root.querySelectorAll(".code-tab > label");
         const panels = root.querySelectorAll(".code-panel");
         assert(labels.length === 2 && panels.length === 2, "the shared snapshot contains both code examples");
@@ -367,6 +398,14 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(scrolled === 1, "replacing a source revision detaches its old anchor handler");
         const updatedPanels = updatedRoot.querySelectorAll(".code-panel");
         assert(getComputedStyle(updatedPanels[0]).display === "none" && getComputedStyle(updatedPanels[1]).display !== "none", "an SSR source update retains the user's selected code example");
+        const diagnosticElement = document.createElement("div"); document.body.appendChild(diagnosticElement);
+        delivered = Promise.withResolvers();
+        await api.renderOutputItem({id:"diagnostic-demo",json:()=>({text:"# Source\\n\\n~~~md\\nunclosed-demo"})},diagnosticElement);
+        await delivered.promise;
+        const diagnosticNode = diagnosticElement.querySelector('[data-render-engine="ssr"]');
+        const diagnosticRoot = diagnosticNode.shadowRoot ?? diagnosticNode;
+        assert(diagnosticRoot.querySelector('[data-component-diagnostic]')?.textContent.includes("第 3 行"),"sealed fence diagnostics display original source coordinates");
+        api.disposeOutputItem("diagnostic-demo");
         const templateElement = document.createElement("div"); document.body.appendChild(templateElement);
         const templateSource = "Total {{ report.total.toFixed(2) }}\\n\\nLater independent prose";
         const templateItem = (binding) => ({ id: "binding-demo", mime: "application/vnd.maieutics.template+json", json: () => ({ version: 1, source: templateSource, bindings: [binding] }) });
@@ -386,7 +425,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const streamingElement = document.createElement("div"); document.body.appendChild(streamingElement);
         globalThis.__progressiveSetups = 0; globalThis.__progressiveUnmounts = 0;
         const setupSource = '\\u003cscript setup lang="ts">\\nimport {ref,computed,onUnmounted} from "vue";\\nglobalThis.__progressiveSetups++;\\nconst count=ref(0); const doubled=computed(()=>count.value*2);\\nonUnmounted(()=>globalThis.__progressiveUnmounts++);\\n\\u003c/script>\\n\\n';
-        let streamingSource = setupSource + '<button class="progressive-counter" @click="count++">{{ count }}</button>';
+        let streamingSource = setupSource + '<button class="progressive-counter" @click="count++">{{ count }}</button>\\n\\n$x^2$\\n\\n~~~py\\nprint(42)\\n~~~';
         const paintStreaming = async (streaming = true) => {
           delivered = Promise.withResolvers();
           await api.renderOutputItem({id:"streaming-vue",mime:"application/vnd.maieutics.live-assistant+json",json:()=>({text:streamingSource,streaming})},streamingElement);
@@ -397,6 +436,13 @@ export async function testSsrRenderingAsync(): Promise<void> {
           return boundary.shadowRoot ?? boundary;
         };
         const streamingRoot = await paintStreaming();
+        if (${client !== undefined}) {
+          assert(streamingRoot.querySelector(".math-inline svg path"),"progressive Vue hydrates SVG math without losing its namespace");
+          copied = Promise.withResolvers();
+          streamingRoot.querySelector("button.code-copy").click();
+          const liveCopy = await copied.promise;
+          assert(liveCopy.ok && liveCopy.copiedText === "print(42)\\n","copy controls also work inside a retained live Vue template");
+        }
         const originalButton = streamingRoot.querySelector(".progressive-counter");
         originalButton.click(); await vueRuntime.vueUpdatesComplete();
         assert(originalButton.textContent === "1", "the first streaming component is interactive");
@@ -451,6 +497,9 @@ export async function testSsrRenderingAsync(): Promise<void> {
         };
         vscode.postMessage({ trace: "vue-request" });
         const firstVue = await mountVue();
+        if (${
+      client !== undefined
+    }) assert(firstVue.querySelector(".math-inline svg path") && firstVue.querySelector("button.code-copy"),"completed Vue hydrates the same math and code content as passive Markdown");
         vscode.postMessage({ trace: "vue-mounted" });
         const clickCounter = async (root) => {
           const value = root.querySelector(".counter-display");

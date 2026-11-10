@@ -168,7 +168,10 @@ Deno.test("VitePress comment notations decorate code and remain local to each fe
   ) {
     assertStringIncludes(html, marker);
   }
-  assert(!html.includes("[!code"), "Shiki must remove recognized presentation comments.");
+  assert(
+    ![...html.matchAll(/<pre[\s\S]*?<\/pre>/g)].some((match) => match[0].includes("[!code")),
+    "Shiki must remove recognized presentation comments from visible code.",
+  );
   assertEquals(html.match(/has-focused-lines/g)?.length, 1);
 });
 
@@ -829,4 +832,111 @@ Deno.test("compile-only updates cannot execute even a throwing setup body", asyn
     () => renderer.renderAssistant("compileonly", source, undefined, { compileOnly: false }),
     VueComponentError,
   );
+});
+
+Deno.test("offline math renders inline and block SVG while code, escapes and currency remain literal", async () => {
+  using renderer = await createOutputRenderer();
+  const output = await renderer.render(
+    "math",
+    String.raw`Inline $x^2 + 1$.
+
+$$
+\frac{1}{2}
+$$
+
+Price $5 and $10.
+
+Escaped \$x$.
+
+${"`$literal$`"}
+
+~~~tex
+$literal$
+~~~`,
+  );
+  assertEquals((output.html.match(/<svg /g) ?? []).length, 2);
+  assertStringIncludes(output.html, 'class="math-block"');
+  assertStringIncludes(output.html, "Price $5 and $10");
+  assertStringIncludes(output.html, "$literal$");
+  assertEquals(output.diagnostics, []);
+  assertEquals(
+    await renderer.render("math", "Inline $x^2 + 1$."),
+    await renderer.render("math", "Inline $x^2 + 1$."),
+  );
+});
+
+Deno.test("math macros are local, unsupported resource commands and oversized formulas stay escaped", async () => {
+  using renderer = await createOutputRenderer();
+  const declared = await renderer.render("math", String.raw`$\newcommand{\local}{x}\local$`);
+  assertStringIncludes(declared.html, "<svg ");
+  const unknown = await renderer.render("math", String.raw`$\local$`);
+  assertEquals(unknown.diagnostics?.[0].code, "math_invalid");
+  for (
+    const tex of [
+      String.raw`\href{javascript:run()}{bad}`,
+      String.raw`\require{html}`,
+      "x".repeat(4097),
+    ]
+  ) {
+    const output = await renderer.render("math", `$${tex}$`);
+    assert(!output.html.includes("<svg "));
+    assert(!output.html.includes('href="javascript:'));
+    assert(output.diagnostics?.length);
+  }
+  const bounded = await renderer.render("math", Array(129).fill("$x$").join(" "));
+  assertEquals(bounded.diagnostics?.at(-1)?.code, "math_limit");
+});
+
+Deno.test("common language grammars and exact copy payloads are bundled", async () => {
+  using renderer = await createOutputRenderer();
+  for (const language of ["py", "sh", "cs", "cpp", "go", "rs", "sql", "yaml", "html", "css"]) {
+    const output = await renderer.render(
+      "code",
+      `~~~${language}\nif class SELECT echo <tag> \"&\n~~~`,
+    );
+    assertStringIncludes(output.html, 'style="--shiki-light:');
+    assertStringIncludes(output.html, 'class="code-copy"');
+    assertStringIncludes(
+      output.html,
+      'data-code-copy="if class SELECT echo &lt;tag&gt; &quot;&amp;\n"',
+    );
+  }
+});
+
+Deno.test("unclosed fence diagnostics retain original lines with frontmatter and ignore valid quoted fences", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "---\ntitle: Example\n---\n\n~~~md\n::: tip\n~~~js\nconst a=1\n~~~\n\n~~~\n| X | Y |";
+  const output = await renderer.render("fence", source);
+  assertEquals(output.diagnostics, [{ code: "unclosed_code_fence", line: 11, column: 1 }]);
+  assertStringIncludes(output.html, "| X | Y |");
+  const valid = await renderer.render(
+    "fence",
+    "> ~~~js\n> let a=1\n> ~~~\n\n~~~~md\n~~~js\na\n~~~\n~~~~",
+  );
+  assertEquals(valid.diagnostics, []);
+});
+
+Deno.test("progressive Vue carries math and code controls through the same template compiler", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '<script setup>import {ref} from "vue";const count=ref(0)</script>\n\n<button @click="count++">{{count}}</button>\n\n$x^2$\n\n~~~py\nprint("hi")\n~~~';
+  const initial = await renderer.renderAssistant("vmath", source, undefined, {
+    compileOnly: false,
+  });
+  assertStringIncludes(initial.html, "<svg ");
+  assertStringIncludes(initial.html, 'class="code-copy"');
+  const later = await renderer.renderAssistant(
+    "vmath",
+    source + String.raw`
+
+$$
+\frac{1}{2}
+$$`,
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(later.vue?.setupKey, initial.vue?.setupKey);
+  assertEquals(later.vue?.code, "");
+  assertStringIncludes(later.vue?.renderCode ?? "", "svg");
 });

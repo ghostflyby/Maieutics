@@ -114,7 +114,9 @@ export function installCodeFences(md: MarkdownIt, highlighter: HighlighterCore):
       : `<div class="code-title">${md.utils.escapeHtml(info.title)}</div>`;
     const block = `<div class="code-block language-${
       md.utils.escapeHtml(info.language)
-    }">${caption}${html}</div>\n`;
+    }">${caption}<button type="button" class="code-copy" data-code-copy="${
+      md.utils.escapeHtml(token.content)
+    }" aria-label="复制代码">复制</button>${html}</div>\n`;
     if (tab === undefined) return block;
     const id = `${tab.group}-tab-${tab.index}`;
     const label = md.utils.escapeHtml(info.title || info.language);

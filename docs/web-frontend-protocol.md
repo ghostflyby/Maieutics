@@ -1242,3 +1242,23 @@ The broader revisioned document transport and external late-binding producer lif
 proposed. This increment shares state only within one frontend's assistant text output, not across
 messages/cells/frontends. Source/HTML/CSS/code, admission, total request and isolated worker limits
 remain in force; at most 16 prefix compilation candidates are considered per progressive request.
+
+### Rendering diagnostics and code copy controls
+
+Rendering v1 success snapshots and typed render-input error bodies may include an optional
+`diagnostics` array (maximum 32). Each item is `{code,line,column}`, with one-based coordinates in
+the original request source. Codes currently include `unclosed_code_fence`,
+`component_compile_failed`, `math_invalid`, and `math_limit`. No source snippet or compiler message
+is transmitted. Fence positions identify the opening delimiter, math positions the containing
+paragraph/block start, and component errors the authored component/script start; this is not a
+full compiled-template source map. Clients tolerate absent fields and unknown future fields.
+Diagnostics do not alter parsing or independently authorize execution. Display incomplete-stream
+warnings only after source sealing. A diagnostic is scoped to its request/source revision.
+
+The internal Deno service uses the same optional shape; the executable validates bounded codes and
+source coordinates before forwarding it. The error HTTP status/code contract remains unchanged.
+Code-fence copy buttons carry escaped source in `data-code-copy`; copying requires a user click and
+frontend clipboard support. The VS Code renderer sends request-correlated `copy` / `copy-result`
+messages to its extension host, independently of the rendering HTTP API. Text is capped at 200,000
+UTF-16 code units, copied verbatim without synthetic decorations, and never logged. Disposal drops
+pending UI references; stale responses do not update detached output.

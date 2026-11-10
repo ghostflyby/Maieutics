@@ -117,7 +117,12 @@ internal sealed class FrontendOutputRenderer(
             message.Content = JsonContent.Create(request, FrontendJsonContext.Default.FrontendRenderMarkdown);
             using var response = await _http.SendAsync(message, requestLifetime.Token).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.BadRequest)
-                throw new FrontendFailureException("invalid_request", "Invalid render input.");
+            {
+                var failure = await response.Content.ReadFromJsonAsync(
+                    FrontendJsonContext.Default.FrontendError, requestLifetime.Token).ConfigureAwait(false);
+                throw new FrontendFailureException("invalid_request", "Invalid render input.",
+                    ValidateDiagnostics(failure?.Diagnostics, request.Source));
+            }
             if (!response.IsSuccessStatusCode) throw Unavailable();
             var result = await response.Content.ReadFromJsonAsync(
                 FrontendJsonContext.Default.FrontendRenderedMarkdown, requestLifetime.Token).ConfigureAwait(false);
@@ -135,7 +140,7 @@ internal sealed class FrontendOutputRenderer(
                  progressiveComponent.RenderCode is not { Length: <= 400_000 } ||
                  result.RenderedSource is null || !request.Source.StartsWith(result.RenderedSource, StringComparison.Ordinal)))
                 throw Unavailable();
-            return result with { Css = component ? _css + result.Css : _css };
+            return result with { Css = component ? _css + result.Css : _css, Diagnostics = ValidateDiagnostics(result.Diagnostics, request.Source) };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -415,6 +420,18 @@ internal sealed class FrontendOutputRenderer(
         internal bool Stopping { get; set; }
         internal bool Exited { get; set; }
         internal bool ExitReported { get; set; }
+    }
+
+    private static FrontendRenderDiagnostic[]? ValidateDiagnostics(FrontendRenderDiagnostic[]? diagnostics, string source)
+    {
+        if (diagnostics is null) return null;
+        if (diagnostics.Length > 32) throw Unavailable();
+        var lines = source.Split('\n');
+        foreach (var item in diagnostics)
+            if (item is null || item.Code is not ("unclosed_code_fence" or "component_compile_failed" or "math_invalid" or "math_limit") ||
+                item.Line < 1 || item.Line > lines.Length || item.Column < 1 || item.Column > lines[item.Line - 1].Length + 1)
+                throw Unavailable();
+        return diagnostics;
     }
 
     private static FrontendFailureException Unavailable() =>

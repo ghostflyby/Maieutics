@@ -116,3 +116,25 @@ Deno.test("sealed assistant API derives component metadata without changing the 
   assertEquals(passive.vue, undefined);
   assertStringIncludes(passive.html, "&lt;script setup&gt;");
 });
+
+Deno.test("render diagnostics locate original fences and component starts without exposing compiler text", async () => {
+  using renderer = await createOutputRenderer();
+  const handler = createRenderHandler(renderer, "secret");
+  const request = (source: string) =>
+    new Request("http://localhost/v1/assistant", {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+      body: JSON.stringify({ version: 1, documentId: "doc", source }),
+    });
+  const fenced = await (await handler(request("# Example\n\n~~~md\nprivate"))).json();
+  assertEquals(fenced.diagnostics, [{ code: "unclosed_code_fence", line: 3, column: 1 }]);
+  const invalid = await handler(
+    request(
+      "~~~vue\n<script setup>example</script>\n~~~\n\n<script setup>const secret = ;</script>\n\n<p>Template</p>",
+    ),
+  );
+  assertEquals(invalid.status, 400);
+  const body = await invalid.json();
+  assertEquals(body.diagnostics, [{ code: "component_compile_failed", line: 5, column: 1 }]);
+  assertEquals(JSON.stringify(body).includes("secret"), false);
+});

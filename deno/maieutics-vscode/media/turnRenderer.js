@@ -579,6 +579,7 @@ export async function activate(context) {
   const pending = new Map();
   const streams = new Map();
   const diagnostics = new WeakMap();
+  const copies = new Map();
   const releaseRegion = (region) => {
     region?.interactions?.abort();
     region?.dispose?.();
@@ -623,6 +624,15 @@ export async function activate(context) {
   };
   context.onDidReceiveMessage?.((message) => {
     if (message?.source !== "maieutics-output" || typeof message.requestId !== "string") return;
+    if (message.type === "copy-result") {
+      const copy = copies.get(message.requestId);
+      copy?.cleanup();
+      if (copy?.button.isConnected) {
+        copy.button.textContent = message.ok === true ? "已复制" : "复制失败";
+        copy.button.disabled = false;
+      }
+      return;
+    }
     let request = pending.get(message.requestId);
     let progress;
     if (message.type === "rendered" && message.streaming === true) {
@@ -683,11 +693,28 @@ export async function activate(context) {
       request.node.dataset.renderState = incomplete
         ? (request.streaming ? "pending" : "failed")
         : "ready";
-      if (incomplete && !request.streaming) {
+      const labels = {
+        unclosed_code_fence:
+          "代码围栏未闭合；展示含代码块的 Markdown 示例时，请给外层使用更长的围栏。",
+        component_compile_failed: "组件编译或执行失败；此位置标记组件的起点。",
+        math_invalid: "公式无法解析，已保留源码。",
+        math_limit: "公式超过渲染限制，已保留源码。",
+      };
+      const details = Array.isArray(message.diagnostics)
+        ? message.diagnostics.slice(0, 32).filter((item) =>
+          labels[item?.code] && Number.isSafeInteger(item.line) && item.line > 0 &&
+          Number.isSafeInteger(item.column) && item.column > 0
+        ).map((item) => `第 ${item.line} 行，第 ${item.column} 列：${labels[item.code]}`)
+        : [];
+      if ((incomplete || details.length) && !request.streaming) {
         const note = document.createElement("div");
         note.dataset.componentDiagnostic = "true";
         note.setAttribute("role", "status");
-        note.textContent = "组件更新未完成，保留上一次可用显示。";
+        note.style.whiteSpace = "pre-wrap";
+        note.textContent = [
+          ...(incomplete ? ["组件更新未完成，保留上一次可用显示。"] : []),
+          ...details,
+        ].join("\n");
         root.appendChild(note);
         diagnostics.set(request.node, note);
       }
@@ -697,6 +724,8 @@ export async function activate(context) {
       state.regions.delete(request.node);
       request.node.replaceWith(request.fallback);
       state.regions.set(request.fallback, { mode: request.mode, key: request.key });
+      request.node = request.fallback;
+      updateStatus();
       acknowledge("native");
     };
     if (message.type === "unavailable") {
@@ -765,6 +794,32 @@ export async function activate(context) {
     rendered.innerHTML = message.html;
     const interactions = new AbortController();
     rendered.addEventListener("click", (event) => {
+      const copy = event.target instanceof Element
+        ? event.target.closest("button.code-copy[data-code-copy]")
+        : null;
+      if (
+        copy !== null && copy.closest(".code-block") && typeof copy.dataset.codeCopy === "string" &&
+        copy.dataset.codeCopy.length <= 200000
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (copy.disabled || copies.size >= 32) return;
+        const copyId = `copy-${crypto.randomUUID()}`;
+        copy.disabled = true;
+        const cleanup = () => {
+          copies.delete(copyId);
+          interactions.signal.removeEventListener("abort", cleanup);
+        };
+        copies.set(copyId, { button: copy, outputId: request.outputId, cleanup });
+        interactions.signal.addEventListener("abort", cleanup, { once: true });
+        context.postMessage?.({
+          source: "maieutics-output",
+          type: "copy",
+          requestId: copyId,
+          text: copy.dataset.codeCopy,
+        });
+        return;
+      }
       if (event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
         return;
       }
@@ -827,6 +882,7 @@ export async function activate(context) {
     const engine = component ? "vue" : "ssr";
     request.node.dataset.renderEngine = engine;
     if (progress) progress.stream.committedRevision = progress.revision;
+    updateStatus();
     acknowledge(engine);
   });
   return {
@@ -1067,6 +1123,9 @@ export async function activate(context) {
       flush();
     },
     disposeOutputItem(id) {
+      for (const copy of copies.values()) {
+        if (id === undefined || copy.outputId === id) copy.cleanup();
+      }
       forgetPending(id, true);
       if (id === undefined) {
         for (const state of states.values()) {

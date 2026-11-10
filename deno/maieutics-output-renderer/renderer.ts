@@ -32,6 +32,7 @@ export interface RenderedOutput {
   readonly headings: readonly RenderedHeading[];
   readonly expressions?: readonly TemplateResult[];
   readonly vue?: CompiledVueComponent;
+  readonly renderedSource?: string;
 }
 
 /** Heading metadata collected by the same plugin family as VitePress. */
@@ -55,6 +56,7 @@ export interface OutputRenderer extends Disposable {
     documentId: string,
     source: string,
     signal?: AbortSignal,
+    progressive?: { compileOnly: boolean },
   ): Promise<RenderedOutput>;
   renderVue(
     documentId: string,
@@ -322,7 +324,53 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         });
       },
       renderVue,
-      async renderAssistant(documentId, source, signal) {
+      async renderAssistant(documentId, source, signal, progressive) {
+        if (progressive) {
+          signal?.throwIfAborted();
+          if (disposed) throw new OutputRenderingError("disposed");
+          if (
+            !/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters
+          ) throw new VueComponentError("invalid_component");
+          if (!/<script(?:\s|>)/i.test(source)) return await render(documentId, source, signal);
+          let candidate = source;
+          for (let attempt = 0; attempt < 16; attempt++) {
+            let component: CompiledVueComponent | undefined;
+            try {
+              const prepared = prepareVueMarkdown(documentId, candidate);
+              if (!prepared.scripted) return await render(documentId, source, signal);
+              if (prepared.unsealedFrontmatter) {
+                throw new VueComponentError("invalid_component");
+              }
+              // One closed setup module owns all later template bindings.
+              component = compileVueComponent(
+                documentId,
+                prepared.source,
+                prepared.frontmatter,
+                true,
+              );
+            } catch (error) {
+              if (!(error instanceof VueComponentError)) throw error;
+              const boundary = candidate.lastIndexOf("\n\n");
+              if (boundary < 0) throw error;
+              candidate = candidate.slice(0, boundary);
+              continue;
+            }
+            const html = progressive.compileOnly ? "" : await renderVueComponent(
+              component,
+              signal
+                ? AbortSignal.any([signal, componentLifetime.signal])
+                : componentLifetime.signal,
+            );
+            return {
+              documentId,
+              html,
+              headings: [],
+              renderedSource: candidate,
+              vue: progressive.compileOnly ? { ...component, code: "" } : component,
+            };
+          }
+          throw new VueComponentError("invalid_component");
+        }
         signal?.throwIfAborted();
         if (disposed) throw new OutputRenderingError("disposed");
         if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId)) {

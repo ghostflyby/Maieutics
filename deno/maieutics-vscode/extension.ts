@@ -231,7 +231,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const widgetChannel = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
   const turnChannel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
   const renderingBridge = new OutputRenderingBridge({
-    render: async (documentId, text, signal, template, vue, assistant) => {
+    render: async (documentId, text, signal, template, vue, assistant, progressive) => {
       // Opening an offline snapshot must never launch a kernel just to format its output.
       const attached = await renderingConnection(connection, connecting, signal);
       if (attached === undefined || attached.isDisposed) return undefined;
@@ -246,7 +246,9 @@ export function activate(context: vscode.ExtensionContext): void {
         signal,
         template,
         vue,
-        assistant && capabilities.rendering?.assistantVersion === 1,
+        assistant && capabilities.rendering?.assistantVersion === 1 &&
+          (!progressive?.streaming || capabilities.rendering?.progressiveVersion === 1),
+        progressive && capabilities.rendering?.progressiveVersion === 1 ? progressive : undefined,
       );
     },
     post: async (message) => await turnChannel.postMessage(message),

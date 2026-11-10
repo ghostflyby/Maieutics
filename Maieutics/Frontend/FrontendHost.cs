@@ -413,7 +413,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     FrontendUiCapabilityVersion,
                     [FrontendUiWire.FormFamily]),
             MultiSession: true,
-            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1)),
+            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1, ProgressiveVersion: 1)),
             FrontendJsonContext.Default.FrontendCapabilities);
     }
 

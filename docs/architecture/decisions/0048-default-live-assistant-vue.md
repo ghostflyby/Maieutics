@@ -65,3 +65,17 @@ turn completion; progressive component compilation and late producer subscriptio
 document runtime. Unavailable history remains readable source; verified history regains Vue UI and
 interactivity. Existing passive clients and APIs retain their behavior. The design, normative protocol and browser/controller regressions own
 the compatibility and lifecycle details.
+
+## Progressive admission amendment (2026-11-10)
+
+The user selected streaming component rendering with shared JavaScript state. On frontends using
+`progressiveVersion:1`, complete synchronous setup/template prefixes may now execute before the
+run terminal frame. The first prefix uses SSR; later render-only updates preserve the mounted
+client scope and do not repeat server setup. A script rewrite creates a new scope. Failed or
+cancelled terminal delivery stops further execution and unmounts its live scope; it cannot undo
+presentation code admitted before the outcome. The earlier completed-only streaming restriction
+is superseded for this optional lane. Persisted markers still grant no authority.
+
+This increment owns one frontend-local scope per assistant text output, without backend JS closure
+retention, cross-cell sharing or automatic producer execution. See the streaming design and
+frontend protocol for prefix limits, binding checks, epoch rules and recovery semantics.

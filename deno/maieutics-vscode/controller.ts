@@ -2524,7 +2524,7 @@ class RunExecution {
         key,
         timelineNotebookOutput(
           node,
-          this.view.terminalState?.kind === "completed" && !snapshot.truncated &&
+          (streaming || this.view.terminalState?.kind === "completed") && !snapshot.truncated &&
             !snapshot.timelineTruncated &&
             node.timeline?.[0]?.kind === "text",
         ),

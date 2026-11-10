@@ -23,6 +23,7 @@ export interface Capabilities {
     templateVersion?: number;
     vueVersion?: number;
     assistantVersion?: number;
+    progressiveVersion?: number;
   };
 }
 

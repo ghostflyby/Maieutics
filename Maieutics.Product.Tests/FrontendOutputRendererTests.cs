@@ -355,6 +355,47 @@ public sealed class FrontendOutputRendererTests
         Assert.NotSame(completion, harness.OutputRenderer.ProcessCompletion);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task ProgressiveAssistantUpdatesCompileWithoutRepeatingServerSetup()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        using var capabilities = await harness.Client.GetAsync("/v1/agent/capabilities", budget.Token);
+        using var advertised = JsonDocument.Parse(await capabilities.Content.ReadAsStringAsync(budget.Token));
+        Assert.Equal(1, advertised.RootElement.GetProperty("rendering").GetProperty("progressiveVersion").GetInt32());
+        const string source = "<script setup lang=\"ts\">\nimport {ref,computed} from 'vue';\nconst count=ref(0);const doubled=computed(()=>count.value*2);\n</script>\n\n<button @click=\"count++\">{{ count }}</button>";
+        using var initialResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "progressive", source, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, initialResponse.StatusCode);
+        var initial = await initialResponse.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token)
+            ?? throw new InvalidOperationException("Missing progressive initial snapshot.");
+        var firstComponent = Assert.IsType<FrontendVueComponent>(initial.Vue);
+        Assert.Equal(64, firstComponent.SetupKey?.Length);
+        Assert.Contains(">0</button>", initial.Html);
+        Assert.NotEmpty(firstComponent.Code ?? "");
+        var updatedSource = source + "\n\n<p>{{ doubled }}</p>";
+        using var updateResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "progressive", updatedSource, Progressive: true, CompileOnly: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        var update = await updateResponse.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token)
+            ?? throw new InvalidOperationException("Missing progressive update.");
+        var nextComponent = Assert.IsType<FrontendVueComponent>(update.Vue);
+        Assert.Equal(firstComponent.SetupKey, nextComponent.SetupKey);
+        Assert.Equal("", update.Html);
+        Assert.Equal("", nextComponent.Code);
+        Assert.Contains("doubled", nextComponent.RenderCode);
+        Assert.Equal(updatedSource, update.RenderedSource);
+        using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/markdown",
+            new FrontendRenderMarkdown(1, "progressive", source, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
+    }
+
     private sealed class RendererLogger : ILogger<FrontendOutputRenderer>
     {
         internal ConcurrentQueue<(LogLevel Level, string Text)> Records { get; } = new();

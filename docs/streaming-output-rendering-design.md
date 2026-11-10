@@ -6,8 +6,8 @@ explicit live Vue components compile, SSR and hydrate with scoped styles. Bounde
 frontmatter now supplies `$frontmatter` paths and readonly Vue template data. Successful completed live
 assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts.
 Connected history restoration can renew this selection after verifying exact assistant source against
-the kernel-owned committed transcript. The streaming document
-runtime and revisioned presentation protocol remain proposed. Append-only passive previews now commit
+the kernel-owned committed transcript. Progressive Vue template prefixes now preserve one client setup scope after a complete script.
+The broader document runtime and revisioned presentation protocol remain proposed. Append-only passive previews now commit
 completed SSR prefixes while newer text continues arriving. Built-in per-run instructions now
 advertise the supported output syntax and completion boundary to the model.
 
@@ -454,7 +454,8 @@ the proposed streaming document protocol.
 
 ### Passive streaming progress around Vue source (implemented 2026-11-09)
 
-Vue compilation still waits for successful source completion. Ordinary Markdown must continue
+The initial passive implementation waited for successful source completion; the progressive Vue
+increment below now admits complete setup/template prefixes on supporting frontends. Ordinary Markdown must continue
 rendering while that source is incomplete: a Vue component does not make the entire reply an
 executable unit during streaming.
 
@@ -689,6 +690,74 @@ inner-lease release on acquisition failure and real Deno worker discovery/invoca
 Kernel/real-Deno integration also invokes the first hook before any registry frame, using the
 production host class and bus with eager startup/registry publication disabled by its owned test
 entry. Native-provider conformance checks delimiters and tool loops against all three APIs.
+
+## Progressive Vue setup and template prefixes (implemented 2026-11-10)
+
+This first increment supports a complete single synchronous `<script setup>` followed by growing
+Markdown/Vue templates in the same assistant text output. All declarations must belong to that
+sealed setup module. Refs, computed values, closures and hooks live in one mounted client instance;
+a later template reads its existing bindings rather than reinitializing them. This is not a JS
+interpreter that executes incomplete statements, arbitrary later modules, or undeclared names.
+Cross-message/tool-round/cell scope and automatic producer subscriptions remain separate work.
+
+The controller now grants runtime assistant provenance to admitted streaming text, not just the
+successful terminal snapshot. Native Markdown remains immediately readable. Supporting kernels
+advertise `rendering.progressiveVersion:1`; old kernels continue passive streaming and may compile
+only the completed answer. Pure notebook decoding still strips provenance; canonical historical
+verification remains required. Cancellation/failure/truncation seal back to passive output and
+unmount any admitted component. Already executed presentation code cannot be undone by a later
+run failure. No Agent event ordering, canonical history or notebook format changes are introduced.
+
+The existing assistant endpoint adds `progressive:true` and optional `compileOnly:true`. The compiler
+uses the public Vue SFC/script/template APIs; template usage is excluded from script-binding
+collection so later templates can read bindings that the initial template did not use. A SHA-256
+`setupKey` identifies the compiled setup, captured frontmatter and document scope. `renderCode`
+contains a separate render-function factory. Unknown render-context names and async setup scopes
+are rejected before admission. On incomplete trailing syntax or unresolved template names, at most
+16 blank-line prefix candidates are compiled; only a genuinely compilable prefix is accepted.
+There is no insertion of guessed script/tag closings. A new valid prefix can include later Markdown
+references and updated TOC definitions because the entire accepted prefix is parsed together.
+
+The first accepted component uses isolated SSR and ships initial HTML plus the full factory.
+After delivery, the extension's bounded initialization hint requests compile-only updates: the
+service compiles the new render function/CSS but executes no SSR setup and returns no new component
+factory. This avoids hydrating new server-initial state over interactive client state. Recovery or
+hint eviction can require fresh SSR; deterministic presentation setup remains required, and external
+producers still belong to authorized tools. The service does not retain JS closures or a shared VM.
+All frontends share compilation/initial SSR through Deno; each frontend owns its local UI state.
+Multi-frontend shared mutable state requires a separate kernel-owned data/action protocol.
+
+The client retains the Vue app, setup bindings and DOM boundary and replaces only its render
+function and CSS. Render caches are invalidated when the compiled template changes; compiler block
+optimizations from an older template are not reused. Ordinary Vue keyed reconciliation preserves
+compatible existing nodes and child instances. Source/shape/key changes may legitimately replace
+DOM; this is not the proposed stable document-unit protocol. Vue-owned DOM is never externally
+morphed. Changed setup identity requires a fresh full factory for a new source epoch; render-only
+updates cannot silently reinitialize the scope. Ending the reply preserves an already mounted
+progressive instance. New ordinary completed/history components retain their existing full-render
+lane when no progressive scope was established.
+
+The bridge coalesces source updates, publishes useful completed prefixes while newer source streams,
+and tracks rewrite epochs independently of text prefix equality. Returning to an older prefix does
+not resurrect its initialization. Browser generation/revision checks reject stale results; sealing
+rejects late streaming replies. Cancellation/disposal remove pending requests and initialization
+hints, and Vue unmount stops effects exactly once. Hints and source ancestry are bounded to 64
+entries. A pending tail retains the last usable interactive prefix. A sealed incomplete or invalid
+update reports a local status while preserving the last usable presentation; it cannot silently
+substitute JS `undefined` or a false conditional branch.
+
+Coverage checks delayed prefix delivery, compile-only selection, rewrite/revert epochs, cancellation,
+wire validation, isolated SSR, and the real controller publishing live MIME before terminal frames.
+Actual browser tests click an early counter, append a computed-value template, append incomplete
+markup, finish the markup against the current count, seal without resetting setup, report incomplete
+sealed source, then rewrite setup and verify one disposal per scope. The same scenario is exercised
+against the real NativeAOT executable and Deno compiler.
+
+Validation passes 27 real VS Code scenarios on macOS arm64 (1.144.1), including actual
+NativeAOT/Deno compilation and client updates, and 1,669 .NET tests with eight existing
+platform/external-service skips. The Deno workspace passes 731 tests plus 20 Node scenarios.
+Release build is warning-free; NativeAOT publishing, offline
+smoke, types/lint/format and diff checks pass. Linux/Windows CI is not run locally.
 
 ## Document state and presentation units
 

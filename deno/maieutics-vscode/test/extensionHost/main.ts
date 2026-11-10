@@ -386,6 +386,9 @@ async function testQueueExecutionAsync(
   interrupted = false,
   truncated = false,
 ): Promise<void> {
+  const streamingVisible = Promise.withResolvers<void>();
+  const requireStreamingPreview = supportsRecovery && !missingReplay && !failBeforeRun &&
+    !interrupted && !truncated;
   const sessionId = "a".repeat(32);
   const runId = "b".repeat(32);
   const itemId = "queued-item";
@@ -460,6 +463,7 @@ async function testQueueExecutionAsync(
         messageId: "m",
         agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Recovered reply" }] },
       };
+      if (requireStreamingPreview) await streamingVisible.promise;
       if (truncated) yield { type: "turn.truncated", runId };
       try {
         yield interrupted
@@ -535,6 +539,14 @@ async function testQueueExecutionAsync(
     const visibleOutput = new Promise<void>((resolve) => {
       outputChanged = vscode.workspace.onDidChangeNotebookDocument((event) => {
         if (event.notebook !== notebook) return;
+        if (
+          notebook.cellAt(0).outputs.some((entry) =>
+            entry.items.some((item) =>
+              item.mime === "application/vnd.maieutics.live-assistant+json" &&
+              JSON.parse(new TextDecoder().decode(item.data)).streaming === true
+            )
+          )
+        ) streamingVisible.resolve();
         const frames = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
           .filter((item) =>
             ["application/vnd.maieutics.turn+json", "application/vnd.maieutics.live-assistant+json"]
@@ -719,6 +731,7 @@ async function testQueueExecutionAsync(
         }
       }
     } finally {
+      streamingVisible.resolve();
       outputChanged?.dispose();
     }
   } finally {

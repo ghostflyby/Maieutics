@@ -44,19 +44,22 @@ Jupyter kernel involved (ADR 0023).
   offline and error fallback; unbound snapshots never start a kernel solely for rendering. While
   assistant text streams, completed passive SSR prefixes can commit before the newest snapshot
   finishes, so rendering does not stall until the model stops. Partial Vue/HTML tags stay inert
-  without consuming adjacent Markdown; rewrites and completion invalidate older prefixes. Vue
-  components themselves still compile and hydrate only after successful completion. Model-supplied
-  HTML stays escaped. See the [SSR demo](demo/README.md) for the current subset and limitations.
-  Tool nodes retain structured arguments, latest progress and results, capped at 20,000 characters
-  per detail and 256 tools per run, with an explicit truncation note. Saving rejoins blocks into one
-  portable turn snapshot; reopening restores expanded replies and collapsed activity nodes. History
-  tied to a session/run reconnects the kernel and regains Vue rendering and interaction after exact
-  source verification against the committed transcript. Component-local state restarts from its
-  initial value. Edited, unbound, unavailable and offline history remains passive source; a file
-  cannot grant execution authority by storing a live marker or compiled code. Cancellation and
-  failure preserve the same timeline. Older snapshots use grouped activity; server-history
-  restoration reconstructs model/tool order, but display-only reasoning summaries require saved
-  notebook output or event replay.
+  without consuming adjacent Markdown; rewrites and completion invalidate older prefixes. On kernels
+  advertising progressive templates, complete setup/template prefixes can mount before completion;
+  later templates preserve the same refs/computed state and existing compatible DOM. Script rewrites
+  establish a new scope. Incomplete tails retain the last usable component; invalid sealed updates
+  report a local diagnostic. Older kernels wait for successful completion. Model-supplied HTML stays
+  escaped. See the [SSR demo](demo/README.md) for the current subset and limitations. Tool nodes
+  retain structured arguments, latest progress and results, capped at 20,000 characters per detail
+  and 256 tools per run, with an explicit truncation note. Saving rejoins blocks into one portable
+  turn snapshot; reopening restores expanded replies and collapsed activity nodes. History tied to a
+  session/run reconnects the kernel and regains Vue rendering and interaction after exact source
+  verification against the committed transcript. Component-local state restarts from its initial
+  value. Edited, unbound, unavailable and offline history remains passive source; a file cannot
+  grant execution authority by storing a live marker or compiled code. Cancellation and failure
+  preserve the same timeline. Older snapshots use grouped activity; server-history restoration
+  reconstructs model/tool order, but display-only reasoning summaries require saved notebook output
+  or event replay.
 - Composer conveniences: **Maieutics: Queue Follow-up Turn** submits a message that joins the
   session's server-owned turn queue behind anything already queued or running (queued cells show
   `queued #N` markers with per-cell dequeue and clear-queue); a status-bar badge totals the provider

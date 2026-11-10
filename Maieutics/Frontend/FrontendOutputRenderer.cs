@@ -91,6 +91,8 @@ internal sealed class FrontendOutputRenderer(
             throw new FrontendFailureException("invalid_request", "Invalid template render request.");
         if (vue && request.Vue is not { Version: 1, Format: "markdown" or "sfc" })
             throw new FrontendFailureException("invalid_request", "Invalid Vue component request.");
+        if ((request.Progressive is true && !assistant) || (request.CompileOnly is true && request.Progressive is not true))
+            throw new FrontendFailureException("invalid_request", "Invalid progressive rendering request.");
         var lifetime = Admit();
         var entered = false;
         try
@@ -126,6 +128,12 @@ internal sealed class FrontendOutputRenderer(
             var component = vue || (assistant && result.Vue is not null);
             if (component && (result.Vue is not { Version: 1, Code: { Length: <= 400_000 } } ||
                         result.Vue.ScopeId != $"data-v-{request.DocumentId}" || result.Css is not { Length: <= 48_000 }))
+                throw Unavailable();
+            if (request.Progressive is true && result.Vue is { } progressiveComponent &&
+                (progressiveComponent.SetupKey is not { Length: 64 } ||
+                 progressiveComponent.SetupKey.Any(character => !char.IsAsciiHexDigit(character)) ||
+                 progressiveComponent.RenderCode is not { Length: <= 400_000 } ||
+                 result.RenderedSource is null || !request.Source.StartsWith(result.RenderedSource, StringComparison.Ordinal)))
                 throw Unavailable();
             return result with { Css = component ? _css + result.Css : _css };
         }

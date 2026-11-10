@@ -1157,9 +1157,10 @@ not select component execution. Invalid source is `400 invalid_request`; worker 
 The internal child endpoint is authenticated `POST /v1/assistant` and returns component-only CSS;
 the executable adds baseline styling. This endpoint does not change Agent history or event order.
 
-VS Code emits local `application/vnd.maieutics.live-assistant+json` for text nodes only after a
-successful run terminal frame. Payload remains the existing turn snapshot. Streaming text continues
-through passive turn MIME, and failed/cancelled/truncated executions never receive live provenance. The final
+The initial completed-only policy emitted local `application/vnd.maieutics.live-assistant+json`
+after a successful terminal frame. The optional progressive policy below also admits streaming
+text and preserves established setup through completion. Payload remains the existing turn snapshot. Unsupported frontends keep streaming text passive; failed/cancelled/truncated terminal snapshots
+use passive MIME. A partial component may already have run before its terminal outcome is known. The final
 text cache invalidates even if text bytes match its last streaming delta. The renderer sends the
 local bridge request with `assistant:true`; template/Vue selectors cannot be combined with that
 flag. The extension selects the endpoint only when advertised; older kernels retain passive SSR.
@@ -1202,3 +1203,42 @@ rejected. Unclosed streaming headers remain readable until sealed. No HTTP, IPC 
 changes; metadata alone never selects Vue execution. `useData()` is not implemented. VitePress site generation, site layouts/navigation and document
 `head` management are intentionally out of scope: the host frontend owns its enclosing document.
 Frontmatter fields such as `head` remain inert data and cannot change the host document. See the rendering design for data limits and exact subset.
+
+## Progressive assistant templates (optional v1)
+
+`rendering.progressiveVersion:1` enables complete-prefix Vue rendering through the existing
+`POST /v1/render/assistant`. Requests add optional boolean `progressive` and `compileOnly`:
+
+```json
+{"version":1,"documentId":"message1","source":"…","progressive":true,"compileOnly":false}
+```
+
+Initial accepted prefixes return the existing HTML/CSS/full factory, plus `renderedSource` and
+`vue.setupKey` (64 hex characters) / `vue.renderCode` (at most 400,000 characters). `renderedSource`
+is an exact prefix of the request source; it can stop before incomplete template syntax. A later
+request with `compileOnly:true` returns empty HTML and empty `vue.code`, retaining CSS, setup identity
+and a render-function factory. This path performs no SSR/setup execution. `compileOnly:true` requires
+`progressive:true` and the assistant endpoint; other selectors reject progressive execution.
+
+Clients mount only a full initial factory. Render-only updates require an existing matching setup
+identity, document generation and source revision. They update the Vue-owned render function/CSS
+while retaining the instance, refs, computed bindings and hooks; full factories from cache recovery
+can also update an existing matching scope without re-running setup. Script rewrites start a new
+source epoch and require a full initial factory. Template changes invalidate compiler render caches.
+Complete synchronous setup is required; arbitrary later declarations and async setup are unsupported.
+
+Supporting VS Code controllers emit the existing runtime assistant MIME during live text streaming.
+Model HTML/source text or persisted marker fields cannot opt into this provenance. Clients without
+the advertised capability keep streaming passive. Failure/cancellation/truncation return to passive
+output and stop owned Vue effects. Successful completion preserves a progressive instance already
+mounted. Notebook decoding remains passive; verified canonical history can renew provenance.
+
+The local bridge may deliver accepted prefix snapshots before the newest source finishes. It uses
+source epochs, revision ancestry and monotonic commits, rejects obsolete generations and sealed
+streaming replies, and clears initialization hints on cancellation/disposal. Pending tails retain
+the current component. Invalid sealed updates show a local diagnostic, not a guessed value.
+
+The broader revisioned document transport and external late-binding producer lifecycle remain
+proposed. This increment shares state only within one frontend's assistant text output, not across
+messages/cells/frontends. Source/HTML/CSS/code, admission, total request and isolated worker limits
+remain in force; at most 16 prefix compilation candidates are considered per progressive request.

@@ -578,6 +578,7 @@ export async function activate(context) {
   const states = new Map();
   const pending = new Map();
   const streams = new Map();
+  const diagnostics = new WeakMap();
   const releaseRegion = (region) => {
     region?.interactions?.abort();
     region?.dispose?.();
@@ -586,7 +587,10 @@ export async function activate(context) {
     state.interactions?.abort();
     for (const region of state.regions.values()) releaseRegion(region);
     state.regions.clear();
-    for (const documentId of state.documents) streams.delete(documentId);
+    for (const documentId of state.documents) {
+      streams.delete(documentId);
+      context.postMessage?.({ source: "maieutics-output", type: "cancel", documentId });
+    }
   };
   const current = (outputId, state, revision, signal) =>
     states.get(outputId) === state && state.revision === revision && !signal?.aborted;
@@ -631,11 +635,18 @@ export async function activate(context) {
         !stream || !Number.isSafeInteger(revision) || revision < stream.minimumRevision ||
         revision <= stream.committedRevision || revision > stream.request.revision ||
         typeof message.renderedSource !== "string" || message.renderedSource.length > 200_000 ||
-        !stream.text.startsWith(message.renderedSource) || message.vue !== undefined
+        !stream.text.startsWith(message.renderedSource) ||
+        (message.vue !== undefined && !stream.request.assistant)
       ) return;
       request = {
         ...stream.request,
-        key: JSON.stringify([message.renderedSource, undefined, undefined, false, true]),
+        key: JSON.stringify([
+          message.renderedSource,
+          undefined,
+          undefined,
+          stream.request.assistant,
+          true,
+        ]),
       };
       progress = { stream, revision };
     }
@@ -663,6 +674,24 @@ export async function activate(context) {
           }
           : {}),
       });
+    const updateStatus = (failed = false) => {
+      const root = request.node.shadowRoot ?? request.node;
+      diagnostics.get(request.node)?.remove();
+      diagnostics.delete(request.node);
+      const incomplete = failed ||
+        (typeof message.renderedSource === "string" && message.renderedSource !== request.text);
+      request.node.dataset.renderState = incomplete
+        ? (request.streaming ? "pending" : "failed")
+        : "ready";
+      if (incomplete && !request.streaming) {
+        const note = document.createElement("div");
+        note.dataset.componentDiagnostic = "true";
+        note.setAttribute("role", "status");
+        note.textContent = "组件更新未完成，保留上一次可用显示。";
+        root.appendChild(note);
+        diagnostics.set(request.node, note);
+      }
+    };
     const fallback = () => {
       releaseRegion(state.regions.get(request.node));
       state.regions.delete(request.node);
@@ -671,6 +700,11 @@ export async function activate(context) {
       acknowledge("native");
     };
     if (message.type === "unavailable") {
+      if (request.assistant && state.regions.get(request.node)?.dispose?.update) {
+        updateStatus(true);
+        acknowledge("vue");
+        return;
+      }
       fallback();
       return;
     }
@@ -685,6 +719,45 @@ export async function activate(context) {
       component && (message.vue?.version !== 1 || typeof message.vue.code !== "string" ||
         message.vue.code.length > 400_000 || message.vue.scopeId !== `data-v-${request.documentId}`)
     ) return;
+    const previousRegion = state.regions.get(request.node);
+    if (
+      request.assistant && previousRegion?.dispose?.update &&
+      message.vue?.setupKey === previousRegion.setupKey &&
+      typeof message.vue.renderCode === "string"
+    ) {
+      if (message.vue.renderCode.length > 400_000) return;
+      const root = request.node.shadowRoot ?? request.node;
+      const style = root.querySelector("style");
+      style.textContent = message.css;
+      return previousRegion.dispose.update(message.vue.setupKey, message.vue.renderCode).then(
+        (applied) => {
+          if (
+            !applied || states.get(request.outputId) !== state ||
+            state.regions.get(request.node) !== previousRegion
+          ) return;
+          previousRegion.css = message.css;
+          if (!current(request.outputId, state, request.revision, request.signal)) return;
+          previousRegion.key = request.key;
+          updateStatus();
+          if (progress) progress.stream.committedRevision = progress.revision;
+          acknowledge("vue");
+        },
+      ).catch(() => {
+        if (
+          states.get(request.outputId) === state &&
+          state.regions.get(request.node) === previousRegion
+        ) {
+          style.textContent = previousRegion.css;
+          if (current(request.outputId, state, request.revision, request.signal)) {
+            updateStatus(true);
+          }
+        }
+      });
+    }
+    if (component && message.vue.code.length === 0) {
+      updateStatus(true);
+      return;
+    }
     rememberCodeTabs(state.element, state);
     const style = document.createElement("style");
     style.textContent = message.css;
@@ -728,7 +801,14 @@ export async function activate(context) {
     let dispose;
     if (component) {
       try {
-        dispose = mountVueIsland(rendered, message.vue.code);
+        dispose = mountVueIsland(
+          rendered,
+          message.vue.code,
+          request.assistant && /^[a-f\d]{64}$/.test(message.vue.setupKey ?? "") &&
+            typeof message.vue.renderCode === "string" && message.vue.renderCode.length <= 400_000
+            ? { setupKey: message.vue.setupKey, renderCode: message.vue.renderCode }
+            : undefined,
+        );
       } catch {
         interactions.abort();
         fallback();
@@ -741,6 +821,8 @@ export async function activate(context) {
       ready: true,
       interactions,
       dispose,
+      setupKey: message.vue?.setupKey,
+      css: message.css,
     });
     const engine = component ? "vue" : "ssr";
     request.node.dataset.renderEngine = engine;
@@ -774,7 +856,7 @@ export async function activate(context) {
         : isTemplate
         ? { text: template ? payload.source : "[invalid_template]" }
         : payload;
-      const streaming = turn.streaming === true && !assistant && !vue && !template;
+      const streaming = turn.streaming === true && !vue && !template;
       let state = states.get(output.id);
       if (state && state.element !== element) {
         forgetPending(output.id, true);
@@ -792,7 +874,7 @@ export async function activate(context) {
       rememberCodeTabs(element, state);
       state.revision++;
       const revision = state.revision;
-      forgetPending(output.id, false);
+      forgetPending(output.id, !streaming && !assistant && !vue && !template);
       states.set(output.id, state);
       if (!streaming) {
         for (const documentId of state.documents) streams.delete(documentId);
@@ -815,10 +897,10 @@ export async function activate(context) {
         content.className = "maieutics-turn";
         content.innerHTML = markup;
       }
-      const mode = streaming
-        ? "streaming"
-        : assistant
+      const mode = assistant
         ? "assistant"
+        : streaming
+        ? "streaming"
         : vue
         ? `vue:${vue.format}`
         : template
@@ -885,6 +967,9 @@ export async function activate(context) {
           const request = {
             vue,
             assistant,
+            text: blocks[index],
+            progressive: assistant && (streaming || previous?.dispose?.update !== undefined),
+            streaming,
             mode,
             key,
             signal,
@@ -915,6 +1000,7 @@ export async function activate(context) {
               ...(template ? { template } : {}),
               ...(vue ? { vue } : {}),
               ...(assistant ? { assistant: true } : {}),
+              ...(request.progressive ? { progressive: true } : {}),
               ...(streaming ? { streaming: true } : {}),
             },
           });

@@ -188,10 +188,52 @@ export async function testSsrRenderingAsync(): Promise<void> {
     viewColumn: vscode.ViewColumn.Beside,
     preserveFocus: true,
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri, markdown.extensionUri] });
+  const progressiveRender = (showDouble: boolean, showSection: boolean) =>
+    `return function(_ctx,_cache,$props,$setup){const {h}=Vue;return h("div",{class:"maieutics-output vp-doc"},[h("button",{class:"progressive-counter",onClick:()=>{$setup.count++}},String($setup.count)),${
+      showDouble ? 'h("p",{class:"progressive-double"},String($setup.doubled)),' : ""
+    }${showSection ? 'h("section",null,String($setup.doubled)),' : ""}]);};`;
   const bridge = new OutputRenderingBridge({
-    render: async (documentId, text, signal, template, vue, assistant) =>
+    render: async (documentId, text, signal, template, vue, assistant, progressive) =>
       client
-        ? await client.renderMarkdown(documentId, text, signal, template, vue, assistant)
+        ? await client.renderMarkdown(
+          documentId,
+          text,
+          signal,
+          template,
+          vue,
+          assistant,
+          progressive,
+        )
+        : progressive && text.includes("__progressiveSetups")
+        ? (() => {
+          const accepted = text.endsWith("<section>{{")
+            ? text.slice(0, text.lastIndexOf("\n\n"))
+            : text;
+          const renderCode = progressiveRender(
+            accepted.includes("progressive-double"),
+            accepted.includes("</section>"),
+          );
+          const initial = text.includes("ref(9)") ? 9 : 0;
+          return {
+            version: 1 as const,
+            documentId,
+            renderedSource: accepted,
+            html:
+              `<div class="maieutics-output vp-doc"><button class="progressive-counter">${initial}</button></div>`,
+            css: "",
+            vue: {
+              version: 1 as const,
+              scopeId: `data-v-${documentId}`,
+              setupKey: (initial ? "f" : "e").repeat(64),
+              renderCode,
+              code: progressive.compileOnly
+                ? ""
+                : `const {ref,computed,onUnmounted}=Vue;return {setup(){globalThis.__progressiveSetups++;const count=ref(${initial}),doubled=computed(()=>count.value*2);onUnmounted(()=>globalThis.__progressiveUnmounts++);return {count,doubled}},render:(()=>{${
+                  progressiveRender(false, false)
+                }})()};`,
+            },
+          };
+        })()
         : (vue || assistant)
         ? {
           version: 1,
@@ -276,8 +318,9 @@ export async function testSsrRenderingAsync(): Promise<void> {
           postMessage: (message) => vscode.postMessage(message),
           onDidReceiveMessage: (handler) => {
             deliver = (message) => {
-              handler(message);
-              if (message.type === "rendered") delivered.resolve();
+              Promise.resolve(handler(message)).then(() => {
+                if (message.type === "rendered") delivered.resolve();
+              }, delivered.reject);
               if (message.type === "unavailable") delivered.reject(new Error("SSR snapshot unavailable"));
             };
             window.addEventListener("message", (event) => {
@@ -340,6 +383,58 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const readyRoot = readyTemplate.shadowRoot ?? readyTemplate;
         assert(readyRoot.querySelector('[data-template-state="ready"]')?.textContent === "42.00" && !readyRoot.querySelector('[data-template-state="pending"]'), "a binding-only update resolves earlier interpolation through the live kernel");
         assert(readyRoot.textContent.includes("Later independent prose"), "later content survives a binding-only update");
+        const streamingElement = document.createElement("div"); document.body.appendChild(streamingElement);
+        globalThis.__progressiveSetups = 0; globalThis.__progressiveUnmounts = 0;
+        const setupSource = '\\u003cscript setup lang="ts">\\nimport {ref,computed,onUnmounted} from "vue";\\nglobalThis.__progressiveSetups++;\\nconst count=ref(0); const doubled=computed(()=>count.value*2);\\nonUnmounted(()=>globalThis.__progressiveUnmounts++);\\n\\u003c/script>\\n\\n';
+        let streamingSource = setupSource + '<button class="progressive-counter" @click="count++">{{ count }}</button>';
+        const paintStreaming = async (streaming = true) => {
+          delivered = Promise.withResolvers();
+          await api.renderOutputItem({id:"streaming-vue",mime:"application/vnd.maieutics.live-assistant+json",json:()=>({text:streamingSource,streaming})},streamingElement);
+          await delivered.promise;
+          await vueRuntime.vueUpdatesComplete();
+          const boundary = streamingElement.querySelector('[data-render-engine="vue"]');
+          assert(boundary,"streaming complete setup mounts before reply completion");
+          return boundary.shadowRoot ?? boundary;
+        };
+        const streamingRoot = await paintStreaming();
+        const originalButton = streamingRoot.querySelector(".progressive-counter");
+        originalButton.click(); await vueRuntime.vueUpdatesComplete();
+        assert(originalButton.textContent === "1", "the first streaming component is interactive");
+        streamingSource += '\\n\\n<p class="progressive-double">{{ doubled }}</p>';
+        await paintStreaming();
+        assert(streamingRoot.querySelector(".progressive-counter") === originalButton && originalButton.textContent === "1", "a later template preserves the existing DOM and ref state");
+        assert(streamingRoot.querySelector(".progressive-double").textContent === "2", "later content reads the same computed and ref bindings");
+        streamingSource += '\\n\\n<section>{{';
+        await paintStreaming();
+        assert(originalButton.isConnected && globalThis.__progressiveSetups === 1, "incomplete trailing syntax retains the live component without rerunning setup");
+        originalButton.click(); await vueRuntime.vueUpdatesComplete();
+        streamingSource += ' doubled }}</section>';
+        await paintStreaming();
+        assert(streamingRoot.querySelector("section").textContent === "4", "new source reads current client state rather than a new SSR initial value");
+        await paintStreaming(false);
+        assert(globalThis.__progressiveSetups === 1 && globalThis.__progressiveUnmounts === 0 && originalButton.textContent === "2", "successful sealing preserves the mounted setup scope");
+        streamingSource += '\\n\\n<section>{{';
+        await paintStreaming(false);
+        assert(streamingRoot.querySelector('[data-component-diagnostic]') && originalButton.textContent === "2" && globalThis.__progressiveSetups === 1, "a sealed incomplete template reports a local diagnostic without resetting existing state");
+        streamingSource = streamingSource.slice(0,streamingSource.lastIndexOf('\\n\\n')).replace("ref(0)","ref(9)");
+        const rewrittenRoot = await paintStreaming();
+        assert(rewrittenRoot.querySelector(".progressive-counter").textContent === "9" && globalThis.__progressiveSetups === 2 && globalThis.__progressiveUnmounts === 1, "an actual setup rewrite starts a new owned scope exactly once");
+        api.disposeOutputItem("streaming-vue");
+        assert(globalThis.__progressiveUnmounts === 2, "disposing streaming output stops its setup effects exactly once");
+        const parallelElement = document.createElement("div"); document.body.appendChild(parallelElement);
+        parallelElement.innerHTML = "<p>0</p>";
+        globalThis.__parallelSetups = 0;
+        const parallelKey = "b".repeat(64);
+        const parallel = vueRuntime.mountVueIsland(parallelElement, 'return {setup(){globalThis.__parallelSetups++;return {value:Vue.ref(0)}},render(_ctx,_cache,$props,$setup){return Vue.h("p",String($setup.value))}};', {setupKey:parallelKey,renderCode:"unused"});
+        const olderUpdate = parallel.update(parallelKey, 'return function(_ctx,_cache,$props,$setup){return Vue.h("p",String($setup.value)+" older")}');
+        const newerUpdate = parallel.update(parallelKey, 'return function(_ctx,_cache,$props,$setup){return Vue.h("p",String($setup.value)+" newer")}');
+        const appliedUpdates = await Promise.all([olderUpdate,newerUpdate]);
+        assert(appliedUpdates[0] === false && appliedUpdates[1] === true && parallelElement.textContent === "0 newer", "batched template jobs commit only the latest render function");
+        const badUpdate = await parallel.update(parallelKey,'return function(){throw new Error("fixture") }').then(()=>null,error=>error);
+        assert(badUpdate && parallelElement.textContent === "0 newer" && globalThis.__parallelSetups === 1, "failed render updates recover the last committed function without repeating setup");
+        const disposingUpdate = parallel.update(parallelKey,'return function(){return Vue.h("p","disposed update")}');
+        parallel();
+        assert(await disposingUpdate === false && parallelElement.dataset.vueState === "disposed", "disposal invalidates pending template flushes");
         const vueElement = document.createElement("div"); document.body.appendChild(vueElement);
         let vueSource = ${
       JSON.stringify(VueDemoSource).replaceAll("<", String.fromCharCode(92) + "u003c")
@@ -389,7 +484,8 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(firstVue.querySelector(".counter-display").textContent === "2", "the retained Vue island remains interactive while SSR is pending");
         holdDelivery = false; deliver(heldMessage);
         const secondVue = await replacingVue;
-        assert(globalThis.__maieuticsVueUnmounts === 1, "source replacement unmounts the previous component exactly once");
+        assert(globalThis.__maieuticsVueUnmounts === 1, "completed legacy source replacement unmounts its prior instance once");
+        secondVue.querySelector(".counter-reset").click(); await vueRuntime.vueUpdatesComplete();
         await clickCounter(secondVue);
         api.disposeOutputItem("vue-demo");
         assert(globalThis.__maieuticsVueUnmounts === 2, "output disposal unmounts Vue effects exactly once");

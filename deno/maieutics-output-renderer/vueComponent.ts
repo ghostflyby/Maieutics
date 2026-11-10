@@ -1,6 +1,7 @@
 // @deno-types="npm:@vue/compiler-sfc@3.5.13/dist/compiler-sfc.d.ts"
 import { compileScript, compileStyle, compileTemplate, parse as parseSfc } from "@vue/compiler-sfc";
 import { type Node, parse } from "acorn";
+import { createHash } from "node:crypto";
 import { transform } from "sucrase";
 
 /** Compiled component code is used unchanged by isolated SSR and the live client island. */
@@ -8,6 +9,8 @@ export interface CompiledVueComponent {
   readonly code: string;
   readonly css: string;
   readonly scopeId: string;
+  readonly setupKey?: string;
+  readonly renderCode?: string;
 }
 
 /** Fixed diagnostics never include source text, values or compiler exception details. */
@@ -67,6 +70,7 @@ export function compileVueComponent(
   documentId: string,
   source: string,
   frontmatter?: Record<string, unknown>,
+  progressive = false,
 ): CompiledVueComponent {
   if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > 200_000) {
     throw new VueComponentError("invalid_component");
@@ -83,8 +87,11 @@ export function compileVueComponent(
         style.src || style.module || (style.lang && style.lang !== "css")
       )
     ) throw new VueComponentError("invalid_component");
+    if (progressive && (!descriptor.scriptSetup || descriptor.script)) {
+      throw new VueComponentError("invalid_component");
+    }
     const script = descriptor.script || descriptor.scriptSetup
-      ? compileScript(descriptor, {
+      ? compileScript(progressive ? { ...descriptor, template: null } : descriptor, {
         id: scopeId,
         genDefaultAs: "__maieutics_component",
         inlineTemplate: false,
@@ -95,7 +102,10 @@ export function compileVueComponent(
       filename: "output.vue",
       id: scopeId,
       scoped: descriptor.styles.some((style) => style.scoped),
-      compilerOptions: { bindingMetadata: script?.bindings },
+      compilerOptions: {
+        bindingMetadata: script?.bindings,
+        ...(progressive ? { hoistStatic: false, cacheHandlers: false } : {}),
+      },
     });
     if (template.errors.length) throw new VueComponentError("invalid_component");
     const scriptJs = script
@@ -116,6 +126,54 @@ export function compileVueComponent(
       if (compiled.errors.length) throw new VueComponentError("invalid_component");
       return compiled.code;
     }).join("\n");
+    const renderCode = `${moduleBody(template.code)}\nreturn render;`;
+    if (progressive) {
+      const rejectAsyncSetup = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          for (const item of value) rejectAsyncSetup(item);
+          return;
+        }
+        if (value === null || typeof value !== "object") return;
+        const node = value as {
+          type?: string;
+          key?: { name?: string };
+          value?: { async?: boolean };
+        };
+        if (node.type === "Property" && node.key?.name === "setup" && node.value?.async) {
+          throw new VueComponentError("invalid_component");
+        }
+        for (const item of Object.values(value)) rejectAsyncSetup(item);
+      };
+      rejectAsyncSetup(parse(scriptJs, { ecmaVersion: 2022, sourceType: "module" }));
+      const tree = parse(template.code, { ecmaVersion: 2022, sourceType: "module" });
+      const check = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          for (const item of value) check(item);
+          return;
+        }
+        if (value === null || typeof value !== "object") return;
+        const node = value as Node & {
+          object?: { type: string; name?: string };
+          property?: { type: string; name?: string };
+          computed?: boolean;
+        };
+        if (
+          node.type === "MemberExpression" && node.object?.type === "Identifier" &&
+          node.object.name === "_ctx" &&
+          (node.computed || node.property?.type !== "Identifier" ||
+            !["$frontmatter", "$attrs", "$slots", "$props", "$emit"].includes(
+              node.property?.name ?? "",
+            ))
+        ) {
+          throw new VueComponentError("invalid_component");
+        }
+        for (const child of Object.values(value)) check(child);
+      };
+      check(tree);
+    }
+    const setupKey = progressive
+      ? createHash("sha256").update(JSON.stringify([scriptJs, frontmatter, scopeId])).digest("hex")
+      : undefined;
     const code = `"use strict";\nconst component = (()=>{${
       moduleBody(scriptJs)
     }\nreturn __maieutics_component;})();\ncomponent.render=(()=>{${
@@ -130,7 +188,7 @@ export function compileVueComponent(
     if (code.length > 400_000 || css.length > 48_000) {
       throw new VueComponentError("invalid_component");
     }
-    return { code, css, scopeId };
+    return { code, css, scopeId, ...(progressive ? { setupKey, renderCode } : {}) };
   } catch (error) {
     if (error instanceof VueComponentError) throw error;
     throw new VueComponentError("invalid_component");

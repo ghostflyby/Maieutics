@@ -138,6 +138,7 @@ export class FrontendClient {
     template?: TemplateContext,
     vue?: VueRequest,
     assistant = false,
+    progressive?: { compileOnly: boolean },
   ): Promise<RenderedMarkdown> {
     const body = await this.post<unknown>(
       assistant
@@ -153,6 +154,7 @@ export class FrontendClient {
         source,
         ...(template ? { template } : {}),
         ...(vue ? { vue } : {}),
+        ...(progressive ? { progressive: true, compileOnly: progressive.compileOnly } : {}),
       },
       signal,
     );
@@ -171,9 +173,20 @@ export class FrontendClient {
       (result.vue?.version !== 1 || typeof result.vue.code !== "string" ||
         result.vue.code.length > 400_000 || result.vue.scopeId !== `data-v-${documentId}`)
     ) throw new FrontendError("protocol_error", 0, "Invalid Vue component snapshot.");
+    if (
+      progressive && result.vue &&
+      (typeof result.vue.setupKey !== "string" || !/^[a-f\d]{64}$/.test(result.vue.setupKey) ||
+        typeof result.vue.renderCode !== "string" || result.vue.renderCode.length > 400_000 ||
+        typeof result.renderedSource !== "string" || !source.startsWith(result.renderedSource))
+    ) {
+      throw new FrontendError("protocol_error", 0, "Invalid progressive component snapshot.");
+    }
     return {
       version: 1,
       documentId,
+      ...(progressive && result.renderedSource !== undefined
+        ? { renderedSource: result.renderedSource }
+        : {}),
       html: result.html,
       css: result.css,
       ...((vue || assistant) && result.vue ? { vue: result.vue } : {}),

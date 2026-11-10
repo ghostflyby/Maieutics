@@ -1,3 +1,4 @@
+import { VueComponentError } from "./vueComponent.ts";
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { createOutputRenderer, OutputRenderingError } from "./mod.ts";
 import { TemplateInputError } from "./template.ts";
@@ -740,5 +741,92 @@ Deno.test("explicit JSON frontmatter is strict and incomplete streaming metadata
   assertStringIncludes(
     (await renderer.render("stream", "---\ntitle: {{ $frontmatter.title }}")).html,
     "{{ $frontmatter.title }}",
+  );
+});
+
+Deno.test("progressive templates reuse a sealed setup scope and never SSR subsequent updates", async () => {
+  using renderer = await createOutputRenderer();
+  const setup =
+    '<script setup lang="ts">\nimport {ref,computed} from "vue";\nconst count=ref<number>(0);\nconst doubled=computed(()=>count.value*2);\nif(globalThis.Deno) { /* presentation-only fixture */ }\n</script>\n\n';
+  const source = setup + '<button @click="count++">{{ count }}</button>';
+  const initial = await renderer.renderAssistant("progressive", source, undefined, {
+    compileOnly: false,
+  });
+  assert(initial.vue?.setupKey);
+  assert(initial.vue.renderCode);
+  assertStringIncludes(initial.html, ">0</button>");
+  const next = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n<p>Double: {{ doubled }}</p>",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(next.vue?.setupKey, initial.vue.setupKey);
+  assertEquals(next.html, "");
+  assertEquals(next.vue?.code, "");
+  assertStringIncludes(next.vue?.renderCode ?? "", "doubled");
+  const partial = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n<section><p>{{ doubled",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(partial.renderedSource, source);
+  const unresolved = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n{{ notDeclaredYet }}",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(unresolved.renderedSource, source);
+  const condition = await renderer.renderAssistant(
+    "progressive",
+    source + '\n\n<p v-if="futureValue">Ready</p><p v-else>Not ready</p>',
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(condition.renderedSource, source);
+  const changed = await renderer.renderAssistant(
+    "progressive",
+    source.replace("ref<number>(0)", "ref<number>(7)"),
+    undefined,
+    { compileOnly: true },
+  );
+  assert(changed.vue?.setupKey !== initial.vue.setupKey);
+  await assertRejects(
+    () =>
+      renderer.renderAssistant("progressive", "<script setup>const count = ", undefined, {
+        compileOnly: false,
+      }),
+    VueComponentError,
+  );
+});
+
+Deno.test("progressive admission rejects async setup instead of mounting an unowned pending scope", async () => {
+  using renderer = await createOutputRenderer();
+  await assertRejects(
+    () =>
+      renderer.renderAssistant(
+        "async",
+        "<script setup>const count=await Promise.resolve(0)</script>\n\n<p>{{ count }}</p>",
+        undefined,
+        { compileOnly: false },
+      ),
+    VueComponentError,
+  );
+});
+
+Deno.test("compile-only updates cannot execute even a throwing setup body", async () => {
+  using renderer = await createOutputRenderer();
+  const source = '<script setup>throw new Error("setup must not run")</script>\n\n<p>Template</p>';
+  const result = await renderer.renderAssistant("compileonly", source, undefined, {
+    compileOnly: true,
+  });
+  assertEquals(result.html, "");
+  assertEquals(result.vue?.code, "");
+  assertStringIncludes(result.vue?.renderCode ?? "", "Template");
+  await assertRejects(
+    () => renderer.renderAssistant("compileonly", source, undefined, { compileOnly: false }),
+    VueComponentError,
   );
 });

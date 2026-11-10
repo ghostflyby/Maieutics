@@ -253,3 +253,13 @@ a new generation with fresh nonce/readiness, without replaying the failed render
 Transient launch failures do not latch rendering off. Retirement and host shutdown join owned
 observers/processes, drain admitted requests and remove staging state. API and notebook versions
 remain unchanged. See the design for cancellation and concurrency semantics.
+
+## Progressive assistant templates
+
+`renderAssistant(id, source, signal, {compileOnly:false})` admits complete prefixes with a single
+synchronous setup module. Compiled results carry `setupKey`, `renderCode` and `renderedSource`. The
+client mounts the initial SSR once; `{compileOnly:true}` compiles subsequent templates without
+executing setup/SSR and returns empty HTML/full factory code. Refs/computed/closures belong to the
+retained client instance. Async setup and undeclared template context names are rejected; at most 16
+blank-line prefix candidates are attempted. Existing source, worker and output limits apply. The
+renderer retains no producer or JS document VM. See the protocol for capability negotiation.

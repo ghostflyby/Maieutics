@@ -13,7 +13,9 @@
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
       "maieutics-vscode/media/viewRenderer.js",
-      "maieutics-vscode/media/vueIslands.js"
+      "maieutics-vscode/media/vueIslands.js",
+      "maieutics-output-renderer/styles.css",
+      "maieutics-output-renderer/vendor/vitepress/styles/"
     ]
   },
   "lint": {

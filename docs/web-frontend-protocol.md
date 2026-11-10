@@ -1262,3 +1262,14 @@ frontend clipboard support. The VS Code renderer sends request-correlated `copy`
 messages to its extension host, independently of the rendering HTTP API. Text is capped at 200,000
 UTF-16 code units, copied verbatim without synthetic decorations, and never logged. Disposal drops
 pending UI references; stale responses do not update detached output.
+
+### Default content theme and CSS bounds
+
+The v1 rendering CSS response includes a scoped, offline VitePress default content theme. The host
+retains ownership of its enclosing document and form controls. The baseline and authored component
+CSS are each bounded to 48,000 UTF-16 characters; receivers supporting this theme admit their combined
+96,000-character CSS response. The component limit and response fields are unchanged. Earlier 64k
+receivers continue to render normal responses and may fall back for large combined stylesheets.
+The CSS contains no imports or downloaded fonts; its external-link decoration uses an embedded SVG.
+Dark hosts can mark the output or an ancestor `.dark`; Shadow DOM adapters also recognize VS Code's
+dark/high-contrast contexts. Theme changes do not execute or reinitialize components.

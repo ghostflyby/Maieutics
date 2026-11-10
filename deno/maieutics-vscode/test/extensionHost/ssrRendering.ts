@@ -53,10 +53,20 @@ const CodeDemoSource = [
   "",
   "$x^2$",
   "",
+  "Body paragraph.",
+  "",
+  "- First item",
+  "- Second item",
+  "",
+  "| Key | Value |",
+  "| --- | --- |",
+  "| Theme | Default |",
+  "",
   "::: code-group",
   "~~~ts:line-numbers=7 {2} [report.ts]",
   "// [!code highlight]",
   "const total = 42;",
+  "const added = 1; // [!code ++]",
   "~~~",
   "",
   "~~~json [report.json]",
@@ -278,7 +288,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           html:
             `<div class="maieutics-output vp-doc"><nav class="table-of-contents"><a href="#${documentId}-contents">Contents</a></nav><h2 id="${documentId}-contents" tabindex="-1">Contents</h2><div class="custom-block note github-alert">Shared alert</div><div class="custom-block tip">Shared SSR</div><span class="math-inline"><svg viewBox="0 0 10 10" role="img"><path d="M0 0L1 1"/></svg></span>
           <fieldset class="vp-code-group"><legend>Code examples</legend>
-          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><div class="code-block"><button type="button" class="code-copy" data-code-copy="// [!code highlight]&#10;const total = 42;&#10;">复制</button><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div></div>
+          <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><div class="code-block"><button type="button" class="code-copy" data-code-copy="// [!code highlight]&#10;const total = 42;&#10;const added = 1; // [!code ++]&#10;">复制</button><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div></div>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
           </fieldset></div>`,
           diagnostics: text.includes("unclosed-demo")
@@ -370,6 +380,36 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(root.querySelector("style")?.textContent.includes("--vscode"), "host-scoped styles are delivered through messaging");
         assert(root.querySelector('.line.highlighted[data-line="7"]'), "line metadata reaches the actual browser");
         assert(root.querySelector(".github-alert.note")?.textContent.includes("Shared alert"), "upstream alert parsing reaches the browser");
+        if (${client !== undefined}) {
+          const wrapper=root.querySelector(".maieutics-output");
+          const diffLine=root.querySelector('.line.diff.add[data-line="8"]');
+          assert(diffLine && getComputedStyle(diffLine,"::before").content.includes("8") && getComputedStyle(diffLine,"::after").content.includes("+"),"upstream diff symbols coexist with native line numbers");
+          const h2=root.querySelector("h2");
+          const tip=root.querySelector(".custom-block.tip");
+          assert(getComputedStyle(h2).fontSize === "24px" && getComputedStyle(h2).paddingTop === "24px", "upstream heading typography and section spacing reach the actual output");
+          assert(getComputedStyle(tip).borderRadius === "8px" && getComputedStyle(tip).paddingTop === "16px", "upstream rounded container framing replaces the former left-bar approximation");
+          const outside=document.createElement("p"); outside.textContent="Host-owned content"; root.appendChild(outside);
+          const beforeOutside=getComputedStyle(outside).lineHeight;
+          assert(beforeOutside !== "28px", "content typography stays inside its output root even within the same shadow boundary");
+          const bodyClasses=document.body.className;
+          const bodyStyle=document.body.getAttribute("style");
+          document.body.classList.remove("vscode-dark","vscode-high-contrast","dark");
+          document.body.classList.add("vscode-light");
+          document.body.style.setProperty("--vscode-editor-foreground","#202020");
+          document.body.style.setProperty("--vscode-editor-background","#ffffff");
+          const syntax=root.querySelector(".shiki span[style*='--shiki-light']");
+          const lightSyntax=getComputedStyle(syntax).color;
+          const lightTip=getComputedStyle(tip).backgroundColor;
+          assert(getComputedStyle(wrapper).color === "rgb(32, 32, 32)","content inherits the host's light text palette");
+          document.body.classList.remove("vscode-light"); document.body.classList.add("vscode-dark");
+          document.body.style.setProperty("--vscode-editor-foreground","#dddddd");
+          document.body.style.setProperty("--vscode-editor-background","#181818");
+          assert(getComputedStyle(wrapper).color === "rgb(221, 221, 221)","content follows host theme variables without recompiling");
+          assert(getComputedStyle(syntax).color !== lightSyntax && getComputedStyle(tip).backgroundColor !== lightTip,"Shadow DOM dark context switches both Shiki tokens and upstream soft palettes");
+          document.body.className=bodyClasses;
+          if(bodyStyle===null)document.body.removeAttribute("style");else document.body.setAttribute("style",bodyStyle);
+          outside.remove();
+        }
         const tocLink = root.querySelector(".table-of-contents a");
         const heading = root.querySelector("h2");
         assert(tocLink?.getAttribute("href") === "#" + heading?.id, "TOC and custom anchors share the same document scope");
@@ -381,7 +421,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(copyButton,"code fences expose an accessible copy button");
         copyButton.click();
         const copyResult = await copied.promise;
-        assert(copyResult.ok && copyResult.copiedText === "// [!code highlight]\\nconst total = 42;\\n", "copy uses exact source without synthetic line numbers");
+        assert(copyResult.ok && copyResult.copiedText === "// [!code highlight]\\nconst total = 42;\\nconst added = 1; // [!code ++]\\n", "copy uses exact source without synthetic line numbers");
         assert(copyButton.textContent === "已复制" && !copyButton.disabled, "copy completion is acknowledged by the extension host");
         const labels = root.querySelectorAll(".code-tab > label");
         const panels = root.querySelectorAll(".code-panel");
@@ -406,6 +446,19 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const diagnosticRoot = diagnosticNode.shadowRoot ?? diagnosticNode;
         assert(diagnosticRoot.querySelector('[data-component-diagnostic]')?.textContent.includes("第 3 行"),"sealed fence diagnostics display original source coordinates");
         api.disposeOutputItem("diagnostic-demo");
+        if (${client !== undefined}) {
+          const bigElement=document.createElement("div");document.body.appendChild(bigElement);
+          const lt=String.fromCharCode(60);
+          const bigSource=lt+'script setup>const label="Styled"'+lt+'/script>\\n\\n<p class="style-budget">{{label}}</p>\\n\\n'+lt+'style scoped>.style-budget{--fixture-padding:'+'x'.repeat(36000)+';margin:3px;color:rgb(12,34,56)}'+lt+'/style>';
+          delivered=Promise.withResolvers();
+          await api.renderOutputItem({id:"style-budget",mime:"application/vnd.maieutics.live-assistant+json",json:()=>({text:bigSource})},bigElement);
+          await delivered.promise;
+          const bigNode=bigElement.querySelector('[data-render-engine="vue"]');
+          assert(bigNode,"upstream baseline plus large authored CSS fits the combined CSS budget");
+          const bigRoot=bigNode.shadowRoot ?? bigNode;
+          assert(getComputedStyle(bigRoot.querySelector(".style-budget")).color === "rgb(12, 34, 56)" && getComputedStyle(bigRoot.querySelector(".style-budget")).marginTop === "3px","authored scoped component CSS still overrides the default content theme");
+          api.disposeOutputItem("style-budget");bigElement.remove();
+        }
         const templateElement = document.createElement("div"); document.body.appendChild(templateElement);
         const templateSource = "Total {{ report.total.toFixed(2) }}\\n\\nLater independent prose";
         const templateItem = (binding) => ({ id: "binding-demo", mime: "application/vnd.maieutics.template+json", json: () => ({ version: 1, source: templateSource, bindings: [binding] }) });
@@ -443,6 +496,9 @@ export async function testSsrRenderingAsync(): Promise<void> {
           const liveCopy = await copied.promise;
           assert(liveCopy.ok && liveCopy.copiedText === "print(42)\\n","copy controls also work inside a retained live Vue template");
         }
+        let styleWrites=0;
+        const styleObserver=new MutationObserver(records=>{styleWrites+=records.length;});
+        styleObserver.observe(streamingRoot.querySelector("style"),{childList:true,subtree:true,characterData:true});
         const originalButton = streamingRoot.querySelector(".progressive-counter");
         originalButton.click(); await vueRuntime.vueUpdatesComplete();
         assert(originalButton.textContent === "1", "the first streaming component is interactive");
@@ -450,6 +506,8 @@ export async function testSsrRenderingAsync(): Promise<void> {
         await paintStreaming();
         assert(streamingRoot.querySelector(".progressive-counter") === originalButton && originalButton.textContent === "1", "a later template preserves the existing DOM and ref state");
         assert(streamingRoot.querySelector(".progressive-double").textContent === "2", "later content reads the same computed and ref bindings");
+        styleObserver.disconnect();
+        assert(styleWrites === 0,"template-only streaming updates keep the unchanged stylesheet instead of reparsing or restarting its animations");
         streamingSource += '\\n\\n<section>{{';
         await paintStreaming();
         assert(originalButton.isConnected && globalThis.__progressiveSetups === 1, "incomplete trailing syntax retains the live component without rerunning setup");

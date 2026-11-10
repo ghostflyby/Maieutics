@@ -15,12 +15,30 @@
     {
       "path": "LICENSE",
       "sha256": "6db2f08c2112251083b26df3117dde40c5589d337195953531e7e677d1a600e5"
+    },
+    {
+      "path": "src/client/theme-default/styles/base.css",
+      "sha256": "cb794d155cc71c23fcb1c75206d79a7caba65e5a38714ffbc715cf2a6f62e6f8"
+    },
+    {
+      "path": "src/client/theme-default/styles/vars.css",
+      "sha256": "9c609f13219941d719aba404d5b53993ad3a7645d061e09c1a9015be87076789"
+    },
+    {
+      "path": "src/client/theme-default/styles/components/vp-doc.css",
+      "sha256": "8592acab7421a4010518b43e7bebcffd5a854972560aff6bf1b54fda6b237428"
+    },
+    {
+      "path": "src/client/theme-default/styles/components/custom-block.css",
+      "sha256": "c68061b3b29707cadd0c05aa30272e73683e8d925e7486329c898857db18a087"
     }
   ],
   "adaptations": [
     "Deno imports and formatting; CJS/ESM type boundary adaptation.",
     "containers.ts extracts ordinary containers only; raw/v-pre and upstream code groups are excluded. Existing native code groups retain their own coherent markup and styles.",
     "Container inline title environment includes documentId and the captured template snapshot so titles share local link scope, binding values and expression limits; existing custom-block class order is retained.",
-    "githubAlerts.ts parsing is retained; contentPlugins.ts overrides title rendering to escape text."
+    "githubAlerts.ts parsing is retained; contentPlugins.ts overrides title rendering to escape text.",
+    "Default theme CSS sources are retained verbatim under styles/. build_styles.ts selects content resets and used variables, scopes selectors, maps VS Code colors and emits styles.css. Site layout, form resets, site-only code controls and team rules are excluded. styles.host.css adapts native code tabs/copy/line numbers, Shadow DOM dark mode and bounded output layout.",
+    "Code diff symbols use ::after in generated CSS because native data-line numbers own ::before. Upstream sources stay unchanged."
   ]
 }

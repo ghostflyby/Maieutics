@@ -740,7 +740,7 @@ export async function activate(context) {
     if (
       message.type !== "rendered" || typeof message.html !== "string" ||
       message.html.length > 4_000_000 ||
-      typeof message.css !== "string" || message.css.length > 64_000 ||
+      typeof message.css !== "string" || message.css.length > 96_000 ||
       states.get(request.outputId)?.revision !== request.revision
     ) return;
     const component = request.vue || (request.assistant && message.vue !== undefined);
@@ -757,7 +757,7 @@ export async function activate(context) {
       if (message.vue.renderCode.length > 400_000) return;
       const root = request.node.shadowRoot ?? request.node;
       const style = root.querySelector("style");
-      style.textContent = message.css;
+      if (style.textContent !== message.css) style.textContent = message.css;
       return previousRegion.dispose.update(message.vue.setupKey, message.vue.renderCode).then(
         (applied) => {
           if (

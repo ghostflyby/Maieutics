@@ -48,8 +48,9 @@ these handlers on replacement/disposal; other Shadow DOM hosts need an equivalen
 TypeScript, JavaScript, JSON, Python, Bash, C#, C/C++, Java, Go, Rust, SQL, YAML, TOML, HTML, CSS,
 Markdown, diff, Dockerfile, XML, PowerShell, Ruby, Swift and Kotlin grammars and both GitHub light
 and dark themes are bundled statically. Unknown languages use escaped plain text without dynamically
-loading packages or starting workers. `styles.css` provides host-scoped baseline styles using VS
-Code variables with browser fallbacks.
+loading packages or starting workers. `styles.css` is generated from the pinned VitePress 1.6.4
+default-theme content CSS, with output scoping and VS Code host-variable adapters; see the
+default-theme section below.
 
 Fences accept literal filename titles (`ts [report.ts]`), line numbers (`ts:line-numbers`,
 `ts:line-numbers=7`, `ts:no-line-numbers`), and highlighted line lists or ranges (`ts{1,3-5}`).
@@ -197,7 +198,7 @@ Run from this directory after installing the workspace's locked dependencies:
 deno task check
 deno task test
 deno task build
-git diff --exit-code --stat -- bundle/
+git diff --exit-code --stat -- bundle/ styles.css
 deno task smoke:offline
 ```
 
@@ -292,3 +293,30 @@ Markdown parsing or silently repair delimiters. VS Code shows diagnostics after 
 Vue-owned DOM, and preserves the previous valid interactive presentation on update failure. The same
 optional field crosses the internal child API and the public rendering API, including typed 400
 component failures. Older clients ignore it. No extra Deno permissions are needed.
+
+## Upstream default content theme
+
+`vendor/vitepress/styles/` retains verbatim v1.6.4 `base.css`, `vars.css`, `vp-doc.css`, and
+`custom-block.css`, with original hashes in the upstream manifest. `build_styles.ts` reuses Vue's
+public style compiler/PostCSS tree to select content resets, collect the transitively required
+variables, scope every selector to `.maieutics-output`, and produce the committed `styles.css`. The
+MIT notice ships in that artifact. No VitePress site app, global html/body rules, navigation, font
+downloads, form-control resets or team layout is imported. Heading/list/paragraph/quote/table,
+inline code, rounded custom blocks and code presentation use upstream declarations.
+
+`styles.host.css` keeps only host/markup adapters: native radio code groups, text copy controls,
+inline `data-line` numbers, local anchors, data-template states, and math. Diff symbols move to
+`::after` because line numbers own `::before`. Code margins stay inside output boundaries rather
+than using VitePress's mobile full-bleed layout. Scoping uses `:where` so authored scoped component
+styles retain precedence. Host fonts/text/background/link colors wrap upstream variable defaults;
+standalone output falls back to VitePress palettes. `.dark` on the output or an ancestor selects
+dark mode. Shadow DOM hosts recognize `.vscode-dark`, `.vscode-high-contrast` and `.dark` through
+`:host-context`, including both upstream palettes and Shiki tokens. High-contrast-light remains on
+the light path. The only image URL is upstream's embedded SVG external-link icon.
+
+The baseline CSS is bounded to 48,000 characters; component CSS remains bounded separately to
+48,000. New VS Code receivers admit their combined 96,000-character response. Older 64k receivers
+can still display normal output but may fall back for unusually large authored component CSS. There
+is no request or notebook format change. `deno task build:styles` regenerates CSS; the normal build
+includes it. A focused artifact/hash test and CI's post-build diff enforce freshness alongside the
+offline SSR bundle. No new runtime permissions or dependencies are required.

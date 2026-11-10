@@ -63,8 +63,9 @@
   },
   "tasks": {
     "check": "deno check .",
-    "test": "deno test --allow-env=NODE_ENV,VSCODE_TEXTMATE_DEBUG --unstable-worker-options",
-    "build": "deno bundle --platform=browser --config deno.worker.json --minify -o dist/vue_worker.js vue_worker.ts && deno run --allow-read=dist/vue_worker.js --allow-write=bundle/vue_worker_source.js build_vue_worker.ts && deno bundle --minify -o dist/smoke.js smoke.ts && deno bundle --minify -o bundle/service.js service_main.ts && deno run --allow-read=bundle/service.js,vendor/ --allow-write=bundle/service.js bundle_output.ts",
-    "smoke:offline": "deno run --unstable-worker-options --no-config --no-npm --no-remote --cached-only --deny-net --deny-run --deny-read --deny-write --allow-env=VSCODE_TEXTMATE_DEBUG dist/smoke.js"
+    "test": "deno test --allow-read=vendor/vitepress,styles.host.css,styles.css --allow-env=NODE_ENV,VSCODE_TEXTMATE_DEBUG --unstable-worker-options",
+    "build": "deno task build:styles && deno bundle --platform=browser --config deno.worker.json --minify -o dist/vue_worker.js vue_worker.ts && deno run --allow-read=dist/vue_worker.js --allow-write=bundle/vue_worker_source.js build_vue_worker.ts && deno bundle --minify -o dist/smoke.js smoke.ts && deno bundle --minify -o bundle/service.js service_main.ts && deno run --allow-read=bundle/service.js,vendor/ --allow-write=bundle/service.js bundle_output.ts",
+    "smoke:offline": "deno run --unstable-worker-options --no-config --no-npm --no-remote --cached-only --deny-net --deny-run --deny-read --deny-write --allow-env=VSCODE_TEXTMATE_DEBUG dist/smoke.js",
+    "build:styles": "deno run --allow-read=vendor/vitepress,styles.host.css --allow-write=styles.css build_styles.ts"
   }
 }

@@ -165,7 +165,7 @@ export class FrontendClient {
     const result = body as Partial<RenderedMarkdown>;
     if (
       result.version !== 1 || result.documentId !== documentId || typeof result.html !== "string" ||
-      result.html.length > 4_000_000 || typeof result.css !== "string" || result.css.length > 64_000
+      result.html.length > 4_000_000 || typeof result.css !== "string" || result.css.length > 96_000
     ) {
       throw new FrontendError("protocol_error", 0, "The renderer returned an invalid snapshot.");
     }

@@ -802,6 +802,35 @@ Vue and progressive Vue paths, source-line diagnostics, and existing ref/compute
 Warning-free Release build, NativeAOT publishing, offline smoke, bundle freshness, types/lint/format
 and diff checks pass. Linux/Windows CI remains to be run.
 
+## Upstream default content theme (implemented 2026-11-10)
+
+The output now uses VitePress v1.6.4 default content styling rather than the former hand-written
+approximation. Four upstream sources are retained verbatim with SHA-256 entries in the existing
+MIT vendor manifest: base.css, vars.css, vp-doc.css and custom-block.css. A deterministic build
+adapter uses the pinned Vue style compiler's PostCSS tree, selects content resets and the variable
+dependency closure, scopes selectors to the output boundary, wraps host color/font tokens around
+upstream defaults, and emits the committed, licensed styles.css. Runtime rendering still reads one
+embedded CSS resource. No site runtime, host html/body/global layout, downloaded fonts, form resets,
+navigation or team layout is introduced.
+
+Headings, paragraphs, lists, quotes, striped tables, inline code, rounded semantic containers and
+code blocks retain upstream declarations. An explicit product adapter handles native radio tabs,
+copy buttons, inline data-line numbers, template states and math. Diff symbols use ::after so they
+do not replace line numbers' ::before. Mobile code margins stay within the notebook boundary.
+The low-specificity :where output guard preserves authored scoped component style precedence.
+Shadow DOM dark contexts recognize VS Code dark/high-contrast and generic .dark ancestors; standalone
+hosts can mark the root/ancestor .dark. Upstream fallback palettes and Shiki tokens switch together
+without recompiling output. Template-only updates also leave an identical mounted stylesheet in place,
+avoiding unnecessary reparsing or animation restarts. The external-link icon stays an embedded SVG; no resource fetch is added.
+
+Baseline and authored component CSS each retain a 48,000-character budget; the combined receiver
+budget grows to 96,000. Older 64k clients handle normal content but may fall back on unusually large
+component styles. No wire shape, notebook version, execution provenance or lifecycle changes.
+CI now rebuilds and checks styles.css together with the committed SSR bundle; focused tests verify
+source hashes, complete content variables, scoping, freshness and bounds. Browser coverage checks
+actual heading/container geometry, theme switching across a shadow boundary, line-number/diff
+coexistence, native code controls, authored-style precedence and a combined CSS response above 64k.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

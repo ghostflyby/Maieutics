@@ -1184,9 +1184,20 @@ execution, automatic binding subscriptions or document patches. The dedicated Vu
 and explicit SFC format remain available for producer-driven output.
 
 The shared content pipeline recognizes bounded frontmatter headers through the public mdit-vue plugin
-with explicit uncached parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) are omitted without
-parsing/evaluating their values or expanding aliases. JavaScript/CoffeeScript engines are rejected.
+with explicit uncached data parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) provide
+the bounded `$frontmatter` data described below. JavaScript/CoffeeScript engines are rejected.
 An unfinished header remains readable passive source and cannot authorize a component.
-Metadata values and `$frontmatter` bindings are not exposed. CSS additionally provides common
+CSS additionally provides common
 `--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`, `--vp-c-text-1`, `--vp-c-text-2`, and
 `--vp-c-divider` host aliases. This adds no site page context or resource loader.
+
+### Frontmatter data (2026-11-10)
+
+Frontmatter headers supply bounded JSON-shaped data. Plain Markdown resolves only `$frontmatter`
+data paths in interpolation; other expressions remain literal. Values are escaped and resolved
+before heading/TOC extraction. Explicit templates reserve `$frontmatter` for document metadata.
+Vue Markdown receives the same readonly data during SSR and hydration; metadata spans cannot inject
+Vue syntax. Malformed or excessive headers return `invalid_frontmatter`; executable engines remain
+rejected. Unclosed streaming headers remain readable until sealed. No HTTP, IPC or notebook shape
+changes; metadata alone never selects Vue execution. `useData()` and VitePress site/head/layout
+configuration remain unsupported. See the rendering design for data limits and exact subset.

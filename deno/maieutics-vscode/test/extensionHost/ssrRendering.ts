@@ -11,8 +11,9 @@ import { TurnOutputMime } from "../../turnView.ts";
 
 const VueDemoSource = `---
 title: Counter
+initial: 0
 ---
-# Counter
+# {{ $frontmatter.title }}
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue';
@@ -24,7 +25,7 @@ const reset = () => { count.value = 0; };
 onUnmounted(() => { globalThis.__maieuticsVueUnmounts = (globalThis.__maieuticsVueUnmounts ?? 0) + 1; });
 </script>
 
-<p><button class="counter-btn counter-decrease" @click="decrease" :disabled="isZero">−</button><button class="counter-btn counter-increase" @click="increase">+</button><span class="counter-display">{{ count }}</span><button class="counter-reset" @click="reset" :disabled="isZero">Reset</button></p>
+<p><button class="counter-btn counter-decrease" @click="decrease" :disabled="isZero">−</button><button class="counter-btn counter-increase" @click="increase">+</button><span class="counter-display">{{ count + $frontmatter.initial }}</span><button class="counter-reset" @click="reset" :disabled="isZero">Reset</button></p>
 
 <p class="counter-hint" v-if="isZero">Not clicked</p><p class="counter-hint" v-else>Clicked {{ count }} times</p>
 

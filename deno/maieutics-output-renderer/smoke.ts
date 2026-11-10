@@ -102,10 +102,13 @@ const assistant = await renderer.renderAssistant(
   "live",
   `---
 title: Counter
+initial: 0
 ---
 <script setup>import { ref } from 'vue'; const count = ref(0);</script>
 
-<button @click="count++">+</button><span>{{ count }}</span>`,
+<button @click="count++">+</button><span>{{ count + $frontmatter.initial }}</span>
+
+# {{ $frontmatter.title }}`,
 );
 if (
   !assistant.vue || !assistant.html.includes(">0</span>") ||

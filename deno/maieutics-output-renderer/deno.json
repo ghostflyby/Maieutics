@@ -5,6 +5,7 @@
     "bundle/"
   ],
   "imports": {
+    "js-yaml": "npm:js-yaml@3.15.2",
     "acorn": "npm:acorn@8.18.0",
     "@mdit-vue/plugin-headers": "npm:@mdit-vue/plugin-headers@2.1.3",
     "@mdit-vue/shared": "npm:@mdit-vue/shared@2.1.3",

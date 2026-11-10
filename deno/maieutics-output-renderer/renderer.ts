@@ -8,6 +8,7 @@ import json from "@shikijs/langs/json";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
+import yaml from "js-yaml";
 import { frontmatterPlugin } from "@mdit-vue/plugin-frontmatter";
 import { componentPlugin } from "@mdit-vue/plugin-component";
 import { sfcPlugin } from "@mdit-vue/plugin-sfc";
@@ -102,10 +103,22 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         html,
         linkify: true,
       });
-      // Metadata is recognized and omitted, never evaluated or exposed as component bindings.
-      const omitMetadata = (source: string) => {
+      // Reuse upstream framing with a non-executable, JSON-shaped YAML schema.
+      const parseMetadata = (source: string, json = false) => {
         if (source.length > 16_000) throw new OutputRenderingError("invalid_frontmatter");
-        return {};
+        try {
+          const value =
+            (json ? JSON.parse(source) : yaml.safeLoad(source, { schema: yaml.JSON_SCHEMA })) ?? {};
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new Error();
+          }
+          return captureTemplate({
+            version: 1,
+            bindings: [{ name: "$frontmatter", state: "ready", value }],
+          }).bindings[0].value;
+        } catch {
+          throw new OutputRenderingError("invalid_frontmatter");
+        }
       };
       const rejectMetadata = () => {
         throw new OutputRenderingError("invalid_frontmatter");
@@ -115,9 +128,9 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         renderExcerpt: false,
         grayMatterOptions: {
           engines: {
-            yaml: omitMetadata,
-            yml: omitMetadata,
-            json: omitMetadata,
+            yaml: (source: string) => parseMetadata(source),
+            yml: (source: string) => parseMetadata(source),
+            json: (source: string) => parseMetadata(source, true),
             js: rejectMetadata,
             javascript: rejectMetadata,
             coffee: rejectMetadata,
@@ -147,6 +160,35 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
           ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
       };
       md.linkify.set({ fuzzyLink: false });
+      {
+        md.core.ruler.before("block", "maieutics-frontmatter", (state) => {
+          state.env.vueMarkdown = html;
+          const binding = {
+            name: "$frontmatter",
+            ...(state.env.unsealedFrontmatter
+              ? { state: "pending" as const }
+              : { state: "ready" as const, value: state.env.frontmatter ?? {} }),
+          };
+          if (!state.env.unsealedFrontmatter) {
+            state.env.frontmatterTemplate = {
+              context: { version: 1, bindings: [binding], sourceSealed: true },
+              expressions: [],
+            };
+          }
+          if (state.env.template) {
+            const context = state.env.template.context;
+            state.env.template.context = {
+              ...context,
+              bindings: [
+                ...context.bindings.filter((item: { name: string }) =>
+                  item.name !== "$frontmatter"
+                ),
+                binding,
+              ],
+            };
+          }
+        });
+      }
       installInterpolation(md);
       installContentPlugins(md);
 
@@ -231,11 +273,13 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         documentId: string;
         authoredScript?: boolean;
         unsealedFrontmatter?: boolean;
+        frontmatter?: Record<string, unknown>;
         sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
       } = { documentId };
       const body = vueMd.render(source, env);
       if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
       return {
+        frontmatter: env.frontmatter ?? {},
         scripted: env.authoredScript === true,
         unsealedFrontmatter: env.unsealedFrontmatter === true,
         source: `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
@@ -249,15 +293,18 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       format: "markdown" | "sfc",
       signal?: AbortSignal,
       prepared?: string,
+      frontmatter?: Record<string, unknown>,
     ): Promise<RenderedOutput> => {
       signal?.throwIfAborted();
       if (disposed) throw new OutputRenderingError("disposed");
       if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters) {
         throw new VueComponentError("invalid_component");
       }
-      const sfc = prepared ??
-        (format === "markdown" ? prepareVueMarkdown(documentId, source).source : source);
-      const component = compileVueComponent(documentId, sfc);
+      const markdown = format === "markdown" && prepared === undefined
+        ? prepareVueMarkdown(documentId, source)
+        : undefined;
+      const sfc = prepared ?? markdown?.source ?? source;
+      const component = compileVueComponent(documentId, sfc, frontmatter ?? markdown?.frontmatter);
       const active = signal
         ? AbortSignal.any([signal, componentLifetime.signal])
         : componentLifetime.signal;
@@ -290,7 +337,14 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         const prepared = prepareVueMarkdown(documentId, source);
         if (prepared.unsealedFrontmatter) throw new OutputRenderingError("invalid_frontmatter");
         return prepared.scripted
-          ? await renderVue(documentId, source, "markdown", signal, prepared.source)
+          ? await renderVue(
+            documentId,
+            source,
+            "markdown",
+            signal,
+            prepared.source,
+            prepared.frontmatter,
+          )
           : await render(documentId, source, signal);
       },
       [Symbol.dispose]() {

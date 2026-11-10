@@ -655,3 +655,90 @@ Deno.test("an unfinished frontmatter header remains readable and cannot authoriz
     OutputRenderingError,
   );
 });
+
+Deno.test("frontmatter data resolves safe paths before heading extraction without enabling arbitrary expressions", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "---\ntitle: Report\nreport:\n  total: 42\ntags: [one, two]\n---\n# {{ $frontmatter.title }}\n\n{{ $frontmatter.report.total }} {{ $frontmatter.tags[1] }} {{ 1 + 1 }}\n\n`{{ $frontmatter.title }}`";
+  const result = await renderer.render("front", source);
+  assertStringIncludes(result.html, "Report");
+  assertStringIncludes(result.html, "42");
+  assertStringIncludes(result.html, "two");
+  assertStringIncludes(result.html, "{{ 1 + 1 }}");
+  assertStringIncludes(result.html, "<code>{{ $frontmatter.title }}</code>");
+  assertEquals(result.headings[0].title, "Report");
+  assertEquals(result.headings[0].slug, "front-report");
+  const changed = await renderer.render("front", source.replace("Report", "Next"));
+  assertEquals(changed.headings[0].title, "Next");
+  const plain = await renderer.render("front", "# {{ $frontmatter.title }}");
+  assert(!plain.html.includes("Next"));
+  const template = await renderer.renderTemplate("front", source, {
+    version: 1,
+    bindings: [{ name: "$frontmatter", state: "ready", value: { title: "forged" } }],
+  });
+  assertEquals(template.headings[0].title, "Report");
+});
+
+Deno.test("frontmatter parses bounded JSON-shaped YAML and rejects non-data metadata", async () => {
+  using renderer = await createOutputRenderer();
+  for (const body of ['{"title":"JSON"}', "title: JSON\n"]) {
+    assertStringIncludes(
+      (await renderer.render("json", `---\n${body}\n---\n# {{ $frontmatter.title }}`)).html,
+      "JSON",
+    );
+  }
+  for (
+    const body of [
+      "[1, 2]",
+      'title: !!js/function "function(){}"',
+      "x: &x {again: *x}",
+      "__proto__: {polluted: true}",
+      "title: [broken",
+    ]
+  ) {
+    await assertRejects(
+      () => renderer.render("bad", `---\n${body}\n---\nBody`),
+      OutputRenderingError,
+    );
+  }
+  const escaped = await renderer.render(
+    "escape",
+    '---\ntitle: "<img src=x onerror=alert(1)>"\n---\n{{ $frontmatter.title }}',
+  );
+  assert(!escaped.html.includes("<img"));
+  assertStringIncludes(escaped.html, "&lt;img");
+});
+
+Deno.test("Vue frontmatter is available to SSR and the hydration factory without injecting template source", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '---\ntitle: Counter\ninitial: 3\n---\n<script setup>\nimport { ref } from "vue";\nconst count = ref(0);\n</script>\n\n# {{ $frontmatter.title }}\n\n<button @click="count++">{{ count + $frontmatter.initial }}</button>';
+  const output = await renderer.renderAssistant("fmvue", source);
+  assert(output.vue);
+  assertStringIncludes(output.html, "Counter");
+  assertStringIncludes(output.html, 'id="fmvue-counter"');
+  assertStringIncludes(output.html, ">3</button>");
+  assertStringIncludes(output.vue.code, "$frontmatter");
+  const hostile = await renderer.renderAssistant(
+    "fmvue",
+    source.replace("title: Counter", "title: '<img src=x> {{ count }}'"),
+  );
+  assertStringIncludes(hostile.html, "&lt;img src=x&gt; {{ count }}");
+});
+
+Deno.test("explicit JSON frontmatter is strict and incomplete streaming metadata remains literal", async () => {
+  using renderer = await createOutputRenderer();
+  assertStringIncludes(
+    (await renderer.render("json", '---json\n{"title":"Strict"}\n---\n# {{ $frontmatter.title }}'))
+      .html,
+    "Strict",
+  );
+  await assertRejects(
+    () => renderer.render("json", "---json\ntitle: not-json\n---\nBody"),
+    OutputRenderingError,
+  );
+  assertStringIncludes(
+    (await renderer.render("stream", "---\ntitle: {{ $frontmatter.title }}")).html,
+    "{{ $frontmatter.title }}",
+  );
+});

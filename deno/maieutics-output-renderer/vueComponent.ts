@@ -63,7 +63,11 @@ function moduleBody(source: string): string {
 }
 
 /** Uses Vue's SFC, template and scoped-style compilers; compilation never executes component code. */
-export function compileVueComponent(documentId: string, source: string): CompiledVueComponent {
+export function compileVueComponent(
+  documentId: string,
+  source: string,
+  frontmatter?: Record<string, unknown>,
+): CompiledVueComponent {
   if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > 200_000) {
     throw new VueComponentError("invalid_component");
   }
@@ -116,7 +120,13 @@ export function compileVueComponent(documentId: string, source: string): Compile
       moduleBody(scriptJs)
     }\nreturn __maieutics_component;})();\ncomponent.render=(()=>{${
       moduleBody(template.code)
-    }\nreturn render;})();\ncomponent.__scopeId=${JSON.stringify(scopeId)};\nreturn component;`;
+    }\nreturn render;})();\n${
+      frontmatter === undefined
+        ? ""
+        : `const setup=component.setup;component.setup=(props,context)=>{Vue.getCurrentInstance().appContext.config.globalProperties.$frontmatter=Vue.readonly(${
+          JSON.stringify(frontmatter).replaceAll("<", "\\u003c")
+        });return setup?setup(props,context):{}};`
+    }\ncomponent.__scopeId=${JSON.stringify(scopeId)};\nreturn component;`;
     if (code.length > 400_000 || css.length > 48_000) {
       throw new VueComponentError("invalid_component");
     }

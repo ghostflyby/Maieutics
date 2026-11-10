@@ -159,9 +159,11 @@ source is removed on notebook saving and reading; supply a text fallback. See th
 Vue-in-Markdown with authored top-level script blocks and return optional compiled Vue metadata.
 Plain content stays passive. Code fences, inline/escaped/quoted examples and metadata never select
 execution. Frontmatter uses the public `@mdit-vue/plugin-frontmatter` 2.1.3 adapter with explicit
-uncached engines: bounded YAML/YML/JSON bodies are omitted, their values ignored and never
-evaluated; JS/CoffeeScript engines are rejected. Common VitePress content color variables map to
-host colors.
+uncached engines: bounded YAML/YML/JSON data supplies `$frontmatter`. Dot/bracket path interpolation
+works in passive Markdown and headings; other passive expressions stay literal. Vue Markdown
+receives identical readonly data in SSR and hydration. Values cannot inject markup or Vue syntax.
+`useData()` and site/head/layout options are not implemented; JS/CoffeeScript engines are rejected.
+Common VitePress content color variables map to host colors.
 
 The live controller selects this lane only after successful turn completion; streaming partials and
 failed/cancelled output remain passive. Saving/reopening removes live provenance and retains source.

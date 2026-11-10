@@ -2,7 +2,8 @@
 
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
-explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
+explicit live Vue components compile, SSR and hydrate with scoped styles. Bounded YAML/JSON
+frontmatter now supplies `$frontmatter` paths and readonly Vue template data. Successful completed live
 assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts.
 Connected history restoration can renew this selection after verifying exact assistant source against
 the kernel-owned committed transcript. The streaming document
@@ -488,13 +489,37 @@ kernel transcript (see historical recovery below). Offline or unverifiable snaps
 An explicitly resumed live run/replay can also recreate derived component state. No external producer
 executes during rendering, history recovery or replay.
 
-Frontmatter extraction now reuses `@mdit-vue/plugin-frontmatter` 2.1.3 with explicit uncached engine
-options. YAML/YML/JSON header content is bounded to 16,000 UTF-16 units, omitted and never evaluated
-or expanded; metadata values are currently ignored rather than exposed as bindings. JavaScript and
-CoffeeScript engines and aliases are rejected. An unfinished header remains readable passive source
-and cannot authorize a live component. This closes the visible `title:` leak in the reported
-counter example without installing gray-matter's default executable engines or global source cache.
-`$frontmatter`, metadata-driven routes/resources and full VitePress page semantics remain later work.
+Frontmatter extraction reuses `@mdit-vue/plugin-frontmatter` 2.1.3 and its existing locked
+`js-yaml` 3.15.2 dependency. The 2026-11-10 increment parses bounded YAML/YML or JSON objects with
+non-executable JSON-schema types, instead of discarding all metadata. Explicit JSON engines use
+strict JSON parsing. Headers remain limited to 16,000 UTF-16 units; data is copied/frozen through
+the existing template capture limits (8,192 nodes, depth 16, 64,000 aggregate characters). Cycles,
+prototype keys, unsupported tags, malformed/root-array/scalar data and executable engines fail
+with `invalid_frontmatter`. Unfinished headers remain readable source until closed.
+
+`{{ $frontmatter.title }}` and nested dot/bracket paths work in ordinary/passive Markdown, including
+streaming prefixes after header closure. Values are escaped text, never reparsed Markdown/HTML.
+Other passive expressions remain literal. Data-only paths resolve before heading/TOC extraction,
+so heading text and scoped anchors agree in passive and Vue Markdown. Fenced/inline examples stay
+literal. Explicit template contexts use document-owned `$frontmatter` in preference to a caller
+binding of that name; other bindings retain their existing lifecycle and expression behavior.
+
+Live Vue Markdown also receives a readonly `$frontmatter` global from its component setup wrapper,
+identically in the isolated SSR worker and browser factory. The wrapper preserves Vue's two-argument
+setup contract so expose/context injection remains available. Pre-resolved metadata spans use
+`v-pre`, preventing metadata containing mustaches from becoming Vue source. Runtime Vue expressions
+and bound attributes can read the same metadata. No site runtime is installed: `useData()`,
+frontmatter-driven document head, layouts, navigation and resource loading remain unsupported.
+Metadata does not itself authorize component execution, start producers or modify conversation state.
+
+Frontmatter validation passes 54 renderer/interpreter/worker tests and 27 real VS Code scenarios
+against the osx-arm64 NativeAOT executable, including SSR-to-browser frontmatter hydration and
+reactive clicks. Offline bundled smoke passes with network/filesystem/process access denied. The
+committed service bundle is regenerated; no HTTP, IPC or notebook format changes are required.
+The full Deno workspace passes 725 tests plus 20 Node scenarios. Types/lint/format checks pass.
+NativeAOT publish and real browser verification run on macOS arm64; Linux/Windows CI is not
+run locally.
+
 The stylesheet supplies the counter's common `--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`,
 `--vp-c-text-1`, `--vp-c-text-2` and `--vp-c-divider` aliases from VS Code colors with browser fallbacks.
 These are a content subset, not the complete VitePress default theme.
@@ -993,3 +1018,5 @@ Sources consulted on 2026-11-04. Recheck the selected versions during the packag
   [Markstream SSR integration](https://github.com/Simon-He95/markstream-vue#ssr--worker-usage-deterministic-output):
   partial parsing and structured-node integration candidates.
 - [Idiomorph](https://github.com/bigskysoftware/idiomorph): DOM matching, update hooks, and focus handling.
+
+Frontmatter reference consulted 2026-11-10: [VitePress frontmatter](https://vitepress.dev/guide/frontmatter).

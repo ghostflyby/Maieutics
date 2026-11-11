@@ -389,6 +389,15 @@ public sealed class FrontendOutputRendererTests
         Assert.Equal(64, firstComponent.SetupKey?.Length);
         Assert.Contains(">0</button>", initial.Html);
         Assert.NotEmpty(firstComponent.Code ?? "");
+        const string gatedSource = "<script setup>const stage=import.meta.env.SSR?'server':'client';const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>";
+        using var gatedResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "clientonly", gatedSource, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, gatedResponse.StatusCode);
+        using var gated = JsonDocument.Parse(await gatedResponse.Content.ReadAsStringAsync(budget.Token));
+        Assert.Contains(">server</p>", gated.RootElement.GetProperty("html").GetString());
+        Assert.DoesNotContain("<span", gated.RootElement.GetProperty("html").GetString());
+        Assert.False(gated.RootElement.GetProperty("vue").TryGetProperty("ssrCode", out _));
         var updatedSource = source + "\n\n<p>{{ doubled }}</p>";
         using var updateResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
             new FrontendRenderMarkdown(1, "progressive", updatedSource, Progressive: true, CompileOnly: true),

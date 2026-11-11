@@ -15,7 +15,7 @@ export async function testHistoricalVueAsync(root: vscode.Uri): Promise<void> {
   const pending: Promise<void>[] = [];
   const sessionId = "c".repeat(32);
   const source =
-    "<script setup>\nimport { ref } from 'vue';\nconst count = ref(0);\n</script>\n\n# History counter\n\n<button @click=\"count++\">{{ count }}</button>";
+    "<script setup>\nimport { ref } from 'vue';\nconst count = ref(0);const browser=()=>import.meta.env.SSR ? 'server' : window.location.protocol;\n</script>\n\n# History counter\n\n<button @click=\"count++\">{{ count }}</button>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>";
   const transcript: Transcript = {
     version: 17,
     sessionId,

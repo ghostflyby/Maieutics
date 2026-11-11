@@ -1097,7 +1097,8 @@ part of this stateless version.
 
 `format` is `markdown` (Vue-in-Markdown) or `sfc` (complete Vue single-file component). Version and
 format are required. Only static imports from `vue` are supported. Other imports, dynamic imports,
-`import.meta`, external blocks, custom blocks, CSS modules and non-CSS style preprocessors fail with
+other `import.meta` expressions, external blocks, custom blocks, CSS modules and non-CSS style
+preprocessors fail with
 `400 invalid_request`. Source must form a complete compilable component. Unknown fields remain
 tolerated. Ordinary Markdown and data-template routes do not evaluate component scripts.
 
@@ -1273,3 +1274,15 @@ receivers continue to render normal responses and may fall back for large combin
 The CSS contains no imports or downloaded fonts; its external-link decoration uses an embedded SVG.
 Dark hosts can mark the output or an ancestor `.dark`; Shadow DOM adapters also recognize VS Code's
 dark/high-contrast contexts. Theme changes do not execute or reinitialize components.
+
+### Client-only regions and SSR constants
+
+Live Vue factories may include a local ClientOnly mount gate: initial SSR/hydration emits a matching
+empty placeholder, then the default slot activates on browser mount. Late progressive templates can
+use the retained gate and setup bindings without reinitializing state. Normal unmount owns cleanup.
+This changes neither passive-content admission nor provenance; the parent setup still executes on
+both sides. Script `import.meta.env.SSR` is a compile-time boolean (true in the private SSR target,
+false in frontend factories). Other environment access/import policy is unchanged. Template code
+uses a declared script binding rather than raw import.meta. The public response never carries the
+private SSR factory. Factories remain v1 standard Vue code supported by existing frontend runtimes;
+no new message, host service or capability selector is required.

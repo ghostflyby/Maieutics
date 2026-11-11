@@ -940,3 +940,26 @@ $$`,
   assertEquals(later.vue?.code, "");
   assertStringIncludes(later.vue?.renderCode ?? "", "svg");
 });
+
+Deno.test("late ClientOnly templates retain the sealed setup identity and compile only client expressions", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '<script setup>import {ref} from "vue";const count=ref(0);const browser=()=>window.location.protocol;const server=import.meta.env.SSR;</script>\n\n<button @click="count++">{{count}}</button>';
+  const initial = await renderer.renderAssistant("lateclient", source, undefined, {
+    compileOnly: false,
+  });
+  const full = source + "\n\n<ClientOnly><p>{{browser()}}</p><span>{{server}}</span></ClientOnly>";
+  const next = await renderer.renderAssistant("lateclient", full, undefined, { compileOnly: true });
+  assertEquals(next.renderedSource, full);
+  assertEquals(next.vue?.setupKey, initial.vue?.setupKey);
+  assertEquals(next.vue?.code, "");
+  assertStringIncludes(next.vue?.renderCode ?? "", "server");
+  const ssr = await renderer.renderAssistant("lateclient", full, undefined, { compileOnly: false });
+  assertEquals(ssr.html.includes("<span"), false);
+  const passive = await renderer.render(
+    "passive",
+    "<ClientOnly><span>{{ browser() }}</span></ClientOnly>",
+  );
+  assertEquals(passive.vue, undefined);
+  assertStringIncludes(passive.html, "&lt;ClientOnly&gt;");
+});

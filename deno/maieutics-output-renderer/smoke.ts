@@ -127,3 +127,12 @@ if (
   math.diagnostics?.[0]?.line !== 7
 ) throw new Error("Offline math/code/diagnostic contract failed.");
 console.log("Offline SVG math, multilingual code and source diagnostics passed.");
+
+const clientOnly = await renderer.renderAssistant(
+  "clientonlyoffline",
+  '<script setup>const stage=import.meta.env.SSR?"server":"client";const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>',
+);
+if (!clientOnly.html.includes(">server</p>") || clientOnly.html.includes("<span")) {
+  throw new Error("Offline ClientOnly/SSR target contract failed.");
+}
+console.log("Offline ClientOnly and target-specific SSR flag passed.");

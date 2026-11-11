@@ -1,3 +1,4 @@
+import { clientOnlyFactory } from "./vendor/vitepress/clientOnly.ts";
 import type { RenderDiagnostic } from "./diagnostics.ts";
 // @deno-types="npm:@vue/compiler-sfc@3.5.13/dist/compiler-sfc.d.ts"
 import { compileScript, compileStyle, compileTemplate, parse as parseSfc } from "@vue/compiler-sfc";
@@ -5,9 +6,11 @@ import { type Node, parse } from "acorn";
 import { createHash } from "node:crypto";
 import { transform } from "sucrase";
 
-/** Compiled component code is used unchanged by isolated SSR and the live client island. */
+/** Compiled Vue factories for the isolated SSR worker and live client island. */
 export interface CompiledVueComponent {
   readonly code: string;
+  /** Private SSR-target factory; never included in the frontend response. */
+  readonly ssrCode?: string;
   readonly css: string;
   readonly scopeId: string;
   readonly setupKey?: string;
@@ -29,7 +32,7 @@ export class VueComponentError extends Error {
   }
 }
 
-function moduleBody(source: string): string {
+function moduleBody(source: string, ssr = false): string {
   const ast = parse(source, { ecmaVersion: 2022, sourceType: "module" });
   const changes: { start: number; end: number; text: string }[] = [];
   for (const node of ast.body) {
@@ -55,6 +58,26 @@ function moduleBody(source: string): string {
     }
     if (typeof value !== "object" || value === null) return;
     const node = value as Node;
+    const member = node as Node & {
+      computed?: boolean;
+      object?: {
+        type?: string;
+        computed?: boolean;
+        object?: { type?: string; meta?: { name?: string }; property?: { name?: string } };
+        property?: { name?: string };
+      };
+      property?: { name?: string };
+    };
+    if (
+      node.type === "MemberExpression" && !member.computed && member.property?.name === "SSR" &&
+      member.object?.type === "MemberExpression" && !member.object.computed &&
+      member.object.property?.name === "env" &&
+      member.object.object?.type === "MetaProperty" &&
+      member.object.object.meta?.name === "import" && member.object.object.property?.name === "meta"
+    ) {
+      changes.push({ start: node.start, end: node.end, text: String(ssr) });
+      return;
+    }
     if (node.type === "ImportExpression" || node.type === "MetaProperty") {
       throw new VueComponentError("unsupported_import");
     }
@@ -64,6 +87,8 @@ function moduleBody(source: string): string {
   for (const change of changes.sort((a, b) => b.start - a.start)) {
     source = source.slice(0, change.start) + change.text + source.slice(change.end);
   }
+  // Replacing a writable flag target must not produce a malformed runtime factory.
+  parse(source, { ecmaVersion: 2022, sourceType: "module" });
   return source;
 }
 
@@ -174,23 +199,36 @@ export function compileVueComponent(
       check(tree);
     }
     const setupKey = progressive
-      ? createHash("sha256").update(JSON.stringify([scriptJs, frontmatter, scopeId])).digest("hex")
+      ? createHash("sha256").update(
+        JSON.stringify([scriptJs, frontmatter, scopeId, clientOnlyFactory]),
+      ).digest("hex")
       : undefined;
-    const code = `"use strict";\nconst component = (()=>{${
-      moduleBody(scriptJs)
-    }\nreturn __maieutics_component;})();\ncomponent.render=(()=>{${
-      moduleBody(template.code)
-    }\nreturn render;})();\n${
-      frontmatter === undefined
-        ? ""
-        : `const setup=component.setup;component.setup=(props,context)=>{Vue.getCurrentInstance().appContext.config.globalProperties.$frontmatter=Vue.readonly(${
-          JSON.stringify(frontmatter).replaceAll("<", "\\u003c")
-        });return setup?setup(props,context):{}};`
-    }\ncomponent.__scopeId=${JSON.stringify(scopeId)};\nreturn component;`;
-    if (code.length > 400_000 || css.length > 48_000) {
+    const factory = (ssr: boolean) =>
+      `"use strict";\nconst component = (()=>{${
+        moduleBody(scriptJs, ssr)
+      }\nreturn __maieutics_component;})();\ncomponent.render=(()=>{${
+        moduleBody(template.code, ssr)
+      }\nreturn render;})();\n${
+        frontmatter === undefined
+          ? ""
+          : `const setup=component.setup;component.setup=(props,context)=>{Vue.getCurrentInstance().appContext.config.globalProperties.$frontmatter=Vue.readonly(${
+            JSON.stringify(frontmatter).replaceAll("<", "\\u003c")
+          });return setup?setup(props,context):{}};`
+      }\ncomponent.components={ClientOnly:${clientOnlyFactory},...component.components};\ncomponent.__scopeId=${
+        JSON.stringify(scopeId)
+      };\nreturn component;`;
+    const code = factory(false);
+    const ssrCode = factory(true);
+    if (code.length > 400_000 || ssrCode.length > 400_000 || css.length > 48_000) {
       throw new VueComponentError("invalid_component");
     }
-    return { code, css, scopeId, ...(progressive ? { setupKey, renderCode } : {}) };
+    return {
+      code,
+      ...(ssrCode !== code ? { ssrCode } : {}),
+      css,
+      scopeId,
+      ...(progressive ? { setupKey, renderCode } : {}),
+    };
   } catch (error) {
     if (error instanceof VueComponentError) throw error;
     throw new VueComponentError("invalid_component");

@@ -148,10 +148,11 @@ style preprocessors are rejected. Ordinary `render` and data templates do not ex
 
 The executable exposes `/v1/render/vue` with `rendering.vueVersion:1`. The live rich MIME is
 `application/vnd.maieutics.vue+json`, `{version:1,format:"markdown"|"sfc",source}`. The frontend
-hydrates using the same compiled factory and bundled Vue runtime, then unmounts on replacement or
+hydrates using the browser-target factory and bundled Vue runtime, then unmounts on replacement or
 disposal. Setup runs twice (SSR and hydration); initial state must be deterministic, and producers
-belong in the authorized REPL. Async setup/Suspense and resource hydration are not verified. Live
-source is removed on notebook saving and reading; supply a text fallback. See the
+belong in the authorized REPL. Async setup/Suspense and resource hydration remain unsupported or
+unverified; synchronous ClientOnly is supported below. Live source is removed on notebook saving and
+reading; supply a text fallback. See the
 [protocol](../../docs/web-frontend-protocol.md#explicit-live-vue-rendering-v1) and
 [runnable demo](../maieutics-vscode/demo/README.md#live-vue-counter).
 
@@ -320,3 +321,30 @@ can still display normal output but may fall back for unusually large authored c
 is no request or notebook format change. `deno task build:styles` regenerates CSS; the normal build
 includes it. A focused artifact/hash test and CI's post-build diff enforce freshness alongside the
 offline SSR bundle. No new runtime permissions or dependencies are required.
+
+## Client-only regions and SSR target flag
+
+`<ClientOnly>` (also `client-only`) is a locally registered component in each compiled live output.
+Its mount-gated default slot reuses VitePress 1.6.4 semantics: SSR and initial hydration emit an
+empty placeholder; after the browser mounts, Vue activates the slot. Browser-only child setup and
+slot expressions do not run in the SSR worker. The compiler includes this component even before a
+late streaming template first uses it. Template-only updates reuse the existing local component type
+and child instances; successful sealing retains state, while unmount runs normal Vue cleanup hooks.
+There is no built-in fallback slot, async loader or external component import in this increment.
+
+`import.meta.env.SSR` in script code compiles to literal `true` for SSR and `false` for the browser.
+Only this static flag is exposed, not an environment object, secrets, URLs or other Vite variables.
+The compiler uses Acorn syntax nodes rather than textual substitution, so strings/comments remain
+literal and malformed writes fail compilation. If needed in a template, declare a script binding,
+for example `const server = import.meta.env.SSR`, then use `server` (normally inside ClientOnly).
+The pinned Vue compiler does not accept raw import.meta in template expressions.
+
+A private SSR factory stays inside the Deno subsystem; the public response contains only the browser
+factory and browser render-function updates. Identical targets share one factory. No frontend/wire
+version change or additional Deno permission is needed. New generated code works with the existing
+Vue client runtime. The setup identity includes the built-in gate contract as well as script/data.
+Presentation setup still runs on both sides. ClientOnly does not defer its parent's setup: put DOM
+work in a child, onMounted, or a guarded browser branch. Keep initial hydrated state deterministic;
+the SSR flag does not automatically transfer arbitrary state between processes. Passive Markdown and
+fenced examples do not gain execution authority. Dynamic imports, defineClientComponent and external
+resources still await the authorized resource/module design. No producers are started.

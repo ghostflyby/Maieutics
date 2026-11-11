@@ -371,8 +371,9 @@ example interpolations do not execute. For SFC input, the source goes directly t
 Vue compiler. `compileScript`, `compileTemplate`, and `compileStyle` implement setup bindings,
 directives, events and scoped CSS; Sucrase erases TypeScript. This is ecosystem reuse, not a second
 implementation of Vue semantics. Static imports from `vue` bind to the shipped runtime. Other
-imports, dynamic import, `import.meta`, external SFC blocks, custom blocks, CSS modules and style
-preprocessors are rejected. VitePress page context, filesystem includes and resource loading are
+imports, dynamic import, other `import.meta` expressions, external SFC blocks, custom blocks, CSS
+modules and style preprocessors are rejected. Script `import.meta.env.SSR` is the target boolean
+described below. VitePress page context, filesystem includes and resource loading are
 not installed. A component must be complete before compilation; this lane does not infer future
 bindings or execute partially received script text.
 
@@ -386,8 +387,8 @@ existing service gate. The trusted worker runtime is bundled ahead of time, embe
 text, and loaded from a module data URL: there is no runtime download or binary-to-text transfer.
 The deadline is a CPU/lifetime bound, not a memory quota or a claim of protection against runtime bugs.
 
-The response carries SSR HTML, baseline plus component CSS, and the same compiled component factory
-used by SSR. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
+The response carries SSR HTML, baseline plus component CSS, and the browser component factory.
+SSR uses the same factory unless a target constant requires a private server variant. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
 one app per output boundary. Reactive refs, computed values, directives and event handlers then
 update that app locally. The renderer unmounts the old app when a changed-source replacement commits,
 and on output or renderer disposal; `onUnmounted` runs and owned Vue effects stop. A complete output replacement
@@ -403,8 +404,9 @@ compiled factory under the notebook output CSP; this is an executable live outpu
 upgrade or a browser sandbox. Setup runs once for SSR and again for client hydration. Initial state
 must be deterministic, and external operations/producers belong in the authorized REPL rather than
 setup. Vue subscriptions, listeners and timers created outside its effect scope still need their
-normal cleanup hooks. Async setup/Suspense, client-only components, external imports and asynchronous
-resource hydration are not part of the verified contract.
+normal cleanup hooks. ClientOnly now defers child regions until browser mount, as detailed below.
+Async setup/Suspense, external imports and asynchronous resource hydration remain outside the
+verified contract.
 
 Persistence never replays component code: notebook saving and reading both remove this MIME,
 retaining its producer-provided text fallback. The same read-time rule strips executable bundled-view
@@ -830,6 +832,37 @@ CI now rebuilds and checks styles.css together with the committed SSR bundle; fo
 source hashes, complete content variables, scoping, freshness and bounds. Browser coverage checks
 actual heading/container geometry, theme switching across a shadow boundary, line-number/diff
 coexistence, native code controls, authored-style precedence and a combined CSS response above 64k.
+
+## Client-only component regions and target constants (implemented 2026-11-11)
+
+Compiled live output now includes the VitePress 1.6.4 ClientOnly mount gate as a self-contained
+local component. The adapted source records the original path/hash in the MIT vendor manifest. SSR
+and the first browser hydration render the same empty placeholder. Vue onMounted then activates the
+default slot. Nested browser-only setup/slot expressions are not evaluated by SSR. This is a
+presentation boundary, not a way to defer parent setup or change execution provenance. Parent DOM
+work still requires onMounted, an SSR guard or a child component. No fallback slot, async loader or
+module resolver is introduced; defineClientComponent remains future resource/module work.
+
+Acorn rewrites the exact script expression import.meta.env.SSR into a target constant. SSR receives
+true, while browser setup and later render functions receive false. Strings/comments are unchanged;
+other meta/environment access and dynamic imports remain rejected. Vue's pinned template parser
+rejects raw import.meta expressions, so template consumers declare a script binding first. Two
+factories are emitted only when target code differs. The private SSR factory is selected by the
+owned worker launcher and never crosses the frontend response boundary. Initial HTML still requires
+deterministic state; target constants do not imply server state serialization.
+
+Every initial factory registers the gate, even if it first appears in a later accepted prefix.
+Compile-only updates refer to the retained component registry/setup bindings and do not rerun setup
+or SSR. Gate types, child reactive state and owned cleanup hooks survive template additions and
+sealing. Disposal follows normal Vue unmount and stops child effects/listeners. Setup identity also
+covers the built-in gate contract. Existing provenance, factory/output bounds, worker deadlines,
+permissions and passive fallback remain unchanged; old frontend runtimes can execute the standard
+Vue factory without new host services. No public wire/notebook format or capability version changes.
+
+Coverage includes real worker exclusion of browser-only child setup and slot expressions, correct
+target constants, unsupported meta/import/write rejection, private-factory wire exclusion, late gate
+admission, browser state/DOM preservation, sealing, exactly-once listener cleanup and verified
+history restoration through the real host pipeline.
 
 ## Document state and presentation units
 

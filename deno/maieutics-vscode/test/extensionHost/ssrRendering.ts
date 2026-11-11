@@ -37,6 +37,24 @@ $x^2$
 print(42)
 ~~~`;
 
+const ClientOnlySetup = `<script setup>
+import {ref,defineComponent,h,onUnmounted} from 'vue';
+const count=ref(0);
+const server=import.meta.env.SSR;
+const browserText=()=>import.meta.env.SSR?'server':window.location.protocol;
+const BrowserWidget=defineComponent({setup(){
+  if(typeof window==='undefined')throw new Error('browser-only child reached SSR');
+  globalThis.__clientOnlyMounts++;
+  const value=ref(0);
+  const listener=()=>globalThis.__clientOnlyEvents++;
+  window.addEventListener('maieutics-client-only-test',listener);
+  onUnmounted(()=>{globalThis.__clientOnlyUnmounts++;window.removeEventListener('maieutics-client-only-test',listener);});
+  return()=>h('button',{class:'client-only-child',onClick:()=>value.value++},String(value.value)+':'+String(server)+':'+browserText());
+}});
+</script>
+
+<button class="client-only-parent" @click="count++">{{count}}</button>`;
+
 const CodeDemoSource = [
   "# Demo",
   "",
@@ -458,6 +476,41 @@ export async function testSsrRenderingAsync(): Promise<void> {
           const bigRoot=bigNode.shadowRoot ?? bigNode;
           assert(getComputedStyle(bigRoot.querySelector(".style-budget")).color === "rgb(12, 34, 56)" && getComputedStyle(bigRoot.querySelector(".style-budget")).marginTop === "3px","authored scoped component CSS still overrides the default content theme");
           api.disposeOutputItem("style-budget");bigElement.remove();
+        }
+        if (${client !== undefined}) {
+          globalThis.__clientOnlyMounts=0;globalThis.__clientOnlyUnmounts=0;globalThis.__clientOnlyEvents=0;
+          const gatedElement=document.createElement("div");document.body.appendChild(gatedElement);
+          let gatedSource=${
+      JSON.stringify(ClientOnlySetup).replaceAll("<", String.fromCharCode(92) + "u003c")
+    };
+          const paintGated=async(streaming=true,id="client-only-demo")=>{
+            delivered=Promise.withResolvers();
+            await api.renderOutputItem({id,mime:"application/vnd.maieutics.live-assistant+json",json:()=>({text:gatedSource,streaming})},gatedElement);
+            await delivered.promise;await vueRuntime.vueUpdatesComplete();
+            const node=gatedElement.querySelector('[data-render-engine="vue"]');
+            assert(node,"ClientOnly output uses the live Vue lane");return node.shadowRoot ?? node;
+          };
+          const initialGate=await paintGated();
+          assert(!initialGate.querySelector(".client-only-child") && globalThis.__clientOnlyMounts===0,"a complete setup does not eagerly construct a later browser-only child");
+          gatedSource+='\\n\\n<ClientOnly><BrowserWidget /></ClientOnly>';
+          const gate=await paintGated();
+          const child=gate.querySelector(".client-only-child");
+          assert(child?.textContent.startsWith("0:false:") && !child.textContent.endsWith(":server") && globalThis.__clientOnlyMounts===1,"late ClientOnly mounts with browser globals and the client SSR flag");
+          child.click();gate.querySelector(".client-only-parent").click();await vueRuntime.vueUpdatesComplete();
+          gatedSource+='\\n\\n<ClientOnly><p class="client-only-late">{{count}}:{{browserText()}}</p></ClientOnly>';
+          await paintGated();
+          assert(gate.querySelector(".client-only-child")===child && child.textContent.startsWith("1:false:") && globalThis.__clientOnlyMounts===1,"new client-only regions preserve existing child instances and reactive state");
+          assert(gate.querySelector(".client-only-late")?.textContent.startsWith("1:"),"later client-only slots read the retained parent scope");
+          await paintGated(false);
+          window.dispatchEvent(new Event("maieutics-client-only-test"));
+          assert(globalThis.__clientOnlyEvents===1 && globalThis.__clientOnlyUnmounts===0,"sealing preserves client-only listeners and state");
+          api.disposeOutputItem("client-only-demo");
+          window.dispatchEvent(new Event("maieutics-client-only-test"));
+          assert(globalThis.__clientOnlyUnmounts===1 && globalThis.__clientOnlyEvents===1,"disposing ClientOnly stops its owned effects exactly once");
+          await paintGated(false,"completed-client-only-demo");
+          assert(globalThis.__clientOnlyMounts===2 && gatedElement.textContent!=="","fresh completed output also hydrates ClientOnly after its SSR placeholder");
+          api.disposeOutputItem("completed-client-only-demo");
+          assert(globalThis.__clientOnlyUnmounts===2,"completed ClientOnly disposal cleans the reconstructed instance");gatedElement.remove();
         }
         const templateElement = document.createElement("div"); document.body.appendChild(templateElement);
         const templateSource = "Total {{ report.total.toFixed(2) }}\\n\\nLater independent prose";

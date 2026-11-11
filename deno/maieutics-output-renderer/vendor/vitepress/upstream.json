@@ -31,6 +31,10 @@
     {
       "path": "src/client/theme-default/styles/components/custom-block.css",
       "sha256": "c68061b3b29707cadd0c05aa30272e73683e8d925e7486329c898857db18a087"
+    },
+    {
+      "path": "src/client/app/components/ClientOnly.ts",
+      "sha256": "60367014583841d1fe494466eb1595119f7a03c605db0bc0ba388c621b25f619"
     }
   ],
   "adaptations": [
@@ -39,6 +43,7 @@
     "Container inline title environment includes documentId and the captured template snapshot so titles share local link scope, binding values and expression limits; existing custom-block class order is retained.",
     "githubAlerts.ts parsing is retained; contentPlugins.ts overrides title rendering to escape text.",
     "Default theme CSS sources are retained verbatim under styles/. build_styles.ts selects content resets and used variables, scopes selectors, maps VS Code colors and emits styles.css. Site layout, form resets, site-only code controls and team rules are excluded. styles.host.css adapts native code tabs/copy/line numbers, Shadow DOM dark mode and bounded output layout.",
-    "Code diff symbols use ::after in generated CSS because native data-line numbers own ::before. Upstream sources stay unchanged."
+    "Code diff symbols use ::after in generated CSS because native data-line numbers own ::before. Upstream sources stay unchanged.",
+    "ClientOnly mount-gated default slot is emitted as a self-contained local component factory; Vue imports become calls on the supplied Vue runtime. No fallback slot or loader is added."
   ]
 }

@@ -10,8 +10,9 @@ if ! sudo apt-get "${apt_options[@]}" --error-on=any update; then
     exit 1
   fi
   echo "::warning::Default APT sources failed; retrying with the kernel.org Ubuntu mirror first."
-  # Keep the distribution sources and signing keys: only mirror selection changes.
-  sudo sed -i '1ihttps://mirrors.edge.kernel.org/ubuntu/' /etc/apt/apt-mirrors.txt
+  # Keep distribution sources and signing keys. APT orders by metadata priority,
+  # not line position; mirrors without a priority are selected at random.
+  sudo sed -i $'1ihttps://mirrors.edge.kernel.org/ubuntu/\tpriority:0' /etc/apt/apt-mirrors.txt
   sudo apt-get "${apt_options[@]}" --error-on=any update
 fi
 sudo apt-get "${apt_options[@]}" -o Acquire::Retries=2 install --yes bubblewrap curl

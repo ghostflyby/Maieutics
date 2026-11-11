@@ -1,0 +1,26 @@
+{
+  "publish": false,
+  "exports": "./mod.ts",
+  "exclude": [
+    "dist/"
+  ],
+  "compilerOptions": {
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable",
+      "deno.ns"
+    ]
+  },
+  "imports": {
+    "@vue/runtime-dom": "npm:@vue/runtime-dom@3.5.13",
+    "markdown-it": "npm:markdown-it@14.3.1",
+    "@types/markdown-it": "npm:@types/markdown-it@14.1.2"
+  },
+  "tasks": {
+    "check": "deno check mod.ts mod_test.ts",
+    "test": "deno test --allow-env=NODE_ENV",
+    "build": "deno bundle --platform=browser --format esm --minify -o dist/outputClient.js mod.ts && deno run --allow-read=types.d.ts --allow-write=dist/outputClient.d.ts build_types.ts",
+    "build:vscode": "deno task build && deno run --allow-read=dist/outputClient.js --allow-write=../maieutics-vscode/media/outputClient.js copy_vscode.ts"
+  }
+}

@@ -88,6 +88,13 @@ started with (`maieutics --frontend-discovery <path>`).
 
 ## Development
 
+Browser output rendering is shared with
+[`maieutics-output-client`](../maieutics-output-client/README.md), an independently importable ESM.
+`media/turnRenderer.js` is the notebook adapter, and `media/outputClient.js` is a copied, bundled
+artifact containing the shared DOM/Vue implementation. Run `deno task build:media` after changing
+browser sources; CI checks the shared artifact's freshness. Extension-host code stays independent of
+browser module sources.
+
 The toolchain is pure Deno — dependencies live in `deno.json` (`package.json` is only the extension
 manifest), and `@vscode/vsce` runs directly under `deno run npm:@vscode/vsce` (the old chalk
 incompatibility, deno#26637, is fixed on current Deno).

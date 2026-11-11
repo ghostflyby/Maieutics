@@ -864,6 +864,38 @@ target constants, unsupported meta/import/write rejection, private-factory wire 
 admission, browser state/DOM preservation, sealing, exactly-once listener cleanup and verified
 history restoration through the real host pipeline.
 
+## Standalone browser ESM client (implemented 2026-11-11)
+
+The browser implementation now lives in deno/maieutics-output-client rather than in the notebook
+entrypoint. Its single dist/outputClient.js bundles the pinned Vue runtime, passive Markdown-it and
+all existing DOM/SSR/progressive-component logic; accompanying declarations describe the public API.
+There are no external runtime imports, VS Code APIs, transport credentials or automatic I/O. This
+is the shared presentation implementation, not a second Markdown compiler or a move of SSR to the
+browser. Compilation, highlighting, math and initial SSR remain in the executable-owned Deno service.
+
+createOutputRenderer accepts host message dispatch, optional native Markdown and explicit action
+handling. render takes an id, output kind, value, element and optional cancellation signal; receive
+applies correlated backend replies and returns the asynchronous Vue-update work. render completion
+means fallback preparation/request dispatch, while the existing applied envelope means a committed
+presentation. disposeOutput releases selected outputs; terminal dispose aborts owned preparation,
+unmounts all apps and rejects future rendering. Transport subscriptions remain owned by the host. A low-level mountVueIsland export supports hosts
+that already own SSR DOM and verified factories; it does not grant execution authority itself.
+Existing revision guards prevent late work from publishing after disposal. The default Markdown
+fallback is passive, disables HTML/command links and uses a scoped shadow boundary.
+
+The VS Code adapter maps MIME/items, injects protected native Markdown and forwards message/action
+services. The same built ESM is copied into media/outputClient.js; extension-host Node code does not
+import another workspace module. build:media and CI rebuild/copy it, and CI rejects a stale committed
+artifact. Widget/view renderers are separate and unchanged. Public frontend envelopes, capability
+versions, provenance and notebook persistence are unchanged: assistant/vue kinds are explicit host
+execution choices, never inferred from an unverified saved marker. CSS can still inherit editor
+variables, with browser defaults when absent.
+
+Coverage includes ESM shape/no external imports, headless import, direct standalone browser Markdown
+and SSR, progressive ClientOnly state, terminal/idempotent disposal, aborted preparation with no late
+commit, and the existing actual VS Code notebook/history paths. Registry publication, a custom element
+wrapper and a browser HTTP/clipboard transport adapter are not introduced by this extraction.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

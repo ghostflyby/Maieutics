@@ -95,6 +95,34 @@ Deno.test("notebook renderer entrypoints are ESM modules, not CJS bundles", asyn
   }
 });
 
+Deno.test("shared output client is a self-contained browser ESM with its public lifecycle exports", async () => {
+  const source = await Deno.readTextFile(new URL("media/outputClient.js", import.meta.url));
+  const module = parse(source, { ecmaVersion: "latest", sourceType: "module" });
+  const names = module.body.flatMap((node) =>
+    node.type === "ExportNamedDeclaration"
+      ? node.specifiers.map(({ exported }) =>
+        exported.type === "Identifier" ? exported.name : exported.value
+      )
+      : []
+  );
+  for (
+    const name of [
+      "createOutputRenderer",
+      "renderTurn",
+      "renderSubagents",
+      "mountVueIsland",
+      "vueUpdatesComplete",
+    ]
+  ) {
+    assert(names.includes(name), `Standalone artifact exports ${name}`);
+  }
+  assert(
+    module.body.every((node) => node.type !== "ImportDeclaration"),
+    "Standalone artifact bundles Vue and Markdown without external imports",
+  );
+  assert(!source.includes("acquireVsCodeApi"), "Standalone artifact has no VS Code bridge global");
+});
+
 Deno.test("renderer gate rejects real minified CJS bundles", async () => {
   const moduleRoot = new URL(".", import.meta.url);
   const scratch = await Deno.makeTempDir({ prefix: "maieutics-renderer-cjs-" });

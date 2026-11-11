@@ -89,6 +89,12 @@ jobs:
           git diff --exit-code --stat -- bundle/ styles.css
           deno task smoke:offline
 
+      - name: Verify committed browser output client
+        working-directory: deno/maieutics-output-client
+        run: |
+          deno task build:vscode
+          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js
+
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
         run: deno publish --dry-run --allow-dirty --no-provenance

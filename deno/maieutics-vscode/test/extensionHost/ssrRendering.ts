@@ -362,7 +362,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
         const markdown = native.activate({ workspace: { isTrusted: true } });
         let delivered = Promise.withResolvers();
         let copied = Promise.withResolvers();
-        let holdDelivery = false, heldMessage, deliver;
+        let holdDelivery = false, heldMessage, deliver, standalone;
         let deliveryHeld = Promise.withResolvers();
         const api = await renderer.activate({
           getRenderer: async () => markdown,
@@ -370,7 +370,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           onDidReceiveMessage: (handler) => {
             deliver = (message) => {
               if (message.type === "copy-result") copied.resolve(message);
-              Promise.resolve(handler(message)).then(() => {
+              Promise.all([handler(message), standalone?.receive(message)]).then(() => {
                 if (message.type === "rendered") delivered.resolve();
               }, delivered.reject);
               if (message.type === "unavailable") delivered.reject(new Error("SSR snapshot unavailable"));
@@ -384,9 +384,51 @@ export async function testSsrRenderingAsync(): Promise<void> {
         });
         const element = document.createElement("div"); document.body.appendChild(element);
         const source = ${JSON.stringify(CodeDemoSource)};
-        const vueRuntime = await import(new URL("./vueIslands.js", ${
+        const vueRuntime = await import(new URL("./outputClient.js", ${
       JSON.stringify(rendererUri.toString())
     }).href);
+        if (${client !== undefined}) {
+          const directElement=document.createElement("div");document.body.appendChild(directElement);
+          standalone=vueRuntime.createOutputRenderer({sendMessage:(message)=>vscode.postMessage(message)});
+          delivered=Promise.withResolvers();
+          await standalone.render({id:"standalone-markdown",kind:"turn",value:{text:"# Standalone Markdown\\n\\n| A | B |\\n| --- | --- |\\n| one | two |\\n\\n<img src=x onerror=alert(1)>"}},directElement);
+          let directRoot=directElement.querySelector("[data-markdown-index]").shadowRoot;
+          assert(directRoot.querySelector("h1") && directRoot.querySelector("table") && !directRoot.querySelector("img"),"standalone ESM supplies passive Markdown without any VS Code renderer API");
+          await delivered.promise;
+          assert(directElement.querySelector('[data-render-engine="ssr"]'),"standalone ESM accepts shared backend snapshots through its transport seam");
+          standalone.disposeOutput("standalone-markdown");directElement.replaceChildren();
+          globalThis.__clientOnlyMounts=0;globalThis.__clientOnlyUnmounts=0;globalThis.__clientOnlyEvents=0;
+          let directSource=${
+      JSON.stringify(ClientOnlySetup).replaceAll("<", String.fromCharCode(92) + "u003c")
+    }+'\\n\\n<ClientOnly><BrowserWidget /></ClientOnly>';
+          const paintDirect=async()=>{
+            delivered=Promise.withResolvers();
+            await standalone.render({id:"standalone-vue",kind:"assistant",value:{text:directSource,streaming:true}},directElement);
+            await delivered.promise;await vueRuntime.vueUpdatesComplete();
+            const region=directElement.querySelector('[data-render-engine="vue"]');
+            assert(region,"standalone ESM mounts the SSR component");return region.shadowRoot ?? region;
+          };
+          directRoot=await paintDirect();
+          const directChild=directRoot.querySelector(".client-only-child");
+          assert(directChild?.textContent.startsWith("0:false:"),"standalone ClientOnly uses the browser factory");
+          directChild.click();await vueRuntime.vueUpdatesComplete();
+          directSource+='\\n\\n<p>Later content</p>';
+          await paintDirect();
+          assert(directRoot.querySelector(".client-only-child")===directChild && directChild.textContent.startsWith("1:false:"),"standalone progressive updates preserve child state");
+          standalone.dispose();standalone.dispose();
+          assert(globalThis.__clientOnlyUnmounts===1,"standalone scope disposal unmounts its child exactly once");
+          let rejected=false;try{await standalone.render({id:"closed",kind:"turn",value:{text:"closed"}},directElement);}catch{rejected=true;}
+          assert(rejected,"standalone scope disposal is terminal");standalone=undefined;directElement.remove();
+          const started=Promise.withResolvers(),release=Promise.withResolvers();let sentAfterDispose=0;
+          const owned=vueRuntime.createOutputRenderer({sendMessage:()=>sentAfterDispose++,renderMarkdown:async(text,target,{signal})=>{started.resolve(signal);await release.promise;target.textContent=text;}});
+          const preparingElement=document.createElement("div");
+          const preparing=owned.render({id:"disposed-during-prepare",kind:"turn",value:{text:"pending"}},preparingElement);
+          const preparationSignal=await started.promise;owned.dispose();
+          assert(preparationSignal.aborted,"standalone disposal aborts owned Markdown preparation");
+          release.resolve();await preparing;
+          assert(sentAfterDispose===0 && !preparingElement.querySelector(".maieutics-turn"),"disposed preparation cannot publish or commit late content");
+        }
+        delivered=Promise.withResolvers();
         await api.renderOutputItem({ id: "ssr-demo", json: () => ({ text: source }) }, element);
         await delivered.promise;
         const node = element.querySelector('[data-render-engine="ssr"]');

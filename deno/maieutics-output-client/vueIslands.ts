@@ -1,12 +1,8 @@
 /// <reference lib="dom" />
 import * as Vue from "@vue/runtime-dom";
+import type { VueIslandDisposer } from "./types.d.ts";
 
 /** Materializes only kernel-compiled, explicitly selected live component output. */
-export interface VueIslandDisposer {
-  (): void;
-  update?(setupKey: string, renderCode: string): Promise<boolean>;
-}
-
 export function mountVueIsland(
   container: HTMLElement,
   code: string,

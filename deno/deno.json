@@ -5,6 +5,7 @@
     "./maieutics-plugin-sdk",
     "./maieutics-plugin-host",
     "./maieutics-output-renderer",
+    "./maieutics-output-client",
     "./maieutics-vscode"
   ],
   "fmt": {
@@ -13,16 +14,16 @@
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
       "maieutics-vscode/media/viewRenderer.js",
-      "maieutics-vscode/media/vueIslands.js",
       "maieutics-output-renderer/styles.css",
-      "maieutics-output-renderer/vendor/vitepress/styles/"
+      "maieutics-output-renderer/vendor/vitepress/styles/",
+      "maieutics-vscode/media/outputClient.js"
     ]
   },
   "lint": {
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
       "maieutics-vscode/media/viewRenderer.js",
-      "maieutics-vscode/media/vueIslands.js"
+      "maieutics-vscode/media/outputClient.js"
     ]
   },
   "imports": {

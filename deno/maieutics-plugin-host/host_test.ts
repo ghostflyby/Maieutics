@@ -461,7 +461,7 @@ Deno.test("unknown extension point names are diagnosed instead of silently ignor
     const messages: string[] = [];
     const original = console.error;
     console.error = (message: string) => messages.push(message);
-    const { defineExtensionPoint } = await import("jsr:@maieutics/plugin-sdk@^0.1");
+    const { defineExtensionPoint } = await import("jsr:@maieutics/plugin-sdk@^0.2");
     export const bogus = defineExtensionPoint("BogusKind", {
       handler: () => ({ action: "continue" }),
     });

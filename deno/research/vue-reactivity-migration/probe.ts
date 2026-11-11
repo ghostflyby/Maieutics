@@ -1,5 +1,6 @@
 /** Feasibility probes, not a production adapter. Run explicitly; see the migration study. */
 import { assertEquals, assertStrictEquals, assertThrows } from "@std/assert";
+// @deno-types="npm:@vue/reactivity@3.5.13/dist/reactivity.d.ts"
 import {
   computed,
   effect,

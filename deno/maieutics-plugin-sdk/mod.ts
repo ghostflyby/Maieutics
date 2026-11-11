@@ -72,7 +72,7 @@ import {
   setValueTransformer,
   setValueUntransformer,
   setWorkerSpecifier,
-  signal,
+  shallowRef,
   snapshot,
   subscribe,
   unprovide,
@@ -629,7 +629,7 @@ export function defineExtensionPoint(
  *
  * ```ts
  * const services = defineServiceExtensionPoint<{ hello(): string }>("services");
- * provide(services, signal({ hello() { return "hi"; } }));
+ * provide(services, shallowRef({ hello() { return "hi"; } }));
  * // consumer: for await (const svc of values(services)) await svc.hello();
  * ```
  */
@@ -706,7 +706,7 @@ const SERVICE_BRAND = "maieutics/service/v1";
  *
  * ```ts
  * const service = { hello(): string { return "hi"; } };
- * provide(ep, signal(defineService(service))); // original instance, no export
+ * provide(ep, shallowRef(defineService(service))); // original instance, no export
  * ```
  */
 export function defineService<T extends object>(service: T): T {
@@ -1095,7 +1095,7 @@ function scanExports(namespace: Record<string, unknown>): void {
  */
 const COLLECTION_SURFACE_MARKER = Symbol.for("maieutics/extensionPoint/v1/collectionSurface");
 
-/** One remote contribution tracked by the defining worker: the local signal
+/** One remote contribution tracked by the defining worker: the local shallowRef
  * plus the pull-loop stop, so `remove`/dispose can withdraw it. */
 interface RemoteContribution {
   registration: ProviderRegistration<unknown>;
@@ -1198,8 +1198,8 @@ function emptyAsyncIterable<T>(): AsyncIterable<T> {
 
 /** Applies a remote provider's contribution to the local collection: register
  * the initial value, then keep pulling the change stream and updating the
- * signal. The pull loop runs independently of any consumer so the producer's
- * values stream continuously; the signal stays registered until the provider's
+ * shallowRef. The pull loop runs independently of any consumer so the producer's
+ * values stream continuously; the shallowRef stays registered until the provider's
  * stream ends (undefined values simply drop the contribution from snapshots).
  *
  * `providerKey` identifies the contributing provider (a client-generated id)
@@ -1220,7 +1220,7 @@ function applyRemoteContribution(
   // Replace a previous contribution from the same provider (idempotent add).
   removeRemoteContribution(name, key);
 
-  const value = signal<unknown | undefined>(initial as unknown | undefined);
+  const value = shallowRef<unknown | undefined>(initial as unknown | undefined);
   const registration = provide(extensionPoint, value as ReactiveValue<unknown | undefined>);
   let stopped = false;
   const stop = (): void => {
@@ -1257,7 +1257,7 @@ function applyRemoteContribution(
 }
 
 /** Withdraws the remote contribution identified by `providerKey`, stopping its
- * pull loop and unregistering its signal from the collection. */
+ * pull loop and unregistering its shallowRef from the collection. */
 function removeRemoteContribution(name: string, providerKey: string): void {
   const byName = remoteContributions.get(name);
   if (byName === undefined) return;
@@ -1855,8 +1855,33 @@ export type {
   ReactiveValue,
   Remote,
 };
-export { computed, effect, signal } from "./reactive.ts";
+export {
+  computed,
+  effectScope,
+  getCurrentScope,
+  isProxy,
+  isReactive,
+  isReadonly,
+  isRef,
+  markRaw,
+  onScopeDispose,
+  reactive,
+  readonly,
+  ref,
+  shallowReactive,
+  shallowReadonly,
+  shallowRef,
+  toRaw,
+  toRef,
+  toRefs,
+  unref,
+  watch,
+} from "./reactive.ts";
 export { evaluateAdmissionHook, setAdmissionHook } from "./reactive.ts";
 export type { AdmissionContext, AdmissionHook } from "./admission.ts";
 export { http, HTTP_AGGREGATOR_SPECIFIER } from "./http.ts";
 export { httpCodec } from "./http_codec.ts";
+
+export type { ComputedRef, EffectScope, Ref, ShallowRef, WatchHandle } from "./vue_reactivity.ts";
+
+export { MaximumReactiveQueueLength, ReactiveSubscriptionError } from "./reactive.ts";

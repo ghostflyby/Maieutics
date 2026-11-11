@@ -15,6 +15,7 @@ import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--deno", default="deno")
+parser.add_argument("--baseline-ref", default="0b10d0a")
 args = parser.parse_args()
 sdk = Path(__file__).resolve().parents[2] / "maieutics-plugin-sdk"
 adapter = """
@@ -39,9 +40,14 @@ with tempfile.TemporaryDirectory(prefix="maieutics-vue-collections-") as directo
     for key in ("TMPDIR", "TEMP", "TMP"):
         child_env[key] = str(child_temp) + os.sep
     lock = root / "deno.lock"
-    shutil.copyfile(sdk.parent / "deno.lock", lock)
+    lock.write_text(subprocess.check_output([
+        "git", "show", f"{args.baseline_ref}:deno/deno.lock",
+    ], cwd=sdk.parent.parent, text=True))
     for name in ("reactive.ts", "reactive_test.ts", "admission.ts"):
-        shutil.copyfile(sdk / name, root / name)
+        source = subprocess.check_output([
+            "git", "show", f"{args.baseline_ref}:deno/maieutics-plugin-sdk/{name}",
+        ], cwd=sdk.parent.parent, text=True)
+        (root / name).write_text(source)
     (root / "vue_adapter.ts").write_text(adapter)
     for label, implementation in (
         ("preact-baseline", "npm:@preact/signals-core@1.14.4"),

@@ -135,13 +135,13 @@ Deno.test("entrypoint-exports: function fix preserves annotations and async/gene
 
 // —— provide-once ——
 
-const REACTIVE_IMPORT = 'import { provide, signal } from "@maieutics/plugin-sdk";\n';
+const REACTIVE_IMPORT = 'import { provide, shallowRef } from "@maieutics/plugin-sdk";\n';
 
 Deno.test("provide-once: the same signal provided twice is reported", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "provide(ep, s);\n" +
     "provide(ep, s);\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -154,8 +154,8 @@ Deno.test("provide-once: distinct signals are not reported", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const a = signal(1);\n" +
-    "const b = signal(2);\n" +
+    "const a = shallowRef(1);\n" +
+    "const b = shallowRef(2);\n" +
     "provide(ep, a);\n" +
     "provide(ep, b);\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -166,7 +166,7 @@ Deno.test("provide-once: namespace import form is tracked", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = 'import * as sdk from "@maieutics/plugin-sdk";\n' +
     'export const ep = sdk.defineExtensionPoint<number>("m");\n' +
-    "const s = sdk.signal(1);\n" +
+    "const s = sdk.shallowRef(1);\n" +
     "sdk.provide(ep, s);\n" +
     "sdk.provide(ep, s);\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -176,9 +176,9 @@ Deno.test("provide-once: namespace import form is tracked", async () => {
 
 Deno.test("provide-once: an imported alias of provide is tracked", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
-  const src = 'import { provide as contribute, signal } from "@maieutics/plugin-sdk";\n' +
+  const src = 'import { provide as contribute, shallowRef } from "@maieutics/plugin-sdk";\n' +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "contribute(ep, s);\n" +
     "contribute(ep, s);\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -190,8 +190,8 @@ Deno.test("provide-once: a non-identifier signal argument is not tracked", async
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "provide(ep, signal(1));\n" +
-    "provide(ep, signal(2));\n";
+    "provide(ep, shallowRef(1));\n" +
+    "provide(ep, shallowRef(2));\n";
   const diags = await lint(dir, "mod.ts", src);
   assertEquals(diags.filter((d) => d.id === "maieutics/provide-once").length, 0);
 });
@@ -276,7 +276,7 @@ Deno.test("provide-top-level: a top-level provide is silent", async () => {
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "provide(ep, s);\n";
   const diags = await lint(dir, "mod.ts", src);
   assertEquals(diags.filter((d) => d.id === "maieutics/provide-top-level").length, 0);
@@ -286,7 +286,7 @@ Deno.test("provide-top-level: a provide inside a function is reported", async ()
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "function setup() { provide(ep, s); }\n" +
     "setup();\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -299,7 +299,7 @@ Deno.test("provide-top-level: arrow and method bodies are reported", async () =>
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "const start = () => { provide(ep, s); };\n" +
     "const obj = { run() { provide(ep, s); } };\n";
   const diags = await lint(dir, "mod.ts", src);
@@ -311,7 +311,7 @@ Deno.test("provide-top-level: a conditional top-level provide is silent", async 
   const dir = tempProject({ main: ["./mod.ts"] });
   const src = REACTIVE_IMPORT +
     'export const ep = defineExtensionPoint<number>("m");\n' +
-    "const s = signal(1);\n" +
+    "const s = shallowRef(1);\n" +
     "if (isProd) { provide(ep, s); }\n";
   const diags = await lint(dir, "mod.ts", src);
   assertEquals(diags.filter((d) => d.id === "maieutics/provide-top-level").length, 0);

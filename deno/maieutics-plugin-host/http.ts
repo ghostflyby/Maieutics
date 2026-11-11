@@ -4,7 +4,7 @@
  *
  * Aggregator — the host is the defining worker of the SDK's `http` contract
  * (`HTTP_AGGREGATOR_SPECIFIER`, bound at SDK module load). A plugin worker's
- * `provide(http, signal(handler))` acquires this process's collection surface
+ * `provide(http, shallowRef(handler))` acquires this process's collection surface
  * through the standard `__acquire-actor` routing (the acquire router serves
  * it directly instead of forwarding to a plugin worker), and every subsequent
  * request is a direct host↔worker actor call: the httpCodec moves the fetch

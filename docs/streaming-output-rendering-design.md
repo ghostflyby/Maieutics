@@ -902,7 +902,8 @@ The 2026-11-11 [Vue reactive UI migration study](vue-reactive-ui-migration.md) r
 replacement of Preact browser families and signals-core backend extension reactivity. It proposes
 owned Vue worker models, explicit data projections and a shared-client reactive mirror, keeping
 SSR as a snapshot consumer. Nine pinned-version probes and a local 12-test SDK comparison pass;
-production migration, cross-worker conformance and the new model protocol remain pending. The
+the SDK 0.2 backend core has since migrated with real-worker coverage. The Vue UI/model protocol
+and browser-family replacement remain pending. The
 study also covers component catalogs, UI action routing, history/legacy compatibility and removal
 of the old family/JSX abstractions. No currently shipped protocol is changed by this research.
 

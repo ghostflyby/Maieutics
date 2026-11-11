@@ -2,18 +2,40 @@
 
 Date: 2026-11-11
 
-Status: researched target architecture. The requested direction is to retire the Preact-based
-abstractions and use Vue for both backend reactivity and browser components. Production migration
-has not started in this change. The executable remains the conversation authority; plugin workers
-may own business models without moving Agent orchestration into JavaScript.
+Status: backend reactive core implemented; UI/model migration pending. The requested direction is to
+retire the Preact-based abstractions and use Vue for both backend reactivity and browser components.
+The SDK 0.2 backend now uses Vue; the Preact browser-family/model-authoring paths remain pending.
+The executable remains the conversation authority; plugin workers may own business models without
+moving Agent orchestration into JavaScript.
 
 Related: [streaming output design](streaming-output-rendering-design.md),
 [previous UI design](custom-ui-framework-design.md), ADR 0037/0038/0040/0047, and
 [`maieutics-output-client`](../deno/maieutics-output-client/README.md).
 
+## Backend core implementation (2026-11-11)
+
+SDK 0.2.0 replaces signals-core with Vue 3.5.13's headless production ESM. The Node entry was
+verified to require NODE_ENV inside a permission-scoped worker; selecting the ESM avoids that read
+without adding grants. Materialized imports reserve/pin the runtime. Native Vue APIs replace
+signal/effect exports, readonly computed refs can contribute, and non-Vue cells are rejected.
+Existing explicit 0.1 SDK imports must move to 0.2; source/scaffold/tests are migrated together.
+
+Each iterator owns a Vue effect scope and a bounded 1024-change buffer. Return and scope disposal
+settle a pending read and discard queued values; concurrent pending reads and overflow fail
+explicitly. Remote provide observes changes before its first async handoff, preserving startup
+transitions, and unprovide stops the source including service-stream transformations. Contribution
+identity, order, service actor references, admission and the undefined withdrawal rule are retained.
+No frontend/IPC wire shape, browser component engine or business-model protocol is changed here.
+
+Focused real-worker coverage exercises synchronous startup changes before attachment and withdrawal
+without polling; existing interop coverage includes forwarding service identity, worker restart and
+cascade stop. Vue business models, state projection transport, browser Vue family replacement and
+retiring the widget authoring dialect remain the next implementation stages.
+
 ## Findings in the current implementation
 
-There are three independent surfaces to replace, not just a browser component library.
+The pre-migration inventory identified three independent surfaces. The first is now migrated; the
+producer UI and browser-family surfaces below still describe the existing implementation.
 
 | Surface                           | Current implementation                                                                                                        | Migration consequence                                                                                                                           |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -231,16 +253,18 @@ changes.
 
 ## Evidence and reproduction
 
-Tested with Deno 2.9.6 and Vue reactivity 3.5.13. The study does not update production dependencies,
-embedded bundles, public SDK or wire formats.
+Tested with Deno 2.9.6 and Vue reactivity 3.5.13. The original study at 0b10d0a did not update
+production dependencies, public SDK or wire formats. The backend implementation above is a separate
+subsequent change; its acceptance is recorded there.
 
 - Nine explicit probes pass: service identity, effect runner semantics, synchronous withdrawal,
   nested projection tracking, deep-watch aliasing, controlled scheduling, scope cleanup, retained
   computed reads after stop and async owner reentry.
-- Existing reactive.ts local tests pass unchanged against Preact (12/12) and against a temporary Vue
-  shallowRef/computed/watch comparison adapter (12/12). The script copies sources and the lock to a
-  temporary directory; the adapter exists only there. These legacy tests include timing waits, so
-  this is compatibility evidence, not the deterministic acceptance suite for the migration.
+- The historical reactive.ts local tests at 0b10d0a pass unchanged against Preact (12/12) and
+  against a temporary Vue shallowRef/computed/watch comparison adapter (12/12). The script copies
+  sources and the lock to a temporary directory; the adapter exists only there. These legacy tests
+  include timing waits, so this is compatibility evidence, not the deterministic acceptance suite
+  for the migration.
 - Real cross-worker/HTTP/worker-restart behavior, browser rendering, new model protocol and final
   package-size/performance effects are not validated by those local experiments.
 

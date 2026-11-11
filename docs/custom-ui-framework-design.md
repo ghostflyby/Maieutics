@@ -7,7 +7,8 @@ Date: 2026-10-04
 
 Direction update (2026-11-11): the requested replacement is a Vue-based backend reactive core and
 browser component model. See the [migration study](vue-reactive-ui-migration.md) for verified scope,
-semantic differences and implementation stages. The Preact family/JSX model described below remains
+semantic differences and implementation stages. SDK 0.2 has migrated its backend core to Vue;
+the Preact family/JSX model described below remains
 the existing implementation during migration; it is not the target for new component extensions.
 
 Related: ADR 0024 (frontend comm plane and widgets), ADR 0021 (plugin HTTP UI

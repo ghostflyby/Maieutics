@@ -1,14 +1,39 @@
 using Maieutics.Plugins;
+using System.Text.Json;
 
 namespace Maieutics.Product.Tests;
 
 public sealed class PluginImportMergerTests
 {
+    [Fact]
+    public void MaterializedVueRuntimeIsPinnedAndCannotBeReplacedByPluginImports()
+    {
+        var merged = PluginImportMerger.Merge(
+            [Plugin("a", imports: [Entry("@vue/reactivity", "npm:unrelated@1")])],
+            PluginHostModule.ReservedImportKeys);
+        var module = new PluginHostModule();
+        try
+        {
+            module.WriteRootConfig(merged.Imports);
+            using var config = JsonDocument.Parse(File.ReadAllText(module.ConfigFile));
+            Assert.Equal("npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js",
+                config.RootElement.GetProperty("imports").GetProperty("@vue/reactivity").GetString());
+            Assert.Contains("reserved", Assert.Single(merged.Warnings));
+            Assert.False(config.RootElement.GetProperty("imports").TryGetProperty("@preact/signals-core", out _));
+            Assert.True(File.Exists(Path.Combine(module.ModuleDirectory, "maieutics-plugin-sdk", "vue_reactivity.ts")));
+            Assert.True(File.Exists(Path.Combine(module.ModuleDirectory, "maieutics-plugin-sdk", "reactive_stream.ts")));
+        }
+        finally
+        {
+            Directory.Delete(module.ModuleDirectory, recursive: true);
+        }
+    }
+
     private static readonly IReadOnlySet<string> ReservedKeys =
         new HashSet<string>(StringComparer.Ordinal)
         {
             "@ghostflyby/worker-actor",
-            "@preact/signals-core",
+            "@vue/reactivity",
             "@maieutics/plugin-sdk"
         };
 
@@ -68,7 +93,7 @@ public sealed class PluginImportMergerTests
     public void SkipsReservedKeys()
     {
         var (imports, exclusions, warnings) = Merge(
-            Plugin("a", imports: [Entry("@maieutics/plugin-sdk", "jsr:@maieutics/plugin-sdk@^0.1")]));
+            Plugin("a", imports: [Entry("@maieutics/plugin-sdk", "jsr:@maieutics/plugin-sdk@^0.2")]));
 
         Assert.Empty(imports);
         Assert.Empty(exclusions);

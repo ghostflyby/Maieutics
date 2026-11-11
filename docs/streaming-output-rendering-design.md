@@ -898,6 +898,14 @@ wrapper and a browser HTTP/clipboard transport adapter are not introduced by thi
 
 ## Document state and presentation units
 
+The 2026-11-11 [Vue reactive UI migration study](vue-reactive-ui-migration.md) records the requested
+replacement of Preact browser families and signals-core backend extension reactivity. It proposes
+owned Vue worker models, explicit data projections and a shared-client reactive mirror, keeping
+SSR as a snapshot consumer. Nine pinned-version probes and a local 12-test SDK comparison pass;
+production migration, cross-worker conformance and the new model protocol remain pending. The
+study also covers component catalogs, UI action routing, history/legacy compatibility and removal
+of the old family/JSX abstractions. No currently shipped protocol is changed by this research.
+
 Each document retains source and a monotonically increasing source version, parsed structure,
 document-level definitions, binding state, and a tree of presentation units. Units carry stable
 identities, source ranges, compilation state, dependencies, and the last committed render version.

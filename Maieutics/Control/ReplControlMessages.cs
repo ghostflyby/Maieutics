@@ -351,7 +351,8 @@ internal sealed record PluginHttpGatewayPayload(
 internal sealed record PluginHttpMountPayload(
     string PluginId,
     string Specifier,
-    bool Live);
+    bool Live,
+    string? AccessToken = null);
 
 internal sealed record ExtensionRegistryPlugin(
     string PluginId,

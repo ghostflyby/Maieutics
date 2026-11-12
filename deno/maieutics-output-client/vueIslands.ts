@@ -1,15 +1,17 @@
 /// <reference lib="dom" />
 import * as Vue from "@vue/runtime-dom";
-import type { VueIslandDisposer } from "./types.d.ts";
+import type { PluginHttpClient, VueIslandDisposer } from "./types.d.ts";
+import { useFetch } from "./pluginFetch.ts";
 
 /** Materializes only kernel-compiled, explicitly selected live component output. */
 export function mountVueIsland(
   container: HTMLElement,
   code: string,
   progressive?: { setupKey: string; renderCode: string },
+  http?: PluginHttpClient,
 ): VueIslandDisposer {
   if (code.length > 400_000) throw new Error("invalid_vue_component");
-  const component = new Function("Vue", code)(Vue);
+  const component = new Function("Vue", "Maieutics", code)(Vue, Object.freeze({ useFetch }));
   const render = Vue.shallowRef(component.render);
   let lastRender = component.render;
   if (progressive) {
@@ -31,6 +33,7 @@ export function mountVueIsland(
     };
   }
   const app = Vue.createSSRApp(component);
+  http?.install(app);
   let failed = false;
   app.config.warnHandler = () => {};
   app.config.errorHandler = () => {

@@ -277,6 +277,7 @@ export class PluginHost {
   #triggerDisposers: Array<() => void> = [];
   #acquireRouterInstalled = false;
   #http: HttpGateway | undefined;
+  #httpStopping: Promise<void> | undefined;
   /** Authoritative per-plugin storage execution pool (ADR 0022): the frame
    * router feeds it, the shutdown path closes it. Inert until a plugin worker
    * posts a frame. */
@@ -536,14 +537,19 @@ export class PluginHost {
     // A quarter of the grace per tick: short graces (tests, tight settings) get
     // timely reclamation without ever busy-looping.
     const tick = Math.max(50, Math.min(1_000, Math.floor(grace / 4)));
-    this.#idleMonitor = setInterval(() => this.#reclaimIdleWorkers(), tick);
+    this.#idleMonitor = setInterval(() => {
+      void this.reclaimIdleWorkers().catch(() =>
+        console.error("[plugin-host] idle reclamation failed")
+      );
+    }, tick);
   }
 
-  #reclaimIdleWorkers(): void {
+  /** Run maintenance at the supplied timestamp and join its queued stops. */
+  async reclaimIdleWorkers(now = Date.now()): Promise<void> {
     if (this.#disposed) return;
     const grace = this.#options.idleGraceMs ?? DEFAULT_IDLE_GRACE_MS;
     if (grace <= 0) return;
-    const now = Date.now();
+    const stopped: Promise<void>[] = [];
     for (const key of this.#workers.keys()) {
       const handle = this.#requireHandle(key);
       if (handle.state !== State.Running) {
@@ -553,6 +559,7 @@ export class PluginHost {
 
       const referenced = (this.#inFlight.get(key) ?? 0) > 0 ||
         (this.#openChannels.get(key) ?? 0) > 0 ||
+        this.#http?.hasProvider(handle.specifier) ||
         this.#isDependencyOfRunningWorker(key);
       if (referenced) {
         this.#idleSince.delete(key);
@@ -567,9 +574,10 @@ export class PluginHost {
         // provider-dead notification fires and dependents drop contributions,
         // exactly as they would when the worker dies. The next reference
         // restarts it.
-        void this.#enqueueLifecycle(() => this.#stopWorker(key));
+        stopped.push(this.#enqueueLifecycle(() => this.#stopWorker(key)));
       }
     }
+    await Promise.all(stopped);
   }
 
   /** True when some RUNNING worker declares (transitively — one edge here)
@@ -843,6 +851,7 @@ export class PluginHost {
         }
         // Specifier identity is the worker's canonical interop name; a config
         // change may rename an entrypoint, so refresh the by-specifier map.
+        await this.#http?.withdrawProvider(handle.specifier);
         this.#bySpecifier.delete(handle.specifier);
         handle.specifier = nextWorker?.specifier ?? handle.specifier;
         this.#bySpecifier.set(handle.specifier, key);
@@ -943,7 +952,10 @@ export class PluginHost {
       clearInterval(this.#idleMonitor);
       this.#idleMonitor = undefined;
     }
-    void this.#http?.stopRouter();
+    this.#httpStopping = this.#http?.dispose();
+    void this.#httpStopping?.catch(() =>
+      console.error("[plugin-host] HTTP gateway shutdown failed")
+    );
     this.#storage.dispose();
     for (const handle of this.#workers.values()) {
       if (handle.actor !== undefined && handle.state !== State.Stopped) {
@@ -966,6 +978,7 @@ export class PluginHost {
       await this.#storage.shutdown();
     } finally {
       this.dispose();
+      await this.#httpStopping;
     }
   }
 
@@ -1059,7 +1072,11 @@ export class PluginHost {
           typeof frame.providerModule === "string" &&
           frame.sab instanceof SharedArrayBuffer
         ) {
-          this.httpGateway().admit(frame as AdmissionRequestFrame, provider.specifier);
+          this.httpGateway().admit(
+            frame as AdmissionRequestFrame,
+            provider.specifier,
+            provider.plugin.id,
+          );
         }
         return;
       }
@@ -1092,9 +1109,15 @@ export class PluginHost {
     refId: string,
     name?: string,
   ): Promise<void> {
+    if (this.#disposed) return;
     if (specifier === HTTP_AGGREGATOR_SPECIFIER) {
+      const provider = [...this.#workers.values()].find((handle) => handle.worker === requester);
+      if (!provider) return;
       const { port1, port2 } = new MessageChannel();
-      this.httpGateway().serveCollection(port1);
+      this.httpGateway().serveCollection(port1, {
+        pluginId: provider.plugin.id,
+        specifier: provider.specifier,
+      });
       requester.postMessage(
         { type: "__ref-acquired", refId, port: port2 },
         { transfer: [port2] },
@@ -1297,6 +1320,7 @@ export class PluginHost {
     // Before the worker dies, tell every dependency it contributes to that this
     // provider is gone, so the definers drop its remote contributions (the
     // provider's change stream would otherwise hang and the value would linger).
+    await this.#http?.withdrawProvider(handle.specifier);
     this.#notifyProviderDead(handle);
     handle.state = State.Stopping;
     const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;

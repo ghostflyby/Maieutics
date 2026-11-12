@@ -37,6 +37,20 @@ function moduleBody(source: string, ssr = false): string {
   const changes: { start: number; end: number; text: string }[] = [];
   for (const node of ast.body) {
     if (node.type === "ImportDeclaration") {
+      if (node.source.value === "@maieutics/output-client") {
+        const bindings = node.specifiers.map((item) => {
+          if (
+            item.type !== "ImportSpecifier" || item.imported.type !== "Identifier" ||
+            item.imported.name !== "useFetch"
+          ) {
+            throw new VueComponentError("unsupported_import");
+          }
+          // SSR may acquire the interface, but never receives a plugin transport.
+          return `const ${item.local.name}=typeof Maieutics!=="undefined"?Maieutics.useFetch:()=>()=>Promise.reject(new Error("plugin_fetch_unavailable"));`;
+        }).join("\n");
+        changes.push({ start: node.start, end: node.end, text: bindings });
+        continue;
+      }
       if (node.source.value !== "vue") throw new VueComponentError("unsupported_import");
       const bindings = node.specifiers.map((item) => {
         if (item.type === "ImportNamespaceSpecifier") return `const ${item.local.name}=Vue;`;

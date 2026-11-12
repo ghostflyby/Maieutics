@@ -80,3 +80,21 @@ Permission, manifest, or source changes under the plugins root are detected by a
 with the new grants. No host-process restart is needed for a permission change.
 
 Validation: `deno task check` and `deno task test`.
+
+## Plugin HTTP component transport
+
+The existing loopback gateway is the primary data/action transport for new Vue plugin components
+(ADR 0051). Each registration has a random plugin-scoped URL credential, reported only through the
+authenticated registry. The kernel exposes scoped URLs for approved live mounts; it never
+substitutes the host-wide entrance credential when a scoped one is absent. Requests/preflights
+validate the credential against the addressed plugin before credentialless CORS is enabled. HTML
+retains the existing restrictive CSP. Component hosts explicitly supply a connection policy or a
+streaming Fetch adapter; this does not grant network permission to plugin workers.
+
+Collection ports are bound to actual worker identity. Stop, revocation and reload withdraw their
+mounts, revoke credentials, cancel/join owned subscription pumps and close ports; a restarted worker
+receives a fresh credential. Handler refresh within a live registration retains its token. Live HTTP
+roots pin their workers against automatic idle reclamation until withdrawn. Request and response
+bodies retain native binary streams, backpressure and cancellation. HTTP delivery completion crosses
+workers through callable Promise observation methods instead of cloning a Promise. No new listener
+or Deno permission kind is added by this integration.

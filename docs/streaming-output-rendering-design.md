@@ -934,6 +934,28 @@ build, pinned/frozen install, format/lint/types, SDK publish dry-run, offline SS
 freshness checks pass. Linux/Windows validation is delegated to the new PR's CI.
 
 
+## Plugin HTTP transport foundation (implemented 2026-11-12)
+
+[ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) selects HTTP as the primary
+transport for future plugin component data/actions. The shared browser ESM exports a host-owned
+`createPluginHttpClient` and a Vue `useFetch()` composable, retaining native Response and body
+streams. A low-level island can receive a client explicitly; the compiler links the named
+`useFetch` import from `@maieutics/output-client`. Browser injection uses the same bundled Vue
+runtime. Neither ordinary assistant output nor a saved artifact selects a plugin's authority.
+
+Each HTTP mount gets an independent credential, validated against its plugin by the gateway.
+Authenticated discovery publishes only approved live scoped URLs; old registry payloads without
+`accessToken` produce no page link. Scoped CORS supports opaque browser origins without ambient
+credentials; the existing HTML CSP is unchanged. Component unmount and host disposal cancel active
+requests/bodies. Redirect following, automatic JSON conversion, retries and background reconnects
+are disabled. Binary stays binary and responses are consumed as streams by callers.
+
+SSR can compile the interface but receives no HTTP client and cannot perform plugin requests.
+Prefetch and hydration response reuse require a later explicit read policy. Approved component
+delivery and notebook-side assignment of plugin context are also subsequent work; existing form
+comms remain usable. Tests cover real workers, isolation/revocation, binary/streaming/cancellation,
+Vue scopes, browser native Fetch, SSR denial and compatible kernel discovery.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

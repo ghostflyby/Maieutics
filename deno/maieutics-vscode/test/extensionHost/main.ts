@@ -34,6 +34,7 @@ import {
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
 import { testNotebookVueFormAsync, testVueFormsAsync } from "./forms.ts";
+import { testPluginHttpAsync } from "./pluginHttp.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
 import { testNotebookSsrAsync, testSsrRenderingAsync } from "./ssrRendering.ts";
 import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
@@ -1139,6 +1140,10 @@ async function testCommandCompletionAsync(): Promise<void> {
 }
 
 const tests: HostTest[] = [
+  {
+    name: "Plugin Fetch preserves native browser streams and Vue scope cancellation",
+    run: testPluginHttpAsync,
+  },
   {
     name: "actual notebook restores frozen forms through the registered Vue MIME renderer",
     run: testNotebookVueFormAsync,

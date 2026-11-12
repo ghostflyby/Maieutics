@@ -43,8 +43,9 @@ client.dispose();
 `receive` use the existing `maieutics-output` presentation envelopes: render/cancel/copy/applied
 outbound and rendered/unavailable/copy-result inbound. A transport adapter owns authentication,
 backend route selection, request coalescing, clipboard and subscription lifetime. The VS Code host
-uses `OutputRenderingBridge` for these services. This module contains no bearer token and makes no
-network or clipboard calls. Server compilation and SSR stay in the kernel's Deno renderer.
+uses `OutputRenderingBridge` for these services. The output-rendering path contains no bearer token
+and makes no network or clipboard calls. The separately injected plugin HTTP client below performs
+only explicit requests. Server compilation and SSR stay in the kernel's Deno renderer.
 
 `render` resolves after native fallback preparation and request dispatch, not after a backend
 commit. The `applied` message identifies a committed request and engine. Await `receive` when
@@ -87,9 +88,10 @@ SSR, progressive ClientOnly state, abort during preparation and adapter/history 
 
 This browser module needs no Deno permissions at runtime. Its build reads source/dependencies and
 writes local dist/; build:vscode additionally writes the one copied media artifact. No new runtime
-filesystem, environment, process or network permission is introduced. Source-level Deno tests allow
-NODE_ENV for Vue's Node entry; the bundled browser artifact has no environment permission
-dependency.
+filesystem, environment or process permission is introduced. Plugin Fetch requires the browser host
+to allow its specific gateway connection, or to inject a streaming native Fetch adapter.
+Source-level Deno tests allow NODE_ENV for Vue's Node entry; the bundled browser artifact has no
+environment permission dependency.
 
 ## Declarative Vue forms
 
@@ -107,3 +109,50 @@ only an attachment-unmount notification; it does not destroy the shared model. M
 closure makes retained content readonly. Up to 128 views and 128 fields/options per form are
 accepted. The VS Code host translates the form contract to the existing authenticated session comm
 endpoint; generic action-result RPC is not supplied by this API.
+
+## Plugin HTTP and Vue Fetch
+
+HTTP is the primary transport for new plugin component data/actions (ADR 0051). A trusted host
+obtains an approved plugin's live scoped URL from `/v1/plugins` and creates an independent request
+scope:
+
+```js
+const http = createPluginHttpClient(plugin.pageUrl);
+const disposeIsland = mountVueIsland(element, verifiedCompiledCode, undefined, http);
+// On view close: disposeIsland(). This aborts only that view's requests.
+// On plugin host-context close: http.dispose(). This aborts every request in the client.
+```
+
+An explicitly compiled component uses the virtual import linked by the kernel compiler:
+
+```vue
+<script setup>
+import { onMounted, ref } from 'vue'
+import { useFetch } from '@maieutics/output-client'
+const fetch = useFetch()
+const items = ref([])
+onMounted(async () => {
+  const response = await fetch('/api/items')
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  items.value = await response.json()
+})
+</script>
+```
+
+Acquire `useFetch()` synchronously in setup, before the first await. Native RequestInit and Response
+retain their semantics: text/JSON/FormData/Blob/bytes, response streams and caller signals are not
+wrapped in JSON envelopes. Choose decoders/content types explicitly and consume or cancel bodies.
+There is no default timeout, cache, retry or reconnect. Browser upload restrictions remain native.
+The host may inject `createPluginHttpClient(url, {fetch: nativeAdapter})`; the adapter must preserve
+streaming, cancellation and native response semantics.
+
+Paths resolve inside the plugin root; path escape is rejected. Requests omit ambient credentials,
+reject redirects and suppress Referer. The gateway independently checks the per-plugin credential
+and supports credentialless CORS after admission. This helper alone does not isolate arbitrary
+executable code; the host still owns browser execution/CSP boundaries. Never give a component the
+host-wide gateway token or another plugin's client. `install(app)` is available for hosts already
+using the same Vue runtime. SSR receives no transport, and requests reject explicitly; imports,
+ordinary assistant output and saved files gain no authority automatically.
+
+Approved reusable plugin component delivery and automatic notebook-side context assignment remain
+subsequent work; this change supplies the public transport and low-level mounting primitives.

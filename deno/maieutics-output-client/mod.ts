@@ -7,6 +7,8 @@ export { renderSubagents, renderTurn } from "./renderer.js";
 export { mountVueIsland, vueUpdatesComplete } from "./vueIslands.ts";
 export { createFormRenderer } from "./forms.ts";
 export type { FormMessage, FormRenderer } from "./forms.ts";
+export { createPluginHttpClient, useFetch } from "./pluginFetch.ts";
+export type { PluginFetch, PluginHttpClient, PluginHttpOptions } from "./types.d.ts";
 
 import type { MarkdownContext, OutputRenderer, OutputRendererOptions } from "./types.d.ts";
 export type {

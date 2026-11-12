@@ -2,14 +2,18 @@
 
 Status: Passive SSR integrated with the kernel and actual Notebook renderer; upstream TOC, anchors,
 containers, and alerts integrated. Explicit data-only template snapshots and interpolation are implemented;
-explicit live Vue components compile, SSR and hydrate with scoped styles. Successful completed live
-assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts. The streaming document
-runtime and revisioned presentation protocol remain proposed. Built-in per-run instructions now
+explicit live Vue components compile, SSR and hydrate with scoped styles. Bounded YAML/JSON
+frontmatter now supplies `$frontmatter` paths and readonly Vue template data. Successful completed live
+assistant replies now select Vue-in-Markdown automatically when they contain authored top-level scripts.
+Connected history restoration can renew this selection after verifying exact assistant source against
+the kernel-owned committed transcript. Progressive Vue template prefixes now preserve one client setup scope after a complete script.
+The broader document runtime and revisioned presentation protocol remain proposed. Append-only passive previews now commit
+completed SSR prefixes while newer text continues arriving. Built-in per-run instructions now
 advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-06
+Last updated: 2026-11-10
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -32,6 +36,21 @@ output across frontends. The passive content subset and stateless kernel API are
 Complete Vue SFC/Markdown authoring is implemented through an explicit live-output lane. The document
 runtime and revisioned update operations remain proposed and require the validation stages below. The initial demo API has its own normative frontend contract.
 
+### Content scope, not a site runtime (2026-11-10)
+
+The rendering unit is one output document in a host frontend, not a page in a renderer-owned site.
+VitePress site generation, page collections, routing, site navigation/default-theme layouts, SEO
+and document `<head>` management are intentionally out of scope, rather than compatibility gaps
+waiting to be filled. The host owns its enclosing document, navigation and presentation shell.
+One output must not change the enclosing document's title, metadata, scripts or styles through
+frontmatter `head` declarations. Such fields can remain ordinary inert data.
+
+Frontmatter is useful as output-local presentation data independent of site features. Future data
+helpers, if needed, should expose the current output's data without inventing a site/page context.
+Cross-references within an output and late TS bindings remain core work. If a frontend later groups
+multiple output documents, that needs an explicit frontend/document navigation design; it does not
+implicitly require adopting VitePress's site runtime or ownership of the host `<head>`.
+
 ## Existing integration boundary
 
 The VS Code frontend currently projects events into ordered timeline entries in
@@ -46,7 +65,8 @@ Markdown-node output metadata remains readable for snapshot compatibility.
 
 The renderer replaces assistant Markdown inside these existing output boundaries. Successful live
 turn completion now selects the assistant endpoint described below; streaming partials and restored
-notebook snapshots retain the passive lane.
+notebook snapshots decode through the passive lane; connected history can renew assistant provenance
+only after canonical transcript verification as described below.
 Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
 retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
 not implicitly become a Vue application.
@@ -351,8 +371,9 @@ example interpolations do not execute. For SFC input, the source goes directly t
 Vue compiler. `compileScript`, `compileTemplate`, and `compileStyle` implement setup bindings,
 directives, events and scoped CSS; Sucrase erases TypeScript. This is ecosystem reuse, not a second
 implementation of Vue semantics. Static imports from `vue` bind to the shipped runtime. Other
-imports, dynamic import, `import.meta`, external SFC blocks, custom blocks, CSS modules and style
-preprocessors are rejected. VitePress page context, filesystem includes and resource loading are
+imports, dynamic import, other `import.meta` expressions, external SFC blocks, custom blocks, CSS
+modules and style preprocessors are rejected. Script `import.meta.env.SSR` is the target boolean
+described below. VitePress page context, filesystem includes and resource loading are
 not installed. A component must be complete before compilation; this lane does not infer future
 bindings or execute partially received script text.
 
@@ -366,8 +387,8 @@ existing service gate. The trusted worker runtime is bundled ahead of time, embe
 text, and loaded from a module data URL: there is no runtime download or binary-to-text transfer.
 The deadline is a CPU/lifetime bound, not a memory quota or a claim of protection against runtime bugs.
 
-The response carries SSR HTML, baseline plus component CSS, and the same compiled component factory
-used by SSR. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
+The response carries SSR HTML, baseline plus component CSS, and the browser component factory.
+SSR uses the same factory unless a target constant requires a private server variant. The browser loads the shipped Vue runtime once, hydrates with `createSSRApp`, and owns
 one app per output boundary. Reactive refs, computed values, directives and event handlers then
 update that app locally. The renderer unmounts the old app when a changed-source replacement commits,
 and on output or renderer disposal; `onUnmounted` runs and owned Vue effects stop. A complete output replacement
@@ -383,8 +404,9 @@ compiled factory under the notebook output CSP; this is an executable live outpu
 upgrade or a browser sandbox. Setup runs once for SSR and again for client hydration. Initial state
 must be deterministic, and external operations/producers belong in the authorized REPL rather than
 setup. Vue subscriptions, listeners and timers created outside its effect scope still need their
-normal cleanup hooks. Async setup/Suspense, client-only components, external imports and asynchronous
-resource hydration are not part of the verified contract.
+normal cleanup hooks. ClientOnly now defers child regions until browser mount, as detailed below.
+Async setup/Suspense, external imports and asynchronous resource hydration remain outside the
+verified contract.
 
 Persistence never replays component code: notebook saving and reading both remove this MIME,
 retaining its producer-provided text fallback. The same read-time rule strips executable bundled-view
@@ -432,20 +454,90 @@ replaces it when ready. Setup still runs in SSR and hydration and must be determ
 producers remain explicit tool work. Source completion here is not automatic producer settlement or
 the proposed streaming document protocol.
 
-Live provenance is frontend runtime state: notebook serialization reads the new local MIME but
-saves only the ordinary source/timeline snapshot. Restore always reconstructs passive turn MIME and
-never the live marker. A forged marker field in a file cannot turn its text into a component. Opening
-or formatting a saved notebook does not execute scripts or start a producer. An explicitly resumed
-live run/replay is a new delivery from the authenticated kernel, subject to the same live completion
-policy; it can recreate derived component state. No producer executes during rendering or replay.
+### Passive streaming progress around Vue source (implemented 2026-11-09)
 
-Frontmatter extraction now reuses `@mdit-vue/plugin-frontmatter` 2.1.3 with explicit uncached engine
-options. YAML/YML/JSON header content is bounded to 16,000 UTF-16 units, omitted and never evaluated
-or expanded; metadata values are currently ignored rather than exposed as bindings. JavaScript and
-CoffeeScript engines and aliases are rejected. An unfinished header remains readable passive source
-and cannot authorize a live component. This closes the visible `title:` leak in the reported
-counter example without installing gray-matter's default executable engines or global source cache.
-`$frontmatter`, metadata-driven routes/resources and full VitePress page semantics remain later work.
+The initial passive implementation waited for successful source completion; the progressive Vue
+increment below now admits complete setup/template prefixes on supporting frontends. Ordinary Markdown must continue
+rendering while that source is incomplete: a Vue component does not make the entire reply an
+executable unit during streaming.
+
+The frontend rendering bridge previously discarded every SSR result whose request identity was
+older than the latest text. When text arrived faster than rendering, every completed snapshot
+could be discarded until the model stopped. Retaining the previous SSR DOM to avoid flicker then
+made the entire answer appear frozen. The native fallback had a separate parsing problem: escaping
+an `html_block` after parsing did not restore the Markdown that an unfinished HTML/Vue block had
+already consumed.
+
+Passive streaming requests now opt into the extension/webview bridge with `streaming:true`.
+The bridge still coalesces queued updates and owns one active render, but also publishes a completed
+snapshot when its source is an exact prefix of the latest streaming source. Its response includes
+`streaming:true` and `renderedSource`, the bounded source of that rendered snapshot. This is local
+frontend messaging; the authenticated kernel Markdown API and its version remain unchanged.
+These previews always use passive Markdown, never the template, explicit Vue or sealed assistant
+evaluation lanes. A rendered prefix is reparsed as one Markdown document, so later reference
+definitions and TOC targets can update earlier content; this does not render detached text tails.
+
+The browser validates document identity, source-prefix ancestry, monotonically increasing request
+revisions and the current output lifetime before committing progress into the existing SSR boundary.
+A source rewrite starts a new revision epoch even if later text returns to the old prefix. Sealing,
+mode changes, cancellation and disposal invalidate the streaming ancestry. Old prefixes cannot
+replace a completed component or execute a Vue factory. Source and binding replacements outside
+the passive streaming lane retain exact-revision matching. Only the latest unavailable result may
+commit its native fallback.
+
+For synthetic Maieutics Markdown items the native parser uses `html:false`, matching the kernel's
+passive parser, before tokenization. Raw Vue/HTML remains escaped readable source, while adjacent
+Markdown headings, lists and other syntax continue to parse, including after cancellation or
+passive snapshot restore. The policy is scoped to Maieutics output items; fenced/inline code
+examples stay literal and ordinary notebook Markdown retains its own HTML policy. Vue setup is
+not executed with guessed closing tags or undefined future bindings.
+
+Deterministic bridge tests hold a newer render open and require the completed prefix to be posted
+before releasing it. Native parser tests pin Markdown swallowed by an unfinished Vue/HTML block.
+Real VS Code webview coverage checks prefix commits while rendering continues, stable SSR boundary
+identity, out-of-order responses, rewrite epochs, sealed transitions and rejection of executable
+streaming metadata. Independent component units, state-preserving incremental Vue hydration and
+late-binding dependency scheduling remain later document-runtime work.
+
+Assistant provenance is frontend runtime state: notebook serialization reads the local MIME but
+saves only the ordinary source/timeline snapshot. The pure codec reconstructs passive turn MIME and
+never trusts a persisted live marker. The connected restoration adapter can renew provenance only
+by verifying the session, run, submitted input and exact assistant text against the authenticated
+kernel transcript (see historical recovery below). Offline or unverifiable snapshots remain passive.
+An explicitly resumed live run/replay can also recreate derived component state. No external producer
+executes during rendering, history recovery or replay.
+
+Frontmatter extraction reuses `@mdit-vue/plugin-frontmatter` 2.1.3 and its existing locked
+`js-yaml` 3.15.2 dependency. The 2026-11-10 increment parses bounded YAML/YML or JSON objects with
+non-executable JSON-schema types, instead of discarding all metadata. Explicit JSON engines use
+strict JSON parsing. Headers remain limited to 16,000 UTF-16 units; data is copied/frozen through
+the existing template capture limits (8,192 nodes, depth 16, 64,000 aggregate characters). Cycles,
+prototype keys, unsupported tags, malformed/root-array/scalar data and executable engines fail
+with `invalid_frontmatter`. Unfinished headers remain readable source until closed.
+
+`{{ $frontmatter.title }}` and nested dot/bracket paths work in ordinary/passive Markdown, including
+streaming prefixes after header closure. Values are escaped text, never reparsed Markdown/HTML.
+Other passive expressions remain literal. Data-only paths resolve before heading/TOC extraction,
+so heading text and scoped anchors agree in passive and Vue Markdown. Fenced/inline examples stay
+literal. Explicit template contexts use document-owned `$frontmatter` in preference to a caller
+binding of that name; other bindings retain their existing lifecycle and expression behavior.
+
+Live Vue Markdown also receives a readonly `$frontmatter` global from its component setup wrapper,
+identically in the isolated SSR worker and browser factory. The wrapper preserves Vue's two-argument
+setup contract so expose/context injection remains available. Pre-resolved metadata spans use
+`v-pre`, preventing metadata containing mustaches from becoming Vue source. Runtime Vue expressions
+and bound attributes can read the same metadata. `useData()` is not implemented. Site generation, frontmatter-driven document head, site layouts
+and navigation are intentional scope exclusions; resource loading needs its own explicit contract.
+Metadata does not itself authorize component execution, start producers or modify conversation state.
+
+Frontmatter validation passes 54 renderer/interpreter/worker tests and 27 real VS Code scenarios
+against the osx-arm64 NativeAOT executable, including SSR-to-browser frontmatter hydration and
+reactive clicks. Offline bundled smoke passes with network/filesystem/process access denied. The
+committed service bundle is regenerated; no HTTP, IPC or notebook format changes are required.
+The full Deno workspace passes 725 tests plus 20 Node scenarios. Types/lint/format checks pass.
+NativeAOT publish and real browser verification run on macOS arm64; Linux/Windows CI is not
+run locally.
+
 The stylesheet supplies the counter's common `--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`,
 `--vp-c-text-1`, `--vp-c-text-2` and `--vp-c-divider` aliases from VS Code colors with browser fallbacks.
 These are a content subset, not the complete VitePress default theme.
@@ -460,6 +552,74 @@ output factory and the new endpoint against a published osx-arm64 NativeAOT kern
 All 708 Deno workspace tests and 20 Node scenarios pass. Four published-process rendering
 smoke tests and the offline assistant component probe pass. Release build has no warnings and
 InspectCode has no error-level findings (two existing non-gating warnings).
+
+### Restored Markdown during connection startup (implemented 2026-11-10)
+
+A restored output can request formatting before the extension has published its connection.
+The bridge now joins an existing startup promise instead of immediately returning unavailable.
+This does not start a kernel for an offline notebook. Rendering cancellation stops only that
+request's wait; connection startup retains its owner, deadline and failure observation. Startup
+failure still selects the prepared native fallback.
+
+The real VS Code regression holds the capabilities response until the saved notebook's renderer
+requests formatting. Before the fix, that output applied native fallback with zero SSR requests
+and never upgraded after startup. With the fix it receives one passive SSR result. A separate
+saved-notebook test forces unavailable rendering and checks actual native heading and table nodes,
+including Markdown following a script block. Restore retains passive MIME and does not execute Vue.
+
+Native rendering failures now report a content-free diagnostic through the existing application
+acknowledgement. If the native renderer fails after attaching a shadow root, plain source is placed
+inside that root so it remains visible. The bridge logs this failure without logging source or
+exception messages. No public HTTP protocol or notebook snapshot format changes.
+
+Verification on macOS arm64 with VS Code 1.144.1 passes all 22 extension-host scenarios,
+335 frontend unit tests, types, lint and formatting checks. The cold-start regression was first
+run against the unchanged connection path and failed with `engine=native, SSR requests=0`.
+The Release solution build passes with warnings as errors; all 1,668 .NET tests pass with eight
+existing platform/external-service skips. This frontend-only change does not republish NativeAOT;
+Linux/Windows and CI validation were not run locally.
+
+### Historical Vue recovery from canonical session history (implemented 2026-11-10)
+
+Dropping the local live MIME on save correctly prevents files from granting execution authority, but
+previously also meant that every reloaded historical component became literal source. The connected
+notebook serializer now separates decoding from renewing provenance: it first uses the unchanged
+passive codec, then reconnects the kernel for a valid session/run binding and reads that session's
+canonical transcript when `assistantVersion:1` is supported. Unbound portable snapshots do not
+launch a kernel. Connection startup is owned by the extension and shared with commands; notebook
+cancellation only stops verification waiting. Restart/shutdown cancel and observe startup before
+releasing its handle. Verification has one 20-second budget and observes notebook cancellation
+without cancelling the connection owner; failure retains readable passive output.
+
+Only a single assistant text node can be promoted. Its persisted turn binding must match a committed
+non-truncated kernel turn's run ID and submitted user text, and its complete source must match the
+joined text parts of one assistant message byte-for-byte. The returned transcript must match the
+requested session and carry a valid nonnegative history revision. Its `version` is a changing
+history revision, not the frontend wire version; recovery does not require it to equal one.
+Tool/user text, altered source, missing bindings, truncated history, and file-authored live markers
+cannot grant provenance. Promotion reconstructs only the verified text node, discarding other
+file-authored payload fields. Compiled factories remain response-only. This covers both portable
+files tied to a session and the virtual session notebooks materialized from canonical history,
+including history written before this fix. No snapshot or HTTP shape changes.
+
+Verified nodes use the same assistant compiler, isolated SSR worker, factory validation and owned
+Vue hydration/disposal as newly completed replies. Components regain their UI and interactivity.
+Setup reruns and local reactive state starts from its declared initial value; previously clicked
+counts, timers and browser-local state are not persisted. This does not re-submit an Agent turn,
+call a model, execute tools, launch external producers or modify canonical history.
+
+The real VS Code regression opens saved and virtual history through the activated extension and
+requires a `vue` application acknowledgement. It also checks altered/unbound source, truncated
+turns, session mismatch and transcript failure stay passive. Its baseline run fails with `ssr`
+instead of `vue`. The optional history-rendering discovery fixture exercises the same restoration
+path against the actual NativeAOT executable and Deno compiler without any model request.
+
+Verification passes 337 frontend unit tests and all 23 real VS Code scenarios on macOS arm64
+(VS Code 1.144.1), including the actual NativeAOT/Deno history compiler path with history revision
+17 and no pre-established connection. Types, lint, formatting and diff checks pass. Release build
+has no warnings; the .NET suite passes 1,668 tests with eight existing platform/external-service
+skips. No executable source changed, so NativeAOT is not republished. Multi-platform CI is not
+run locally.
 
 ### Model-facing output instructions (implemented 2026-11-06)
 
@@ -533,7 +693,219 @@ Kernel/real-Deno integration also invokes the first hook before any registry fra
 production host class and bus with eager startup/registry publication disabled by its owned test
 entry. Native-provider conformance checks delimiters and tool loops against all three APIs.
 
+## Progressive Vue setup and template prefixes (implemented 2026-11-10)
+
+This first increment supports a complete single synchronous `<script setup>` followed by growing
+Markdown/Vue templates in the same assistant text output. All declarations must belong to that
+sealed setup module. Refs, computed values, closures and hooks live in one mounted client instance;
+a later template reads its existing bindings rather than reinitializing them. This is not a JS
+interpreter that executes incomplete statements, arbitrary later modules, or undeclared names.
+Cross-message/tool-round/cell scope and automatic producer subscriptions remain separate work.
+
+The controller now grants runtime assistant provenance to admitted streaming text, not just the
+successful terminal snapshot. Native Markdown remains immediately readable. Supporting kernels
+advertise `rendering.progressiveVersion:1`; old kernels continue passive streaming and may compile
+only the completed answer. Pure notebook decoding still strips provenance; canonical historical
+verification remains required. Cancellation/failure/truncation seal back to passive output and
+unmount any admitted component. Already executed presentation code cannot be undone by a later
+run failure. No Agent event ordering, canonical history or notebook format changes are introduced.
+
+The existing assistant endpoint adds `progressive:true` and optional `compileOnly:true`. The compiler
+uses the public Vue SFC/script/template APIs; template usage is excluded from script-binding
+collection so later templates can read bindings that the initial template did not use. A SHA-256
+`setupKey` identifies the compiled setup, captured frontmatter and document scope. `renderCode`
+contains a separate render-function factory. Unknown render-context names and async setup scopes
+are rejected before admission. On incomplete trailing syntax or unresolved template names, at most
+16 blank-line prefix candidates are compiled; only a genuinely compilable prefix is accepted.
+There is no insertion of guessed script/tag closings. A new valid prefix can include later Markdown
+references and updated TOC definitions because the entire accepted prefix is parsed together.
+
+The first accepted component uses isolated SSR and ships initial HTML plus the full factory.
+After delivery, the extension's bounded initialization hint requests compile-only updates: the
+service compiles the new render function/CSS but executes no SSR setup and returns no new component
+factory. This avoids hydrating new server-initial state over interactive client state. Recovery or
+hint eviction can require fresh SSR; deterministic presentation setup remains required, and external
+producers still belong to authorized tools. The service does not retain JS closures or a shared VM.
+All frontends share compilation/initial SSR through Deno; each frontend owns its local UI state.
+Multi-frontend shared mutable state requires a separate kernel-owned data/action protocol.
+
+The client retains the Vue app, setup bindings and DOM boundary and replaces only its render
+function and CSS. Render caches are invalidated when the compiled template changes; compiler block
+optimizations from an older template are not reused. Ordinary Vue keyed reconciliation preserves
+compatible existing nodes and child instances. Source/shape/key changes may legitimately replace
+DOM; this is not the proposed stable document-unit protocol. Vue-owned DOM is never externally
+morphed. Changed setup identity requires a fresh full factory for a new source epoch; render-only
+updates cannot silently reinitialize the scope. Ending the reply preserves an already mounted
+progressive instance. New ordinary completed/history components retain their existing full-render
+lane when no progressive scope was established.
+
+The bridge coalesces source updates, publishes useful completed prefixes while newer source streams,
+and tracks rewrite epochs independently of text prefix equality. Returning to an older prefix does
+not resurrect its initialization. Browser generation/revision checks reject stale results; sealing
+rejects late streaming replies. Cancellation/disposal remove pending requests and initialization
+hints, and Vue unmount stops effects exactly once. Hints and source ancestry are bounded to 64
+entries. A pending tail retains the last usable interactive prefix. A sealed incomplete or invalid
+update reports a local status while preserving the last usable presentation; it cannot silently
+substitute JS `undefined` or a false conditional branch.
+
+Coverage checks delayed prefix delivery, compile-only selection, rewrite/revert epochs, cancellation,
+wire validation, isolated SSR, and the real controller publishing live MIME before terminal frames.
+Actual browser tests click an early counter, append a computed-value template, append incomplete
+markup, finish the markup against the current count, seal without resetting setup, report incomplete
+sealed source, then rewrite setup and verify one disposal per scope. The same scenario is exercised
+against the real NativeAOT executable and Deno compiler.
+
+Validation passes 27 real VS Code scenarios on macOS arm64 (1.144.1), including actual
+NativeAOT/Deno compilation and client updates, and 1,669 .NET tests with eight existing
+platform/external-service skips. The Deno workspace passes 731 tests plus 20 Node scenarios.
+Release build is warning-free; NativeAOT publishing, offline
+smoke, types/lint/format and diff checks pass. Linux/Windows CI is not run locally.
+
+## Math, code controls and source diagnostics (implemented 2026-11-10)
+
+The content pipeline now renders inline/block dollar math as offline SVG with MathJax 3.2.2.
+Reuse is deliberate: extract only the MIT dollar-tokenization rules from markdown-it-mathjax3 4.3.2,
+and use MathJax's public TeX/SVG/document APIs directly. The original plugin's Juice/resource graph,
+all-package loader and repeated global HTML-handler registration are excluded. The dependency review
+pins MathJax and adds no native binary, runtime I/O or permission. Its Apache-2.0 license and the
+extracted-rule license ship in the service bundle. Every formula creates its own document and macro
+state, so earlier formulas/documents cannot mutate later compilation. Base/AMS/local newcommand
+support is bounded: 128 formulas, 4,096 source units, 1,000 macro expansions and 200,000 output units
+per formula; excess/errors remain literal. No URL/HTML/require/autoload package is enabled. SVG paths
+need no remote fonts or scripts. Incomplete block delimiters remain literal until closed; Vue math
+wrappers use v-pre. General output/compiler limits still apply.
+
+The statically bundled highlighter expands from TS/JS/JSON to common programming, shell, data and
+markup languages; unknown grammars remain escaped text. Code fences carry escaped original-source
+copy payloads. An explicit button click delegates to the frontend clipboard owner, bounded to the
+existing 200,000 source limit. Copy contains original comments/newlines and no synthetic line numbers;
+status is request-correlated and disposal removes pending UI references. The VS Code clipboard API
+is used without reading clipboard contents or logging code. No kernel request is needed for copying.
+
+Rendering snapshots and typed 400 component errors add optional diagnostics (at most 32): fixed code
+and one-based source line/column, without source fragments or compiler exception messages. The kernel
+validates their bounds before forwarding, the client validates the shape, and old clients ignore the
+additive field. Fence diagnostics use parser token ranges and include stripped frontmatter offsets.
+They point to the unterminated opening fence and advise longer outer fences for nested examples;
+parsing is not changed or repaired. Math diagnostics identify the paragraph/block start. Component
+errors identify the actual authored script/component start (fenced examples cannot claim this
+position); precise generated-template source maps remain future work. Current codes are
+unclosed_code_fence, component_compile_failed, math_invalid and math_limit.
+
+The notebook displays diagnostics only after sealing, outside Vue-owned DOM, with stale request
+checks and explicit node ownership. Streaming incompleteness remains quiet, while a failed sealed
+update preserves its last valid interactive component. This does not add document-unit patches,
+producer subscriptions, cross-cell state, resource delivery or arbitrary component imports.
+
+Validation passes 739 Deno tests plus 20 Node scenarios, 1,669 .NET tests (eight existing
+platform/external-MCP skips), and 27 real VS Code scenarios on macOS arm64. The browser coverage
+includes actual NativeAOT/Deno output, SVG namespaces and clipboard controls in passive, completed
+Vue and progressive Vue paths, source-line diagnostics, and existing ref/computed state retention.
+Warning-free Release build, NativeAOT publishing, offline smoke, bundle freshness, types/lint/format
+and diff checks pass. Linux/Windows CI remains to be run.
+
+## Upstream default content theme (implemented 2026-11-10)
+
+The output now uses VitePress v1.6.4 default content styling rather than the former hand-written
+approximation. Four upstream sources are retained verbatim with SHA-256 entries in the existing
+MIT vendor manifest: base.css, vars.css, vp-doc.css and custom-block.css. A deterministic build
+adapter uses the pinned Vue style compiler's PostCSS tree, selects content resets and the variable
+dependency closure, scopes selectors to the output boundary, wraps host color/font tokens around
+upstream defaults, and emits the committed, licensed styles.css. Runtime rendering still reads one
+embedded CSS resource. No site runtime, host html/body/global layout, downloaded fonts, form resets,
+navigation or team layout is introduced.
+
+Headings, paragraphs, lists, quotes, striped tables, inline code, rounded semantic containers and
+code blocks retain upstream declarations. An explicit product adapter handles native radio tabs,
+copy buttons, inline data-line numbers, template states and math. Diff symbols use ::after so they
+do not replace line numbers' ::before. Mobile code margins stay within the notebook boundary.
+The low-specificity :where output guard preserves authored scoped component style precedence.
+Shadow DOM dark contexts recognize VS Code dark/high-contrast and generic .dark ancestors; standalone
+hosts can mark the root/ancestor .dark. Upstream fallback palettes and Shiki tokens switch together
+without recompiling output. Template-only updates also leave an identical mounted stylesheet in place,
+avoiding unnecessary reparsing or animation restarts. The external-link icon stays an embedded SVG; no resource fetch is added.
+
+Baseline and authored component CSS each retain a 48,000-character budget; the combined receiver
+budget grows to 96,000. Older 64k clients handle normal content but may fall back on unusually large
+component styles. No wire shape, notebook version, execution provenance or lifecycle changes.
+CI now rebuilds and checks styles.css together with the committed SSR bundle; focused tests verify
+source hashes, complete content variables, scoping, freshness and bounds. Browser coverage checks
+actual heading/container geometry, theme switching across a shadow boundary, line-number/diff
+coexistence, native code controls, authored-style precedence and a combined CSS response above 64k.
+
+## Client-only component regions and target constants (implemented 2026-11-11)
+
+Compiled live output now includes the VitePress 1.6.4 ClientOnly mount gate as a self-contained
+local component. The adapted source records the original path/hash in the MIT vendor manifest. SSR
+and the first browser hydration render the same empty placeholder. Vue onMounted then activates the
+default slot. Nested browser-only setup/slot expressions are not evaluated by SSR. This is a
+presentation boundary, not a way to defer parent setup or change execution provenance. Parent DOM
+work still requires onMounted, an SSR guard or a child component. No fallback slot, async loader or
+module resolver is introduced; defineClientComponent remains future resource/module work.
+
+Acorn rewrites the exact script expression import.meta.env.SSR into a target constant. SSR receives
+true, while browser setup and later render functions receive false. Strings/comments are unchanged;
+other meta/environment access and dynamic imports remain rejected. Vue's pinned template parser
+rejects raw import.meta expressions, so template consumers declare a script binding first. Two
+factories are emitted only when target code differs. The private SSR factory is selected by the
+owned worker launcher and never crosses the frontend response boundary. Initial HTML still requires
+deterministic state; target constants do not imply server state serialization.
+
+Every initial factory registers the gate, even if it first appears in a later accepted prefix.
+Compile-only updates refer to the retained component registry/setup bindings and do not rerun setup
+or SSR. Gate types, child reactive state and owned cleanup hooks survive template additions and
+sealing. Disposal follows normal Vue unmount and stops child effects/listeners. Setup identity also
+covers the built-in gate contract. Existing provenance, factory/output bounds, worker deadlines,
+permissions and passive fallback remain unchanged; old frontend runtimes can execute the standard
+Vue factory without new host services. No public wire/notebook format or capability version changes.
+
+Coverage includes real worker exclusion of browser-only child setup and slot expressions, correct
+target constants, unsupported meta/import/write rejection, private-factory wire exclusion, late gate
+admission, browser state/DOM preservation, sealing, exactly-once listener cleanup and verified
+history restoration through the real host pipeline.
+
+## Standalone browser ESM client (implemented 2026-11-11)
+
+The browser implementation now lives in deno/maieutics-output-client rather than in the notebook
+entrypoint. Its single dist/outputClient.js bundles the pinned Vue runtime, passive Markdown-it and
+all existing DOM/SSR/progressive-component logic; accompanying declarations describe the public API.
+There are no external runtime imports, VS Code APIs, transport credentials or automatic I/O. This
+is the shared presentation implementation, not a second Markdown compiler or a move of SSR to the
+browser. Compilation, highlighting, math and initial SSR remain in the executable-owned Deno service.
+
+createOutputRenderer accepts host message dispatch, optional native Markdown and explicit action
+handling. render takes an id, output kind, value, element and optional cancellation signal; receive
+applies correlated backend replies and returns the asynchronous Vue-update work. render completion
+means fallback preparation/request dispatch, while the existing applied envelope means a committed
+presentation. disposeOutput releases selected outputs; terminal dispose aborts owned preparation,
+unmounts all apps and rejects future rendering. Transport subscriptions remain owned by the host. A low-level mountVueIsland export supports hosts
+that already own SSR DOM and verified factories; it does not grant execution authority itself.
+Existing revision guards prevent late work from publishing after disposal. The default Markdown
+fallback is passive, disables HTML/command links and uses a scoped shadow boundary.
+
+The VS Code adapter maps MIME/items, injects protected native Markdown and forwards message/action
+services. The same built ESM is copied into media/outputClient.js; extension-host Node code does not
+import another workspace module. build:media and CI rebuild/copy it, and CI rejects a stale committed
+artifact. Widget/view renderers are separate and unchanged. Public frontend envelopes, capability
+versions, provenance and notebook persistence are unchanged: assistant/vue kinds are explicit host
+execution choices, never inferred from an unverified saved marker. CSS can still inherit editor
+variables, with browser defaults when absent.
+
+Coverage includes ESM shape/no external imports, headless import, direct standalone browser Markdown
+and SSR, progressive ClientOnly state, terminal/idempotent disposal, aborted preparation with no late
+commit, and the existing actual VS Code notebook/history paths. Registry publication, a custom element
+wrapper and a browser HTTP/clipboard transport adapter are not introduced by this extraction.
+
 ## Document state and presentation units
+
+The 2026-11-11 [Vue reactive UI migration study](vue-reactive-ui-migration.md) records the requested
+replacement of Preact browser families and signals-core backend extension reactivity. It proposes
+owned Vue worker models, explicit data projections and a shared-client reactive mirror, keeping
+SSR as a snapshot consumer. Nine pinned-version probes and a local 12-test SDK comparison pass;
+the SDK 0.2 backend core has since migrated with real-worker coverage. The Vue UI/model protocol
+and browser-family replacement remain pending. The
+study also covers component catalogs, UI action routing, history/legacy compatibility and removal
+of the old family/JSX abstractions. No currently shipped protocol is changed by this research.
 
 Each document retains source and a monotonically increasing source version, parsed structure,
 document-level definitions, binding state, and a tree of presentation units. Units carry stable
@@ -830,7 +1202,7 @@ fix. Full subtree diffing and stable streaming document nodes remain separate wo
 
 ## Open decisions
 
-- How much VitePress page/compiler compatibility is needed beyond the composed passive subset, and
+- Which additional VitePress content/compiler capabilities are useful within an output document, and
   can those additions retain offline packaging and independent ownership?
 - How should authorized producer/component registration extend the shipped data-expression subset
   with automatic late binding, cancellation settlement and stable document scope?
@@ -876,3 +1248,5 @@ Sources consulted on 2026-11-04. Recheck the selected versions during the packag
   [Markstream SSR integration](https://github.com/Simon-He95/markstream-vue#ssr--worker-usage-deterministic-output):
   partial parsing and structured-node integration candidates.
 - [Idiomorph](https://github.com/bigskysoftware/idiomorph): DOM matching, update hooks, and focus handling.
+
+Frontmatter reference consulted 2026-11-10: [VitePress frontmatter](https://vitepress.dev/guide/frontmatter).

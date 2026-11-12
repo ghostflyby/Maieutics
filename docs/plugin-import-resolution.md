@@ -26,7 +26,7 @@ import { join } from "@std/path/join";
 This works in the author's toolchain (`deno check`, editors) and fails at runtime. The
 plugin host process is launched `deno run --config=<materialized root deno.json>` where
 the root config contains exactly two mappings (`@ghostflyby/worker-actor`,
-`@preact/signals-core`) plus `links` pinning the SDK to the kernel-materialized copy.
+`@vue/reactivity`) plus `links` pinning the SDK to the kernel-materialized copy.
 Deno resolves one process config; the plugin's own `deno.json` is never consulted at
 runtime, so bare aliases fail with `Import "…" not a dependency and not in import map`.
 
@@ -113,7 +113,7 @@ plus a diagnostics list reusing the graph-exclusion shape (`PluginId`, `Reason`,
 
 | Rule | Condition | Action |
 |---|---|---|
-| R1 | Key is reserved: `@ghostflyby/worker-actor`, `@preact/signals-core`, `@maieutics/plugin-sdk` | Skip, Information log. Reserved keys are owned by the host materialization (imports + `links`) |
+| R1 | Key is reserved: `@ghostflyby/worker-actor`, `@vue/reactivity`, `@maieutics/plugin-sdk` | Skip, Information log. Reserved keys are owned by the host materialization (imports + `links`) |
 | R2 | Key normalizes (strip `jsr:` prefix, strip `@version` segment — same rule as the SDK hook) to a discovered plugin specifier (`<name>/<entrypoint>`) | Skip, Warning. Actor imports are owned by the load hook's canonical match, which precedes native resolution; a map entry would create a second, competing resolution path |
 | R3 | Value starts with `./` or `../` | Absolutize against the plugin root: `new Uri(Path.GetFullPath(Path.Combine(root, value))).AbsoluteUri` (import-map relative values resolve against the config's own directory, which is the kernel temp dir — always wrong for plugins) |
 | R4 | Value is scheme-ful (`jsr:`, `npm:`, `https:`, `node:`, `data:`) or absolute | Keep verbatim |
@@ -137,7 +137,7 @@ unchanged otherwise:
 {
   "imports": {
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
-    "@preact/signals-core": "npm:@preact/signals-core@1.14.4",
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js",
     "@acme/widget": "jsr:@acme/widget@^0.3",
     "@std/path": "jsr:@std/path@^1"
   },

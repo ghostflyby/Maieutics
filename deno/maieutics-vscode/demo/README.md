@@ -34,10 +34,11 @@ Switch a code tab to inspect the alternative JSON example. The fixture does not 
 The demo model configuration supplies an unused local placeholder endpoint; normal Agent turns need
 a real provider configuration.
 
-Open the same snapshot without an attached connection to inspect its native Markdown fallback.
-Opening a snapshot never starts a kernel solely for rendering. Stop the demo kernel with Ctrl+C; its
-child and staging directory are released with the host. Clear the temporary discovery setting when
-returning to an ordinary workspace configuration.
+Open the same snapshot without an attached connection to inspect its native Markdown fallback. These
+unbound demo snapshots never start a kernel solely for rendering. Session/run-bound history can
+reconnect the kernel to verify and restore its assistant components. Stop the demo kernel with
+Ctrl+C; its child and staging directory are released with the host. Clear the temporary discovery
+setting when returning to an ordinary workspace configuration.
 
 ## Automated verification
 
@@ -55,6 +56,11 @@ live text nodes to enter this same structured output route. Without the environm
 standard webview test uses a snapshot fixture. Other coverage checks coalescing, stale-result
 rejection, cancellation, native fallback, raw HTML remaining inert, real child startup/disposal, and
 published NativeAOT rendering.
+
+To exercise historical Vue recovery specifically, set `MAIEUTICS_HISTORY_RENDERING_DISCOVERY` to an
+isolated demo kernel's discovery file when running `test:vscode`. The fixture owns its test history
+and delegates only rendering to the real kernel; it verifies saved files, virtual session views and
+passive rejection paths without a model request.
 
 This initial demo updates complete text regions. Revisioned document patches, late TS bindings,
 automatic producer subscriptions and frontend resource URL rewriting remain future stages in the

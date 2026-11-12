@@ -50,7 +50,9 @@ public sealed class OutputRenderingPromptTests
             var sections = request.Where(message => message.Role == ChatRole.System).ToArray();
             var prompt = Assert.Single(sections, message => message.Text.Contains("VitePress-based Markdown", StringComparison.Ordinal)).Text;
             Assert.Contains("VitePress-based Markdown", prompt);
-            Assert.Contains("only after successful completion", prompt);
+            Assert.Contains("complete template prefix", prompt);
+            Assert.Contains("Template-only updates preserve client setup and state", prompt);
+            Assert.Contains("one complete script early", prompt);
             Assert.Equal(2, prompt.Split("## Output rendering").Length);
             if (withSkills) Assert.Contains(sections, message => message.Text.Contains("skill://example", StringComparison.Ordinal));
         });

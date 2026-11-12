@@ -5,6 +5,7 @@
     "./maieutics-plugin-sdk",
     "./maieutics-plugin-host",
     "./maieutics-output-renderer",
+    "./maieutics-output-client",
     "./maieutics-vscode"
   ],
   "fmt": {
@@ -13,25 +14,27 @@
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
       "maieutics-vscode/media/viewRenderer.js",
-      "maieutics-vscode/media/vueIslands.js"
+      "maieutics-output-renderer/styles.css",
+      "maieutics-output-renderer/vendor/vitepress/styles/",
+      "maieutics-vscode/media/outputClient.js"
     ]
   },
   "lint": {
     "exclude": [
       "maieutics-vscode/media/widgetRenderer.js",
       "maieutics-vscode/media/viewRenderer.js",
-      "maieutics-vscode/media/vueIslands.js"
+      "maieutics-vscode/media/outputClient.js"
     ]
   },
   "imports": {
     "@ghostflyby/aves/repl": "jsr:@ghostflyby/aves@0.6.0/repl",
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
-    "@preact/signals-core": "npm:@preact/signals-core@1.14.4",
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "maieutics-widgets": "./maieutics-plugin-sdk/widgets/index.ts",
     "maieutics-widgets/jsx-runtime": "./maieutics-plugin-sdk/widgets/jsx-runtime.ts",
     "preact": "npm:preact@10.26.9",
-    "esbuild-wasm": "npm:esbuild-wasm@0.25.12"
+    "esbuild-wasm": "npm:esbuild-wasm@0.25.12",
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js"
   },
   "tasks": {
     "check": "deno check",

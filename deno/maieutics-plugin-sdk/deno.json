@@ -1,6 +1,6 @@
 {
   "name": "@maieutics/plugin-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "exports": {
     ".": "./entry.ts",
@@ -17,7 +17,7 @@
   },
   "imports": {
     "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
-    "@preact/signals-core": "npm:@preact/signals-core@1.14.4"
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js"
   },
   "tasks": {
     "check": "deno check .",

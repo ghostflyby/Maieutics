@@ -1106,7 +1106,7 @@ internal sealed partial class PluginHostManager(
                   "name": "@maieutics/plugins",
                   "version": "0.1.0",
                   "imports": {
-                    "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.1"
+                    "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.2"
                   }
                 }
                 """);

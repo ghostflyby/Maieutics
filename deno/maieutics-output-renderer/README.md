@@ -45,10 +45,12 @@ notes; the MIT license is retained in source and the shipped bundle. Raw/v-pre c
 excluded. VS Code handles local-fragment scrolling/focus inside the output's shadow root and removes
 these handlers on replacement/disposal; other Shadow DOM hosts need an equivalent frontend adapter.
 
-TypeScript, JavaScript, and JSON grammars and both GitHub light and dark themes are bundled
-statically. Other code languages use escaped plain text without dynamically loading packages or
-starting workers. `styles.css` provides host-scoped baseline styles using VS Code variables with
-browser fallbacks.
+TypeScript, JavaScript, JSON, Python, Bash, C#, C/C++, Java, Go, Rust, SQL, YAML, TOML, HTML, CSS,
+Markdown, diff, Dockerfile, XML, PowerShell, Ruby, Swift and Kotlin grammars and both GitHub light
+and dark themes are bundled statically. Unknown languages use escaped plain text without dynamically
+loading packages or starting workers. `styles.css` is generated from the pinned VitePress 1.6.4
+default-theme content CSS, with output scoping and VS Code host-variable adapters; see the
+default-theme section below.
 
 Fences accept literal filename titles (`ts [report.ts]`), line numbers (`ts:line-numbers`,
 `ts:line-numbers=7`, `ts:no-line-numbers`), and highlighted line lists or ranges (`ts{1,3-5}`).
@@ -89,10 +91,10 @@ directives are never installed. Product resource schemes are retained for a futu
 resource retrieval and rewriting are not implemented here.
 
 This is a selected VitePress-compatible content subset, not complete VitePress page semantics.
-Frontmatter value exposure, automatic late-binding subscriptions, HTML patches and host resource
-delivery remain later work. Complete Vue components use the separate explicit lane below.
-Re-rendering with a later link definition corrects earlier references in a complete snapshot; stable
-incremental nodes require the document runtime.
+Automatic late-binding subscriptions, HTML patches and host resource delivery remain later work.
+Frontmatter data exposure is implemented below. Complete Vue components use the separate explicit
+lane below. Re-rendering with a later link definition corrects earlier references in a complete
+snapshot; stable incremental nodes require the document runtime.
 
 ## Explicit data templates
 
@@ -146,10 +148,11 @@ style preprocessors are rejected. Ordinary `render` and data templates do not ex
 
 The executable exposes `/v1/render/vue` with `rendering.vueVersion:1`. The live rich MIME is
 `application/vnd.maieutics.vue+json`, `{version:1,format:"markdown"|"sfc",source}`. The frontend
-hydrates using the same compiled factory and bundled Vue runtime, then unmounts on replacement or
+hydrates using the browser-target factory and bundled Vue runtime, then unmounts on replacement or
 disposal. Setup runs twice (SSR and hydration); initial state must be deterministic, and producers
-belong in the authorized REPL. Async setup/Suspense and resource hydration are not verified. Live
-source is removed on notebook saving and reading; supply a text fallback. See the
+belong in the authorized REPL. Async setup/Suspense and resource hydration remain unsupported or
+unverified; synchronous ClientOnly is supported below. Live source is removed on notebook saving and
+reading; supply a text fallback. See the
 [protocol](../../docs/web-frontend-protocol.md#explicit-live-vue-rendering-v1) and
 [runnable demo](../maieutics-vscode/demo/README.md#live-vue-counter).
 
@@ -159,16 +162,19 @@ source is removed on notebook saving and reading; supply a text fallback. See th
 Vue-in-Markdown with authored top-level script blocks and return optional compiled Vue metadata.
 Plain content stays passive. Code fences, inline/escaped/quoted examples and metadata never select
 execution. Frontmatter uses the public `@mdit-vue/plugin-frontmatter` 2.1.3 adapter with explicit
-uncached engines: bounded YAML/YML/JSON bodies are omitted, their values ignored and never
-evaluated; JS/CoffeeScript engines are rejected. Common VitePress content color variables map to
-host colors.
+uncached engines: bounded YAML/YML/JSON data supplies `$frontmatter`. Dot/bracket path interpolation
+works in passive Markdown and headings; other passive expressions stay literal. Vue Markdown
+receives identical readonly data in SSR and hydration. Values cannot inject markup or Vue syntax.
+`useData()` is not implemented. Site generation, site layouts/navigation and host document `head`
+management are intentionally out of scope; frontmatter remains output-local data; JS/CoffeeScript
+engines are rejected. Common VitePress content color variables map to host colors.
 
-The live controller selects this lane only after successful turn completion; streaming partials and
-failed/cancelled output remain passive. Saving/reopening removes live provenance and retains source.
-The [protocol](../../docs/web-frontend-protocol.md#completed-live-assistant-rendering-v1) defines
-the additive capability, endpoint and local MIME. Standalone SFCs keep their explicit format
-selector. This enables default direct assistant components without running incomplete scripts or
-producers.
+The live controller selects this lane for trusted streaming output on progressive-capable kernels
+and successful terminal snapshots. Failed/cancelled output returns to passive rendering.
+Saving/reopening removes live provenance and retains source. The
+[protocol](../../docs/web-frontend-protocol.md#completed-live-assistant-rendering-v1) defines the
+additive capability, endpoint and local MIME. Standalone SFCs keep their explicit format selector.
+This enables default direct assistant components without running incomplete scripts or producers.
 
 ## Why compose the underlying packages
 
@@ -193,7 +199,7 @@ Run from this directory after installing the workspace's locked dependencies:
 deno task check
 deno task test
 deno task build
-git diff --exit-code --stat -- bundle/
+git diff --exit-code --stat -- bundle/ styles.css
 deno task smoke:offline
 ```
 
@@ -250,3 +256,95 @@ a new generation with fresh nonce/readiness, without replaying the failed render
 Transient launch failures do not latch rendering off. Retirement and host shutdown join owned
 observers/processes, drain admitted requests and remove staging state. API and notebook versions
 remain unchanged. See the design for cancellation and concurrency semantics.
+
+## Progressive assistant templates
+
+`renderAssistant(id, source, signal, {compileOnly:false})` admits complete prefixes with a single
+synchronous setup module. Compiled results carry `setupKey`, `renderCode` and `renderedSource`. The
+client mounts the initial SSR once; `{compileOnly:true}` compiles subsequent templates without
+executing setup/SSR and returns empty HTML/full factory code. Refs/computed/closures belong to the
+retained client instance. Async setup and undeclared template context names are rejected; at most 16
+blank-line prefix candidates are attempted. Existing source, worker and output limits apply. The
+renderer retains no producer or JS document VM. See the protocol for capability negotiation.
+
+## Math, copy controls and diagnostics
+
+Inline `$...$` and block `$$...$$` formulas render as offline SVG using MathJax 3.2.2. The dollar
+syntax rules are extracted from the MIT-licensed `markdown-it-mathjax3` 4.3.2 used by the VitePress
+ecosystem; its dependency on Juice and its global handler registration are not shipped. Each formula
+owns a fresh document and TeX macro state. Only base, AMS and local newcommand packages are enabled;
+resource loading, HTML/link commands, autoload and require are unavailable. SVG uses inline paths,
+without font or script downloads. Limits are 128 formulas per snapshot, 4,096 code units per
+formula, 1,000 macro substitutions, and 200,000 SVG characters per formula. Failed or excessive
+formulas remain escaped source with bounded diagnostics; incomplete block math waits for its closing
+delimiter. Code/escaped dollars remain literal. Formula output is `v-pre` in live Vue templates.
+
+Code fences expose an accessible copy button. VS Code delegates explicit clicks to its clipboard
+API; it copies original fenced code (including original comments and trailing newline), without
+generated line numbers or diff decorations. There is no clipboard read, automatic copy or text in
+logs. A failed write has local feedback. Other frontend adapters may bind these controls to their
+own clipboard API.
+
+Responses may contain up to 32 `diagnostics`: fixed `code` plus one-based `line`/`column`. Codes are
+`unclosed_code_fence`, `component_compile_failed`, `math_invalid`, and `math_limit`. Fence positions
+include frontmatter lines; inline math identifies its containing source paragraph, block math its
+opening line. Component errors identify the authored component/script start, not a full template
+source map. Errors contain no original code or compiler exception messages. Warnings do not change
+Markdown parsing or silently repair delimiters. VS Code shows diagnostics after sealing, outside
+Vue-owned DOM, and preserves the previous valid interactive presentation on update failure. The same
+optional field crosses the internal child API and the public rendering API, including typed 400
+component failures. Older clients ignore it. No extra Deno permissions are needed.
+
+## Upstream default content theme
+
+`vendor/vitepress/styles/` retains verbatim v1.6.4 `base.css`, `vars.css`, `vp-doc.css`, and
+`custom-block.css`, with original hashes in the upstream manifest. `build_styles.ts` reuses Vue's
+public style compiler/PostCSS tree to select content resets, collect the transitively required
+variables, scope every selector to `.maieutics-output`, and produce the committed `styles.css`. The
+MIT notice ships in that artifact. No VitePress site app, global html/body rules, navigation, font
+downloads, form-control resets or team layout is imported. Heading/list/paragraph/quote/table,
+inline code, rounded custom blocks and code presentation use upstream declarations.
+
+`styles.host.css` keeps only host/markup adapters: native radio code groups, text copy controls,
+inline `data-line` numbers, local anchors, data-template states, and math. Diff symbols move to
+`::after` because line numbers own `::before`. Code margins stay inside output boundaries rather
+than using VitePress's mobile full-bleed layout. Scoping uses `:where` so authored scoped component
+styles retain precedence. Host fonts/text/background/link colors wrap upstream variable defaults;
+standalone output falls back to VitePress palettes. `.dark` on the output or an ancestor selects
+dark mode. Shadow DOM hosts recognize `.vscode-dark`, `.vscode-high-contrast` and `.dark` through
+`:host-context`, including both upstream palettes and Shiki tokens. High-contrast-light remains on
+the light path. The only image URL is upstream's embedded SVG external-link icon.
+
+The baseline CSS is bounded to 48,000 characters; component CSS remains bounded separately to
+48,000. New VS Code receivers admit their combined 96,000-character response. Older 64k receivers
+can still display normal output but may fall back for unusually large authored component CSS. There
+is no request or notebook format change. `deno task build:styles` regenerates CSS; the normal build
+includes it. A focused artifact/hash test and CI's post-build diff enforce freshness alongside the
+offline SSR bundle. No new runtime permissions or dependencies are required.
+
+## Client-only regions and SSR target flag
+
+`<ClientOnly>` (also `client-only`) is a locally registered component in each compiled live output.
+Its mount-gated default slot reuses VitePress 1.6.4 semantics: SSR and initial hydration emit an
+empty placeholder; after the browser mounts, Vue activates the slot. Browser-only child setup and
+slot expressions do not run in the SSR worker. The compiler includes this component even before a
+late streaming template first uses it. Template-only updates reuse the existing local component type
+and child instances; successful sealing retains state, while unmount runs normal Vue cleanup hooks.
+There is no built-in fallback slot, async loader or external component import in this increment.
+
+`import.meta.env.SSR` in script code compiles to literal `true` for SSR and `false` for the browser.
+Only this static flag is exposed, not an environment object, secrets, URLs or other Vite variables.
+The compiler uses Acorn syntax nodes rather than textual substitution, so strings/comments remain
+literal and malformed writes fail compilation. If needed in a template, declare a script binding,
+for example `const server = import.meta.env.SSR`, then use `server` (normally inside ClientOnly).
+The pinned Vue compiler does not accept raw import.meta in template expressions.
+
+A private SSR factory stays inside the Deno subsystem; the public response contains only the browser
+factory and browser render-function updates. Identical targets share one factory. No frontend/wire
+version change or additional Deno permission is needed. New generated code works with the existing
+Vue client runtime. The setup identity includes the built-in gate contract as well as script/data.
+Presentation setup still runs on both sides. ClientOnly does not defer its parent's setup: put DOM
+work in a child, onMounted, or a guarded browser branch. Keep initial hydrated state deterministic;
+the SSR flag does not automatically transfer arbitrary state between processes. Passive Markdown and
+fenced examples do not gain execution authority. Dynamic imports, defineClientComponent and external
+resources still await the authorized resource/module design. No producers are started.

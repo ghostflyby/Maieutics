@@ -55,6 +55,19 @@ public sealed class FrontendOutputRendererTests
             Assert.Contains("{{ report.total }}", output.Html);
             Assert.Contains("--vscode", output.Css);
             Assert.Equal("demo", output.DocumentId);
+            var math = await RenderAsync(harness, "$x^2$\n\n~~~py\nprint(42)\n~~~\n\n~~~md\nunclosed", budget.Token);
+            Assert.Contains("<svg ", math.Html);
+            Assert.Contains("code-copy", math.Html);
+            Assert.Contains("--shiki-light", math.Html);
+            var diagnostic = Assert.Single(Assert.IsType<FrontendRenderDiagnostic[]>(math.Diagnostics));
+            Assert.Equal("unclosed_code_fence", diagnostic.Code);
+            Assert.Equal(7, diagnostic.Line);
+            using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+                new FrontendRenderMarkdown(1, "demo", "# Heading\n\n<script setup>const broken = ;</script>\n\n<p>Template</p>"),
+                FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            using var failure = JsonDocument.Parse(await invalid.Content.ReadAsStringAsync(budget.Token));
+            Assert.Equal(3, failure.RootElement.GetProperty("diagnostics")[0].GetProperty("line").GetInt32());
             Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
             var pid = Assert.IsType<int>(harness.OutputRenderer.ProcessId);
             child = Process.GetProcessById(pid);
@@ -353,6 +366,56 @@ public sealed class FrontendOutputRendererTests
         Assert.Contains("After worker self signal", (await RenderAsync(harness, "After worker self signal", budget.Token)).Html);
         Assert.NotNull(harness.OutputRenderer.ProcessId);
         Assert.NotSame(completion, harness.OutputRenderer.ProcessCompletion);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ProgressiveAssistantUpdatesCompileWithoutRepeatingServerSetup()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(50));
+        await using var harness = await FrontendHarness.StartAsync(budget.Token,
+            new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted, answer: "unused"), false);
+        using var capabilities = await harness.Client.GetAsync("/v1/agent/capabilities", budget.Token);
+        using var advertised = JsonDocument.Parse(await capabilities.Content.ReadAsStringAsync(budget.Token));
+        Assert.Equal(1, advertised.RootElement.GetProperty("rendering").GetProperty("progressiveVersion").GetInt32());
+        const string source = "<script setup lang=\"ts\">\nimport {ref,computed} from 'vue';\nconst count=ref(0);const doubled=computed(()=>count.value*2);\n</script>\n\n<button @click=\"count++\">{{ count }}</button>";
+        using var initialResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "progressive", source, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, initialResponse.StatusCode);
+        var initial = await initialResponse.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token)
+            ?? throw new InvalidOperationException("Missing progressive initial snapshot.");
+        var firstComponent = Assert.IsType<FrontendVueComponent>(initial.Vue);
+        Assert.Equal(64, firstComponent.SetupKey?.Length);
+        Assert.Contains(">0</button>", initial.Html);
+        Assert.NotEmpty(firstComponent.Code ?? "");
+        const string gatedSource = "<script setup>const stage=import.meta.env.SSR?'server':'client';const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>";
+        using var gatedResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "clientonly", gatedSource, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, gatedResponse.StatusCode);
+        using var gated = JsonDocument.Parse(await gatedResponse.Content.ReadAsStringAsync(budget.Token));
+        Assert.Contains(">server</p>", gated.RootElement.GetProperty("html").GetString());
+        Assert.DoesNotContain("<span", gated.RootElement.GetProperty("html").GetString());
+        Assert.False(gated.RootElement.GetProperty("vue").TryGetProperty("ssrCode", out _));
+        var updatedSource = source + "\n\n<p>{{ doubled }}</p>";
+        using var updateResponse = await harness.Client.PostAsJsonAsync("/v1/render/assistant",
+            new FrontendRenderMarkdown(1, "progressive", updatedSource, Progressive: true, CompileOnly: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        var update = await updateResponse.Content.ReadFromJsonAsync(FrontendJsonContext.Default.FrontendRenderedMarkdown, budget.Token)
+            ?? throw new InvalidOperationException("Missing progressive update.");
+        var nextComponent = Assert.IsType<FrontendVueComponent>(update.Vue);
+        Assert.Equal(firstComponent.SetupKey, nextComponent.SetupKey);
+        Assert.Equal("", update.Html);
+        Assert.Equal("", nextComponent.Code);
+        Assert.Contains("doubled", nextComponent.RenderCode);
+        Assert.Equal(updatedSource, update.RenderedSource);
+        using var invalid = await harness.Client.PostAsJsonAsync("/v1/render/markdown",
+            new FrontendRenderMarkdown(1, "progressive", source, Progressive: true),
+            FrontendJsonContext.Default.FrontendRenderMarkdown, budget.Token);
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Equal(0, harness.SessionService.DescribeSession().Turns);
     }
 
     private sealed class RendererLogger : ILogger<FrontendOutputRenderer>

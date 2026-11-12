@@ -1097,7 +1097,8 @@ part of this stateless version.
 
 `format` is `markdown` (Vue-in-Markdown) or `sfc` (complete Vue single-file component). Version and
 format are required. Only static imports from `vue` are supported. Other imports, dynamic imports,
-`import.meta`, external blocks, custom blocks, CSS modules and non-CSS style preprocessors fail with
+other `import.meta` expressions, external blocks, custom blocks, CSS modules and non-CSS style
+preprocessors fail with
 `400 invalid_request`. Source must form a complete compilable component. Unknown fields remain
 tolerated. Ordinary Markdown and data-template routes do not evaluate component scripts.
 
@@ -1130,8 +1131,9 @@ The corresponding rich-display MIME is `application/vnd.maieutics.vue+json`:
 Publish through the existing explicitly selected REPL rich-display API and include `text/plain`
 fallback. Live output delivery and updates use existing display identities. VS Code selects this MIME
 only for live output, requests the explicit endpoint, and hydrates successful SSR. Unsupported or
-failed rendering retains native source/fallback. Streaming partials and restored assistant snapshots
-do not select execution; the completed live-assistant policy below separately opts into this runtime. The compiled factory is not accepted from a saved notebook or a MIME bundle.
+failed rendering retains native source/fallback. Streaming partials and unverified restored assistant snapshots
+do not select execution; the completed-assistant policy below separately covers live and verified
+canonical historical answers. The compiled factory is not accepted from a saved notebook or a MIME bundle.
 Notebook v1 reading and saving both discard the Vue MIME and preserve its other fallback items;
 reading also strips executable `esmSource`/`cssSource` from existing bundled-view MIME. Reopening a
 snapshot executes no component; a live producer must redisplay it. Data-template snapshots remain
@@ -1156,27 +1158,131 @@ not select component execution. Invalid source is `400 invalid_request`; worker 
 The internal child endpoint is authenticated `POST /v1/assistant` and returns component-only CSS;
 the executable adds baseline styling. This endpoint does not change Agent history or event order.
 
-VS Code emits local `application/vnd.maieutics.live-assistant+json` for text nodes only after a
-successful run terminal frame. Payload remains the existing turn snapshot. Streaming text continues
-through passive turn MIME, and failed/cancelled/truncated executions never receive live provenance. The final
+The initial completed-only policy emitted local `application/vnd.maieutics.live-assistant+json`
+after a successful terminal frame. The optional progressive policy below also admits streaming
+text and preserves established setup through completion. Payload remains the existing turn snapshot. Unsupported frontends keep streaming text passive; failed/cancelled/truncated terminal snapshots
+use passive MIME. A partial component may already have run before its terminal outcome is known. The final
 text cache invalidates even if text bytes match its last streaming delta. The renderer sends the
 local bridge request with `assistant:true`; template/Vue selectors cannot be combined with that
 flag. The extension selects the endpoint only when advertised; older kernels retain passive SSR.
 Optional compiled metadata is accepted only for the current selected assistant/component request.
 
 Notebook v1 saving recognizes this local MIME and extracts ordinary source/timeline data. Restoration
-always emits passive turn MIME; a stored marker or source text cannot select execution. The notebook
-format and canonical transcript are unchanged. Opening a saved notebook runs no component. An
-explicit live replay from the authenticated kernel can recreate presentation state. Component setup
+through the pure codec emits passive turn MIME; a stored marker or source text alone cannot select
+execution. A VS Code client may renew assistant provenance for session/run-bound history by reconnecting the
+kernel and reading the
+session-addressed canonical transcript: session ID, run ID, submitted input and the entire
+assistant text node must match a committed non-truncated turn. Only that verified text node is
+reconstructed as runtime assistant MIME; tool/user text and additional file-authored fields are not
+promoted. The transcript `version` is a changing history revision, not a protocol selector.
+Missing/unavailable history, changed source and offline files stay passive. This applies
+to saved files and virtual session notebooks, including older history; it changes no notebook or
+HTTP payload shape. Recovery re-compiles and hydrates the component with initial local state, without
+submitting Agent turns, calling models/tools or starting external producers. An explicit live replay
+from the authenticated kernel can also recreate presentation state. Component setup
 still runs for SSR and hydration and must have deterministic initial state; external producers remain
 explicit tools. This version waits for full source/turn completion and introduces no partial-script
 execution, automatic binding subscriptions or document patches. The dedicated Vue-rich-display MIME
 and explicit SFC format remain available for producer-driven output.
 
 The shared content pipeline recognizes bounded frontmatter headers through the public mdit-vue plugin
-with explicit uncached parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) are omitted without
-parsing/evaluating their values or expanding aliases. JavaScript/CoffeeScript engines are rejected.
+with explicit uncached data parsers: YAML/YML/JSON bodies (at most 16,000 UTF-16 units) provide
+the bounded `$frontmatter` data described below. JavaScript/CoffeeScript engines are rejected.
 An unfinished header remains readable passive source and cannot authorize a component.
-Metadata values and `$frontmatter` bindings are not exposed. CSS additionally provides common
+CSS additionally provides common
 `--vp-c-brand-1`, `--vp-c-brand-soft`, `--vp-c-bg-soft`, `--vp-c-text-1`, `--vp-c-text-2`, and
 `--vp-c-divider` host aliases. This adds no site page context or resource loader.
+
+### Frontmatter data (2026-11-10)
+
+Frontmatter headers supply bounded JSON-shaped data. Plain Markdown resolves only `$frontmatter`
+data paths in interpolation; other expressions remain literal. Values are escaped and resolved
+before heading/TOC extraction. Explicit templates reserve `$frontmatter` for document metadata.
+Vue Markdown receives the same readonly data during SSR and hydration; metadata spans cannot inject
+Vue syntax. Malformed or excessive headers return `invalid_frontmatter`; executable engines remain
+rejected. Unclosed streaming headers remain readable until sealed. No HTTP, IPC or notebook shape
+changes; metadata alone never selects Vue execution. `useData()` is not implemented. VitePress site generation, site layouts/navigation and document
+`head` management are intentionally out of scope: the host frontend owns its enclosing document.
+Frontmatter fields such as `head` remain inert data and cannot change the host document. See the rendering design for data limits and exact subset.
+
+## Progressive assistant templates (optional v1)
+
+`rendering.progressiveVersion:1` enables complete-prefix Vue rendering through the existing
+`POST /v1/render/assistant`. Requests add optional boolean `progressive` and `compileOnly`:
+
+```json
+{"version":1,"documentId":"message1","source":"…","progressive":true,"compileOnly":false}
+```
+
+Initial accepted prefixes return the existing HTML/CSS/full factory, plus `renderedSource` and
+`vue.setupKey` (64 hex characters) / `vue.renderCode` (at most 400,000 characters). `renderedSource`
+is an exact prefix of the request source; it can stop before incomplete template syntax. A later
+request with `compileOnly:true` returns empty HTML and empty `vue.code`, retaining CSS, setup identity
+and a render-function factory. This path performs no SSR/setup execution. `compileOnly:true` requires
+`progressive:true` and the assistant endpoint; other selectors reject progressive execution.
+
+Clients mount only a full initial factory. Render-only updates require an existing matching setup
+identity, document generation and source revision. They update the Vue-owned render function/CSS
+while retaining the instance, refs, computed bindings and hooks; full factories from cache recovery
+can also update an existing matching scope without re-running setup. Script rewrites start a new
+source epoch and require a full initial factory. Template changes invalidate compiler render caches.
+Complete synchronous setup is required; arbitrary later declarations and async setup are unsupported.
+
+Supporting VS Code controllers emit the existing runtime assistant MIME during live text streaming.
+Model HTML/source text or persisted marker fields cannot opt into this provenance. Clients without
+the advertised capability keep streaming passive. Failure/cancellation/truncation return to passive
+output and stop owned Vue effects. Successful completion preserves a progressive instance already
+mounted. Notebook decoding remains passive; verified canonical history can renew provenance.
+
+The local bridge may deliver accepted prefix snapshots before the newest source finishes. It uses
+source epochs, revision ancestry and monotonic commits, rejects obsolete generations and sealed
+streaming replies, and clears initialization hints on cancellation/disposal. Pending tails retain
+the current component. Invalid sealed updates show a local diagnostic, not a guessed value.
+
+The broader revisioned document transport and external late-binding producer lifecycle remain
+proposed. This increment shares state only within one frontend's assistant text output, not across
+messages/cells/frontends. Source/HTML/CSS/code, admission, total request and isolated worker limits
+remain in force; at most 16 prefix compilation candidates are considered per progressive request.
+
+### Rendering diagnostics and code copy controls
+
+Rendering v1 success snapshots and typed render-input error bodies may include an optional
+`diagnostics` array (maximum 32). Each item is `{code,line,column}`, with one-based coordinates in
+the original request source. Codes currently include `unclosed_code_fence`,
+`component_compile_failed`, `math_invalid`, and `math_limit`. No source snippet or compiler message
+is transmitted. Fence positions identify the opening delimiter, math positions the containing
+paragraph/block start, and component errors the authored component/script start; this is not a
+full compiled-template source map. Clients tolerate absent fields and unknown future fields.
+Diagnostics do not alter parsing or independently authorize execution. Display incomplete-stream
+warnings only after source sealing. A diagnostic is scoped to its request/source revision.
+
+The internal Deno service uses the same optional shape; the executable validates bounded codes and
+source coordinates before forwarding it. The error HTTP status/code contract remains unchanged.
+Code-fence copy buttons carry escaped source in `data-code-copy`; copying requires a user click and
+frontend clipboard support. The VS Code renderer sends request-correlated `copy` / `copy-result`
+messages to its extension host, independently of the rendering HTTP API. Text is capped at 200,000
+UTF-16 code units, copied verbatim without synthetic decorations, and never logged. Disposal drops
+pending UI references; stale responses do not update detached output.
+
+### Default content theme and CSS bounds
+
+The v1 rendering CSS response includes a scoped, offline VitePress default content theme. The host
+retains ownership of its enclosing document and form controls. The baseline and authored component
+CSS are each bounded to 48,000 UTF-16 characters; receivers supporting this theme admit their combined
+96,000-character CSS response. The component limit and response fields are unchanged. Earlier 64k
+receivers continue to render normal responses and may fall back for large combined stylesheets.
+The CSS contains no imports or downloaded fonts; its external-link decoration uses an embedded SVG.
+Dark hosts can mark the output or an ancestor `.dark`; Shadow DOM adapters also recognize VS Code's
+dark/high-contrast contexts. Theme changes do not execute or reinitialize components.
+
+### Client-only regions and SSR constants
+
+Live Vue factories may include a local ClientOnly mount gate: initial SSR/hydration emits a matching
+empty placeholder, then the default slot activates on browser mount. Late progressive templates can
+use the retained gate and setup bindings without reinitializing state. Normal unmount owns cleanup.
+This changes neither passive-content admission nor provenance; the parent setup still executes on
+both sides. Script `import.meta.env.SSR` is a compile-time boolean (true in the private SSR target,
+false in frontend factories). Other environment access/import policy is unchanged. Template code
+uses a declared script binding rather than raw import.meta. The public response never carries the
+private SSR factory. Factories remain v1 standard Vue code supported by existing frontend runtimes;
+no new message, host service or capability selector is required.

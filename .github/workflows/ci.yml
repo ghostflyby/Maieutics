@@ -82,12 +82,18 @@ jobs:
         working-directory: deno
         run: deno task test
 
-      - name: Verify committed offline SSR bundle
+      - name: Verify committed offline SSR assets
         working-directory: deno/maieutics-output-renderer
         run: |
           deno task build
-          git diff --exit-code --stat -- bundle/
+          git diff --exit-code --stat -- bundle/ styles.css
           deno task smoke:offline
+
+      - name: Verify committed browser output client
+        working-directory: deno/maieutics-output-client
+        run: |
+          deno task build:vscode
+          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk

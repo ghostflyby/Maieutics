@@ -102,10 +102,13 @@ const assistant = await renderer.renderAssistant(
   "live",
   `---
 title: Counter
+initial: 0
 ---
 <script setup>import { ref } from 'vue'; const count = ref(0);</script>
 
-<button @click="count++">+</button><span>{{ count }}</span>`,
+<button @click="count++">+</button><span>{{ count + $frontmatter.initial }}</span>
+
+# {{ $frontmatter.title }}`,
 );
 if (
   !assistant.vue || !assistant.html.includes(">0</span>") ||
@@ -114,3 +117,22 @@ if (
   throw new Error("Offline live assistant Vue failed");
 }
 console.log("Offline sealed assistant Vue passed.");
+
+const math = await renderer.render(
+  "mathoffline",
+  "$x^2$\n\n~~~py\nprint(42)\n~~~\n\n~~~md\nunclosed",
+);
+if (
+  !math.html.includes("<svg ") || !math.html.includes('class="code-copy"') ||
+  math.diagnostics?.[0]?.line !== 7
+) throw new Error("Offline math/code/diagnostic contract failed.");
+console.log("Offline SVG math, multilingual code and source diagnostics passed.");
+
+const clientOnly = await renderer.renderAssistant(
+  "clientonlyoffline",
+  '<script setup>const stage=import.meta.env.SSR?"server":"client";const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>',
+);
+if (!clientOnly.html.includes(">server</p>") || clientOnly.html.includes("<span")) {
+  throw new Error("Offline ClientOnly/SSR target contract failed.");
+}
+console.log("Offline ClientOnly and target-specific SSR flag passed.");

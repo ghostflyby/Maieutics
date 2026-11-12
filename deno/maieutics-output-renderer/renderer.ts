@@ -5,9 +5,31 @@ import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 import typescript from "@shikijs/langs/typescript";
 import javascript from "@shikijs/langs/javascript";
 import json from "@shikijs/langs/json";
+import python from "@shikijs/langs/python";
+import bash from "@shikijs/langs/bash";
+import csharp from "@shikijs/langs/csharp";
+import cpp from "@shikijs/langs/cpp";
+import c from "@shikijs/langs/c";
+import java from "@shikijs/langs/java";
+import go from "@shikijs/langs/go";
+import rust from "@shikijs/langs/rust";
+import sql from "@shikijs/langs/sql";
+import yamlLanguage from "@shikijs/langs/yaml";
+import toml from "@shikijs/langs/toml";
+import html from "@shikijs/langs/html";
+import css from "@shikijs/langs/css";
+import markdown from "@shikijs/langs/markdown";
+import diff from "@shikijs/langs/diff";
+import dockerfile from "@shikijs/langs/dockerfile";
+import xml from "@shikijs/langs/xml";
+import powershell from "@shikijs/langs/powershell";
+import ruby from "@shikijs/langs/ruby";
+import swift from "@shikijs/langs/swift";
+import kotlin from "@shikijs/langs/kotlin";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 import { createSSRApp, h } from "vue";
+import yaml from "js-yaml";
 import { frontmatterPlugin } from "@mdit-vue/plugin-frontmatter";
 import { componentPlugin } from "@mdit-vue/plugin-component";
 import { sfcPlugin } from "@mdit-vue/plugin-sfc";
@@ -19,6 +41,8 @@ import {
 import { renderVueComponent } from "./vueSsr.ts";
 import { renderToString } from "vue/server-renderer";
 import { installCodeFences } from "./codeFences.ts";
+import { installDiagnostics, type RenderDiagnostic } from "./diagnostics.ts";
+import { installMath } from "./math.ts";
 import { installCodeGroups } from "./codeGroups.ts";
 import { installContentPlugins } from "./contentPlugins.ts";
 import { installInterpolation, type TemplateEnvironment } from "./interpolation.ts";
@@ -31,6 +55,8 @@ export interface RenderedOutput {
   readonly headings: readonly RenderedHeading[];
   readonly expressions?: readonly TemplateResult[];
   readonly vue?: CompiledVueComponent;
+  readonly renderedSource?: string;
+  readonly diagnostics?: readonly RenderDiagnostic[];
 }
 
 /** Heading metadata collected by the same plugin family as VitePress. */
@@ -54,6 +80,7 @@ export interface OutputRenderer extends Disposable {
     documentId: string,
     source: string,
     signal?: AbortSignal,
+    progressive?: { compileOnly: boolean },
   ): Promise<RenderedOutput>;
   renderVue(
     documentId: string,
@@ -93,7 +120,32 @@ export const MaximumHtmlCharacters = 4_000_000;
 export async function createOutputRenderer(): Promise<OutputRenderer> {
   const highlighter = await createHighlighterCore({
     themes: [githubLight, githubDark],
-    langs: [typescript, javascript, json],
+    langs: [
+      typescript,
+      javascript,
+      json,
+      python,
+      bash,
+      csharp,
+      cpp,
+      c,
+      java,
+      go,
+      rust,
+      sql,
+      yamlLanguage,
+      toml,
+      html,
+      css,
+      markdown,
+      diff,
+      dockerfile,
+      xml,
+      powershell,
+      ruby,
+      swift,
+      kotlin,
+    ],
     engine: createJavaScriptRegexEngine(),
   });
   try {
@@ -102,10 +154,22 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         html,
         linkify: true,
       });
-      // Metadata is recognized and omitted, never evaluated or exposed as component bindings.
-      const omitMetadata = (source: string) => {
+      // Reuse upstream framing with a non-executable, JSON-shaped YAML schema.
+      const parseMetadata = (source: string, json = false) => {
         if (source.length > 16_000) throw new OutputRenderingError("invalid_frontmatter");
-        return {};
+        try {
+          const value =
+            (json ? JSON.parse(source) : yaml.safeLoad(source, { schema: yaml.JSON_SCHEMA })) ?? {};
+          if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new Error();
+          }
+          return captureTemplate({
+            version: 1,
+            bindings: [{ name: "$frontmatter", state: "ready", value }],
+          }).bindings[0].value;
+        } catch {
+          throw new OutputRenderingError("invalid_frontmatter");
+        }
       };
       const rejectMetadata = () => {
         throw new OutputRenderingError("invalid_frontmatter");
@@ -115,9 +179,9 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         renderExcerpt: false,
         grayMatterOptions: {
           engines: {
-            yaml: omitMetadata,
-            yml: omitMetadata,
-            json: omitMetadata,
+            yaml: (source: string) => parseMetadata(source),
+            yml: (source: string) => parseMetadata(source),
+            json: (source: string) => parseMetadata(source, true),
             js: rejectMetadata,
             javascript: rejectMetadata,
             coffee: rejectMetadata,
@@ -127,6 +191,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       });
       const withMetadata = md.render.bind(md);
       md.render = (source, env = {}) => {
+        env.originalSource = source;
         const opening = /^(?:\uFEFF)?---(?:[ \t]*([A-Za-z][\w-]*))?[ \t]*(?:\r?\n|$)/.exec(source);
         if (!opening) return withoutMetadata(source, env);
         if (opening[1] && !["yaml", "yml", "json"].includes(opening[1])) {
@@ -140,6 +205,8 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       };
       installCodeFences(md, highlighter);
       installCodeGroups(md);
+      installMath(md);
+      installDiagnostics(md);
       const validateLink = md.validateLink;
       md.validateLink = (url) => {
         const scheme = /^([a-z][a-z\d+.-]*):/i.exec(url)?.[1].toLowerCase();
@@ -147,16 +214,50 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
           ["http", "https", "mailto", "workspace", "task", "skill", "mcp"].includes(scheme));
       };
       md.linkify.set({ fuzzyLink: false });
+      {
+        md.core.ruler.before("block", "maieutics-frontmatter", (state) => {
+          state.env.vueMarkdown = html;
+          const binding = {
+            name: "$frontmatter",
+            ...(state.env.unsealedFrontmatter
+              ? { state: "pending" as const }
+              : { state: "ready" as const, value: state.env.frontmatter ?? {} }),
+          };
+          if (!state.env.unsealedFrontmatter) {
+            state.env.frontmatterTemplate = {
+              context: { version: 1, bindings: [binding], sourceSealed: true },
+              expressions: [],
+            };
+          }
+          if (state.env.template) {
+            const context = state.env.template.context;
+            state.env.template.context = {
+              ...context,
+              bindings: [
+                ...context.bindings.filter((item: { name: string }) =>
+                  item.name !== "$frontmatter"
+                ),
+                binding,
+              ],
+            };
+          }
+        });
+      }
       installInterpolation(md);
       installContentPlugins(md);
 
       if (html) {
         md.use(componentPlugin).use(sfcPlugin);
         md.core.ruler.after("block", "maieutics-script-source", (state) => {
-          state.env.authoredScript = state.tokens.some((token) =>
+          const script = state.tokens.find((token) =>
             token.type === "html_block" &&
             token.level === 0 && /^\s*<script(?:\s|>)/i.test(token.content)
           );
+          state.env.authoredScript = script !== undefined;
+          const original = state.env.originalSource ?? state.src;
+          state.env.scriptLine =
+            original.slice(0, original.length - state.src.length).split("\n").length +
+            (script?.map?.[0] ?? 0);
         });
         const htmlBlock = md.renderer.rules.html_block;
         md.renderer.rules.html_block = (tokens, index, options, env, renderer) => {
@@ -197,6 +298,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       const env: {
         documentId: string;
         headers?: RenderedHeading[];
+        diagnostics?: RenderDiagnostic[];
         template?: TemplateEnvironment;
       } = { documentId, template };
       const body = md.render(source, env);
@@ -222,6 +324,7 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       return {
         documentId,
         html,
+        diagnostics: env.diagnostics,
         headings: scopeHeadings(env.headers ?? []),
         ...(template ? { expressions: template.expressions } : {}),
       };
@@ -230,18 +333,44 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       const env: {
         documentId: string;
         authoredScript?: boolean;
+        scriptLine?: number;
+        diagnostics?: RenderDiagnostic[];
         unsealedFrontmatter?: boolean;
+        frontmatter?: Record<string, unknown>;
         sfcBlocks?: { scripts: { content: string }[]; styles: { content: string }[] };
       } = { documentId };
       const body = vueMd.render(source, env);
       if (body.length > MaximumHtmlCharacters) throw new OutputRenderingError("output_too_large");
       return {
+        diagnostics: env.diagnostics,
+        frontmatter: env.frontmatter ?? {},
         scripted: env.authoredScript === true,
+        scriptLine: env.scriptLine ?? 1,
         unsealedFrontmatter: env.unsealedFrontmatter === true,
         source: `<template><div class="maieutics-output vp-doc">${body}</div></template>\n${
           env.sfcBlocks?.scripts.map((block) => block.content).join("\n") ?? ""
         }\n${env.sfcBlocks?.styles.map((block) => block.content).join("\n") ?? ""}`,
       };
+    };
+    const compileLocated = (
+      documentId: string,
+      source: string,
+      frontmatter?: Record<string, unknown>,
+      progressive = false,
+      line = 1,
+    ) => {
+      try {
+        return compileVueComponent(documentId, source, frontmatter, progressive);
+      } catch (error) {
+        if (error instanceof VueComponentError) {
+          throw new VueComponentError(error.code, [{
+            code: "component_compile_failed",
+            line,
+            column: 1,
+          }]);
+        }
+        throw error;
+      }
     };
     const renderVue = async (
       documentId: string,
@@ -249,22 +378,39 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
       format: "markdown" | "sfc",
       signal?: AbortSignal,
       prepared?: string,
+      frontmatter?: Record<string, unknown>,
+      diagnostics?: RenderDiagnostic[],
+      scriptLine?: number,
     ): Promise<RenderedOutput> => {
       signal?.throwIfAborted();
       if (disposed) throw new OutputRenderingError("disposed");
       if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters) {
         throw new VueComponentError("invalid_component");
       }
-      const sfc = prepared ??
-        (format === "markdown" ? prepareVueMarkdown(documentId, source).source : source);
-      const component = compileVueComponent(documentId, sfc);
+      const markdown = format === "markdown" && prepared === undefined
+        ? prepareVueMarkdown(documentId, source)
+        : undefined;
+      const sfc = prepared ?? markdown?.source ?? source;
+      const component = compileLocated(
+        documentId,
+        sfc,
+        frontmatter ?? markdown?.frontmatter,
+        false,
+        scriptLine ?? markdown?.scriptLine ?? 1,
+      );
       const active = signal
         ? AbortSignal.any([signal, componentLifetime.signal])
         : componentLifetime.signal;
       const html = await renderVueComponent(component, active);
       signal?.throwIfAborted();
       if (disposed) throw new OutputRenderingError("disposed");
-      return { documentId, html, headings: [], vue: component };
+      return {
+        documentId,
+        html,
+        headings: [],
+        vue: component,
+        diagnostics: diagnostics ?? markdown?.diagnostics,
+      };
     };
     return {
       render,
@@ -275,7 +421,57 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         });
       },
       renderVue,
-      async renderAssistant(documentId, source, signal) {
+      async renderAssistant(documentId, source, signal, progressive) {
+        if (progressive) {
+          signal?.throwIfAborted();
+          if (disposed) throw new OutputRenderingError("disposed");
+          if (
+            !/^[a-z][a-z\d_-]{0,63}$/i.test(documentId) || source.length > MaximumSourceCharacters
+          ) throw new VueComponentError("invalid_component");
+          if (!/<script(?:\s|>)/i.test(source)) return await render(documentId, source, signal);
+          let candidate = source;
+          for (let attempt = 0; attempt < 16; attempt++) {
+            let component: CompiledVueComponent | undefined;
+            let diagnostics: RenderDiagnostic[] | undefined;
+            try {
+              const prepared = prepareVueMarkdown(documentId, candidate);
+              diagnostics = prepared.diagnostics;
+              if (!prepared.scripted) return await render(documentId, source, signal);
+              if (prepared.unsealedFrontmatter) {
+                throw new VueComponentError("invalid_component");
+              }
+              // One closed setup module owns all later template bindings.
+              component = compileLocated(
+                documentId,
+                prepared.source,
+                prepared.frontmatter,
+                true,
+                prepared.scriptLine,
+              );
+            } catch (error) {
+              if (!(error instanceof VueComponentError)) throw error;
+              const boundary = candidate.lastIndexOf("\n\n");
+              if (boundary < 0) throw error;
+              candidate = candidate.slice(0, boundary);
+              continue;
+            }
+            const html = progressive.compileOnly ? "" : await renderVueComponent(
+              component,
+              signal
+                ? AbortSignal.any([signal, componentLifetime.signal])
+                : componentLifetime.signal,
+            );
+            return {
+              documentId,
+              html,
+              headings: [],
+              renderedSource: candidate,
+              diagnostics,
+              vue: progressive.compileOnly ? { ...component, code: "" } : component,
+            };
+          }
+          throw new VueComponentError("invalid_component");
+        }
         signal?.throwIfAborted();
         if (disposed) throw new OutputRenderingError("disposed");
         if (!/^[a-z][a-z\d_-]{0,63}$/i.test(documentId)) {
@@ -290,7 +486,16 @@ export async function createOutputRenderer(): Promise<OutputRenderer> {
         const prepared = prepareVueMarkdown(documentId, source);
         if (prepared.unsealedFrontmatter) throw new OutputRenderingError("invalid_frontmatter");
         return prepared.scripted
-          ? await renderVue(documentId, source, "markdown", signal, prepared.source)
+          ? await renderVue(
+            documentId,
+            source,
+            "markdown",
+            signal,
+            prepared.source,
+            prepared.frontmatter,
+            prepared.diagnostics,
+            prepared.scriptLine,
+          )
           : await render(documentId, source, signal);
       },
       [Symbol.dispose]() {

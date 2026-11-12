@@ -43,6 +43,26 @@ Deno.test("assistant replies retain their full escaped content without collapse"
   assert(html.includes("x".repeat(300)), html);
 });
 
+Deno.test("streamed Vue source cannot swallow independent Markdown into an HTML block", () => {
+  const source = "# Before\n\n<div>\n## Inside\n\n<script setup>\nconst count =";
+  const html = markdown.render(source, {
+    outputItem: renderer.markdownOutputItem({ id: "stream" }, source, 0),
+  });
+  assert(html.includes("<h1>Before</h1>"), html);
+  assert(html.includes("<h2>Inside</h2>"), html);
+  assert(!html.includes("<script") && !html.includes("<div>"), html);
+  const restored = markdown.render(source, {
+    outputItem: renderer.markdownOutputItem({ id: "saved" }, source, 0),
+  });
+  assertEquals(
+    restored,
+    html,
+    "Cancellation and passive snapshot restore keep Markdown formatting.",
+  );
+  const ordinary = markdown.render("<div>\n## Literal example\n</div>");
+  assert(!ordinary.includes("<h2>Literal example</h2>"), ordinary);
+});
+
 Deno.test("timeline retains model rounds, summaries and tools in arrival order", () => {
   const html = render({
     text: "Final answer",

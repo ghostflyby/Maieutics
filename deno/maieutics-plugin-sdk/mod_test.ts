@@ -1,3 +1,4 @@
+import * as AuthorAPI from "./entry.ts";
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { defineExtensionPoint, ExtensionPoint, type McpAdjustedTool } from "./entry.ts";
 
@@ -72,7 +73,7 @@ Deno.test("defineExtensionPoint rejects a bare object without a handler", () => 
   );
 });
 
-Deno.test("the sdk module imports only worker-actor, signals-core and its local modules", async () => {
+Deno.test("the sdk module imports only worker-actor, Vue reactivity and its local modules", async () => {
   const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
   const imports = [...source.matchAll(/^import[^\n]*?from\s+"([^"]+)"/gm)].map((match) => match[1]);
   assert(imports.length > 0, "expected at least one import in the sdk module");
@@ -86,8 +87,17 @@ Deno.test("the sdk module imports only worker-actor, signals-core and its local 
         specifier === "./http_codec.ts" ||
         specifier === "@ghostflyby/worker-actor" ||
         specifier.startsWith("@ghostflyby/worker-actor/") ||
-        specifier === "@preact/signals-core",
+        specifier === "@vue/reactivity",
       `unexpected import '${specifier}' in the sdk module`,
     );
   }
+});
+
+Deno.test("SDK 0.2 exposes native Vue refs and watchers without Preact compatibility aliases", () => {
+  assertEquals(typeof AuthorAPI.shallowRef, "function");
+  assertEquals(typeof AuthorAPI.computed, "function");
+  assertEquals(typeof AuthorAPI.watch, "function");
+  assertEquals(typeof AuthorAPI.effectScope, "function");
+  assertEquals("signal" in AuthorAPI, false);
+  assertEquals("effect" in AuthorAPI, false);
 });

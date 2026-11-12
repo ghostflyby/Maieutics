@@ -39,6 +39,8 @@ import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
 import { testProjectRegistrationAsync } from "./projectRegistration.ts";
 import { testDocumentEditing } from "./documentEditing.ts";
 import { testWorkspaceSaving } from "./workspaceSaving.ts";
+import { testRenderingDuringConnectionAsync } from "./renderingRecovery.ts";
+import { testHistoricalVueAsync } from "./historyRendering.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -177,6 +179,53 @@ async function testSerializerAsync(): Promise<void> {
     notebook.cellAt(0).document.getText() === "hello",
     "the agent cell's text round-trips through the serializer",
   );
+}
+
+async function testRestoredMarkdownWithoutKernelAsync(): Promise<void> {
+  const channel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
+  const seen: string[] = [];
+  const uri = vscode.Uri.joinPath(workspaceRoot(), "restored-renderer.maieuticsnb");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let subscription: vscode.Disposable | undefined;
+  const rendered = new Promise<void>((resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Restored renderer did not finish: ${seen.join(", ")}`)),
+      20_000,
+    );
+    subscription = channel.onDidReceiveMessage(({ editor, message }) => {
+      if (editor.notebook.uri.toString() !== uri.toString()) return;
+      if (message?.source !== "maieutics-output") return;
+      seen.push(message.type + (message.engine ? `:${message.engine}` : ""));
+      if (message.type === "render") {
+        void channel.postMessage({ ...message, type: "unavailable" });
+      }
+      if (message.type === "applied" && message.engine === "native") {
+        if (
+          message.native?.headings >= 1 && message.native?.tables === 1 && !message.native?.error
+        ) resolve();
+        else {
+          reject(
+            new Error(`Restored Markdown structure missing: ${JSON.stringify(message.native)}`),
+          );
+        }
+      }
+    });
+  });
+  try {
+    const notebook = emptyNotebook();
+    notebook.cells[0].text = "Saved question";
+    notebook.cells[0].output = {
+      text:
+        "<script setup>\nconst count = 0;\n</script>\n\n# Restored heading\n\n| Key | Value |\n| --- | --- |\n| a | **bold** |",
+    };
+    await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(JSON.stringify(notebook)));
+    const document = await vscode.workspace.openNotebookDocument(uri);
+    await vscode.window.showNotebookDocument(document, { preview: false });
+    await rendered;
+  } finally {
+    if (timer) clearTimeout(timer);
+    subscription?.dispose();
+  }
 }
 
 function testRichDisplaySnapshotsAsync(): void {
@@ -337,6 +386,9 @@ async function testQueueExecutionAsync(
   interrupted = false,
   truncated = false,
 ): Promise<void> {
+  const streamingVisible = Promise.withResolvers<void>();
+  const requireStreamingPreview = supportsRecovery && !missingReplay && !failBeforeRun &&
+    !interrupted && !truncated;
   const sessionId = "a".repeat(32);
   const runId = "b".repeat(32);
   const itemId = "queued-item";
@@ -411,6 +463,7 @@ async function testQueueExecutionAsync(
         messageId: "m",
         agentMessage: { role: "assistant", parts: [{ kind: "text", text: "Recovered reply" }] },
       };
+      if (requireStreamingPreview) await streamingVisible.promise;
       if (truncated) yield { type: "turn.truncated", runId };
       try {
         yield interrupted
@@ -486,6 +539,14 @@ async function testQueueExecutionAsync(
     const visibleOutput = new Promise<void>((resolve) => {
       outputChanged = vscode.workspace.onDidChangeNotebookDocument((event) => {
         if (event.notebook !== notebook) return;
+        if (
+          notebook.cellAt(0).outputs.some((entry) =>
+            entry.items.some((item) =>
+              item.mime === "application/vnd.maieutics.live-assistant+json" &&
+              JSON.parse(new TextDecoder().decode(item.data)).streaming === true
+            )
+          )
+        ) streamingVisible.resolve();
         const frames = notebook.cellAt(0).outputs.flatMap((entry) => entry.items)
           .filter((item) =>
             ["application/vnd.maieutics.turn+json", "application/vnd.maieutics.live-assistant+json"]
@@ -670,6 +731,7 @@ async function testQueueExecutionAsync(
         }
       }
     } finally {
+      streamingVisible.resolve();
       outputChanged?.dispose();
     }
   } finally {
@@ -1078,8 +1140,16 @@ async function testCommandCompletionAsync(): Promise<void> {
 const tests: HostTest[] = [
   { name: "extension is installed and activates", run: testActivationAsync },
   {
+    name: "restored Markdown waits for the connection already starting during reload",
+    run: () => testRenderingDuringConnectionAsync(workspaceRoot()),
+  },
+  {
     name: "the actual extension tolerates broken projects and registers folder changes",
     run: () => testProjectRegistrationAsync(workspaceRoot()),
+  },
+  {
+    name: "verified historical Vue restores from saved files and virtual sessions",
+    run: () => testHistoricalVueAsync(workspaceRoot()),
   },
   {
     name: "all projects in a real VS Code multi-root workspace register individually",
@@ -1088,6 +1158,10 @@ const tests: HostTest[] = [
   {
     name: "Timeline and Markdown use native rendering without losing ordered activity",
     run: testTurnRendererAsync,
+  },
+  {
+    name: "restored headings and tables render without a connected kernel",
+    run: testRestoredMarkdownWithoutKernelAsync,
   },
   { name: "SSR snapshots reach the turn renderer under webview CSP", run: testSsrRenderingAsync },
   { name: "the .maieuticsnb serializer round-trips the fixture", run: testSerializerAsync },

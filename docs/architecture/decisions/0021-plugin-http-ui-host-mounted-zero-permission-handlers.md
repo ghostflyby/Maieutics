@@ -76,10 +76,10 @@ export const http = defineServiceExtensionPoint<Deno.ServeHandler>("http");
 A plugin declares its root by providing into the collection:
 
 ```ts
-import { provide, signal } from "@maieutics/plugin-sdk";
+import { provide, shallowRef } from "@maieutics/plugin-sdk";
 import { http } from "@maieutics/plugin-sdk/http";
 
-provide(http, signal(async (request, info) => {
+provide(http, shallowRef(async (request, info) => {
   // request: Request, info: Deno.ServeHandlerInfo — same shape as a
   // Deno.serve handler; route on new URL(request.url).pathname internally.
 }));

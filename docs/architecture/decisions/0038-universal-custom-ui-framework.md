@@ -2,6 +2,11 @@
 
 Status: Draft
 
+Migration direction (2026-11-11): the Preact implementation is being reconsidered in favor of Vue
+for backend reactivity and browser components. The [migration study](../../vue-reactive-ui-migration.md)
+defines the replacement and compatibility work. SDK 0.2 has migrated the backend reactive core;
+the browser-family and business-model migration remains pending.
+
 Date: 2026-10-04
 
 Amends: ADR 0024 (comm plane gains the custom-UI model layer on top; the

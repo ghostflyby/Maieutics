@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13"
+  }
+}

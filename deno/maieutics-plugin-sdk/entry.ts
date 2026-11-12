@@ -14,7 +14,7 @@
  *   defineExtensionPoint,
  *   defineServiceExtensionPoint,
  *   provide,
- *   signal,
+ *   shallowRef,
  *   depActor,
  * } from "@maieutics/plugin-sdk";
  * ```
@@ -53,7 +53,28 @@ export {
   values,
 } from "./mod.ts";
 
-export { computed, effect, signal } from "./reactive.ts";
+export {
+  computed,
+  effectScope,
+  getCurrentScope,
+  isProxy,
+  isReactive,
+  isReadonly,
+  isRef,
+  markRaw,
+  onScopeDispose,
+  reactive,
+  readonly,
+  ref,
+  shallowReactive,
+  shallowReadonly,
+  shallowRef,
+  toRaw,
+  toRef,
+  toRefs,
+  unref,
+  watch,
+} from "./reactive.ts";
 
 // —— Plugin HTTP root (ADR 0021) ——
 
@@ -157,3 +178,7 @@ export type {
   ToolRequest,
   ToolResponse,
 } from "./mod.ts";
+
+export type { ComputedRef, EffectScope, Ref, ShallowRef, WatchHandle } from "./vue_reactivity.ts";
+
+export { MaximumReactiveQueueLength, ReactiveSubscriptionError } from "./reactive.ts";

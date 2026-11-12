@@ -20,9 +20,15 @@
 - `maieutics-vscode/` — VS Code notebook frontend over the custom web protocol (ADR 0023,
   `docs/web-frontend-protocol.md`). Owns the `.maieuticsnb` snapshot, launches or attaches to the
   kernel through the discovery file, and executes cells as Agent turns. Self-contained: it must not
-  import other workspace modules, because it ships through `deno bundle` to the extension host (Node
-  runtime), not into the kernel. `package.json` is the extension manifest only; dependencies live in
-  `deno.json`.
+  import other workspace modules into the extension host, because it ships through `deno bundle` to
+  the Node runtime, not into the kernel. The browser-only output client is separately bundled and
+  copied into media/; its notebook adapter must not fork that implementation. `package.json` is the
+  extension manifest only; dependencies live in `deno.json`.
+- `maieutics-output-client/` — standalone browser ESM output renderer. Owns timeline DOM, SSR
+  snapshot application, progressive Vue hydration/state and disposal. No VS Code APIs or transport
+  credentials; hosts supply message delivery, optional Markdown and action handling. Build emits
+  dist/outputClient.js plus declarations; build:vscode copies the identical JS artifact into the
+  extension. Commit the copied artifact and enforce rebuild freshness in CI.
 - `maieutics-output-renderer/` — executable-owned passive Markdown, explicit data-template and Vue
   SSR primitives for `docs/streaming-output-rendering-design.md`. Owns offline content rendering and
   highlighter lifetime. The executable embeds its committed `bundle/service.js`; regenerate that

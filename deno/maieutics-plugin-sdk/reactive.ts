@@ -1,6 +1,6 @@
 /**
  * Reactive extension-point core: a contract-mode extension-point identity plus
- * a per-worker provider registry on top of @preact/signals-core.
+ * a per-worker provider registry on top of Vue reactivity.
  *
  * An extension point is a contract value (`defineExtensionPoint(name)`) owned
  * by the module that declares it: the identity carries the defining module's
@@ -23,11 +23,13 @@
  * `__acquire-actor` frames that let a consumer resolve a provider's surface.
  */
 
-import { computed, effect, type Signal, signal } from "@preact/signals-core";
+import { computed, type ComputedRef, isRef, type Ref, shallowRef } from "./vue_reactivity.ts";
+import { reactiveStream } from "./reactive_stream.ts";
 import { type AdmissionContext, type AdmissionHook, requestAdmission } from "./admission.ts";
+export { MaximumReactiveQueueLength, ReactiveSubscriptionError } from "./reactive_stream.ts";
 
-/** A reactive value: a signals-core signal holding `T`. */
-export type ReactiveValue<T> = Signal<T>;
+/** A Vue ref source; readonly computed refs can contribute without granting mutation access. */
+export type ReactiveValue<T> = Readonly<Ref<T>>;
 
 // —— Admission hooks (ADR 0021 decision 9) ——
 
@@ -63,8 +65,30 @@ export function evaluateAdmissionHook(
   return hook(context);
 }
 
-/** Re-export the signals-core primitives the SDK builds on. */
-export { computed, effect, signal };
+/** Native Vue primitives; service/contribution cells should use shallowRef to retain identity. */
+export {
+  computed,
+  effectScope,
+  getCurrentScope,
+  isProxy,
+  isReactive,
+  isReadonly,
+  isRef,
+  markRaw,
+  onScopeDispose,
+  reactive,
+  readonly,
+  ref,
+  shallowReactive,
+  shallowReadonly,
+  shallowRef,
+  toRaw,
+  toRef,
+  toRefs,
+  unref,
+  watch,
+} from "./vue_reactivity.ts";
+export type { ComputedRef, EffectScope, Ref, ShallowRef, WatchHandle } from "./vue_reactivity.ts";
 
 /** Brand attached to an extension-point identity value. */
 const EXTENSION_POINT_BRAND = Symbol.for("maieutics/extensionPoint/v1/identity");
@@ -117,7 +141,7 @@ const providersByPoint = new Map<
 
 // Monotonic version bumped on every provide/unprovide, so a collection signal
 // can depend on provider-set membership as well as on individual values.
-const registryVersion = signal(0);
+const registryVersion = shallowRef(0);
 
 /** Resolves the registry symbol for an extension point's owner + name. */
 function symbolFor(owner: string, name: string): symbol {
@@ -342,48 +366,14 @@ export function isLocalExtensionPoint(extensionPoint: ExtensionPointIdentity): b
  * subscription.
  */
 export function changesOf<T>(value: ReactiveValue<T | undefined>): AsyncIterable<T | undefined> {
-  return {
-    [Symbol.asyncIterator]() {
-      let stopped = false;
-      let pending: ((v: T | undefined) => void) | undefined;
-      const queue: (T | undefined)[] = [];
-      // The initial value travels separately; the effect's first run must not
-      // enqueue it again.
-      let first = true;
-      const stop = effect(() => {
-        const current = value.value;
-        if (first) {
-          first = false;
-          return;
-        }
-        if (pending !== undefined) {
-          const resolve = pending;
-          pending = undefined;
-          resolve(current);
-        } else {
-          queue.push(current);
-        }
-      });
-      return {
-        next(): Promise<IteratorResult<T | undefined>> {
-          if (stopped) return Promise.resolve({ done: true, value: undefined });
-          if (queue.length > 0) {
-            // The length guard guarantees shift() returns an element; the
-            // element itself may legitimately be undefined (a signal change).
-            return Promise.resolve({ done: false, value: queue.shift() as T | undefined });
-          }
-          return new Promise<IteratorResult<T | undefined>>((resolve) => {
-            pending = (v: T | undefined) => resolve({ done: false, value: v });
-          });
-        },
-        return(): Promise<IteratorResult<T | undefined>> {
-          stopped = true;
-          stop();
-          return Promise.resolve({ done: true, value: undefined });
-        },
-      };
-    },
-  };
+  return reactiveStream((emit) => {
+    let first = true;
+    return () => {
+      const current = value.value;
+      if (first) first = false;
+      else emit(current);
+    };
+  });
 }
 
 /**
@@ -398,11 +388,24 @@ function transformChanges(
   transform: (value: unknown) => unknown,
 ): AsyncIterable<unknown> {
   return {
-    async *[Symbol.asyncIterator](): AsyncIterator<unknown> {
-      for await (const value of source) yield transform(value);
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]();
+      return {
+        async next() {
+          const next = await iterator.next();
+          return next.done
+            ? { done: true as const, value: undefined }
+            : { done: false as const, value: transform(next.value) };
+        },
+        return() {
+          return iterator.return?.() ?? Promise.resolve({ done: true as const, value: undefined });
+        },
+      };
     },
   };
 }
+
+const remoteSubscriptions = new WeakMap<object, () => void>();
 
 /**
  * Contributes a reactive value to an extension point from the current worker.
@@ -422,6 +425,7 @@ export function provide<T>(
   if (!isExtensionPoint(extensionPoint)) {
     throw new TypeError("provide() expects an extension point identity.");
   }
+  if (!isRef(value)) throw new TypeError("provide() expects a Vue ref or computed ref.");
 
   // Remote identity: route to the defining worker's collection. The providerKey
   // (generated here) identifies this contribution so a later unprovide can
@@ -456,9 +460,26 @@ export function provide<T>(
     const transform = valueTransformer;
     const isServicePoint = extensionPoint.serviceKind === "service" && transform !== undefined;
     const initial = isServicePoint ? transform(value.value) : value.value;
-    const changes = isServicePoint
-      ? transformChanges(changesOf(value), transform)
-      : changesOf(value);
+    // Capture observation before the first remote await, so startup changes cannot fall into
+    // the gap between the initial value and the remote consumer's first pull.
+    const iterator = changesOf(value)[Symbol.asyncIterator]();
+    const source = { [Symbol.asyncIterator]: () => iterator };
+    const changes = isServicePoint ? transformChanges(source, transform) : source;
+    const registration: ProviderRegistration<T> = {
+      extensionPoint,
+      value,
+      providerId: `remote:${specifier}:${extensionPoint.name}:${providerKey}`,
+      remoteSpecifier: specifier,
+      remoteKey: providerKey,
+    };
+    const release = () => {
+      remoteSubscriptions.delete(registration);
+      const closing = iterator.return?.();
+      if (closing) {
+        void closing.catch(() => console.error("[plugin-sdk] reactive source cleanup failed"));
+      }
+    };
+    remoteSubscriptions.set(registration, release);
     void remoteProvide(
       specifier,
       extensionPoint.name,
@@ -466,6 +487,7 @@ export function provide<T>(
       changes,
       providerKey,
     ).catch((error: unknown) => {
+      release();
       // The contribution failed to reach the defining worker; log instead of
       // surfacing an unhandled rejection in this worker.
       console.error(
@@ -473,13 +495,7 @@ export function provide<T>(
           `${error instanceof Error ? error.message : String(error)}`,
       );
     });
-    return {
-      extensionPoint,
-      value,
-      providerId: `remote:${specifier}:${extensionPoint.name}:${providerKey}`,
-      remoteSpecifier: specifier,
-      remoteKey: providerKey,
-    };
+    return registration;
   }
 
   const symbol = symbolFor(extensionPoint.owner, extensionPoint.name);
@@ -512,6 +528,7 @@ export function provide<T>(
  * registration the withdrawal is routed back to the defining worker, which
  * unregisters its local contribution and stops the change stream. */
 export function unprovide<T>(registration: ProviderRegistration<T>): void {
+  remoteSubscriptions.get(registration)?.();
   if (
     registration.remoteSpecifier !== undefined &&
     registration.remoteKey !== undefined &&
@@ -567,7 +584,7 @@ export function snapshot<T>(extensionPoint: ExtensionPointIdentity<T>): T[] {
  */
 export function collection<T>(
   extensionPoint: ExtensionPointIdentity<T>,
-): Signal<T[]> {
+): ComputedRef<T[]> {
   // Reading the registry version makes the computed depend on provider-set
   // membership; the per-provider value signals are read inside the computed,
   // so a value change also recomputes.
@@ -591,48 +608,11 @@ export function collection<T>(
  * returned iterable is a plain async iterable (worker-actor's iterable codec
  * transports it across workers lazily with backpressure and cancellation).
  */
-export async function* subscribe<T>(
-  extensionPoint: ExtensionPointIdentity<T>,
-): AsyncIterable<T[]> {
-  const collectionSignal = collection(extensionPoint);
-  let pending: ((value: T[]) => void) | undefined;
-  const queue: T[][] = [];
-  // The initial snapshot is yielded explicitly below; the effect's first run
-  // must not enqueue it again.
-  let first = true;
-
-  const notify = (): void => {
-    const snapshot = collectionSignal.value;
-    if (first) {
-      first = false;
-      return;
-    }
-    if (pending !== undefined) {
-      const resolve = pending;
-      pending = undefined;
-      resolve(snapshot);
-    } else {
-      queue.push(snapshot);
-    }
-  };
-
-  const stop = effect(notify);
-  try {
-    // Emit the current snapshot first, then every change.
-    yield collectionSignal.value;
-    while (true) {
-      if (queue.length > 0) {
-        yield queue.shift() as T[];
-      } else {
-        const snapshot = await new Promise<T[]>((resolve) => {
-          pending = resolve;
-        });
-        yield snapshot;
-      }
-    }
-  } finally {
-    stop();
-  }
+export function subscribe<T>(extensionPoint: ExtensionPointIdentity<T>): AsyncIterable<T[]> {
+  return reactiveStream((emit) => {
+    const current = collection(extensionPoint);
+    return () => emit(current.value);
+  });
 }
 
 /** Number of local providers currently registered for an extension point. */
@@ -673,72 +653,25 @@ export interface CollectionStream<T> {
 }
 
 /** The stream's value source: one value per change, identified by provider. */
-function valueChanges<T>(
-  extensionPoint: ExtensionPointIdentity<T>,
-): AsyncIterable<T> {
-  return {
-    [Symbol.asyncIterator]() {
-      let stopped = false;
-      let pending: ((result: IteratorResult<T>) => void) | undefined;
-      const queue: T[] = [];
-      // Provider id → last emitted value; a changed or new provider emits.
-      let lastByProvider = new Map<string, unknown>();
-
-      const stop = effect(() => {
-        registryVersion.value;
-        const current = providersByPoint.get(
-          symbolFor(extensionPoint.owner, extensionPoint.name),
-        );
-        const nextByProvider = new Map<string, unknown>();
-        for (const [providerId, signal] of current ?? []) {
-          const value = signal.value;
-          nextByProvider.set(providerId, value);
-          if (value === undefined) continue;
-          if (
-            !lastByProvider.has(providerId) ||
-            lastByProvider.get(providerId) !== value
-          ) {
-            // Service extension points decode each value on consume (Remote<T>
-            // proxy); data extension points pass values through unchanged.
-            const out = extensionPoint.serviceKind === "service" ? untransformValue(value) : value;
-            if (pending !== undefined) {
-              const resolve = pending;
-              pending = undefined;
-              resolve({ done: false, value: out as T });
-            } else {
-              queue.push(out as T);
-            }
-          }
+function valueChanges<T>(extensionPoint: ExtensionPointIdentity<T>): AsyncIterable<T> {
+  return reactiveStream((emit) => {
+    let lastByProvider = new Map<string, unknown>();
+    return () => {
+      registryVersion.value;
+      const current = providersByPoint.get(symbolFor(extensionPoint.owner, extensionPoint.name));
+      const nextByProvider = new Map<string, unknown>();
+      for (const [providerId, source] of current ?? []) {
+        const value = source.value;
+        nextByProvider.set(providerId, value);
+        if (value === undefined) continue;
+        if (!lastByProvider.has(providerId) || lastByProvider.get(providerId) !== value) {
+          const out = extensionPoint.serviceKind === "service" ? untransformValue(value) : value;
+          emit(out as T);
         }
-        lastByProvider = nextByProvider;
-      });
-
-      return {
-        next(): Promise<IteratorResult<T>> {
-          if (stopped) return Promise.resolve({ done: true, value: undefined });
-          if (queue.length > 0) {
-            // The length guard guarantees shift() returns an element.
-            return Promise.resolve({ done: false, value: queue.shift() as T });
-          }
-          return new Promise<IteratorResult<T>>((resolve) => {
-            pending = (result: IteratorResult<T>) => resolve(result);
-          });
-        },
-        return(): Promise<IteratorResult<T>> {
-          if (stopped) return Promise.resolve({ done: true, value: undefined });
-          stopped = true;
-          stop();
-          // A pending next() must settle or the iterator never completes.
-          if (pending !== undefined) {
-            const resolve = pending;
-            pending = undefined;
-            resolve({ done: true, value: undefined });
-          }
-          return Promise.resolve({ done: true, value: undefined });
-        },
-      };
-    },
-  };
+      }
+      lastByProvider = nextByProvider;
+    };
+  });
 }
 
 /**

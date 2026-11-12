@@ -60,10 +60,75 @@ function sdkImport(): string {
 
 /** Reactive contract identity + collection API, from the low-level reactive path. */
 function reactiveImport(): string {
-  return `import { defineExtensionPoint, signal, provide, unprovide, snapshot, subscribe, values } from ${
+  return `import { defineExtensionPoint, shallowRef, provide, unprovide, snapshot, subscribe, values } from ${
     JSON.stringify(REACTIVE_URL)
   };`;
 }
+
+Deno.test("Vue contributions preserve startup transitions before remote attachment and stop on withdrawal", async () => {
+  const root = Deno.makeTempDirSync();
+  const definer = writePlugin(
+    root,
+    "definer",
+    `${sdkImport()}
+    ${reactiveImport()}
+    export const ep = defineExtensionPoint<number>("vue.startup");
+    const iterator = subscribe(ep)[Symbol.asyncIterator]();
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
+      handler: async () => ({ snapshots: (await iterator.next()).value }),
+    });
+  `,
+  );
+  const provider = writePlugin(
+    root,
+    "provider",
+    `${sdkImport()}
+    ${reactiveImport()}
+    import {ep} from "@maieutics/definer/main";
+    const value = shallowRef<number | undefined>(1);
+    const registration = provide(ep, value);
+    value.value = 2;
+    value.value = undefined;
+    value.value = 3;
+    export const pre = defineHostExtensionPoint("ToolPreInvoke", {
+      handler: () => {unprovide(registration); value.value = 99; return {};},
+    });
+  `,
+    ["definer"],
+  );
+  const host = new PluginHost({
+    sdkUrl: SDK_URL,
+    workerEntryUrl: WORKER_ENTRY_URL,
+    plugins: [pluginConfig(definer), pluginConfig(provider)],
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Vue remote contribution transition budget exhausted")),
+      5_000,
+    );
+  });
+  try {
+    await Promise.race([host.startAll(), budget]);
+    for (const expected of [[], [1], [2], [], [3]]) {
+      const result = await Promise.race([
+        host.invoke("definer", "./main", "ToolPreInvoke", {}),
+        budget,
+      ]) as { snapshots: number[] };
+      assertEquals(result.snapshots, expected);
+    }
+    await Promise.race([host.invoke("provider", "./main", "ToolPreInvoke", {}), budget]);
+    const result = await Promise.race([
+      host.invoke("definer", "./main", "ToolPreInvoke", {}),
+      budget,
+    ]) as { snapshots: number[] };
+    assertEquals(result.snapshots, []);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    host.dispose();
+    Deno.removeSync(root, { recursive: true });
+  }
+});
 
 /** Polls the definer's collection snapshot until `predicate` holds or the timeout elapses. */
 async function waitForCollectionSnapshot(
@@ -349,7 +414,7 @@ Deno.test("a consumer subscribes to a provider's reactive extension point across
     `${sdkImport()}
     ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    const value = signal<number | undefined>(1);
+    const value = shallowRef<number | undefined>(1);
     provide(ep, value);
     export const metrics = defineActor({
       changes(): AsyncIterable<number[]> {
@@ -493,7 +558,7 @@ Deno.test("a provider contributes to a defining worker's collection across worke
     `${sdkImport()}
     ${reactiveImport()}
     import { ep } from "@maieutics/definer/main";
-    const value = signal<number | undefined>(1);
+    const value = shallowRef<number | undefined>(1);
     provide(ep, value);
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: (context: { arguments?: { step?: string } }) => {
@@ -517,7 +582,7 @@ Deno.test("a provider contributes to a defining worker's collection across worke
     const initial = await waitForCollectionSnapshot(host, (snapshots) => snapshots.length === 1);
     assertEquals(initial, [1]);
 
-    // A change on the provider's signal streams to the definer's collection.
+    // A change on the provider's shallowRef streams to the definer's collection.
     await host.invoke("provider", "./main", "ToolPreInvoke", { arguments: { step: "set-two" } });
     const updated = await waitForCollectionSnapshot(
       host,
@@ -555,11 +620,11 @@ Deno.test("a provider's unprovide withdraws its remote contribution", async () =
     root,
     "provider",
     `${sdkImport()}
-    import { signal, provide, unprovide, type ProviderRegistration } from ${
+    import { shallowRef, provide, unprovide, type ProviderRegistration } from ${
       JSON.stringify(REACTIVE_URL)
     };
     import { ep } from "@maieutics/definer/main";
-    const value = signal<number | undefined>(1);
+    const value = shallowRef<number | undefined>(1);
     let registration: ProviderRegistration<number> | undefined;
     registration = provide(ep, value);
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
@@ -611,9 +676,9 @@ Deno.test("multiple provider workers aggregate into the defining worker's collec
 
   const providerSource = (_pluginName: string, value: number): string =>
     `${sdkImport()}
-    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
+    import { shallowRef, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
-    const value = signal<number | undefined>(${value});
+    const value = shallowRef<number | undefined>(${value});
     provide(ep, value);
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
@@ -647,7 +712,7 @@ Deno.test("cascading the stop to a dependent does not hang its stream iteration"
     `${sdkImport()}
     ${reactiveImport()}
     export const ep = defineExtensionPoint<number>("sample.metric");
-    const value = signal<number | undefined>(1);
+    const value = shallowRef<number | undefined>(1);
     provide(ep, value);
     export const metrics = defineActor({
       changes(): AsyncIterable<number[]> { return subscribe(ep); },
@@ -732,9 +797,9 @@ Deno.test("reloading a provider drops its stale contribution from the definer", 
 
   const providerSource = (): string =>
     `${sdkImport()}
-    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
+    import { shallowRef, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
-    const value = signal<number | undefined>(1);
+    const value = shallowRef<number | undefined>(1);
     provide(ep, value);
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
@@ -786,9 +851,9 @@ Deno.test("reloading a provider to a non-contributing version drops its contribu
   // only provider-b's [2] — never a lingering stale [1].
   const contributing = (_name: string, value: number): string =>
     `${sdkImport()}
-    import { signal, provide } from ${JSON.stringify(REACTIVE_URL)};
+    import { shallowRef, provide } from ${JSON.stringify(REACTIVE_URL)};
     import { ep } from "@maieutics/definer/main";
-    const value = signal<number | undefined>(${value});
+    const value = shallowRef<number | undefined>(${value});
     provide(ep, value);
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
@@ -846,7 +911,7 @@ Deno.test("a transparent service travels through a collection as a remote refere
       hello(): string { return "hi-from-service"; },
       add(a: number, b: number): number { return a + b; },
     };
-    const value = signal<unknown | undefined>(service);
+    const value = shallowRef<unknown | undefined>(service);
     provide(ep, value);
     export const metrics = defineActor({
       changes(): AsyncIterable<unknown[]> {
@@ -918,13 +983,13 @@ Deno.test("data and service extension points coexist in one worker", async () =>
     ${reactiveImport()}
     import { defineServiceExtensionPoint, markCollectionStream } from ${JSON.stringify(SDK_URL)};
     export const dataEp = defineExtensionPoint<{ name: string; count: number }>("sample.data");
-    const data = signal<{ name: string; count: number } | undefined>(
+    const data = shallowRef<{ name: string; count: number } | undefined>(
       { name: "plain", count: 7 },
     );
     provide(dataEp, data);
     export const svcEp = defineServiceExtensionPoint<{ echo(s: string): string }>("sample.svc");
     const svc = { echo(s: string): string { return "echo:" + s; } };
-    const service = signal<{ echo(s: string): string } | undefined>(svc);
+    const service = shallowRef<{ echo(s: string): string } | undefined>(svc);
     provide(svcEp, service);
     export const metrics = defineActor({
       dataChanges(): AsyncIterable<unknown[]> {
@@ -1004,7 +1069,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
   // receives a Remote<T> proxy — never raw data that would trip the callback
   // codec.
   const fullSdkImport =
-    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, shallowRef, subscribe, markCollectionStream, depActor } from ${
       JSON.stringify(SDK_URL)
     };`;
   const definer = writePlugin(
@@ -1027,7 +1092,7 @@ Deno.test("a service contributed from another worker arrives as a Remote proxy w
     `${fullSdkImport}
     import { ep } from "@maieutics/definer/main";
     const svc = { hello(): string { return "remote-plain-hi"; } };
-    provide(ep, signal<unknown | undefined>(svc));
+    provide(ep, shallowRef<unknown | undefined>(svc));
     export const pre = defineHostExtensionPoint("ToolPreInvoke", {
       handler: () => ({ action: "continue" as const }),
     });
@@ -1082,7 +1147,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
   // re-encoded reference must keep its specifier and surface name, so the
   // third worker's call routes back to the service's owning worker.
   const fullSdkImport =
-    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, signal, subscribe, markCollectionStream, depActor } from ${
+    `import { defineActor, defineExtensionPoint as defineHostExtensionPoint, defineServiceExtensionPoint, provide, shallowRef, subscribe, markCollectionStream, depActor } from ${
       JSON.stringify(SDK_URL)
     };`;
   const definer = writePlugin(
@@ -1091,7 +1156,7 @@ Deno.test("a service reference forwarded to a third worker keeps its routing ide
     `${fullSdkImport}
     export const ep = defineServiceExtensionPoint<{ hello(): string }>("sample.svc");
     const svc = { hello(): string { return "fwd-hi"; } };
-    provide(ep, signal<unknown | undefined>(svc));
+    provide(ep, shallowRef<unknown | undefined>(svc));
     export const metrics = defineActor({
       changes(): AsyncIterable<unknown[]> { return markCollectionStream(subscribe(ep)); },
     });

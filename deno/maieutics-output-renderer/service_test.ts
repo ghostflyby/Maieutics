@@ -116,3 +116,45 @@ Deno.test("sealed assistant API derives component metadata without changing the 
   assertEquals(passive.vue, undefined);
   assertStringIncludes(passive.html, "&lt;script setup&gt;");
 });
+
+Deno.test("render diagnostics locate original fences and component starts without exposing compiler text", async () => {
+  using renderer = await createOutputRenderer();
+  const handler = createRenderHandler(renderer, "secret");
+  const request = (source: string) =>
+    new Request("http://localhost/v1/assistant", {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+      body: JSON.stringify({ version: 1, documentId: "doc", source }),
+    });
+  const fenced = await (await handler(request("# Example\n\n~~~md\nprivate"))).json();
+  assertEquals(fenced.diagnostics, [{ code: "unclosed_code_fence", line: 3, column: 1 }]);
+  const invalid = await handler(
+    request(
+      "~~~vue\n<script setup>example</script>\n~~~\n\n<script setup>const secret = ;</script>\n\n<p>Template</p>",
+    ),
+  );
+  assertEquals(invalid.status, 400);
+  const body = await invalid.json();
+  assertEquals(body.diagnostics, [{ code: "component_compile_failed", line: 5, column: 1 }]);
+  assertEquals(JSON.stringify(body).includes("secret"), false);
+});
+
+Deno.test("assistant responses expose client-target code while SSR keeps its target factory private", async () => {
+  using renderer = await createOutputRenderer();
+  const handler = createRenderHandler(renderer, "secret");
+  const source =
+    '<script setup>const stage=import.meta.env.SSR?"server":"client";const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>';
+  const response = await handler(
+    new Request("http://localhost/v1/assistant", {
+      method: "POST",
+      headers: { authorization: "Bearer secret" },
+      body: JSON.stringify({ version: 1, documentId: "env", source }),
+    }),
+  );
+  assertEquals(response.status, 200);
+  const body = await response.json();
+  assertStringIncludes(body.html, ">server</p>");
+  assertEquals(body.html.includes("<span"), false);
+  assertEquals("ssrCode" in body.vue, false);
+  assertEquals(body.vue.code.includes("const stage=true"), false);
+});

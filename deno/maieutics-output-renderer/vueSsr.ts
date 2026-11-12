@@ -36,7 +36,9 @@ export async function renderVueComponent(
         else reject(new VueComponentError("component_failed"));
       };
       timer = setTimeout(() => reject(new VueComponentError("component_timeout")), 5000);
-      worker.postMessage({ code: component.code, port: channel.port2 }, [channel.port2]);
+      worker.postMessage({ code: component.ssrCode ?? component.code, port: channel.port2 }, [
+        channel.port2,
+      ]);
     });
   } finally {
     if (timer !== undefined) clearTimeout(timer);

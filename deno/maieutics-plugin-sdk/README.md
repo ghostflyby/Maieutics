@@ -28,6 +28,43 @@ Object implementations must expose a `handler(context)` method; callable functio
 directly. Markers are `Symbol.for` keys under `maieutics/extensionPoint/v1/...`, so they are stable
 across worker isolates.
 
+## Vue reactivity (SDK 0.2)
+
+The backend reactive core now uses pinned Vue 3.5.13. Import native `ref`, `shallowRef`, `reactive`,
+`computed`, `watch`, `effectScope` and `onScopeDispose` from the SDK. `signal`, the old
+disposer-returning `effect`, and the Preact `Signal` type are removed. Update explicit SDK imports
+to `@^0.2`; the kernel-materialized package is version 0.2.0 and is not a substitute for an
+incompatible 0.1 range.
+
+```ts
+import { computed, provide, shallowRef } from "@maieutics/plugin-sdk";
+
+const value = shallowRef<number | undefined>(1);
+provide(metrics, computed(() => value.value));
+value.value = 2;
+value.value = undefined; // Temporarily withdraw from this collection.
+```
+
+`metrics` above is an imported extension-point contract. Use shallowRef for object/function/service
+contributions to retain their original identity; use reactive/ref intentionally for mutable local
+business state. `provide` accepts Vue refs (including readonly computed refs) and rejects plain
+objects or non-Vue signals. Collection snapshots remain registration-ordered, and undefined retains
+its contribution-withdrawal meaning. This does not introduce a UI pending-value convention.
+
+Subscriptions use synchronous raw Vue watch observers, not the browser renderer's default flush
+queue. `changesOf`, `subscribe` and `values` own one effect scope per iterator; return stops the
+watcher, releases buffered values and settles pending next. A surrounding Vue scope also owns the
+iterator if it was created there. Only one pending next is permitted. Each iterator retains at most
+1024 changes; overflow terminates with `ReactiveSubscriptionError("reactive_backpressure")` instead
+of dropping transitions. Callers must observe iterator failures and close subscriptions they stop
+consuming. A remote provide captures its change observer before the first asynchronous handoff;
+unprovide releases it even while a remote read is pending.
+
+The SDK loads the upstream headless production ESM, avoiding the Node entry's NODE_ENV read. No new
+worker environment, network or filesystem grant is needed. Vue import identity is pinned by the
+host; plugins cannot override the reserved `@vue/reactivity` mapping. Backend refs do not cross IPC
+as live reactive objects: existing data/service codecs and actor boundaries remain in effect.
+
 ## System instructions
 
 `SystemPrompt` contributes actual system-level instructions at the start of each conversation run.

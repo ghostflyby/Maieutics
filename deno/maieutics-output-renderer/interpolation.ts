@@ -19,10 +19,20 @@ export interface TemplateEnvironment {
 /** Inline parsing precedes Markdown syntax; inserted values are text and never reparsed as markup. */
 export function installInterpolation(md: MarkdownIt): void {
   md.inline.ruler.before("text", "maieutics_interpolation", (state, silent) => {
-    const template = state.env.template as TemplateEnvironment | undefined;
-    if (!template || state.src.slice(state.pos, state.pos + 2) !== "{{") return false;
+    if (state.src.slice(state.pos, state.pos + 2) !== "{{") return false;
+    let template = state.env.template as TemplateEnvironment | undefined;
     const rest = state.src.slice(state.pos + 2, state.posMax);
     const closing = interpolationEnd(rest);
+    if (!template) {
+      if (
+        closing === undefined ||
+        !/^\s*\$frontmatter(?:\.[a-z_$][\w$]*|\[(?:\d+|"[\w$-]+"|'[\w$-]+')\])*\s*$/i.test(
+          rest.slice(0, closing),
+        )
+      ) return false;
+      template = state.env.frontmatterTemplate;
+    }
+    if (!template) return false;
     const end = closing === undefined ? state.posMax : state.pos + 2 + closing + 2;
     if (!silent) {
       if (template.expressions.length >= MaximumExpressions) {
@@ -66,7 +76,9 @@ export function installInterpolation(md: MarkdownIt): void {
         ? text(tokens, index, options, env, renderer)
         : md.utils.escapeHtml(token.content);
     }
-    return `<span class="template-value" data-template-state="${result.state}" data-template-index="${token.meta.templateIndex}"${
+    return `<span${
+      env.vueMarkdown ? " v-pre" : ""
+    } class="template-value" data-template-state="${result.state}" data-template-index="${token.meta.templateIndex}"${
       result.state === "pending" ? ' aria-busy="true"' : ""
     }>${md.utils.escapeHtml(token.content)}</span>`;
   };

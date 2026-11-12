@@ -413,7 +413,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                     FrontendUiCapabilityVersion,
                     [FrontendUiWire.FormFamily]),
             MultiSession: true,
-            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1)),
+            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1, ProgressiveVersion: 1)),
             FrontendJsonContext.Default.FrontendCapabilities);
     }
 
@@ -1655,7 +1655,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         }
         catch (FrontendFailureException exception)
         {
-            await WriteErrorAsync(context, exception.Code, exception.Message).ConfigureAwait(false);
+            await WriteErrorAsync(context, exception.Code, exception.Message, exception.Diagnostics).ConfigureAwait(false);
             return;
         }
 
@@ -1702,7 +1702,7 @@ internal sealed class FrontendHost : IAsyncDisposable
     ///     Debug, where an unexplained 4xx would otherwise be undiagnosable. Rejections that
     ///     are anomalies worth seeing in production log at their own decision point.
     /// </summary>
-    private async Task WriteErrorAsync(HttpContext context, string code, string message)
+    private async Task WriteErrorAsync(HttpContext context, string code, string message, FrontendRenderDiagnostic[]? diagnostics = null)
     {
         if (context.Response.HasStarted)
         {
@@ -1739,7 +1739,7 @@ internal sealed class FrontendHost : IAsyncDisposable
         context.Response.ContentType = "application/json";
         await context.Response
             .WriteAsync(JsonSerializer.Serialize(
-                    new FrontendError(code, message),
+                    new FrontendError(code, message, diagnostics),
                     FrontendJsonContext.Default.FrontendError),
                 context.RequestAborted)
             .ConfigureAwait(false);

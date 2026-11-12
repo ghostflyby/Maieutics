@@ -411,7 +411,7 @@ const provideOnceRule: Deno.lint.Rule = {
     let namespaceNames: Set<string> | undefined;
     // signal identifier → line of its first provide; a second provide reports.
     const providedByIdentifier = new Map<string, number>();
-    // A signal bound to a fresh expression (signal(...)) is not an identifier
+    // A signal bound to a fresh expression (shallowRef(...)) is not an identifier
     // and cannot be duplicated by name — only identifier arguments are tracked.
     const reported = new Set<string>();
 
@@ -470,9 +470,9 @@ const provideOnceRule: Deno.lint.Rule = {
           reported.add(name);
           context.report({
             node: node as Deno.lint.Node,
-            message: `Signal '${name}' is provided to the same extension point more than once ` +
+            message: `Ref '${name}' is provided to the same extension point more than once ` +
               `(first provide at line ${firstLine}). Each provide registers an independent ` +
-              `contribution; a repeated provide of the same signal is usually an accidental ` +
+              `contribution; a repeated provide of the same ref is usually an accidental ` +
               `duplicate and yields identical values in the collection.`,
           });
           return;
@@ -578,7 +578,7 @@ const provideTopLevelRule: Deno.lint.Rule = {
             `A function-body provide registers a new contribution on every invocation ` +
             `(never unregistered) and starts a change stream that is never stopped — ` +
             `both leak. Declare the contribution once at top level and use ` +
-            `signal.value = undefined to pause it or unprovide() to withdraw it.`,
+            `source.value = undefined to pause it or unprovide() to withdraw it.`,
         });
       },
     };

@@ -133,3 +133,89 @@ Deno.test("assistant client explicitly selects the live route and accepts option
     await server.shutdown();
   }
 });
+
+Deno.test("progressive wire fixtures preserve render-only code and reject unrelated source prefixes", async () => {
+  let accepted = "source";
+  let received: unknown;
+  const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
+    assertEquals(new URL(request.url).pathname, "/v1/render/assistant");
+    received = await request.json();
+    return Response.json({
+      version: 1,
+      documentId: "doc",
+      html: "",
+      css: "",
+      renderedSource: accepted,
+      vue: {
+        version: 1,
+        scopeId: "data-v-doc",
+        code: "",
+        setupKey: "a".repeat(64),
+        renderCode: "return function(){};",
+      },
+    });
+  });
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    const result = await client.renderMarkdown(
+      "doc",
+      "source extended",
+      undefined,
+      undefined,
+      undefined,
+      true,
+      { compileOnly: true },
+    );
+    assertEquals(received, {
+      version: 1,
+      documentId: "doc",
+      source: "source extended",
+      progressive: true,
+      compileOnly: true,
+    });
+    assertEquals(result.vue?.code, "");
+    assertEquals(result.renderedSource, "source");
+    accepted = "other document";
+    await assertRejects(
+      () =>
+        client.renderMarkdown("doc", "source extended", undefined, undefined, undefined, true, {
+          compileOnly: true,
+        }),
+      FrontendError,
+    );
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("render client preserves bounded diagnostics on snapshots and typed failures", async () => {
+  let fail = false;
+  const diagnostics = [{ code: "unclosed_code_fence", line: 3, column: 1 }];
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen() {} },
+    () =>
+      Response.json(
+        fail
+          ? { code: "invalid_request", message: "Invalid render input.", diagnostics }
+          : { version: 1, documentId: "doc", html: "", css: "", diagnostics },
+        { status: fail ? 400 : 200 },
+      ),
+  );
+  try {
+    const client = FrontendClient.fromDiscovery({
+      version: 1,
+      url: `http://127.0.0.1:${server.addr.port}`,
+      token: "test",
+    });
+    assertEquals((await client.renderMarkdown("doc", "# Title\n\n~~~md")).diagnostics, diagnostics);
+    fail = true;
+    const error = await assertRejects(() => client.renderMarkdown("doc", "x"), FrontendError);
+    assertEquals(error.diagnostics, diagnostics);
+  } finally {
+    await server.shutdown();
+  }
+});

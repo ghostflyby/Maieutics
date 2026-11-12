@@ -54,6 +54,12 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
       ) {
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
+      if (
+        (body.progressive !== undefined && typeof body.progressive !== "boolean") ||
+        (body.compileOnly !== undefined && typeof body.compileOnly !== "boolean") ||
+        ((body.progressive || body.compileOnly) && path !== "/v1/assistant") ||
+        (body.compileOnly && !body.progressive)
+      ) return Response.json({ code: "invalid_request" }, { status: 400 });
       const vue = body.vue as { version?: number; format?: string } | undefined;
       if (
         path === "/v1/vue" &&
@@ -61,7 +67,12 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
           !["markdown", "sfc"].includes(vue.format ?? ""))
       ) return Response.json({ code: "invalid_request" }, { status: 400 });
       const output = path === "/v1/assistant"
-        ? await renderer.renderAssistant(body.documentId, body.source, request.signal)
+        ? await renderer.renderAssistant(
+          body.documentId,
+          body.source,
+          request.signal,
+          body.progressive ? { compileOnly: body.compileOnly === true } : undefined,
+        )
         : path === "/v1/vue"
         ? await renderer.renderVue(
           body.documentId,
@@ -81,9 +92,17 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         version: 1,
         documentId: output.documentId,
         html: output.html,
+        renderedSource: output.renderedSource,
+        diagnostics: output.diagnostics,
         css: output.vue?.css,
         vue: output.vue
-          ? { version: 1, code: output.vue.code, scopeId: output.vue.scopeId }
+          ? {
+            version: 1,
+            code: output.vue.code,
+            scopeId: output.vue.scopeId,
+            setupKey: output.vue.setupKey,
+            renderCode: output.vue.renderCode,
+          }
           : undefined,
         expressions: output.expressions?.map(({ state, dependencies, code }) => ({
           state,
@@ -99,7 +118,10 @@ export function createRenderHandler(renderer: OutputRenderer, credential: string
         return Response.json({ code: "invalid_request" }, { status: 400 });
       }
       if (error instanceof VueComponentError) {
-        return Response.json({ code: error.code }, {
+        return Response.json({
+          code: error.code,
+          diagnostics: error.diagnostics,
+        }, {
           status: error.code.startsWith("component_") ? 503 : 400,
         });
       }

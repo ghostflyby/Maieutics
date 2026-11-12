@@ -86,3 +86,57 @@ Deno.test("the SSR deadline terminates non-cooperative setup without poisoning l
     ">0</span>",
   );
 });
+
+Deno.test("ClientOnly keeps browser-only child setup and slot expressions out of isolated SSR", async () => {
+  const component = compileVueComponent(
+    "clientonly",
+    `<script setup>
+import {defineComponent,h} from 'vue';
+const browserText=()=>window.location.protocol;
+const Browser=defineComponent({setup(){throw new Error("browser child setup reached SSR");return()=>h('p','client')}});
+</script><template><p>Server-visible</p><ClientOnly><Browser/><span>{{ browserText() }}</span></ClientOnly></template>`,
+  );
+  const html = await renderVueComponent(component);
+  assertStringIncludes(html, "Server-visible");
+  assertEquals(html.includes("<span"), false);
+  assertStringIncludes(html, "<!---->");
+  const parent = compileVueComponent(
+    "parent",
+    "<script setup>const location=window.location;</script><template><ClientOnly>{{location}}</ClientOnly></template>",
+  );
+  await assertRejects(() => renderVueComponent(parent), VueComponentError);
+});
+
+Deno.test("SSR environment flag is target-specific in setup while strings stay literal", async () => {
+  const component = compileVueComponent(
+    "environment",
+    `<script setup>
+const server=import.meta.env.SSR; const stage=server?'server':'client';
+if(!import.meta.env.SSR)window.__clientOnlyFlag=true;
+const literal='import.meta.env.SSR';
+</script><template><p>{{ stage }}</p><span>{{ server }}</span><code>{{ literal }}</code></template>`,
+  );
+  const html = await renderVueComponent(component);
+  assertStringIncludes(html, ">server</p>");
+  assertStringIncludes(html, ">true</span>");
+  assertStringIncludes(html, ">import.meta.env.SSR</code>");
+  const client = new Function("Vue", component.code);
+  assertEquals(typeof client, "function");
+  assertStringIncludes(component.code, "false");
+  for (
+    const expression of [
+      "import.meta.url",
+      "import.meta.env",
+      "import.meta.env.SECRET",
+      'import.meta["env"].SSR',
+      "import.meta.env.SSR = false",
+      "import.meta.env.SSR++",
+      'import("vue")',
+    ]
+  ) {
+    assertThrows(
+      () => compileVueComponent("invalid", `<script setup>${expression}</script><template/>`),
+      VueComponentError,
+    );
+  }
+});

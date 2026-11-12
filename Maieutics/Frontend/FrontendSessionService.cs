@@ -14,10 +14,13 @@ using Microsoft.Extensions.Logging;
 namespace Maieutics.Frontend;
 
 /// <summary>Typed failure carried to the HTTP surface as a protocol error body.</summary>
-internal sealed class FrontendFailureException(string code, string message) : Exception(message)
+internal sealed class FrontendFailureException(string code, string message, FrontendRenderDiagnostic[]? diagnostics = null) : Exception(message)
 {
     /// <summary>Gets the stable protocol error code.</summary>
     public string Code { get; } = code;
+
+    /// <summary>Gets optional bounded rendering diagnostics.</summary>
+    public FrontendRenderDiagnostic[]? Diagnostics { get; } = diagnostics;
 }
 
 /// <summary>

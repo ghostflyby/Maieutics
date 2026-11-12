@@ -1,3 +1,4 @@
+import { VueComponentError } from "./vueComponent.ts";
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { createOutputRenderer, OutputRenderingError } from "./mod.ts";
 import { TemplateInputError } from "./template.ts";
@@ -167,7 +168,10 @@ Deno.test("VitePress comment notations decorate code and remain local to each fe
   ) {
     assertStringIncludes(html, marker);
   }
-  assert(!html.includes("[!code"), "Shiki must remove recognized presentation comments.");
+  assert(
+    ![...html.matchAll(/<pre[\s\S]*?<\/pre>/g)].some((match) => match[0].includes("[!code")),
+    "Shiki must remove recognized presentation comments from visible code.",
+  );
   assertEquals(html.match(/has-focused-lines/g)?.length, 1);
 });
 
@@ -654,4 +658,308 @@ Deno.test("an unfinished frontmatter header remains readable and cannot authoriz
       ),
     OutputRenderingError,
   );
+});
+
+Deno.test("frontmatter data resolves safe paths before heading extraction without enabling arbitrary expressions", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "---\ntitle: Report\nreport:\n  total: 42\ntags: [one, two]\n---\n# {{ $frontmatter.title }}\n\n{{ $frontmatter.report.total }} {{ $frontmatter.tags[1] }} {{ 1 + 1 }}\n\n`{{ $frontmatter.title }}`";
+  const result = await renderer.render("front", source);
+  assertStringIncludes(result.html, "Report");
+  assertStringIncludes(result.html, "42");
+  assertStringIncludes(result.html, "two");
+  assertStringIncludes(result.html, "{{ 1 + 1 }}");
+  assertStringIncludes(result.html, "<code>{{ $frontmatter.title }}</code>");
+  assertEquals(result.headings[0].title, "Report");
+  assertEquals(result.headings[0].slug, "front-report");
+  const changed = await renderer.render("front", source.replace("Report", "Next"));
+  assertEquals(changed.headings[0].title, "Next");
+  const plain = await renderer.render("front", "# {{ $frontmatter.title }}");
+  assert(!plain.html.includes("Next"));
+  const template = await renderer.renderTemplate("front", source, {
+    version: 1,
+    bindings: [{ name: "$frontmatter", state: "ready", value: { title: "forged" } }],
+  });
+  assertEquals(template.headings[0].title, "Report");
+});
+
+Deno.test("frontmatter parses bounded JSON-shaped YAML and rejects non-data metadata", async () => {
+  using renderer = await createOutputRenderer();
+  for (const body of ['{"title":"JSON"}', "title: JSON\n"]) {
+    assertStringIncludes(
+      (await renderer.render("json", `---\n${body}\n---\n# {{ $frontmatter.title }}`)).html,
+      "JSON",
+    );
+  }
+  for (
+    const body of [
+      "[1, 2]",
+      'title: !!js/function "function(){}"',
+      "x: &x {again: *x}",
+      "__proto__: {polluted: true}",
+      "title: [broken",
+    ]
+  ) {
+    await assertRejects(
+      () => renderer.render("bad", `---\n${body}\n---\nBody`),
+      OutputRenderingError,
+    );
+  }
+  const escaped = await renderer.render(
+    "escape",
+    '---\ntitle: "<img src=x onerror=alert(1)>"\n---\n{{ $frontmatter.title }}',
+  );
+  assert(!escaped.html.includes("<img"));
+  assertStringIncludes(escaped.html, "&lt;img");
+});
+
+Deno.test("Vue frontmatter is available to SSR and the hydration factory without injecting template source", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '---\ntitle: Counter\ninitial: 3\n---\n<script setup>\nimport { ref } from "vue";\nconst count = ref(0);\n</script>\n\n# {{ $frontmatter.title }}\n\n<button @click="count++">{{ count + $frontmatter.initial }}</button>';
+  const output = await renderer.renderAssistant("fmvue", source);
+  assert(output.vue);
+  assertStringIncludes(output.html, "Counter");
+  assertStringIncludes(output.html, 'id="fmvue-counter"');
+  assertStringIncludes(output.html, ">3</button>");
+  assertStringIncludes(output.vue.code, "$frontmatter");
+  const hostile = await renderer.renderAssistant(
+    "fmvue",
+    source.replace("title: Counter", "title: '<img src=x> {{ count }}'"),
+  );
+  assertStringIncludes(hostile.html, "&lt;img src=x&gt; {{ count }}");
+});
+
+Deno.test("explicit JSON frontmatter is strict and incomplete streaming metadata remains literal", async () => {
+  using renderer = await createOutputRenderer();
+  assertStringIncludes(
+    (await renderer.render("json", '---json\n{"title":"Strict"}\n---\n# {{ $frontmatter.title }}'))
+      .html,
+    "Strict",
+  );
+  await assertRejects(
+    () => renderer.render("json", "---json\ntitle: not-json\n---\nBody"),
+    OutputRenderingError,
+  );
+  assertStringIncludes(
+    (await renderer.render("stream", "---\ntitle: {{ $frontmatter.title }}")).html,
+    "{{ $frontmatter.title }}",
+  );
+});
+
+Deno.test("progressive templates reuse a sealed setup scope and never SSR subsequent updates", async () => {
+  using renderer = await createOutputRenderer();
+  const setup =
+    '<script setup lang="ts">\nimport {ref,computed} from "vue";\nconst count=ref<number>(0);\nconst doubled=computed(()=>count.value*2);\nif(globalThis.Deno) { /* presentation-only fixture */ }\n</script>\n\n';
+  const source = setup + '<button @click="count++">{{ count }}</button>';
+  const initial = await renderer.renderAssistant("progressive", source, undefined, {
+    compileOnly: false,
+  });
+  assert(initial.vue?.setupKey);
+  assert(initial.vue.renderCode);
+  assertStringIncludes(initial.html, ">0</button>");
+  const next = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n<p>Double: {{ doubled }}</p>",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(next.vue?.setupKey, initial.vue.setupKey);
+  assertEquals(next.html, "");
+  assertEquals(next.vue?.code, "");
+  assertStringIncludes(next.vue?.renderCode ?? "", "doubled");
+  const partial = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n<section><p>{{ doubled",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(partial.renderedSource, source);
+  const unresolved = await renderer.renderAssistant(
+    "progressive",
+    source + "\n\n{{ notDeclaredYet }}",
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(unresolved.renderedSource, source);
+  const condition = await renderer.renderAssistant(
+    "progressive",
+    source + '\n\n<p v-if="futureValue">Ready</p><p v-else>Not ready</p>',
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(condition.renderedSource, source);
+  const changed = await renderer.renderAssistant(
+    "progressive",
+    source.replace("ref<number>(0)", "ref<number>(7)"),
+    undefined,
+    { compileOnly: true },
+  );
+  assert(changed.vue?.setupKey !== initial.vue.setupKey);
+  await assertRejects(
+    () =>
+      renderer.renderAssistant("progressive", "<script setup>const count = ", undefined, {
+        compileOnly: false,
+      }),
+    VueComponentError,
+  );
+});
+
+Deno.test("progressive admission rejects async setup instead of mounting an unowned pending scope", async () => {
+  using renderer = await createOutputRenderer();
+  await assertRejects(
+    () =>
+      renderer.renderAssistant(
+        "async",
+        "<script setup>const count=await Promise.resolve(0)</script>\n\n<p>{{ count }}</p>",
+        undefined,
+        { compileOnly: false },
+      ),
+    VueComponentError,
+  );
+});
+
+Deno.test("compile-only updates cannot execute even a throwing setup body", async () => {
+  using renderer = await createOutputRenderer();
+  const source = '<script setup>throw new Error("setup must not run")</script>\n\n<p>Template</p>';
+  const result = await renderer.renderAssistant("compileonly", source, undefined, {
+    compileOnly: true,
+  });
+  assertEquals(result.html, "");
+  assertEquals(result.vue?.code, "");
+  assertStringIncludes(result.vue?.renderCode ?? "", "Template");
+  await assertRejects(
+    () => renderer.renderAssistant("compileonly", source, undefined, { compileOnly: false }),
+    VueComponentError,
+  );
+});
+
+Deno.test("offline math renders inline and block SVG while code, escapes and currency remain literal", async () => {
+  using renderer = await createOutputRenderer();
+  const output = await renderer.render(
+    "math",
+    String.raw`Inline $x^2 + 1$.
+
+$$
+\frac{1}{2}
+$$
+
+Price $5 and $10.
+
+Escaped \$x$.
+
+${"`$literal$`"}
+
+~~~tex
+$literal$
+~~~`,
+  );
+  assertEquals((output.html.match(/<svg /g) ?? []).length, 2);
+  assertStringIncludes(output.html, 'class="math-block"');
+  assertStringIncludes(output.html, "Price $5 and $10");
+  assertStringIncludes(output.html, "$literal$");
+  assertEquals(output.diagnostics, []);
+  assertEquals(
+    await renderer.render("math", "Inline $x^2 + 1$."),
+    await renderer.render("math", "Inline $x^2 + 1$."),
+  );
+});
+
+Deno.test("math macros are local, unsupported resource commands and oversized formulas stay escaped", async () => {
+  using renderer = await createOutputRenderer();
+  const declared = await renderer.render("math", String.raw`$\newcommand{\local}{x}\local$`);
+  assertStringIncludes(declared.html, "<svg ");
+  const unknown = await renderer.render("math", String.raw`$\local$`);
+  assertEquals(unknown.diagnostics?.[0].code, "math_invalid");
+  for (
+    const tex of [
+      String.raw`\href{javascript:run()}{bad}`,
+      String.raw`\require{html}`,
+      "x".repeat(4097),
+    ]
+  ) {
+    const output = await renderer.render("math", `$${tex}$`);
+    assert(!output.html.includes("<svg "));
+    assert(!output.html.includes('href="javascript:'));
+    assert(output.diagnostics?.length);
+  }
+  const bounded = await renderer.render("math", Array(129).fill("$x$").join(" "));
+  assertEquals(bounded.diagnostics?.at(-1)?.code, "math_limit");
+});
+
+Deno.test("common language grammars and exact copy payloads are bundled", async () => {
+  using renderer = await createOutputRenderer();
+  for (const language of ["py", "sh", "cs", "cpp", "go", "rs", "sql", "yaml", "html", "css"]) {
+    const output = await renderer.render(
+      "code",
+      `~~~${language}\nif class SELECT echo <tag> \"&\n~~~`,
+    );
+    assertStringIncludes(output.html, 'style="--shiki-light:');
+    assertStringIncludes(output.html, 'class="code-copy"');
+    assertStringIncludes(
+      output.html,
+      'data-code-copy="if class SELECT echo &lt;tag&gt; &quot;&amp;\n"',
+    );
+  }
+});
+
+Deno.test("unclosed fence diagnostics retain original lines with frontmatter and ignore valid quoted fences", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    "---\ntitle: Example\n---\n\n~~~md\n::: tip\n~~~js\nconst a=1\n~~~\n\n~~~\n| X | Y |";
+  const output = await renderer.render("fence", source);
+  assertEquals(output.diagnostics, [{ code: "unclosed_code_fence", line: 11, column: 1 }]);
+  assertStringIncludes(output.html, "| X | Y |");
+  const valid = await renderer.render(
+    "fence",
+    "> ~~~js\n> let a=1\n> ~~~\n\n~~~~md\n~~~js\na\n~~~\n~~~~",
+  );
+  assertEquals(valid.diagnostics, []);
+});
+
+Deno.test("progressive Vue carries math and code controls through the same template compiler", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '<script setup>import {ref} from "vue";const count=ref(0)</script>\n\n<button @click="count++">{{count}}</button>\n\n$x^2$\n\n~~~py\nprint("hi")\n~~~';
+  const initial = await renderer.renderAssistant("vmath", source, undefined, {
+    compileOnly: false,
+  });
+  assertStringIncludes(initial.html, "<svg ");
+  assertStringIncludes(initial.html, 'class="code-copy"');
+  const later = await renderer.renderAssistant(
+    "vmath",
+    source + String.raw`
+
+$$
+\frac{1}{2}
+$$`,
+    undefined,
+    { compileOnly: true },
+  );
+  assertEquals(later.vue?.setupKey, initial.vue?.setupKey);
+  assertEquals(later.vue?.code, "");
+  assertStringIncludes(later.vue?.renderCode ?? "", "svg");
+});
+
+Deno.test("late ClientOnly templates retain the sealed setup identity and compile only client expressions", async () => {
+  using renderer = await createOutputRenderer();
+  const source =
+    '<script setup>import {ref} from "vue";const count=ref(0);const browser=()=>window.location.protocol;const server=import.meta.env.SSR;</script>\n\n<button @click="count++">{{count}}</button>';
+  const initial = await renderer.renderAssistant("lateclient", source, undefined, {
+    compileOnly: false,
+  });
+  const full = source + "\n\n<ClientOnly><p>{{browser()}}</p><span>{{server}}</span></ClientOnly>";
+  const next = await renderer.renderAssistant("lateclient", full, undefined, { compileOnly: true });
+  assertEquals(next.renderedSource, full);
+  assertEquals(next.vue?.setupKey, initial.vue?.setupKey);
+  assertEquals(next.vue?.code, "");
+  assertStringIncludes(next.vue?.renderCode ?? "", "server");
+  const ssr = await renderer.renderAssistant("lateclient", full, undefined, { compileOnly: false });
+  assertEquals(ssr.html.includes("<span"), false);
+  const passive = await renderer.render(
+    "passive",
+    "<ClientOnly><span>{{ browser() }}</span></ClientOnly>",
+  );
+  assertEquals(passive.vue, undefined);
+  assertStringIncludes(passive.html, "&lt;ClientOnly&gt;");
 });

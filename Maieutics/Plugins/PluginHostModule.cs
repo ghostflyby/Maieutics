@@ -46,7 +46,7 @@ internal sealed class PluginHostModule
         new HashSet<string>(StringComparer.Ordinal)
         {
             "@ghostflyby/worker-actor",
-            "@preact/signals-core",
+            "@vue/reactivity",
             "@maieutics/plugin-sdk"
         };
 
@@ -65,7 +65,7 @@ internal sealed class PluginHostModule
             writer.WriteStartObject();
             writer.WriteStartObject("imports");
             writer.WriteString("@ghostflyby/worker-actor", "jsr:@ghostflyby/worker-actor@0.6.0");
-            writer.WriteString("@preact/signals-core", "npm:@preact/signals-core@1.14.4");
+            writer.WriteString("@vue/reactivity", "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js");
             foreach (var (key, value) in mergedImports)
             {
                 writer.WriteString(key, value);

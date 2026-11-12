@@ -18,8 +18,11 @@ function fixture() {
       while (!done) {
         const item = queue.shift();
         if (item) {
-          yield item.frame;
-          item.consumed.resolve();
+          try {
+            yield item.frame;
+          } finally {
+            item.consumed.resolve();
+          }
           continue;
         }
         const pending = wake;
@@ -56,6 +59,102 @@ function fixture() {
 }
 const mount = (bridge: UiBridge, modelId = "f1", viewId = "v1") =>
   bridge.handleRendererMessage({ source: "maieutics-form", type: "mount", modelId, viewId });
+
+Deno.test("form admission overflow rejects only the new model and keeps the shared transport usable", async () => {
+  const f = fixture();
+  await mount(f.bridge, "kept", "kept-view");
+  await mount(f.bridge, "overflow", "overflow-view");
+  try {
+    for (let index = 0; index < 1024; index++) {
+      await f.emit({
+        kind: 0,
+        commId: index === 0 ? "kept" : `cached-${index}`,
+        targetName: "maieutics.form",
+        data: { state: { title: "Initial" } },
+        buffers: [],
+      });
+    }
+    await f.emit({
+      kind: 0,
+      commId: "overflow",
+      targetName: "maieutics.form",
+      data: { state: { title: "Excess" } },
+      buffers: [],
+    });
+    assertEquals(f.posted.at(-1), {
+      source: "maieutics-form",
+      type: "closed",
+      modelId: "overflow",
+      code: "form_state_limit",
+    }, "Capacity rejection must be scoped to the new form, without unwinding the shared pump");
+    assertEquals(f.closeCount, 0, "One excess form must not close the shared socket");
+    assertEquals(f.sent, [], "Local admission must not close a producer shared by other views");
+
+    await f.emit({
+      kind: 1,
+      commId: "kept",
+      data: { method: "update", state: { title: "Updated" } },
+      buffers: [],
+    });
+    assertEquals(f.posted.at(-1), {
+      source: "maieutics-form",
+      type: "state",
+      modelId: "kept",
+      state: { title: "Updated" },
+    });
+    for (const [modelId, viewId] of [["kept", "kept-view"], ["overflow", "overflow-view"]]) {
+      await f.bridge.handleRendererMessage({
+        source: "maieutics-form",
+        type: "event",
+        modelId,
+        viewId,
+        name: "cancel",
+      });
+    }
+    assertEquals(
+      f.sent.map((message) => message.commId),
+      ["kept"],
+      "Existing forms must remain interactive while rejected forms stay readonly",
+    );
+
+    await f.emit({
+      kind: 0,
+      commId: "kept",
+      targetName: "maieutics.form",
+      data: { state: { title: "Refreshed" } },
+      buffers: [],
+    });
+    assertEquals(f.posted.at(-1), {
+      source: "maieutics-form",
+      type: "state",
+      modelId: "kept",
+      state: { title: "Refreshed" },
+    }, "Refreshing an admitted form must remain possible at capacity");
+    await f.emit({ kind: 2, commId: "cached-1", buffers: [] });
+    await f.emit({
+      kind: 0,
+      commId: "overflow",
+      targetName: "maieutics.form",
+      data: { state: { title: "Admitted" } },
+      buffers: [],
+    });
+    assertEquals(f.posted.at(-1), {
+      source: "maieutics-form",
+      type: "state",
+      modelId: "overflow",
+      state: { title: "Admitted" },
+    }, "A fresh open must be admitted after another form releases capacity");
+    assertEquals(f.closeCount, 0);
+    assertEquals(
+      f.posted.filter((message) => (message as { type: string }).type === "closed").length,
+      1,
+    );
+  } finally {
+    await f.bridge.dispose();
+  }
+  assertEquals(f.closeCount, 1);
+});
+
 Deno.test("form bridge caches typed form state and routes actions for an attached view", async () => {
   const f = fixture();
   await mount(f.bridge);

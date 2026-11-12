@@ -96,7 +96,9 @@ export class UiBridge {
         if (message.kind === 0) {
           if (message.targetName !== TARGET) continue;
           if (!this.#states.has(message.commId) && this.#states.size >= 1024) {
-            throw new Error("form_state_limit");
+            this.#options.log("form open rejected: form_state_limit");
+            this.#postClosed(message.commId, "form_state_limit");
+            continue;
           }
           this.#states.set(message.commId, isRecord(data.state) ? { ...data.state } : {});
         } else if (message.kind === 1) {
@@ -127,9 +129,9 @@ export class UiBridge {
       this.#options.post({ source: SOURCE, type: "state", modelId, state });
     }
   }
-  #postClosed(modelId: string): void {
+  #postClosed(modelId: string, code?: string): void {
     if ([...this.#views.values()].includes(modelId)) {
-      this.#options.post({ source: SOURCE, type: "closed", modelId });
+      this.#options.post({ source: SOURCE, type: "closed", modelId, ...(code ? { code } : {}) });
     }
   }
 }

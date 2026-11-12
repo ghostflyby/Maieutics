@@ -911,6 +911,15 @@ permanently readonly; legacy component sources are discarded. The form contract 
 UI capability version 2; rendering capabilities and assistant SSR/progressive semantics are unchanged.
 Built-in form rendering is client-side; it does not add SSR model hydration or a plugin catalog.
 
+The VS Code form bridge bounds cached live states to 1,024 models. An excess new open is rejected
+locally with `form_state_limit`; only that model's mounted views receive a readonly/closed
+notification. The shared receive pump and admitted models remain usable, including state updates,
+actions and refresh opens at capacity. No upstream producer is closed by this frontend-local limit.
+Once a model closes and releases capacity, a fresh open may admit a previously rejected model.
+Actual transport loss still makes all retained views readonly. Regression coverage fills the cache,
+rejects the next open, verifies surviving interactions and tests admission after capacity is freed;
+the standalone ESM export gate also asserts `createFormRenderer`.
+
 General business-model projections, correlated action results and approved reusable Vue component
 registration remain the next stages in the [migration roadmap](vue-reactive-ui-migration.md).
 

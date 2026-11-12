@@ -22,6 +22,14 @@ The kernel and plugin host retain approval, session and comm ownership. The brid
 `maieutics.form` target and actions from a mounted matching view with confirmed live state. The
 form renderer is a presentation component, not a worker or a new permissions authority.
 
+The VS Code bridge admits at most 1,024 live form states. At capacity it skips only a new model's
+open, logs `form_state_limit`, and sends any mounted views of that model a local
+`closed` notification with `code:"form_state_limit"`. Existing models can still refresh, receive
+updates and send actions; their shared socket stays connected. The rejected producer is not closed
+upstream, since other frontends may use it. Rejected models cannot send actions or gain state from
+updates; after another model closes, a fresh open can admit them. This local admission failure is
+distinct from actual transport loss, which makes all retained views readonly.
+
 ## Data contract
 
 Discovery advertises `ui: {version: 2, formVersion: 1}`. Forms announce through

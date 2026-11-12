@@ -109,3 +109,23 @@ export declare function renderSubagents(
   overflow?: boolean,
   markdownToHtml?: (text: string) => string,
 ): string;
+
+export interface FormRenderer {
+  render(id: string, value: unknown, element: HTMLElement): void;
+  receive(message: unknown): Promise<void>;
+  disposeOutput(id?: string): void;
+  dispose(): void;
+}
+export interface FormMessage {
+  readonly source: "maieutics-form";
+  readonly type: "mount" | "unmount" | "event";
+  readonly modelId: string;
+  readonly viewId: string;
+  readonly name?: "submit" | "cancel";
+  readonly payload?: { values: Record<string, unknown> };
+}
+
+/** Create the built-in Vue form renderer; the caller owns transport subscriptions. */
+export function createFormRenderer(
+  options: { sendMessage(message: FormMessage): void },
+): FormRenderer;

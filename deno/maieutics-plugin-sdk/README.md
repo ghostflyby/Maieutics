@@ -28,13 +28,13 @@ Object implementations must expose a `handler(context)` method; callable functio
 directly. Markers are `Symbol.for` keys under `maieutics/extensionPoint/v1/...`, so they are stable
 across worker isolates.
 
-## Vue reactivity (SDK 0.2)
+## Vue reactivity (SDK 0.3)
 
 The backend reactive core now uses pinned Vue 3.5.13. Import native `ref`, `shallowRef`, `reactive`,
 `computed`, `watch`, `effectScope` and `onScopeDispose` from the SDK. `signal`, the old
 disposer-returning `effect`, and the Preact `Signal` type are removed. Update explicit SDK imports
-to `@^0.2`; the kernel-materialized package is version 0.2.0 and is not a substitute for an
-incompatible 0.1 range.
+to `@^0.3`; the kernel-materialized package is version 0.3.0. Older authoring APIs are not silently
+reinterpreted.
 
 ```ts
 import { computed, provide, shallowRef } from "@maieutics/plugin-sdk";
@@ -209,3 +209,24 @@ host (worker permission grant for each carrier worker). Any change to the SDK th
 environment, network, or filesystem behavior must update this list in the same change.
 
 Validation: `deno task check` and `deno task test`.
+
+## Declarative forms and removed component APIs (0.3)
+
+The `./widgets` exports, widget JSX/TSX dialect, generic `./ui` family/model registration and
+bundled component-source contract are removed. The browser uses ordinary Vue components in the
+standalone output ESM; there is no replacement custom component engine.
+
+Inside the REPL, use `await maieutics.ui.form(definition, handlers)` and display the returned
+handle. Standalone producers may use `FormController.bind(host)` from `./ui` to their owned comm
+transport. A handle has readonly Vue-ref `state`, awaited serialized `update(patch)` and idempotent
+`close()`; updates accept detached plain data, not proxies/functions. This form data contract uses
+MIME `application/vnd.maieutics.form+json` version 1 and target `maieutics.form`.
+
+Approved plugin workers use `ui.form` from `./plugin-ui` through the existing `ui.models`
+capability. It carries form data only; old arbitrary family targets are rejected. Saved form output
+is permanently readonly and never reattaches to a worker. General reusable Vue plugin components and
+model action-result RPC require the subsequent catalog/model protocol.
+
+Form code opens no filesystem, environment or network access itself: the owner supplies comm
+transport, or the kernel enforces the plugin capability. The headless Vue import uses the pinned
+production ESM and needs no NODE_ENV grant. Browser form code performs no automatic I/O.

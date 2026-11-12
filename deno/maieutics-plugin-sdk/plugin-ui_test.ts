@@ -78,7 +78,7 @@ Deno.test("form publishes the native dialect open and returns a handle", async (
   assertEquals(requests[0].capability, "ui.models");
   const frame = requests[0].payload as Record<string, unknown>;
   assertEquals(frame.kind, "open");
-  assertEquals(frame.targetName, "maieutics.view/maieutics/form");
+  assertEquals(frame.targetName, "maieutics.form");
   assertEquals(typeof frame.commId, "string");
   assertEquals(handle.commId, frame.commId);
   const state = (frame.data as { state: Record<string, unknown> }).state;

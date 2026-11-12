@@ -576,49 +576,33 @@ builds/tests. The default is false for compatibility and non-build operations;
 shell command text is not parsed to guess intent. One elected frontend remains
 pinned throughout each barrier, and requests are never broadcast or replayed.
 
-## Comm channels (interactive widgets and view families)
+## Comm channels and declarative forms
 
-Interactive widgets (ADR 0024) and native view families (ADR 0038, the
-custom-UI framework) pair a **display mime** that announces the model with a
-**comm channel** that carries its life:
+The generic session comm transport carries owned producer state and actions. Built-in forms use
+`application/vnd.maieutics.form+json`:
 
-- A REPL display bundle may carry
-  `application/vnd.jupyter.widget-view+json`:
-  `{"model_id": "…", "version_major": 2, "version_minor": 0}` — the model's
-  state travels on the comm channel, not in the bundle.
-- A REPL display bundle may also carry
-  `application/vnd.maieutics.view+json` (native families, additive; clients
-  that do not know it ignore it under the unknown-field tolerance):
+```json
+{"version":1,"modelId":"opaque-comm-id","state":{"title":"Approve","fields":[],"values":{}}}
+```
 
-  ```json
-  {
-    "modelId": "…",
-    "viewFamily": "maieutics/form",
-    "version": "1.0",
-    "state": { … initial state; seeds the view before/instead of live comm … },
-    "esmSource": "… optional bundled component source (stage 1b; ≤1 MiB) …",
-    "cssSource": "… optional stylesheet scoped to the family …"
-  }
-  ```
+`comm_open.target_name` is `maieutics.form`, and data is `{state}`. Downlink messages use
+`{method:"update",state:{...}}`; the form adapter merges received state into its current snapshot.
+Uplink actions use `{method:"event",name:"submit",payload:{values:{...}}}` or `name:"cancel"`.
+This is a data/action contract, not a component registry or component-source envelope.
+Kernel elicitation, approved plugin workers/declarative plugin entries and REPL forms use the same
+contract; uplink routes to the registered kernel or worker owner.
 
-  The embedded `state` is the display-time snapshot: a reopened notebook
-  renders it with a stale marker when the producing model is no longer live.
-  `esmSource`/`cssSource` are present only for bundled families (the
-  renderer materializes the module inline; see ADR 0038 §4).
-- Everything else about a model travels on the comm WebSocket below.
+UI capability version 2 advertises `{version:2,formVersion:1}`. The former version-one `families`
+contract, old view MIME, bundled-source execution, widget authoring and widget renderer are removed
+(ADR 0050). Generic comm framing remains version 1. Older clients retain `text/plain` fallback.
 
-Native families speak their own comm dialect alongside the ipywidgets one:
-
-- `comm_open.target_name` is `maieutics.view/<family>` (e.g.
-  `maieutics.view/maieutics.form`); `jupyter.widget` remains verbatim for the
-  compat family. The relay treats target names as opaque.
-- `comm_open.data` is `{"state": {…}}`.
-- Downlink/uplink state deltas are `comm_msg.data`
-  `{"method": "update", "state": {key: value}, "buffer_paths": []}` (the same
-  shape widgets use).
-- One-shot actions flow uplink-only as `comm_msg.data`
-  `{"method": "event", "name": "submit" | "cancel" | …, "payload": {…}}`;
-  families without actions never emit it.
+The standalone Vue client owns normal form components and reactive state. Hosts supply transport.
+Only confirmed live state enables actions, and a mounted view identity scopes the frontend bridge.
+Closing a view releases its attachment, not another view's model; closing the model or losing its
+transport leaves retained output readonly. Saving/reading a form adds `snapshot:true` and retains
+only version/modelId/state; that presentation never attaches, emits actions or accepts live state.
+Historical form announcements are decoded into readonly data. Other retired component output
+becomes JSON/text and never executes its embedded source.
 
 ### `GET /v1/agent/sessions/{sid}/comms?sinceSeq=<n>&token=<hex>`
 
@@ -659,22 +643,15 @@ native bytes, never base64 (invariant 26). Direction rules:
 Backpressure and resume follow the events stream: bounded per-subscriber
 queues; on overflow the server closes with `1011 backpressure` and the client
 reconnects with its last observed sequence. Sequences are dense per session. Planes are retained per session (least
-recently used, a small fixed window) rather than torn down eagerly; widget
-state lives in the session's REPL process, so a plane created for a
-switched-back session reflects only comms that REPL re-announces. Frames are
-re-sent verbatim on replay; widget state merges are last-wins, so replay is
-idempotent.
+recently used, a small fixed window) rather than torn down eagerly. Producer state lives in its owning REPL or plugin worker; the
+relay does not own a component engine. Frames are re-sent verbatim on replay. Form state merges
+are last-wins; missing bootstrap state keeps a view readonly rather than guessing that it is live.
 
 `GET /v1/agent/capabilities` advertises the feature as
 `"comm": {"version": 1, "maxMessageBytes": 16777216}`; clients that do not
-implement comms ignore it and never open the endpoint. The native view
-families advertise as `"ui": {"version": 1, "families": ["maieutics/form"]}`
-(additive, same rule). Kernel features (ADR 0038 stage 2) may produce
-native announcements too — a `maieutics/form` model created by the kernel
-(for example an MCP elicitation) rides the same `repl.display` +
-comms-plane pair, and its uplink routes to the kernel owner instead of the
-REPL; the announcement shape and dialects are identical to REPL-produced
-models.
+implement comms ignore it and never open the endpoint. Declarative forms advertise
+`"ui": {"version": 2, "formVersion": 1}`. New component/model contracts must version their own
+capabilities; opaque comm targets do not themselves grant component execution.
 
 ## REST endpoints (frontend → executable)
 

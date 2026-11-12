@@ -981,11 +981,7 @@ public static class MaieuticsHost
             owner,
             cancellationToken).ConfigureAwait(false);
 
-        // The announcement mirrors the native dialect: the family is the target's
-        // maieutics.view/ suffix; the display-time state rides the frame's data.
-        var family = frame.TargetName is { } target && target.StartsWith("maieutics.view/", StringComparison.Ordinal)
-            ? target["maieutics.view/".Length..]
-            : frame.TargetName ?? "unknown";
+        // Announce bounded form data; no component code or registry crosses this boundary.
         JsonElement state = frame.Data is { ValueKind: JsonValueKind.Object } data &&
                             data.TryGetProperty("state", out var stateElement) &&
                             stateElement.ValueKind == JsonValueKind.Object
@@ -993,14 +989,13 @@ public static class MaieuticsHost
             : JsonDocument.Parse("{}").RootElement.Clone();
         var announcement = new Dictionary<string, object?>
         {
-            ["application/vnd.maieutics.view+json"] = new Dictionary<string, object?>
+            ["application/vnd.maieutics.form+json"] = new Dictionary<string, object?>
             {
                 ["modelId"] = frame.CommId,
-                ["viewFamily"] = family,
-                ["version"] = "1.0",
+                ["version"] = 1,
                 ["state"] = state,
             },
-            ["text/plain"] = $"plugin UI: {family}",
+            ["text/plain"] = "Plugin form",
         };
         if (!framePublisher.TryPublishPresentation(
                 sessionId,

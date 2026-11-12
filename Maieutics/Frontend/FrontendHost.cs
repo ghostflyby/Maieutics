@@ -32,7 +32,7 @@ namespace Maieutics.Frontend;
 internal sealed class FrontendHost : IAsyncDisposable
 {
     /// <summary>The native view-family capability version advertised in capabilities (ADR 0038).</summary>
-    internal const int FrontendUiCapabilityVersion = 1;
+    internal const int FrontendUiCapabilityVersion = 2;
 
     private readonly FrontendSessionService _service;
     private readonly FrontendElicitationPresenter _elicitationPresenter;
@@ -411,7 +411,7 @@ internal sealed class FrontendHost : IAsyncDisposable
                 ? null
                 : new FrontendUiCapability(
                     FrontendUiCapabilityVersion,
-                    [FrontendUiWire.FormFamily]),
+                    FrontendUiWire.FormVersion),
             MultiSession: true,
             Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1, ProgressiveVersion: 1)),
             FrontendJsonContext.Default.FrontendCapabilities);

@@ -33,6 +33,7 @@ import {
 } from "../../serializer.ts";
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
+import { testNotebookVueFormAsync, testVueFormsAsync } from "./forms.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
 import { testNotebookSsrAsync, testSsrRenderingAsync } from "./ssrRendering.ts";
 import { localProjectPaths, ProjectMounts } from "../../projectMounts.ts";
@@ -1138,6 +1139,14 @@ async function testCommandCompletionAsync(): Promise<void> {
 }
 
 const tests: HostTest[] = [
+  {
+    name: "actual notebook restores frozen forms through the registered Vue MIME renderer",
+    run: testNotebookVueFormAsync,
+  },
+  {
+    name: "Vue forms preserve drafts, route actions and dispose through the shared ESM",
+    run: testVueFormsAsync,
+  },
   { name: "extension is installed and activates", run: testActivationAsync },
   {
     name: "restored Markdown waits for the connection already starting during reload",

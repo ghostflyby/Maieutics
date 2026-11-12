@@ -2,7 +2,8 @@
 
 Standalone browser ES Module for Maieutics output. It shares the exact implementation used by the VS
 Code notebook adapter: timeline DOM, passive Markdown fallback, SSR snapshots, scoped CSS,
-progressive Vue templates, ClientOnly, code controls, diagnostics and component disposal.
+progressive Vue templates, ClientOnly, code controls, diagnostics, declarative Vue forms and
+component disposal.
 
 ```sh
 deno task build
@@ -89,3 +90,20 @@ writes local dist/; build:vscode additionally writes the one copied media artifa
 filesystem, environment, process or network permission is introduced. Source-level Deno tests allow
 NODE_ENV for Vue's Node entry; the bundled browser artifact has no environment permission
 dependency.
+
+## Declarative Vue forms
+
+`createFormRenderer({sendMessage})` is the shared normal-Vue form implementation used by the
+notebook's `formRenderer.js`. Call `render(outputId, {version:1,modelId,state}, element)`, pass host
+state/closed messages to `receive` and release views with `disposeOutput(id)` or terminal
+`dispose()`. The host owns transport subscriptions. `receive` awaits Vue DOM updates; use the
+existing `vueUpdatesComplete` barrier for local user edits.
+
+The renderer has no family/component registry, injected source or JSX runtime. Local drafts remain
+stable across unrelated server updates, and several views share backend state without sharing local
+edits. Fields/actions stay disabled until the host confirms live state. A snapshot carrying
+`snapshot:true` never sends a mount, accepts live messages or emits actions. Closing a view sends
+only an attachment-unmount notification; it does not destroy the shared model. Model/transport
+closure makes retained content readonly. Up to 128 views and 128 fields/options per form are
+accepted. The VS Code host translates the form contract to the existing authenticated session comm
+endpoint; generic action-result RPC is not supplied by this API.

@@ -1,278 +1,199 @@
 /// <reference lib="deno.ns" />
-/**
- * UI bridge tests: state caching, family-dispatched envelopes, and
- * renderer↔comm routing against a scripted socket, with a captured post
- * sink (ports widgets_test.ts and adds the native-family paths).
- */
-
+/// <reference lib="es2024.promise" />
 import { assertEquals } from "@std/assert";
-import type { CommMessage } from "../shared/comm_codec.ts";
-import type { CommFrame } from "./protocol.ts";
+import type { CommFrame, CommMessage } from "./protocol.ts";
 import { UiBridge, type UiCommSocket } from "./uiBridge.ts";
 
-interface ScriptedFrame {
-  sequence: number;
-  kind: 0 | 1 | 2;
-  commId: string;
-  targetName?: string;
-  data?: unknown;
-}
-
-function scriptedSocket() {
-  const sent: CommMessage[] = [];
-  let closeCount = 0;
-  let closed = false;
-  const queue: ScriptedFrame[] = [];
-  let wake: () => void = () => {};
-  const messages = (async function* (): AsyncGenerator<CommFrame> {
-    while (!closed) {
-      while (queue.length > 0) {
-        const frame = queue.shift()!;
-        yield {
-          kind: "comm",
-          sequence: frame.sequence,
-          message: {
-            kind: frame.kind,
-            commId: frame.commId,
-            targetName: frame.targetName,
-            data: frame.data,
-            buffers: [],
-          },
-        };
-      }
-      if (closed) return;
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
-    }
-  })();
-  const emit = (frame: ScriptedFrame) => {
-    queue.push(frame);
-    wake();
-  };
+function fixture() {
+  const sent: CommMessage[] = [], posted: unknown[] = [];
+  let done = false, closeCount = 0;
+  let wake = Promise.withResolvers<void>();
+  const queue: { frame: CommFrame; consumed: ReturnType<typeof Promise.withResolvers<void>> }[] =
+    [];
   const socket: UiCommSocket = {
-    send: (message) => sent.push(message),
-    messages,
-    close: () => {
-      closed = true;
-      closeCount += 1;
-      wake();
+    send(message) {
+      sent.push(message);
+    },
+    messages: (async function* () {
+      while (!done) {
+        const item = queue.shift();
+        if (item) {
+          yield item.frame;
+          item.consumed.resolve();
+          continue;
+        }
+        const pending = wake;
+        await pending.promise;
+        if (wake === pending) wake = Promise.withResolvers<void>();
+      }
+    })(),
+    close() {
+      closeCount++;
+      done = true;
+      wake.resolve();
     },
   };
+  const bridge = new UiBridge({
+    connect: () => Promise.resolve(socket),
+    post: (message) => posted.push(message),
+    log() {},
+  });
   return {
-    socket,
+    bridge,
     sent,
-    emit,
+    posted,
+    socket,
     get closeCount() {
       return closeCount;
     },
+    async emit(message: CommMessage) {
+      const consumed = Promise.withResolvers<void>();
+      queue.push({ frame: { kind: "comm", sequence: 1, message }, consumed });
+      wake.resolve();
+      await consumed.promise;
+    },
   };
 }
+const mount = (bridge: UiBridge, modelId = "f1", viewId = "v1") =>
+  bridge.handleRendererMessage({ source: "maieutics-form", type: "mount", modelId, viewId });
+Deno.test("form bridge caches typed form state and routes actions for an attached view", async () => {
+  const f = fixture();
+  await mount(f.bridge);
+  try {
+    await f.emit({
+      kind: 0,
+      commId: "f1",
+      targetName: "maieutics.form",
+      data: { state: { fields: [], title: "Ready" } },
+      buffers: [],
+    });
+    assertEquals(f.posted.at(-1), {
+      source: "maieutics-form",
+      type: "state",
+      modelId: "f1",
+      state: { fields: [], title: "Ready" },
+    });
+    await f.bridge.handleRendererMessage({
+      source: "maieutics-form",
+      type: "event",
+      modelId: "f1",
+      viewId: "v1",
+      name: "submit",
+      payload: { values: { q: "typed" } },
+    });
+    assertEquals(f.sent[0].data, {
+      method: "event",
+      name: "submit",
+      payload: { values: { q: "typed" } },
+    });
+    await f.emit({
+      kind: 1,
+      commId: "f1",
+      data: { method: "update", state: { title: "Updated" } },
+      buffers: [],
+    });
+    assertEquals((f.posted.at(-1) as { state: unknown }).state, { fields: [], title: "Updated" });
+    await f.emit({ kind: 2, commId: "f1", buffers: [] });
+    assertEquals(f.posted.at(-1), { source: "maieutics-form", type: "closed", modelId: "f1" });
+    const count = f.sent.length;
+    await f.bridge.handleRendererMessage({
+      source: "maieutics-form",
+      type: "event",
+      modelId: "f1",
+      viewId: "v1",
+      name: "cancel",
+    });
+    assertEquals(f.sent.length, count);
+  } finally {
+    await f.bridge.dispose();
+  }
+});
+Deno.test("retired component targets and unknown views cannot obtain a live form", async () => {
+  const f = fixture();
+  await mount(f.bridge);
+  try {
+    await f.emit({
+      kind: 0,
+      commId: "f1",
+      targetName: "maieutics.view/old",
+      data: { state: { secret: true } },
+      buffers: [],
+    });
+    await f.bridge.handleRendererMessage({
+      source: "maieutics-form",
+      type: "event",
+      modelId: "f1",
+      viewId: "spoof",
+      name: "cancel",
+    });
+    assertEquals(f.posted, []);
+    assertEquals(f.sent, []);
+  } finally {
+    await f.bridge.dispose();
+  }
+});
+Deno.test("view disposal removes only that attachment while another view continues", async () => {
+  const f = fixture();
+  await mount(f.bridge);
+  await mount(f.bridge, "f1", "v2");
+  try {
+    await f.emit({
+      kind: 0,
+      commId: "f1",
+      targetName: "maieutics.form",
+      data: { state: {} },
+      buffers: [],
+    });
+    await f.bridge.handleRendererMessage({
+      source: "maieutics-form",
+      type: "unmount",
+      modelId: "f1",
+      viewId: "v1",
+    });
+    for (const viewId of ["v1", "v2"]) {
+      await f.bridge.handleRendererMessage({
+        source: "maieutics-form",
+        type: "event",
+        modelId: "f1",
+        viewId,
+        name: "cancel",
+      });
+    }
+    assertEquals(f.sent.length, 1);
+  } finally {
+    await f.bridge.dispose();
+  }
+  await f.bridge.dispose();
+  assertEquals(f.closeCount, 1);
+});
+Deno.test("disposal joins a pending connection and closes the late socket once", async () => {
+  const f = fixture(), connected = Promise.withResolvers<UiCommSocket>();
+  const bridge = new UiBridge({ connect: () => connected.promise, post() {}, log() {} });
+  const mounting = mount(bridge), disposing = bridge.dispose();
+  connected.resolve(f.socket);
+  await mounting;
+  await disposing;
+  assertEquals(f.closeCount, 1);
+});
 
-function bridgeOver(scripted: ReturnType<typeof scriptedSocket>) {
-  const posted: unknown[] = [];
+Deno.test("form bridge disposal cancels its owned connection before awaiting it", async () => {
+  const started = Promise.withResolvers<void>();
+  let aborted = false;
   const bridge = new UiBridge({
-    connect: () => Promise.resolve(scripted.socket),
-    post: (message) => posted.push(message),
-    log: () => {},
+    connect: (signal) =>
+      new Promise<UiCommSocket>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+        started.resolve();
+      }),
+    post() {},
+    log() {},
   });
-  return { bridge, posted };
-}
-
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 5));
-}
-
-async function mounted(bridge: UiBridge, modelId: string): Promise<void> {
-  // Mount first (connects the socket; nothing is posted while no state is
-  // known), then the test emits downlink frames and flushes — the pump's
-  // postState is then the single reply.
-  await bridge.handleRendererMessage({ source: "maieutics-widget", type: "mount", modelId });
-  await flush();
-}
-
-Deno.test("mount replies with the widget-family state from comm_open", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  await mounted(bridge, "w1");
-  scripted.emit({
-    sequence: 1,
-    kind: 0,
-    commId: "w1",
-    targetName: "jupyter.widget",
-    data: { state: { value: 5 } },
-  });
-  await flush();
-  assertEquals(posted, [
-    { source: "maieutics-widget", type: "state", modelId: "w1", state: { value: 5 } },
-  ]);
+  const mounting = mount(bridge);
+  await started.promise;
   await bridge.dispose();
-});
-
-Deno.test("native-target opens speak the maieutics-ui source", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  await bridge.handleRendererMessage({ source: "maieutics-ui", type: "mount", modelId: "u1" });
-  await flush();
-  scripted.emit({
-    sequence: 1,
-    kind: 0,
-    commId: "u1",
-    targetName: "maieutics.view/maieutics.form",
-    data: { state: { fields: [] } },
-  });
-  await flush();
-  assertEquals(posted, [
-    { source: "maieutics-ui", type: "state", modelId: "u1", state: { fields: [] } },
-  ]);
-  await bridge.dispose();
-});
-
-Deno.test("renderer updates merge locally and relay upstream", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  await mounted(bridge, "w1");
-  scripted.emit({
-    sequence: 1,
-    kind: 0,
-    commId: "w1",
-    targetName: "jupyter.widget",
-    data: { state: { value: 1 } },
-  });
-  await flush();
-  await bridge.handleRendererMessage({
-    source: "maieutics-widget",
-    type: "update",
-    modelId: "w1",
-    state: { value: 2 },
-  });
-  assertEquals(scripted.sent, [{
-    kind: 1,
-    commId: "w1",
-    data: { method: "update", state: { value: 2 }, buffer_paths: [] },
-    buffers: [],
-  }]);
-  scripted.emit({
-    sequence: 2,
-    kind: 1,
-    commId: "w1",
-    data: { method: "update", state: { other: "x" } },
-  });
-  await flush();
-  assertEquals(posted.at(-1), {
-    source: "maieutics-widget",
-    type: "state",
-    modelId: "w1",
-    state: { value: 2, other: "x" },
-  });
-  await bridge.dispose();
-});
-
-Deno.test("event envelopes relay as native event comm messages", async () => {
-  const scripted = scriptedSocket();
-  const { bridge } = bridgeOver(scripted);
-  await bridge.handleRendererMessage({ source: "maieutics-ui", type: "mount", modelId: "u1" });
-  await flush();
-  await bridge.handleRendererMessage({
-    source: "maieutics-ui",
-    type: "event",
-    modelId: "u1",
-    name: "submit",
-    payload: { values: { q: "typed" } },
-  });
-  assertEquals(scripted.sent, [{
-    kind: 1,
-    commId: "u1",
-    data: { method: "event", name: "submit", payload: { values: { q: "typed" } } },
-    buffers: [],
-  }]);
-  await bridge.dispose();
-});
-
-Deno.test("comm_close drops the cached state; a later mount stays silent", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  await mounted(bridge, "w1");
-  scripted.emit({
-    sequence: 1,
-    kind: 0,
-    commId: "w1",
-    targetName: "jupyter.widget",
-    data: { state: { a: 1 } },
-  });
-  await flush();
-  scripted.emit({ sequence: 2, kind: 2, commId: "w1" });
-  await flush();
-  const postedCount = posted.length;
-  await mounted(bridge, "w1");
-  assertEquals(posted.length, postedCount);
-  await bridge.dispose();
-});
-
-Deno.test("frames for never-mounted models are cached; unknown-model updates relay for a typed kernel error", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  // Mount another model to open the socket; w1's open is cached silently.
-  await mounted(bridge, "other");
-  scripted.emit({
-    sequence: 1,
-    kind: 0,
-    commId: "w1",
-    targetName: "jupyter.widget",
-    data: { state: { a: 1 } },
-  });
-  await flush();
-  // Updates for unknown models relay upstream (the kernel answers a typed
-  // comm_not_found error in production); nothing is posted back for them.
-  await bridge.handleRendererMessage({
-    source: "maieutics-widget",
-    type: "update",
-    modelId: "unknown",
-    state: { a: 2 },
-  });
-  assertEquals(scripted.sent.length, 1);
-  assertEquals(
-    posted.some((entry) => (entry as { modelId?: string }).modelId === "unknown"),
-    false,
-  );
-  // The late mount for w1 answers from the cache.
-  await mounted(bridge, "w1");
-  assertEquals(posted.at(-1), {
-    source: "maieutics-widget",
-    type: "state",
-    modelId: "w1",
-    state: { a: 1 },
-  });
-  await bridge.dispose();
-});
-
-Deno.test("dispose closes the socket exactly once and settles the pump", async () => {
-  const scripted = scriptedSocket();
-  const { bridge } = bridgeOver(scripted);
-  await mounted(bridge, "w1");
-  await bridge.dispose();
-  await bridge.dispose();
-  assertEquals(scripted.closeCount, 1);
-});
-
-Deno.test("state for a model without a cached open posts under both sources", async () => {
-  const scripted = scriptedSocket();
-  const { bridge, posted } = bridgeOver(scripted);
-  // An update frame for a model whose comm_open was lost to replay
-  // truncation: the state must still reach either renderer.
-  await bridge.handleRendererMessage({ source: "maieutics-ui", type: "mount", modelId: "u1" });
-  scripted.emit({
-    sequence: 1,
-    kind: 1,
-    commId: "u1",
-    data: { method: "update", state: { a: 1 } },
-  });
-  await flush();
-  assertEquals(
-    posted.filter((entry) => (entry as { modelId?: string }).modelId === "u1")
-      .map((entry) => (entry as { source: string }).source)
-      .sort(),
-    ["maieutics-ui", "maieutics-widget"],
-  );
-  await bridge.dispose();
+  await mounting;
+  assertEquals(aborted, true);
 });

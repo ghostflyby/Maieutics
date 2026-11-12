@@ -13,6 +13,7 @@ import * as vscode from "vscode";
 import {
   type CellSnapshot,
   emptyNotebook,
+  freezeOutputDisplays,
   type MaieuticsNotebook,
   mergeOutputSnapshots,
   NotebookKind,
@@ -20,7 +21,6 @@ import {
   type OutputSnapshot,
   parseNotebook,
   serializeNotebook as serializeNotebookBytes,
-  stripBundledDisplaySources,
   type TurnBinding,
 } from "./notebookFormat.ts";
 import { readTurnBinding, TurnBindingMetadataKey } from "./cellHistory.ts";
@@ -171,7 +171,7 @@ function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undef
       try {
         const snapshot = JSON.parse(new TextDecoder().decode(item.data)) as OutputSnapshot;
         if (typeof snapshot === "object" && snapshot !== null) {
-          snapshots.push(stripBundledDisplaySources(snapshot));
+          snapshots.push(freezeOutputDisplays(snapshot));
         }
       } catch {
         // Fall through to the markdown render.
@@ -180,7 +180,7 @@ function findTurnSnapshot(cell: vscode.NotebookCellData): OutputSnapshot | undef
   }
   if (repl.length) snapshots.push({ repl });
   const merged = mergeOutputSnapshots(snapshots, snapshotFromMarkdownOutputs(cell)?.text);
-  return merged === undefined ? undefined : stripBundledDisplaySources(merged);
+  return merged === undefined ? undefined : freezeOutputDisplays(merged);
 }
 
 /** Best-effort fallback when only the markdown render survived. */
@@ -222,12 +222,7 @@ const DisplayMimes = new Set([
   "application/json",
   "application/vnd.maieutics.template+json",
   "application/vnd.maieutics.vue+json",
-  // Widget views ride display bundles as structured JSON; the widget
-  // renderer claims them (ADR 0024).
-  "application/vnd.jupyter.widget-view+json",
-  // Native view-family announcements (custom-UI framework, ADR 0038); the
-  // view renderer claims them.
-  "application/vnd.maieutics.view+json",
+  "application/vnd.maieutics.form+json",
 ]);
 
 /** A reference to an immutable binary display payload, addressed by its

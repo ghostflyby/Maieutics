@@ -159,7 +159,7 @@ public sealed class PluginApprovalTests
             """
             {
               "name": "@maieutics/plugins",
-              "imports": { "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.2" }
+              "imports": { "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.3" }
             }
             """,
             """

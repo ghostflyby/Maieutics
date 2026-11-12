@@ -1,6 +1,6 @@
 {
   "name": "@maieutics/plugin-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "exports": {
     ".": "./entry.ts",
@@ -10,9 +10,6 @@
     "./reactive": "./reactive.ts",
     "./ui": "./ui/index.ts",
     "./lint": "./lint-plugin.ts",
-    "./widgets": "./widgets/index.ts",
-    "./widgets/jsx-runtime": "./widgets/jsx-runtime.ts",
-    "./widgets/transform": "./widgets/transform.ts",
     "./plugin-ui": "./plugin-ui.ts"
   },
   "imports": {

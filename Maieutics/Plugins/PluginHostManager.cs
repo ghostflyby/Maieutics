@@ -769,7 +769,7 @@ internal sealed partial class PluginHostManager(
             ReplControlJsonContext.Default.DictionaryStringJsonElement);
         await UiFrameSink(
             pluginId,
-            new PluginUiFramePayload("open", commId, "maieutics.view/maieutics/form", data),
+            new PluginUiFramePayload("open", commId, "maieutics.form", data),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1106,7 +1106,7 @@ internal sealed partial class PluginHostManager(
                   "name": "@maieutics/plugins",
                   "version": "0.1.0",
                   "imports": {
-                    "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.2"
+                    "@maieutics/plugin-sdk": "jsr:@maieutics/plugin-sdk@^0.3"
                   }
                 }
                 """);
@@ -3380,15 +3380,13 @@ internal sealed partial class PluginHostManager(
                 if (frame is null ||
                     string.IsNullOrWhiteSpace(frame.CommId) ||
                     (frame.Kind != "open" && frame.Kind != "message" && frame.Kind != "close") ||
-                    (frame.Kind == "open" &&
-                     (string.IsNullOrWhiteSpace(frame.TargetName) ||
-                      !frame.TargetName.StartsWith("maieutics.view/", StringComparison.Ordinal))))
+                    (frame.Kind == "open" && frame.TargetName != "maieutics.form"))
                 {
                     await PushCapabilityErrorAsync(
                         socket,
                         envelope.CorrelationId,
                         "invalid_capability_invoke",
-                        "The ui.models payload requires a kind (open|message|close), a commId, and a targetName on open.",
+                        "The ui.models payload requires a kind (open|message|close), a commId, and targetName maieutics.form on open.",
                         budget.Token).ConfigureAwait(false);
                     return;
                 }

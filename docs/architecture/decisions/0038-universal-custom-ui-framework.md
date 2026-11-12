@@ -1,5 +1,6 @@
 # ADR 0038: Universal Custom UI Framework
 
+Status: component runtime and authoring superseded by [ADR 0050](0050-retire-custom-component-families.md), 2026-11-12. The implementation described below is historical.
 Status: Draft
 
 Migration direction (2026-11-11): the Preact implementation is being reconsidered in favor of Vue

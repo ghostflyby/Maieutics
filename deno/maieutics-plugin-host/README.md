@@ -12,7 +12,7 @@ The host process runs with a materialized root `deno.json` whose `imports` entry
 `@ghostflyby/worker-actor` to the pinned JSR package and whose `links` entry maps
 `jsr:@maieutics/plugin-sdk` to the local materialized SDK package. Plugins therefore import the SDK
 with a stable specifier (`import "@maieutics/plugin-sdk"` or
-`import "jsr:@maieutics/plugin-sdk@^0.2"`) and Deno resolves it to the kernel-provided local copy;
+`import "jsr:@maieutics/plugin-sdk@^0.3"`) and Deno resolves it to the kernel-provided local copy;
 this keeps JSR-distributed plugins working without a registry round trip.
 
 ## Deno permissions

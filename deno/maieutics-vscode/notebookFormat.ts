@@ -160,36 +160,20 @@ export function serializeNotebook(notebook: MaieuticsNotebook): Uint8Array {
 /** Executable Vue sources are live-only and never replay from notebook snapshots. */
 export const VueOutputMime = "application/vnd.maieutics.vue+json";
 
-/** The display-mime member native view-family announcements ride. */
+/** New form snapshots are data-only and never reattach to a model on file open. */
+export const FormOutputMime = "application/vnd.maieutics.form+json";
+/** Historical input marker, decoded as frozen data only. */
 export const NativeViewMime = "application/vnd.maieutics.view+json";
 
-/**
- * Strip executable Vue MIME and bundled-family sources (esmSource/cssSource) from a
- * snapshot's REPL displays before it is persisted: a `.maieuticsnb` file is
- * untrusted input (AGENTS.md), and bundled code must only ever reach the
- * renderer as live output of a running session (ADR 0038 stage 1b's trust
- * boundary). Reopened notebooks render the frozen announcement state via
- * the fallback view; a live re-display re-materializes the family.
- */
-export function stripBundledDisplaySources(output: OutputSnapshot): OutputSnapshot {
+/** Freeze output data before persistence, including inputs from retired renderer versions. */
+export function freezeOutputDisplays(output: OutputSnapshot): OutputSnapshot {
   if (output.repl === undefined) return output;
   let changed = false;
   const repl = output.repl.map((display) => {
-    let data = display.data;
-    if (VueOutputMime in data) {
-      changed = true;
-      data = { ...data };
-      delete data[VueOutputMime];
-    }
-    const announcement = data[NativeViewMime];
-    if (isRecord(announcement) && ("esmSource" in announcement || "cssSource" in announcement)) {
-      changed = true;
-      const cleaned = { ...announcement };
-      delete cleaned.esmSource;
-      delete cleaned.cssSource;
-      data = { ...data, [NativeViewMime]: cleaned };
-    }
-    return data === display.data ? display : { ...display, data };
+    const data = frozenDisplayData(display.data);
+    if (JSON.stringify(data) === JSON.stringify(display.data)) return display;
+    changed = true;
+    return { ...display, data };
   });
   return changed ? { ...output, repl } : output;
 }
@@ -381,12 +365,33 @@ export function mergeOutputSnapshots(
 function frozenDisplayData(value: unknown): Record<string, unknown> {
   const data = isRecord(value) ? { ...value } : {};
   delete data[VueOutputMime];
-  const announcement = data[NativeViewMime];
-  if (isRecord(announcement)) {
-    const cleaned = { ...announcement };
-    delete cleaned.esmSource;
-    delete cleaned.cssSource;
-    data[NativeViewMime] = cleaned;
+  const legacy = data[NativeViewMime];
+  if (isRecord(legacy)) {
+    delete data[NativeViewMime];
+    if (!(FormOutputMime in data) && legacy.viewFamily === "maieutics/form") {
+      data[FormOutputMime] = {
+        version: 1,
+        modelId: legacy.modelId,
+        state: legacy.state,
+        snapshot: true,
+      };
+    } else if (!("application/json" in data)) {
+      data["application/json"] = { retiredView: legacy.viewFamily, state: legacy.state };
+    }
+  }
+  const form = data[FormOutputMime];
+  if (isRecord(form)) {
+    // Whitelist data fields rather than carrying executable legacy properties forward.
+    data[FormOutputMime] = {
+      version: form.version,
+      modelId: form.modelId,
+      state: form.state,
+      snapshot: true,
+    };
+  }
+  if ("application/vnd.jupyter.widget-view+json" in data) {
+    delete data["application/vnd.jupyter.widget-view+json"];
+    data["text/plain"] ??= "Legacy widget output (renderer retired).";
   }
   return data;
 }

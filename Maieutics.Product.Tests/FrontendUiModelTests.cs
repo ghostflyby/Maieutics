@@ -55,14 +55,13 @@ public sealed class FrontendUiModelTests
 
         Assert.NotNull(model);
         var live = router.PlaneFor(session.ToString()).SnapshotLive();
-        Assert.Equal("maieutics.view/maieutics/form", Assert.Single(live).TargetName);
+        Assert.Equal("maieutics.form", Assert.Single(live).TargetName);
 
         var display = Assert.Single(publisher.Published);
         Assert.Equal("repl.display", display.Type);
-        var announcement = display.Data.GetProperty("application/vnd.maieutics.view+json");
+        var announcement = display.Data.GetProperty("application/vnd.maieutics.form+json");
         Assert.Equal(model.CommId, announcement.GetProperty("modelId").GetString());
-        Assert.Equal("maieutics/form", announcement.GetProperty("viewFamily").GetString());
-        Assert.Equal("1.0", announcement.GetProperty("version").GetString());
+        Assert.Equal(1, announcement.GetProperty("version").GetInt32());
         Assert.Equal("Approve deployment?", announcement.GetProperty("state").GetProperty("title").GetString());
         Assert.Equal("Approve deployment?", display.Data.GetProperty("text/plain").GetString());
     }
@@ -203,7 +202,7 @@ public sealed class FrontendUiModelTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task CapabilitiesAdvertiseTheUiFamilies()
+    public async Task CapabilitiesAdvertiseTheVueFormContract()
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -215,9 +214,8 @@ public sealed class FrontendUiModelTests
         var capabilities = await harness.Client.GetFromJsonAsync<JsonElement>(
             "/v1/agent/capabilities",
             token);
-        Assert.Equal(1, capabilities.GetProperty("ui").GetProperty("version").GetInt32());
-        Assert.Contains("maieutics/form", capabilities.GetProperty("ui").GetProperty("families")
-            .EnumerateArray().Select(family => family.GetString()));
+        Assert.Equal(2, capabilities.GetProperty("ui").GetProperty("version").GetInt32());
+        Assert.Equal(1, capabilities.GetProperty("ui").GetProperty("formVersion").GetInt32());
     }
 
     [Fact(Timeout = 30_000)]
@@ -248,8 +246,8 @@ public sealed class FrontendUiModelTests
         Assert.Equivalent(new[] { "input.request", "repl.display" }, publisher.Published.Select(frame => frame.Type));
         var announcement = publisher.Published
             .Single(frame => frame.Type == "repl.display")
-            .Data.GetProperty("application/vnd.maieutics.view+json");
-        Assert.Equal("maieutics/form", announcement.GetProperty("viewFamily").GetString());
+            .Data.GetProperty("application/vnd.maieutics.form+json");
+        Assert.Equal(1, announcement.GetProperty("version").GetInt32());
         var fields = announcement.GetProperty("state").GetProperty("fields");
         Assert.Equal(3, fields.GetArrayLength());
         Assert.Equal("token", fields[0].GetProperty("name").GetString());
@@ -290,7 +288,7 @@ public sealed class FrontendUiModelTests
         // The comm_open's replayed data carries the native state payload.
         var plane = router.PlaneFor(session.ToString());
         var open = Assert.Single(plane.Subscribe(0).Initial);
-        Assert.Equal("maieutics.view/maieutics/form", open.Message.TargetName);
+        Assert.Equal("maieutics.form", open.Message.TargetName);
         Assert.NotNull(open.Message.Data);
         Assert.Equal("T", open.Message.Data!.Value.GetProperty("state").GetProperty("title").GetString());
 

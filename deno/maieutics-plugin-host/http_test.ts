@@ -226,8 +226,9 @@ Deno.test("active HTTP roots pin their workers across an awaited idle maintenanc
   const f = await fixture();
   const url = f.url("alpha");
   try {
-    await f.host.reclaimIdleWorkers(0);
-    await f.host.reclaimIdleWorkers(60_000);
+    const now = Date.now();
+    await f.host.reclaimIdleWorkers(now);
+    await f.host.reclaimIdleWorkers(now + 60_000);
     assertEquals(
       f.host.states().map((worker) => worker.state),
       ["running", "running"],

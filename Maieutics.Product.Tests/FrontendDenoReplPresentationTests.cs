@@ -67,7 +67,7 @@ public sealed class FrontendDenoReplPresentationTests
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task NativeViewFamilyAnnouncementPassesThroughVerbatim()
+    public async Task DeclarativeFormAnnouncementPassesThroughVerbatim()
     {
         // The custom-UI framework's native announcement mime (ADR 0038) must
         // ride a display bundle untouched: the presentation sink's only
@@ -79,14 +79,13 @@ public sealed class FrontendDenoReplPresentationTests
             new Dictionary<string, object?>
             {
                 ["modelId"] = "0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01",
-                ["viewFamily"] = "maieutics/form",
-                ["version"] = "1.0",
+                ["version"] = 1,
                 ["state"] = new Dictionary<string, object?> { ["fields"] = Array.Empty<string>() },
             });
         var bundle = new ReplDisplayBundle(new ReadOnlyDictionary<string, JsonElement>(
             new Dictionary<string, JsonElement>
             {
-                ["application/vnd.maieutics.view+json"] = announcement,
+                ["application/vnd.maieutics.form+json"] = announcement,
                 ["text/plain"] = JsonSerializer.SerializeToElement("form", ReplJsonContext.Default.String),
             }));
 
@@ -94,8 +93,8 @@ public sealed class FrontendDenoReplPresentationTests
 
         var item = Assert.Single(target.Published);
         var data = item.Data;
-        Assert.Equal("maieutics/form", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("viewFamily").GetString());
-        Assert.Equal("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01", data.GetProperty("application/vnd.maieutics.view+json").GetProperty("modelId").GetString());
+        Assert.Equal(1, data.GetProperty("application/vnd.maieutics.form+json").GetProperty("version").GetInt32());
+        Assert.Equal("0b71a2b6-4b1e-4c66-9a06-93e0e2b60a01", data.GetProperty("application/vnd.maieutics.form+json").GetProperty("modelId").GetString());
         Assert.Equal("form", data.GetProperty("text/plain").GetString());
     }
 

@@ -195,3 +195,15 @@ Session metadata arrives independently of answer output and run completion; olde
 overwrite newer titles. Configure the startup default with `Maieutics:Agent:Title:Mode`; legacy
 `AutoTitle=false` selects `manual` when no new mode is set. These controls use the existing
 authenticated connection and require no additional Deno permissions.
+
+## Vue forms (SDK 0.3 migration)
+
+Form output uses the same standalone Vue ESM as assistant islands, through `media/formRenderer.js`.
+The former custom family registry, bundled source engine, widget renderer and widget JSX/TSX
+producer API are removed. Discovery UI version 2 advertises the version-one form data contract.
+Older clients retain text fallback. Saved forms and migrated historical forms are readonly snapshots
+and cannot attach to a live model; other retired views/widgets retain JSON/text.
+
+The renderer adapter uses its owning VS Code context for messaging. Components, local drafts,
+reactive updates and cleanup belong to `maieutics-output-client`, which also works without VS Code.
+No new extension permissions or automatic browser network access are introduced.

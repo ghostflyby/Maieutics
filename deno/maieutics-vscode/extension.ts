@@ -33,7 +33,7 @@ import {
 import { sessionLabel, type SessionLike } from "./sessionGroups.ts";
 import { MaieuticsSessionsProvider, type TreeEnvironment } from "./sessionsTree.ts";
 import { shortTaskId, taskDetailText, taskPicks, TasksEmptyHint } from "./taskPicks.ts";
-import { iframeViewState, type PluginPick, pluginPicks, PluginsEmptyHint } from "./pluginPicks.ts";
+import { pluginPageUrl, type PluginPick, pluginPicks, PluginsEmptyHint } from "./pluginPicks.ts";
 import type { AttachmentMarker } from "./attachments.ts";
 import {
   appendAttachmentMarkers,
@@ -225,10 +225,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // UI renderers (widget compat + native view families) talk to the kernel's
-  // UI models through this bridge; the comms socket opens lazily on the first
-  // mount so plain notebooks never pay for it (ADR 0024, ADR 0038).
-  const widgetChannel = vscode.notebooks.createRendererMessaging("maieutics-widget-renderer");
+  // Vue form outputs use the shared client and a session comm adapter.
   const turnChannel = vscode.notebooks.createRendererMessaging("maieutics-turn-renderer");
   const renderingBridge = new OutputRenderingBridge({
     writeClipboard: async (text) => await vscode.env.clipboard.writeText(text),
@@ -255,31 +252,29 @@ export function activate(context: vscode.ExtensionContext): void {
     post: async (message) => await turnChannel.postMessage(message),
     log: (message) => output?.appendLine(message),
   });
-  const viewChannel = vscode.notebooks.createRendererMessaging("maieutics-view-renderer");
+  const formChannel = vscode.notebooks.createRendererMessaging("maieutics-form-renderer");
   const uiBridge = new UiBridge({
-    connect: async () => {
+    connect: async (signal) => {
       const client = await clientOf();
+      signal.throwIfAborted();
       // The comm capability gate (ADR 0024): an older server without comm
       // support would otherwise hang on a socket that never opens.
-      const capabilities = await client.capabilities();
+      const capabilities = await client.capabilities(signal);
       if (capabilities.comm === undefined) {
         throw new FrontendError(
           "comm_unavailable",
           0,
-          "This Maieutics server does not expose widget comm channels.",
+          "This Maieutics server does not expose form comm channels.",
         );
       }
 
-      const session = await client.session();
-      return client.commSocket(session.id);
+      const session = await client.session(signal);
+      return client.commSocket(session.id, { signal });
     },
-    // State frames broadcast to both channels; renderers filter by source.
     post: (message) => {
-      for (const channel of [widgetChannel, viewChannel]) {
-        void Promise.resolve(channel.postMessage(message)).catch(
-          (error: unknown) => output?.appendLine(`ui post failed: ${error}`),
-        );
-      }
+      void Promise.resolve(formChannel.postMessage(message)).catch(
+        (error: unknown) => output?.appendLine(`form post failed: ${error}`),
+      );
     },
     log: (message) => output?.appendLine(message),
   });
@@ -312,18 +307,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
-    widgetChannel.onDidReceiveMessage(({ message }) => {
-      const envelope = message as { source?: unknown };
-      if (envelope.source !== "maieutics-widget") return;
+    formChannel.onDidReceiveMessage(({ message }) => {
       void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
-        output?.appendLine(`ui bridge failed: ${error}`)
-      );
-    }),
-    viewChannel.onDidReceiveMessage(({ message }) => {
-      const envelope = message as { source?: unknown };
-      if (envelope.source !== "maieutics-ui") return;
-      void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
-        output?.appendLine(`ui bridge failed: ${error}`)
+        output?.appendLine(`form bridge failed: ${error}`)
       );
     }),
     { dispose: () => void uiBridge.dispose().catch(() => {}) },
@@ -402,10 +388,8 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
         if (picked.pageUrl !== undefined) {
-          // The gateway URL opens in a browser; in-product iframe embedding waits
-          // for the maieutics/iframe kernel producer path. pluginPicks only hands
-          // out vetted loopback gateway links, but the external open re-checks.
-          if (iframeViewState(picked.pageUrl, picked.pluginId) === undefined) return;
+          // Gateway pages open normally; there is no component-family iframe renderer.
+          if (pluginPageUrl(picked.pageUrl) === undefined) return;
           await vscode.env.openExternal(vscode.Uri.parse(picked.pageUrl));
           return;
         }

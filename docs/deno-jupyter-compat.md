@@ -20,53 +20,11 @@
 | `image(path \| Uint8Array)` | ✅ | PNG/JPEG 自动判定,base64 传输 |
 | `prompt` / `confirm` / `alert` | ✅ | 经 input_request 通道回前端 |
 
-## 经典 ipywidgets 控件（TSX 单元格）
+## 组件编写迁移（2026-11-12）
 
-REPL 单元格支持 TSX。JSX 元素经 `maieutics-widgets/jsx-runtime` 直接映射到经典
-`@jupyter-widgets/controls` 的模型（内核侧只维护模型状态,控件 DOM 由前端 JupyterLab 的
-`@jupyter-widgets/jupyterlab-manager` 渲染）:
+经典 widget 工厂、widget JSX/TSX 转换和对应浏览器渲染器已删除。REPL 使用普通 TypeScript；
+交互输出使用 Vue Markdown/SFC，产品表单使用 `await maieutics.ui.form(...)`。
+通用 comm 与二进制传输仍保留；它们不隐含任何 widget 或组件执行引擎。
+旧 notebook 组件只恢复为冻结的表单数据或 JSON/文本，不执行保存的组件源码。
 
-- 转换:REPL 的 Aves kernel 注入 `createTsxTransform()`(`loader: "tsx"`,
-  `jsxImportSource: "maieutics-widgets"`),TSX 单元格编译为 ESM 后走 Aves 持久作用域改写。
-- 控件工厂:`maieutics.widgets.IntSlider` 等返回可显示模型(comm_open `jupyter.widget` +
-  `application/vnd.jupyter.widget-view+json` display)。
-- 双向绑定:内核→前端经 `comm_msg {method:"update"}`;前端→内核经入站 comm 更新模型 state
-  并触发 `onChange` 回调。
-- 身份字段(`_model_module`/`_view_name`/版本)来自经典 controls 模板,前端 manager 按此渲染。
-
-支持的控件:IntSlider / FloatSlider / Button / Text / ToggleButton / IntRangeSlider / Box。
-
-## comm 通道
-
-脚本经 `maieutics.comm`(注入的命名空间)与前端双向交换 comm 消息:
-
-- `maieutics.comm.open(commId, targetName?, data?)` / `msg(commId, data?, buffers?)` /
-  `close(commId, data?)`:脚本 → 前端。`buffers` 为原生 `Uint8Array[]`,无 base64。
-- `maieutics.comm.on(event, handler)`:订阅前端 → 脚本的 comm 事件(`open` / `msg` / `close`)。
-- 也可用 `Deno.jupyter.broadcast("comm_open|comm_msg|comm_close", content, { buffers })` 从脚本发 comm。
-
-comm 走专属 WebSocket 路径(`/comm`),与控制总线隔离,二进制原生透传。消息编码为固定二进制格式
-(`[kind:1][commIdLen:2][commId][targetNameLen:2][targetName][dataLen:4][data][bufferCount:2][bufLen:4][buf]...`),
-C# 侧 `ReplControlHost.CommCodec` 与 Deno 侧 `maieutics-repl-client/comm.ts` 同构。
-
-## 与官方 Deno.jupyter 的差异
-
-- **`display()` 默认语义**:官方默认 `{ raw: true }`;本实现默认 `raw: false`(先经 `format()`)。官方 raw
-  要求调用方自行传 MediaBundle,本实现对普通对象更宽容,且与工具描述中显式 `{ raw: true }` 的用法一致。
-  需要官方默认行为时请显式传 `{ raw: true }`。
-- **`broadcast` 类型受限**:仅上表列出的消息类型被支持。其他 iopub 消息类型(如 `execute_result`、
-  `kernel_info_reply` 等)会抛 `TypeError`,因为那是内核职责,不是 REPL 脚本可广播的面。
-- **`deno jupyter` CLI / kernelspec / 连接文件面不存在**:架构不采用真 `deno jupyter` 内核(ADR 0014/0018),
-  Maieutics 本身就是 Jupyter kernel。
-
-## 明确不做
-
-- **comm 之外的任意 iopub 广播**:见上表。
-- **`_esm` 自定义前端组件**(anywidget 路线):本实现用经典 `@jupyter-widgets/controls` 控件集,不
-  托管任意前端 JS。需要任意前端渲染时走 anywidget(经 comm 透传,已支持)。
-- **ipywidgets 协议 v1**(`backbone`/`sync_data`):只实现 v2(`method:"update"`),老前端不支持。
-
-## 触发重新评审
-
-出现经典控件集之外的真实 widget 需求(需 comm + 二进制 buffers 之外的内核侧协议,或需要托管任意
-前端 JS 的 `_esm` 组件)时,先走 ADR 评审再扩展。
+参见 [Vue UI 设计](custom-ui-framework-design.md) 和 [ADR 0050](architecture/decisions/0050-retire-custom-component-families.md)。

@@ -2,7 +2,7 @@
 /** Plugins-surface pick models: ranking, badges, actions, iframe view state. */
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
-import { iframeViewState, type PluginPick, pluginPicks } from "./pluginPicks.ts";
+import { pluginPageUrl, type PluginPick, pluginPicks } from "./pluginPicks.ts";
 import type { PluginInfo } from "./protocol.ts";
 
 function plugin(overrides: Partial<PluginInfo> = {}): PluginInfo {
@@ -58,29 +58,23 @@ Deno.test("unknown approval states read as pending", () => {
   assertEquals((picks[0] as PluginPick).description.includes("pending approval"), true);
 });
 
-Deno.test("iframeViewState accepts only loopback gateway plugin paths", () => {
-  assertEquals(
-    iframeViewState("http://127.0.0.1:9123/tok/plugins/acme/", "m1"),
-    {
-      modelId: "m1",
-      viewFamily: "maieutics/iframe",
-      version: "1.0",
-      state: { url: "http://127.0.0.1:9123/tok/plugins/acme/" },
-    },
-  );
-  assertEquals(
-    iframeViewState("http://localhost:9123/tok/plugins/acme/", "m1")?.viewFamily,
-    "maieutics/iframe",
-  );
-  // Foreign hosts, non-plugin paths, and non-http schemes are refused.
-  assertEquals(iframeViewState("http://example.com/tok/plugins/acme/", "m1"), undefined);
-  assertEquals(iframeViewState("https://example.com/tok/plugins/acme/", "m1"), undefined);
-  assertEquals(iframeViewState("http://127.0.0.1:9123/other/acme/", "m1"), undefined);
-  assertEquals(iframeViewState("file:///etc/passwd", "m1"), undefined);
-  assertEquals(iframeViewState("", "m1"), undefined);
-});
-
 Deno.test("empty pageUrl is dropped from picks without crashing", () => {
   const picks = pluginPicks([plugin({ pageUrl: "" })]);
   assertStrictEquals((picks[0] as PluginPick).pageUrl, undefined);
+});
+
+Deno.test("gateway page validation remains available without a component-family scaffold", () => {
+  const valid = "http://127.0.0.1:9123/token/plugins/acme/";
+  assertEquals(pluginPageUrl(valid), valid);
+  for (
+    const invalid of [
+      "",
+      "not a url",
+      "file:///etc/passwd",
+      "https://example.com/token/plugins/x/",
+      "http://localhost/other/x/",
+    ]
+  ) {
+    assertEquals(pluginPageUrl(invalid), undefined);
+  }
 });

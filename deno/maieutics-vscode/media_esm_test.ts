@@ -108,6 +108,7 @@ Deno.test("shared output client is a self-contained browser ESM with its public 
   for (
     const name of [
       "createOutputRenderer",
+      "createFormRenderer",
       "renderTurn",
       "renderSubagents",
       "mountVueIsland",
@@ -127,7 +128,7 @@ Deno.test("renderer gate rejects real minified CJS bundles", async () => {
   const moduleRoot = new URL(".", import.meta.url);
   const scratch = await Deno.makeTempDir({ prefix: "maieutics-renderer-cjs-" });
   try {
-    for (const entry of ["widgetEntry", "viewEntry"]) {
+    for (const entry of ["formRenderer"]) {
       const outputPath = `${scratch}/${entry}.cjs`;
       const output = await new Deno.Command(Deno.execPath(), {
         args: [
@@ -137,7 +138,7 @@ Deno.test("renderer gate rejects real minified CJS bundles", async () => {
           "--minify",
           "--output",
           outputPath,
-          `renderer/${entry}.ts`,
+          `media/${entry}.js`,
         ],
         cwd: fileURLToPath(moduleRoot),
         stdin: "null",

@@ -1,10 +1,10 @@
 /**
  * Plugin-owned UI models (ADR 0038 stage 3, worker side).
  *
- * A granted plugin pushes native view-family frames to the kernel through the
+ * A granted plugin pushes declarative form frames to the kernel through the
  * `ui.models` capability and receives frontend events on its `UiEvent`
  * extension-point export. The kernel publishes open frames into the
- * foreground session's comm plane and announces them as `maieutics.view`
+ * foreground session's comm plane and announces them as `maieutics.form`
  * display members; a frontend that renders the announcement talks back over
  * the same comm, and the kernel routes those frames here.
  *
@@ -159,7 +159,7 @@ export const ui: {
       await pushFrame({
         kind: "open",
         commId,
-        targetName: "maieutics.view/maieutics/form",
+        targetName: "maieutics.form",
         data: {
           state: {
             ...(def.title === undefined ? {} : { title: def.title }),

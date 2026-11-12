@@ -108,13 +108,13 @@ public sealed class PluginUiCapabilityTests
             "{\"version\":1,\"type\":\"capability.invoke\",\"correlationId\":\"ui-1\"," +
             "\"payload\":{\"pluginId\":\"plugin-1\",\"capability\":\"ui.models\"," +
             "\"payload\":{\"kind\":\"open\",\"commId\":\"u1\"," +
-            "\"targetName\":\"maieutics.view/maieutics/form\",\"data\":{\"state\":{\"title\":\"hi\"}}}}}");
+            "\"targetName\":\"maieutics.form\",\"data\":{\"state\":{\"title\":\"hi\"}}}}}");
 
         var sent = await harness.Host.ReadSentAsync(TestContext.Current.CancellationToken);
         Assert.Contains("\"capability.result\"", sent);
         Assert.Contains("\"ui-1\"", sent);
         Assert.Equal("u1", Assert.Single(frames).CommId);
-        Assert.Equal("maieutics.view/maieutics/form", frames[0].TargetName);
+        Assert.Equal("maieutics.form", frames[0].TargetName);
         Assert.Equal("hi", frames[0].Data!.Value.GetProperty("state").GetProperty("title").GetString());
     }
 
@@ -212,14 +212,14 @@ public sealed class PluginUiCapabilityTests
             session.ToString(),
             publisher,
             "plugin-1",
-            new PluginUiFramePayload("open", "p1", "maieutics.view/maieutics/form", state.RootElement.Clone()),
+            new PluginUiFramePayload("open", "p1", "maieutics.form", state.RootElement.Clone()),
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("maieutics.view/maieutics/form", Assert.Single(router.PlaneFor(session.ToString()).SnapshotLive()).TargetName);
+        Assert.Equal("maieutics.form", Assert.Single(router.PlaneFor(session.ToString()).SnapshotLive()).TargetName);
         var announcement = Assert.Single(publisher.Published);
         Assert.Equal("repl.display", announcement.Type);
-        var view = announcement.Data.GetProperty("application/vnd.maieutics.view+json");
-        Assert.Equal("maieutics/form", view.GetProperty("viewFamily").GetString());
+        var view = announcement.Data.GetProperty("application/vnd.maieutics.form+json");
+        Assert.Equal(1, view.GetProperty("version").GetInt32());
         Assert.Equal("p1", view.GetProperty("modelId").GetString());
         Assert.Equal("panel", view.GetProperty("state").GetProperty("title").GetString());
 
@@ -233,7 +233,7 @@ public sealed class PluginUiCapabilityTests
                 session.ToString(),
                 publisher,
                 "plugin-1",
-                new PluginUiFramePayload("open", "p2", "maieutics.view/maieutics/form"),
+                new PluginUiFramePayload("open", "p2", "maieutics.form"),
                 TestContext.Current.CancellationToken);
         });
         var live = router.PlaneFor(session.ToString()).SnapshotLive();

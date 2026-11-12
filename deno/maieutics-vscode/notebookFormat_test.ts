@@ -3,16 +3,17 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   emptyNotebook,
+  FormOutputMime,
+  freezeOutputDisplays,
   mergeOutputSnapshots,
   NativeViewMime,
   NotebookFormatError,
   type OutputSnapshot,
   parseNotebook,
   serializeNotebook,
-  stripBundledDisplaySources,
 } from "./notebookFormat.ts";
 
-Deno.test("stripBundledDisplaySources removes executable sources, keeps the frozen state", () => {
+Deno.test("freezeOutputDisplays removes executable sources, keeps the frozen state", () => {
   const output: OutputSnapshot = {
     repl: [
       { displayId: "d1", data: { "text/html": "<b>t</b>" } },
@@ -24,7 +25,7 @@ Deno.test("stripBundledDisplaySources removes executable sources, keeps the froz
             viewFamily: "acme/panel",
             version: "1.0",
             state: { title: "frozen" },
-            esmSource: "registerViewFamily('acme/panel', { component: () => null });",
+            esmSource: "throw new Error('retired source must stay inert');",
             cssSource: ".acme { color: red; }",
           },
         },
@@ -32,18 +33,18 @@ Deno.test("stripBundledDisplaySources removes executable sources, keeps the froz
     ],
   };
 
-  const stripped = stripBundledDisplaySources(output);
+  const stripped = freezeOutputDisplays(output);
 
-  const announcement = stripped.repl?.[1].data[NativeViewMime] as Record<string, unknown>;
-  assertEquals("esmSource" in announcement, false);
-  assertEquals("cssSource" in announcement, false);
-  assertEquals(announcement.state, { title: "frozen" });
-  assertEquals(announcement.viewFamily, "acme/panel");
+  assertEquals(stripped.repl?.[1].data[NativeViewMime], undefined);
+  assertEquals(stripped.repl?.[1].data["application/json"], {
+    retiredView: "acme/panel",
+    state: { title: "frozen" },
+  });
   // Untouched displays pass through by reference.
   assertEquals(stripped.repl?.[0].data, { "text/html": "<b>t</b>" });
   // Outputs without bundled sources return unchanged (same reference).
   const plain: OutputSnapshot = { repl: [{ displayId: "d1", data: {} }] };
-  assertEquals(stripBundledDisplaySources(plain) === plain, true);
+  assertEquals(freezeOutputDisplays(plain) === plain, true);
 });
 
 Deno.test("empty notebook round-trips", () => {
@@ -294,7 +295,7 @@ Deno.test("untrusted notebook Vue sources are stripped on read and live sources 
   notebook.cells[0].output = output;
   const restored = parseNotebook(serializeNotebook(notebook));
   assertEquals(restored.cells[0].output?.repl?.[0].data, { "text/plain": "Frozen counter" });
-  assertEquals(stripBundledDisplaySources(output).repl?.[0].data, {
+  assertEquals(freezeOutputDisplays(output).repl?.[0].data, {
     "text/plain": "Frozen counter",
   });
   assertEquals(output.repl?.[0].data["application/vnd.maieutics.vue+json"] !== undefined, true);
@@ -317,14 +318,44 @@ Deno.test("a combined Vue/native bundle cannot preserve executable sources throu
     }],
   };
   const expected = {
-    [NativeViewMime]: { viewFamily: "test", state: { count: 0 } },
+    "application/json": { retiredView: "test", state: { count: 0 } },
     "text/plain": "Frozen",
   };
-  assertEquals(stripBundledDisplaySources(output).repl?.[0].data, expected);
+  assertEquals(freezeOutputDisplays(output).repl?.[0].data, expected);
   const notebook = emptyNotebook();
   notebook.cells[0].output = output;
   assertEquals(
     parseNotebook(serializeNotebook(notebook)).cells[0].output?.repl?.[0].data,
     expected,
   );
+});
+
+Deno.test("saved forms and legacy form inputs restore as readonly data without live attachment", () => {
+  for (
+    const data of [
+      {
+        [FormOutputMime]: {
+          version: 1,
+          modelId: "m1",
+          state: { fields: [] },
+          esmSource: "must not survive",
+        },
+      },
+      {
+        [NativeViewMime]: {
+          version: "1.0",
+          modelId: "m1",
+          viewFamily: "maieutics/form",
+          state: { fields: [] },
+          esmSource: "must not survive",
+        },
+      },
+    ]
+  ) {
+    const notebook = emptyNotebook();
+    notebook.cells[0].output = { repl: [{ displayId: "form", data }] };
+    assertEquals(parseNotebook(serializeNotebook(notebook)).cells[0].output?.repl?.[0].data, {
+      [FormOutputMime]: { version: 1, modelId: "m1", state: { fields: [] }, snapshot: true },
+    });
+  }
 });

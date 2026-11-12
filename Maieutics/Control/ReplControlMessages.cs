@@ -112,10 +112,10 @@ internal sealed record ToolInvokeRequest(
 internal sealed record ToolInvokePayload(string Tool, JsonElement Arguments);
 
 /// <summary>
-///     One native view-family comm frame pushed by a plugin worker through the
+///     One declarative form comm frame pushed by a plugin worker through the
 ///     <c>ui.models</c> capability (ADR 0038 stage 3): the worker-originated mirror of the
 ///     comm plane's open/message/close shapes. <c>Kind</c> is <c>open</c> (requires
-///     <c>TargetName</c> under <c>maieutics.view/</c>), <c>message</c>, or <c>close</c>.
+///     <c>TargetName</c> equal to <c>maieutics.form</c>), <c>message</c>, or <c>close</c>.
 /// </summary>
 internal sealed record PluginUiFramePayload(
     string Kind,

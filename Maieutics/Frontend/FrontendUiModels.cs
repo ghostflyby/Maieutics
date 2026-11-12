@@ -5,18 +5,16 @@ using Maieutics.DenoRepl;
 
 namespace Maieutics.Frontend;
 
-/// <summary>Native view-family wire constants (ADR 0038).</summary>
+/// <summary>Version-one declarative form wire constants.</summary>
 internal static class FrontendUiWire
 {
-    /// <summary>The display mime every native view-family announcement rides.</summary>
-    internal const string ViewMime = "application/vnd.maieutics.view+json";
+    /// <summary>The display mime declarative form announcements use.</summary>
+    internal const string ViewMime = "application/vnd.maieutics.form+json";
 
-    /// <summary>The comm target of the <c>maieutics/form</c> family.</summary>
-    internal const string FormTarget = "maieutics.view/maieutics/form";
+    /// <summary>The version-one form comm target.</summary>
+    internal const string FormTarget = "maieutics.form";
 
-    internal const string FormFamily = "maieutics/form";
-
-    internal const string FormVersion = "1.0";
+    internal const int FormVersion = 1;
 }
 
 /// <summary>One choice option of a <c>choice</c> form field.</summary>
@@ -24,7 +22,7 @@ internal sealed record FrontendUiFormChoice(
     [property: JsonPropertyName("value")] string Value,
     [property: JsonPropertyName("label")] string Label);
 
-/// <summary>One form field of the <c>maieutics/form</c> family state (mirrors the SDK dialect).</summary>
+/// <summary>One declarative form field, shared with the SDK data contract.</summary>
 internal sealed record FrontendUiFormField(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("label")] string? Label = null,
@@ -36,7 +34,7 @@ internal sealed record FrontendUiFormField(
     [property: JsonPropertyName("placeholder")]
     string? Placeholder = null);
 
-/// <summary>The <c>maieutics/form</c> family state carried on comm_open and in the announcement.</summary>
+/// <summary>The form state carried on comm_open and in the announcement.</summary>
 internal sealed record FrontendUiFormState(
     [property: JsonPropertyName("title")] string? Title = null,
     [property: JsonPropertyName("fields")] IReadOnlyList<FrontendUiFormField>? Fields = null,
@@ -52,10 +50,8 @@ internal sealed record FrontendUiFormState(
 internal sealed record FrontendUiFormAnnouncement(
     [property: JsonPropertyName("modelId")]
     string ModelId,
-    [property: JsonPropertyName("viewFamily")]
-    string ViewFamily,
     [property: JsonPropertyName("version")]
-    string Version,
+    int Version,
     [property: JsonPropertyName("state")] FrontendUiFormState State);
 
 /// <summary>The native uplink dialect: state deltas and one-shot events.</summary>
@@ -187,10 +183,9 @@ internal sealed class FrontendFormModel : IFrontendKernelCommOwner, IAsyncDispos
         {
             [FrontendUiWire.ViewMime] = new FrontendUiFormAnnouncement(
                 model._commId,
-                FrontendUiWire.FormFamily,
                 FrontendUiWire.FormVersion,
                 state),
-            ["text/plain"] = string.IsNullOrWhiteSpace(state.Title) ? "form" : state.Title!,
+            ["text/plain"] = string.IsNullOrWhiteSpace(state.Title) ? "form" : state.Title,
         };
         var published = publisher.TryPublishPresentation(
             sessionId,

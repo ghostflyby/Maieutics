@@ -93,7 +93,7 @@ public sealed class PluginImportMergerTests
     public void SkipsReservedKeys()
     {
         var (imports, exclusions, warnings) = Merge(
-            Plugin("a", imports: [Entry("@maieutics/plugin-sdk", "jsr:@maieutics/plugin-sdk@^0.2")]));
+            Plugin("a", imports: [Entry("@maieutics/plugin-sdk", "jsr:@maieutics/plugin-sdk@^0.3")]));
 
         Assert.Empty(imports);
         Assert.Empty(exclusions);

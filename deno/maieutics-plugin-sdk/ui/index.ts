@@ -1,150 +1,129 @@
-/**
- * Maieutics UI module public surface (custom-UI framework, ADR 0038).
- *
- * Bind the runtime to the REPL's comm transport, then author native view
- * models from cells:
- *
- * ```ts
- * const { form } = maieutics.ui;
- * form(
- *   { fields: [{ name: "q", type: "text" }] },
- *   { onSubmit: (values) => { /* … *&#47; } },
- * );
- * ```
- *
- * The `jupyter.widget` family keeps its own runtime and API
- * (`maieutics.widgets`); this module serves native families only. The REPL
- * worker binds the transport at bootstrap — importing the module outside a
- * bound host leaves the runtime unbound and `useUiRuntime()` throws.
- */
+/** Declarative forms. Vue components live in the shared browser output client. */
+import { readonly, type Ref, shallowRef } from "../vue_reactivity.ts";
+import { type FormDef, type FormHandlers, type FormState, formState } from "./form.ts";
+export * from "./form.ts";
 
-import { createForm, FormFamilyContract, type FormState } from "./form.ts";
-import { JUPYTER_DISPLAY, type UiBroadcast } from "./family.ts";
-import { UiModelRuntime } from "./runtime.ts";
-import type { UiModel } from "./runtime.ts";
+/** Form display data contains no component source or runtime registration. */
+export const FORM_MIME = "application/vnd.maieutics.form+json";
+/** Comm target for the version-one form data contract. */
+export const FORM_TARGET = "maieutics.form";
+/** Display hook supplied by the REPL. */
+export const JUPYTER_DISPLAY = Symbol.for("Jupyter.display");
 
-export type {
-  UiBroadcast,
-  UiIncomingDispatch,
-  UiIncomingMessage,
-  ViewFamilyContract,
-} from "./family.ts";
-export {
-  JUPYTER_DISPLAY,
-  NATIVE_DISPLAY_MIME,
-  NativeFamilyContract,
-  nativeTarget,
-} from "./family.ts";
-export { UiModelRuntime } from "./runtime.ts";
-export type { BundledFamilySource, UiModel, UiModelHandlers } from "./runtime.ts";
-export {
-  createForm,
-  FORM_FAMILY,
-  type FormDef,
-  type FormFieldDef,
-  type FormFieldType,
-  type FormHandlers,
-  type FormState,
-  formState,
-  initialValues,
-  normalizeChoices,
-} from "./form.ts";
-
-/** The host surface the REPL worker injects (broadcast + comm subscription). */
+/** A form's transport, supplied by its owning REPL worker. */
 export interface UiHost {
-  broadcast: UiBroadcast;
-  onComm: (
-    event: "open" | "msg" | "close",
-    handler: (message: {
-      commId: string;
-      targetName?: string;
-      data?: unknown;
-      buffers: Uint8Array[];
-    }) => void,
-  ) => void;
+  broadcast(messageType: string, content: Record<string, unknown>): Promise<void>;
+  onComm(
+    event: "msg" | "close",
+    handler: (message: { commId: string; data?: unknown }) => void,
+  ): void;
 }
 
-let runtime: UiModelRuntime | undefined;
+/** A live form; updates are awaited and closing releases its handlers. */
+export interface FormHandle {
+  readonly commId: string;
+  readonly state: Readonly<Ref<FormState>>;
+  update(patch: Partial<FormState>): Promise<void>;
+  close(): Promise<void>;
+  [JUPYTER_DISPLAY](): Promise<Record<string, unknown>>;
+}
 
-/** The runtime bound to the REPL transport; throws before bindUiHost. */
-export function useUiRuntime(): UiModelRuntime {
-  if (runtime === undefined) {
-    throw new Error(
-      "The UI runtime is not bound. Import the Maieutics UI module inside " +
-        "the REPL so the worker can inject the comm transport.",
-    );
+interface Entry {
+  state: Ref<FormState>;
+  handlers: FormHandlers;
+  tail: Promise<void>;
+  pending: number;
+}
+
+/** Owns form data and comm routing, with no custom component registry. */
+export class FormController {
+  readonly #host: UiHost;
+  readonly #forms = new Map<string, Entry>();
+  private constructor(host: UiHost) {
+    this.#host = host;
   }
-  return runtime;
-}
 
-/**
- * Bind the runtime to a host transport (REPL worker bootstrap) and
- * pre-register the built-in native families. Mirrors `bindWidgetHost`:
- * each call binds a fresh runtime against the given host (tests bind fakes;
- * production binds once).
- */
-export function bindUiHost(host: UiHost): UiModelRuntime {
-  const bound = new UiModelRuntime(host.broadcast);
-  bound.registerFamily(new FormFamilyContract());
-  host.onComm("msg", (message) => {
-    bound.handleIncoming({
-      kind: 1,
-      commId: message.commId,
-      targetName: message.targetName,
-      data: message.data,
-      buffers: message.buffers,
+  /** Explicitly attach one controller to its owning worker transport. */
+  static bind(host: UiHost): FormController {
+    const controller = new FormController(host);
+    controller.#bind();
+    return controller;
+  }
+
+  #bind(): void {
+    const host = this.#host;
+    host.onComm("close", ({ commId }) => this.#forms.delete(commId));
+    host.onComm("msg", ({ commId, data }) => {
+      const entry = this.#forms.get(commId);
+      if (!entry || !isRecord(data) || data.method !== "event") return;
+      if (data.name === "cancel") entry.handlers.onCancel?.();
+      if (data.name === "submit" && isRecord(data.payload) && isRecord(data.payload.values)) {
+        entry.handlers.onSubmit?.(data.payload.values);
+      }
     });
-  });
-  // Release the model registry when the frontend closes a comm; the kernel
-  // keeps running (invariant 18) and a later create registers a fresh model.
-  host.onComm("close", (message) => {
-    bound.remove(message.commId);
-  });
-  runtime = bound;
-  return bound;
+  }
+
+  /** Publish the form before returning a displayable handle; failed opens retain no entry. */
+  async form(def: FormDef, handlers: FormHandlers = {}): Promise<FormHandle> {
+    if (this.#forms.size >= 128) throw new Error("form_limit");
+    const commId = crypto.randomUUID();
+    const entry: Entry = {
+      state: shallowRef(formState(def)),
+      handlers,
+      tail: Promise.resolve(),
+      pending: 0,
+    };
+    this.#forms.set(commId, entry);
+    try {
+      await this.#host.broadcast("comm_open", {
+        comm_id: commId,
+        target_name: FORM_TARGET,
+        data: { state: entry.state.value },
+      });
+    } catch (error) {
+      this.#forms.delete(commId);
+      throw error;
+    }
+    const requireOpen = () => {
+      if (!this.#forms.has(commId)) throw new Error("form_closed");
+    };
+    requireOpen();
+    return {
+      commId,
+      state: readonly(entry.state),
+      update: async (patch) => {
+        requireOpen();
+        if (entry.pending >= 64) throw new Error("form_update_limit");
+        const captured = structuredClone(patch);
+        entry.pending++;
+        const operation = entry.tail.then(async () => {
+          requireOpen();
+          const state = { ...entry.state.value, ...captured };
+          await this.#host.broadcast("comm_msg", {
+            comm_id: commId,
+            data: { method: "update", state },
+          });
+          if (this.#forms.has(commId)) entry.state.value = state;
+        }).finally(() => {
+          entry.pending--;
+        });
+        entry.tail = operation.catch(() => {});
+        await operation;
+      },
+      close: async () => {
+        if (!this.#forms.delete(commId)) return;
+        await entry.tail;
+        await this.#host.broadcast("comm_close", { comm_id: commId });
+      },
+      [JUPYTER_DISPLAY]: () =>
+        Promise.resolve({
+          [FORM_MIME]: { version: 1, modelId: commId, state: entry.state.value },
+          "text/plain": entry.state.value.title ?? "Form",
+        }),
+    };
+  }
 }
 
-/** Create a live form model (convenience over `useUiRuntime` + `createForm`). */
-export function form(
-  def: Parameters<typeof createForm>[1],
-  handlers: Parameters<typeof createForm>[2] = {},
-): DisplayableModel<FormState> {
-  return displayable(createForm(useUiRuntime(), def, handlers));
-}
-
-/** Register a custom view-family contract on the bound runtime, optionally
- * with the bundled component source its announcements embed (stage 1b). */
-export function registerFamily(
-  contract: Parameters<UiModelRuntime["registerFamily"]>[0],
-  bundled?: Parameters<UiModelRuntime["registerFamily"]>[1],
-): void {
-  useUiRuntime().registerFamily(contract, bundled);
-}
-
-/** Create a model of any registered native family. */
-export function model<State extends Record<string, unknown>>(
-  family: string,
-  state: State,
-  handlers: Parameters<UiModelRuntime["create"]>[2] = {},
-): DisplayableModel<State> {
-  return displayable(useUiRuntime().create<State>(family, state, handlers));
-}
-
-/** A UI model wrapped for display as a cell result. */
-export type DisplayableModel<State extends Record<string, unknown>> = UiModel<State> & {
-  [JUPYTER_DISPLAY]: () => Promise<Record<string, unknown>>;
-};
-
-/**
- * Make a model displayable as a cell result: evaluating it in a cell emits
- * the family's display-mime announcement (same contract as `createWidget`).
- */
-export function displayable<State extends Record<string, unknown>>(
-  model: UiModel<State>,
-): DisplayableModel<State> {
-  return {
-    ...model,
-    // announce is sync; the display contract expects a thenable.
-    [JUPYTER_DISPLAY]: () => Promise.resolve(model.announce()),
-  };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

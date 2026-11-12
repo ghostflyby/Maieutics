@@ -19,6 +19,68 @@ namespace Maieutics.Product.Tests;
 [Trait("Category", "Smoke")]
 public sealed class FrontendProcessSmokeTests
 {
+    [Fact(Timeout = 120_000)]
+    public async Task PublishedExecutableCreatesVueFormDataThroughItsRealRepl()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("vue-form-smoke");
+        const string code = """
+            if ('widgets' in maieutics || 'registerFamily' in maieutics.ui || 'model' in maieutics.ui)
+              throw new Error('retired UI authoring must not be exposed');
+            const identity = <T>(value: T) => value;
+            const approval = await maieutics.ui.form({ title: 'Vue form smoke', fields: [{ name: 'note', type: 'text' }] });
+            await Deno.jupyter.display(approval);
+            await approval.update({ title: 'Updated Vue form' });
+            await approval.close();
+            identity('vue-form-published');
+            """;
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            toolFlow: true, toolName: "repl_execute", toolArgumentsJson: JsonSerializer.Serialize(new { code }),
+            expectedToolResultText: "vue-form-published");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path);
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var url = discovery.GetProperty("url").GetString() ?? throw new InvalidOperationException("Missing URL");
+        var token = discovery.GetProperty("token").GetString();
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(url);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var id = session.GetProperty("id").GetString();
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+        await socket.ConnectAsync(new Uri($"ws://{new Uri(url).Authority}/v1/agent/sessions/{id}/events"), budget.Token);
+        try
+        {
+            await ReceiveEventFrameAsync(socket, budget.Token);
+            using var submitted = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/queue",
+                new { items = new[] { new { text = "Show the Vue form" } } }, budget.Token);
+            Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+            var displayed = false;
+            while (true)
+            {
+                var frame = await ReceiveEventFrameAsync(socket, budget.Token);
+                var type = frame.GetProperty("type").GetString();
+                if (type == "repl.display")
+                {
+                    var data = frame.GetProperty("data");
+                    if (data.TryGetProperty("application/vnd.maieutics.form+json", out var form))
+                    {
+                        Assert.Equal(1, form.GetProperty("version").GetInt32());
+                        Assert.Equal("Vue form smoke", form.GetProperty("state").GetProperty("title").GetString());
+                        Assert.False(form.TryGetProperty("viewFamily", out _));
+                        displayed = true;
+                    }
+                }
+                if (type == "run.failed") Assert.Fail(frame.GetRawText());
+                if (type == "run.completed") break;
+            }
+            await provider.Completion.WaitAsync(budget.Token);
+            Assert.True(displayed, "The published kernel and real REPL must emit versioned form data.");
+        }
+        finally { socket.Abort(); }
+    }
+
     [Theory(Timeout = 120_000)]
     [InlineData(false)]
     [InlineData(true)]

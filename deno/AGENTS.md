@@ -25,10 +25,11 @@
   copied into media/; its notebook adapter must not fork that implementation. `package.json` is the
   extension manifest only; dependencies live in `deno.json`.
 - `maieutics-output-client/` — standalone browser ESM output renderer. Owns timeline DOM, SSR
-  snapshot application, progressive Vue hydration/state and disposal. No VS Code APIs or transport
-  credentials; hosts supply message delivery, optional Markdown and action handling. Build emits
-  dist/outputClient.js plus declarations; build:vscode copies the identical JS artifact into the
-  extension. Commit the copied artifact and enforce rebuild freshness in CI.
+  snapshot application, progressive Vue hydration/state, built-in data-only Vue forms and disposal.
+  No VS Code APIs or transport credentials; hosts supply message delivery, optional Markdown and
+  action handling. Build emits dist/outputClient.js plus declarations; build:vscode copies the
+  identical JS artifact into the extension. Commit the copied artifact and enforce rebuild freshness
+  in CI.
 - `maieutics-output-renderer/` — executable-owned passive Markdown, explicit data-template and Vue
   SSR primitives for `docs/streaming-output-rendering-design.md`. Owns offline content rendering and
   highlighter lifetime. The executable embeds its committed `bundle/service.js`; regenerate that
@@ -76,13 +77,11 @@ per-process temporary directory before launching the REPL child
 Deno-side file that is imported by another embedded file but is not itself embedded fails at child
 startup with `Module not found`, breaking every real-Deno integration test.
 
-When adding, renaming, or removing an individually embedded REPL/client/host `.ts` file:
-
-1. Update `Maieutics/Maieutics.csproj` `EmbeddedResource` entries (one
-   `<EmbeddedResource Include=... LogicalName="Maieutics.Deno....">` per file).
-2. Update the `DenoReplModule.Entries` table in `Maieutics/DenoRepl/DenoReplModule.cs` (the logical
-   name maps to the materialized relative path).
-3. Keep the two lists in sync with each other and with the module's own `deno.json` imports.
+REPL/client/host/SDK TypeScript sources are embedded through the `DenoRuntimeModule` globs in
+`Maieutics.csproj`; DenoReplModule and PluginHostModule materialize the matching package resources.
+Keep package config/import mappings and those globs aligned when adding or retiring modules. Do not
+add a second hand-maintained file table. Source deletion must remove bootstrap/import references and
+pass real-child startup coverage as well as source type checks.
 
 The output renderer ships as the committed `maieutics-output-renderer/bundle/service.js` resource,
 not as individual source files. Source additions there require regenerating that bundle and running

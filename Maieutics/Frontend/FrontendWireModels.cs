@@ -63,13 +63,12 @@ internal sealed record FrontendCommCapability(
     [property: JsonPropertyName("maxMessageBytes")]
     int MaxMessageBytes);
 
-/// <summary>Advertises the native view families (ADR 0038): the families whose models
-/// the build produces or relays; null when the comm plane is disabled.</summary>
+/// <summary>Advertises the declarative Vue form contract; null without a comm plane.</summary>
 internal sealed record FrontendUiCapability(
     [property: JsonPropertyName("version")]
     int Version,
-    [property: JsonPropertyName("families")]
-    string[] Families);
+    [property: JsonPropertyName("formVersion")]
+    int FormVersion);
 
 /// <summary>Describes the active session to a frontend.</summary>
 internal sealed record FrontendSessionInfo(

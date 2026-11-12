@@ -1,5 +1,4 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
-import { createTsxTransform } from "../maieutics-plugin-sdk/widgets/transform.ts";
 import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
@@ -60,7 +59,7 @@ export const rpc = {
     installHostEnvironment();
     await installWorkspaceFsBridge();
     await installProcessBridge();
-    kernel = await createReplKernel({ transform: createTsxTransform() });
+    kernel = await createReplKernel();
   },
 
   async *execute(
@@ -175,41 +174,14 @@ async function installMaieuticsNamespace(): Promise<void> {
   const injected = { ...namespace, comm };
   (globalThis as unknown as Record<string, unknown>).maieutics = injected;
 
-  // Bind the widget runtime to the comm transport this proxy owns, and expose
-  // the widget API under `maieutics.widgets` so TSX cells can
-  // `const { IntSlider } = maieutics.widgets` without an import specifier.
-  // The widget module is imported lazily by the REPL worker; its esbuild-wasm
-  // payload loads only when a widget cell actually compiles (createTsxTransform
-  // stays lazy, and the wasm initialize is deferred to first transform).
-  const widgetModule = await import("../maieutics-plugin-sdk/widgets/index.ts");
-  widgetModule.bindWidgetHost({
-    broadcast: (messageType, content, extra) => Deno.jupyter.broadcast(messageType, content, extra),
-    onComm: (event, handler) => comm.on(event, handler),
-  });
-  (globalThis as unknown as { maieutics: Record<string, unknown> }).maieutics.widgets = {
-    IntSlider: widgetModule.IntSlider,
-    FloatSlider: widgetModule.FloatSlider,
-    Button: widgetModule.Button,
-    Text: widgetModule.Text,
-    ToggleButton: widgetModule.ToggleButton,
-    IntRangeSlider: widgetModule.IntRangeSlider,
-    Box: widgetModule.Box,
-    createWidget: widgetModule.createWidget,
-    useWidgetRuntime: widgetModule.useWidgetRuntime,
-  };
-
-  // Bind the native-UI model runtime (custom-UI framework, ADR 0038) to the
-  // same comm transport and expose it as `maieutics.ui`; the jupyter.widget
-  // family keeps its own runtime above.
+  // Forms publish plain data; component execution belongs to the Vue output client.
   const uiModule = await import("../maieutics-plugin-sdk/ui/index.ts");
-  uiModule.bindUiHost({
-    broadcast: (messageType, content, extra) => Deno.jupyter.broadcast(messageType, content, extra),
+  const forms = uiModule.FormController.bind({
+    broadcast: (messageType, content) => Deno.jupyter.broadcast(messageType, content),
     onComm: (event, handler) => comm.on(event, handler),
   });
   (globalThis as unknown as { maieutics: Record<string, unknown> }).maieutics.ui = {
-    form: uiModule.form,
-    model: uiModule.model,
-    registerFamily: uiModule.registerFamily,
+    form: forms.form.bind(forms),
   };
 }
 

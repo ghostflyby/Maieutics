@@ -571,7 +571,7 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(root, "mod.ts"),
             """
-            import { capabilities, defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+            import { capabilities, defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
             export const pre = defineExtensionPoint("ToolPreInvoke", {
               handler: async () => {
                 try {
@@ -1225,7 +1225,7 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(root, "mod.ts"),
             """
-            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
             export const discover = defineExtensionPoint("McpDiscover", {
               handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
             });
@@ -1258,7 +1258,7 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(extra, "mod.ts"),
             """
-            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
             export const discover = defineExtensionPoint("McpDiscover", {
               handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
             });
@@ -1350,13 +1350,13 @@ public sealed class PluginHostIntegrationTests
             Path.Combine(root, "mod.ts"),
             pluginName == "rejecting"
                 ? """
-                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
                   export const pre = defineExtensionPoint("ToolPreInvoke", {
                     handler: () => ({ action: "reject", error: { code: "denied_by_hook", message: "the hook denied this call" } }),
                   });
                   """
                 : """
-                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+                  import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
                   export const discover = defineExtensionPoint("McpDiscover", {
                     handler: () => [{ module: "npm:@maieutics/probe-server", transport: { type: "stdio", command: "deno" } }],
                   });
@@ -1380,7 +1380,7 @@ public sealed class PluginHostIntegrationTests
             "sdk-direct-jsr" => "import { concat } from \"jsr:@std/bytes@1/concat\";",
             _ => "",
         };
-        var sdkImport = "import { defineExtensionPoint } from \"jsr:@maieutics/plugin-sdk@^0.2\";";
+        var sdkImport = "import { defineExtensionPoint } from \"jsr:@maieutics/plugin-sdk@^0.3\";";
         var moduleBody = variant == "sdk-only"
             ? $"{sdkImport}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\" }} }}],\n}});"
             : $"{sdkImport}\n{importLine}\nexport const discover = defineExtensionPoint(\"McpDiscover\", {{\n  handler: () => [{{ module: \"npm:@maieutics/probe-server\", transport: {{ type: \"stdio\", command: \"deno\", args: [String(concat([new Uint8Array([1, 2]), new Uint8Array([3, 4])]))] }} }}],\n}});";
@@ -1439,7 +1439,7 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(root, "mod.ts"),
             """
-            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.2";
+            import { defineExtensionPoint } from "jsr:@maieutics/plugin-sdk@^0.3";
             import dep from "@acme/sub/main";
             export const discover = defineExtensionPoint("McpDiscover", {
               handler: async () => {
@@ -1469,7 +1469,7 @@ public sealed class PluginHostIntegrationTests
         File.WriteAllText(
             Path.Combine(root, "sub", "mod.ts"),
             """
-            import { defineActor } from "jsr:@maieutics/plugin-sdk@^0.2";
+            import { defineActor } from "jsr:@maieutics/plugin-sdk@^0.3";
             export const math = defineActor({ double(n: number): number { return n * 2; } });
             """);
         return root;

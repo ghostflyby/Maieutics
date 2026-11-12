@@ -67,9 +67,9 @@ The renderer replaces assistant Markdown inside these existing output boundaries
 turn completion now selects the assistant endpoint described below; streaming partials and restored
 notebook snapshots decode through the passive lane; connected history can renew assistant provenance
 only after canonical transcript verification as described below.
-Tool activity, permitted reasoning summaries, rich MIME values, widgets, and interactive view families
-retain their owning contracts until separately adapted. The Preact view-family lane in ADR 0038 does
-not implicitly become a Vue application.
+Tool activity, permitted reasoning summaries and rich MIME values retain their owning contracts.
+Built-in forms now use ordinary Vue components and a separate data-only contract (ADR 0050);
+the old family/widget engine is retired.
 
 The first rendering primitive is now implemented in
 [`deno/maieutics-output-renderer`](../deno/maieutics-output-renderer/README.md), a Deno workspace member.
@@ -886,7 +886,8 @@ fallback is passive, disables HTML/command links and uses a scoped shadow bounda
 The VS Code adapter maps MIME/items, injects protected native Markdown and forwards message/action
 services. The same built ESM is copied into media/outputClient.js; extension-host Node code does not
 import another workspace module. build:media and CI rebuild/copy it, and CI rejects a stale committed
-artifact. Widget/view renderers are separate and unchanged. Public frontend envelopes, capability
+artifact. At extraction time the widget/view renderers remained separate; ADR 0050 retires them in the
+subsequent Vue UI migration described below. Public frontend envelopes, capability
 versions, provenance and notebook persistence are unchanged: assistant/vue kinds are explicit host
 execution choices, never inferred from an unverified saved marker. CSS can still inherit editor
 variables, with browser defaults when absent.
@@ -896,16 +897,44 @@ and SSR, progressive ClientOnly state, terminal/idempotent disposal, aborted pre
 commit, and the existing actual VS Code notebook/history paths. Registry publication, a custom element
 wrapper and a browser HTTP/clipboard transport adapter are not introduced by this extraction.
 
-## Document state and presentation units
+## Vue UI migration (implemented 2026-11-12)
 
-The 2026-11-11 [Vue reactive UI migration study](vue-reactive-ui-migration.md) records the requested
-replacement of Preact browser families and signals-core backend extension reactivity. It proposes
-owned Vue worker models, explicit data projections and a shared-client reactive mirror, keeping
-SSR as a snapshot consumer. Nine pinned-version probes and a local 12-test SDK comparison pass;
-the SDK 0.2 backend core has since migrated with real-worker coverage. The Vue UI/model protocol
-and browser-family replacement remain pending. The
-study also covers component catalogs, UI action routing, history/legacy compatibility and removal
-of the old family/JSX abstractions. No currently shipped protocol is changed by this research.
+[ADR 0050](architecture/decisions/0050-retire-custom-component-families.md) removes the former
+component-family engine, widget runtime and JSX authoring dialect. SDK 0.3 uses a form-only data
+producer; the shared output ESM owns normal Vue form components using the same bundled Vue runtime
+as assistant islands. The notebook adapter only supplies transport. There is no custom family
+registration, dependency collector/paint loop or executable bundled component source.
+
+Forms use a separate version-one MIME/comm target, with confirmed live state, local Vue drafts,
+shared backend projections across views and deterministic unmount. Snapshot save/read marks forms
+permanently readonly; legacy component sources are discarded. The form contract is advertised by
+UI capability version 2; rendering capabilities and assistant SSR/progressive semantics are unchanged.
+Built-in form rendering is client-side; it does not add SSR model hydration or a plugin catalog.
+
+The VS Code form bridge bounds cached live states to 1,024 models. An excess new open is rejected
+locally with `form_state_limit`; only that model's mounted views receive a readonly/closed
+notification. The shared receive pump and admitted models remain usable, including state updates,
+actions and refresh opens at capacity. No upstream producer is closed by this frontend-local limit.
+Once a model closes and releases capacity, a fresh open may admit a previously rejected model.
+Actual transport loss still makes all retained views readonly. Regression coverage fills the cache,
+rejects the next open, verifies surviving interactions and tests admission after capacity is freed;
+the standalone ESM export gate also asserts `createFormRenderer`.
+
+General business-model projections, correlated action results and approved reusable Vue component
+registration remain the next stages in the [migration roadmap](vue-reactive-ui-migration.md).
+
+Validation on macOS arm64: 681 Deno tests and 20 Node scenarios, 1,679 .NET cases
+(1,671 passed; eight existing platform/external-MCP skips), 25 real VS Code cases and 13 published
+NativeAOT process smokes pass. The real notebook tests exercise both current and migrated historical
+form MIME through the production serializer/renderer registration; browser tests verify field
+values, draft/focus preservation, multi-view updates, readonly closure and cleanup even when host
+unmount delivery fails. The published-process smoke creates, displays, updates and closes a form
+through the actual Deno REPL and proves that old authoring APIs are absent. Warning-free Release
+build, pinned/frozen install, format/lint/types, SDK publish dry-run, offline SSR and committed asset
+freshness checks pass. Linux/Windows validation is delegated to the new PR's CI.
+
+
+## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,
 document-level definitions, binding state, and a tree of presentation units. Units carry stable
@@ -1044,7 +1073,7 @@ boundaries, using a DOM merger if validated. Verify focus, selection, expanded d
 and scroll position under updates rather than relying on replacement of whole output trees.
 
 Interactive components use explicit client-owned islands with matching server and client code and
-initial state. DOM merging must not traverse a subtree managed by Vue, Preact, or a widget runtime.
+initial state. DOM merging must not traverse a subtree managed by Vue or another host-owned runtime.
 Define mount, update, and disposal through that subtree's adapter. SSR alone does not install event
 handlers or make a VitePress component interactive.
 

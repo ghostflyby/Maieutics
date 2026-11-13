@@ -245,15 +245,15 @@ internal static class UnifiedDiff
     }
 
     /// <summary>A whole-final-line replacement for texts that differ only in
-    /// their trailing newline (the line arrays align completely).</summary>
+    /// their trailing newline. The caller has established that the line arrays
+    /// are equal and nonempty.</summary>
     private static List<ScriptOp> FinalLineReplacementScript(string[] before, string[] after)
     {
         var script = new List<ScriptOp>();
-        var lastBefore = Math.Max(0, before.Length - 1);
-        var lastAfter = Math.Max(0, after.Length - 1);
-        var equalCount = Math.Max(lastBefore, lastAfter);
-        for (var index = 0; index < equalCount; index++)
-            script.Add(new ScriptOp(OpKind.Equal, Math.Min(index, lastBefore), Math.Min(index, lastAfter)));
+        var lastBefore = before.Length - 1;
+        var lastAfter = after.Length - 1;
+        for (var index = 0; index < lastBefore; index++)
+            script.Add(new ScriptOp(OpKind.Equal, index, index));
 
         script.Add(new ScriptOp(OpKind.Delete, lastBefore, lastAfter));
         script.Add(new ScriptOp(OpKind.Insert, lastBefore, lastAfter));

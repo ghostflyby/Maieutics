@@ -101,10 +101,6 @@ internal sealed class MaieuticsCommandExecutor(
             throw new MaieuticsCommandException(
                 MaieuticsCommandException.CommandError, "Unknown Maieutics command.");
         }
-        catch (MaieuticsCommandException)
-        {
-            throw;
-        }
         catch (Exception exception) when (exception is ArgumentException or IOException or
                                               UnauthorizedAccessException or NotSupportedException)
         {

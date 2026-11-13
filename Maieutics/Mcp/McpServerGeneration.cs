@@ -1132,10 +1132,6 @@ internal sealed class McpServerGeneration
                         resource.ProtocolResource.Description,
                         resource.ProtocolResource.MimeType));
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
             catch (McpException exception)
             {
                 _logger.LogDebug(
@@ -1156,10 +1152,6 @@ internal sealed class McpServerGeneration
                         template.ProtocolResourceTemplate.Name,
                         template.ProtocolResourceTemplate.Description,
                         template.ProtocolResourceTemplate.MimeType));
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
             }
             catch (McpException exception)
             {

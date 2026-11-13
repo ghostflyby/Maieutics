@@ -9,6 +9,35 @@ const count = ref<number>(0);
 <template><button class="counter-btn" @click="count++">Count</button><span class="counter-display">{{ count }}</span></template>
 <style scoped>.counter-btn { padding: 6px 14px; color: red; }</style>`;
 
+Deno.test("Vue Fetch import is explicit and SSR cannot acquire a plugin HTTP transport", async () => {
+  const component = compileVueComponent(
+    "http",
+    `<script setup>
+    import { useFetch as usePluginFetch } from '@maieutics/output-client';
+    import {onMounted} from 'vue';
+    const fetch = usePluginFetch();
+    onMounted(() => fetch('/api/items'));
+    </script><template><p>Client HTTP</p></template>`,
+  );
+  assertStringIncludes(await renderVueComponent(component), ">Client HTTP</p>");
+  const denied = compileVueComponent(
+    "httpdenied",
+    `<script setup>
+    import {useFetch} from '@maieutics/output-client';
+    let denied = false;
+    try { await useFetch()('/api/items'); } catch(error) { denied = error.message === 'plugin_fetch_unavailable'; }
+    </script><template><p>{{denied}}</p></template>`,
+  );
+  assertStringIncludes(await renderVueComponent(denied), ">true</p>");
+  assertThrows(() =>
+    compileVueComponent(
+      "badhttp",
+      `<script setup>
+    import {createPluginHttpClient} from '@maieutics/output-client';
+    </script><template/>`,
+    ), VueComponentError);
+});
+
 Deno.test("official Vue compilers preserve setup, TS, events and scoped CSS", () => {
   const component = compileVueComponent("counter", CounterSfc);
   assertStringIncludes(component.code, 'Vue["ref"]');

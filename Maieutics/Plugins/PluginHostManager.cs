@@ -684,7 +684,7 @@ internal sealed partial class PluginHostManager(
     /// <summary>Snapshots every discovered plugin's surface entry. Gateway page URLs
     /// are composed only for approved plugins with a live mount; blocked plugins
     /// appear (with their state) but carry no usable links.</summary>
-    internal IReadOnlyList<PluginSurfaceInfo> GetPluginSurfaces(string? gatewayHostname, int gatewayPort, string? gatewayToken)
+    internal IReadOnlyList<PluginSurfaceInfo> GetPluginSurfaces(PluginHttpGatewayPayload? gateway)
     {
         PluginDescriptor[] snapshot;
         PluginApprovalState[] surfaceStates;
@@ -700,12 +700,13 @@ internal sealed partial class PluginHostManager(
         {
             var descriptor = snapshot[index];
             var state = surfaceStates[index];
+            var mount = gateway?.Mounts.FirstOrDefault(candidate => candidate.PluginId == descriptor.Id && candidate.Live);
             string? pageUrl = null;
             if (state == PluginApprovalState.Approved &&
-                gatewayHostname is not null && gatewayToken is not null &&
+                gateway is not null && mount?.AccessToken is { Length: > 0 } accessToken &&
                 descriptor.UiForm?.Error is null)
             {
-                pageUrl = $"http://{gatewayHostname}:{gatewayPort}/{gatewayToken}/plugins/{descriptor.Id}/";
+                pageUrl = $"http://{gateway.Hostname}:{gateway.Port}/{accessToken}/plugins/{Uri.EscapeDataString(descriptor.Id)}/";
             }
 
             surfaces.Add(new PluginSurfaceInfo(

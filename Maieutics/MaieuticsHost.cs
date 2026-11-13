@@ -1080,10 +1080,7 @@ internal sealed class FrontendPluginSurfaceAdapter(PluginHostManager manager) : 
     public IReadOnlyList<FrontendPluginSurfaceEntry> GetPluginSurfaces()
     {
         var gateway = manager.GetHttpGateway();
-        var surfaces = manager.GetPluginSurfaces(
-            gateway?.Hostname,
-            gateway?.Port ?? 0,
-            gateway?.Token);
+        var surfaces = manager.GetPluginSurfaces(gateway);
         return
         [
             .. surfaces.Select(surface => new FrontendPluginSurfaceEntry(

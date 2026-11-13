@@ -2,6 +2,10 @@
 
 Status: Draft
 
+Follow-up: [ADR 0051](0051-plugin-scoped-http-fetch.md) implements plugin-scoped browser credentials,
+Vue Fetch and owned HTTP subscriptions on this gateway. Browser-facing URLs no longer use the
+host-wide entrance token. The original design and historical open items below are retained.
+
 Date: 2026-08-28
 
 ## Context

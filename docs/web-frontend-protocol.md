@@ -578,6 +578,18 @@ pinned throughout each barrier, and requests are never broadcast or replayed.
 
 ## Comm channels and declarative forms
 
+New plugin component data/action transport uses the plugin HTTP gateway (ADR 0051), rather than
+expanding form events into general RPC. The bearer-authenticated `/v1/plugins` response retains its
+existing `pageUrl` field, now populated only for an approved live HTTP mount with a plugin-scoped
+credential. URLs lacking a current mount or scoped credential are omitted. Changing the plugin ID
+in such a URL does not grant access to another plugin; worker replacement invalidates the old
+credential. This is additive to the internal host registry's optional mount `accessToken` field;
+older registry frames remain readable without exposing the host-wide gateway token in a page URL.
+Scoped requests support credentialless CORS after mount/token validation; native HTTP response
+bodies carry binary and streaming data. Existing comm framing and form capabilities below are
+unchanged. The Vue client and remaining component binding are described in
+[ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md).
+
 The generic session comm transport carries owned producer state and actions. Built-in forms use
 `application/vnd.maieutics.form+json`:
 

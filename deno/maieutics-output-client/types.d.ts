@@ -92,6 +92,7 @@ export declare function mountVueIsland(
   container: HTMLElement,
   code: string,
   progressive?: { setupKey: string; renderCode: string },
+  http?: PluginHttpClient,
 ): VueIslandDisposer;
 
 /** Create an independently owned browser renderer. */
@@ -114,6 +115,23 @@ export interface FormRenderer {
   render(id: string, value: unknown, element: HTMLElement): void;
   receive(message: unknown): Promise<void>;
   disposeOutput(id?: string): void;
+  dispose(): void;
+}
+
+/** Native HTTP semantics with paths resolved within the host-authorized plugin root. */
+export type PluginFetch = (path: string, init?: RequestInit) => Promise<Response>;
+
+export interface PluginHttpOptions {
+  /** Host transport; browser hosts must arrange CSP/CORS access or supply a stream adapter. */
+  readonly fetch?: typeof globalThis.fetch;
+}
+
+/** Host-owned request scope. Mount credentials must be issued by the server for one plugin. */
+export interface PluginHttpClient {
+  readonly fetch: PluginFetch;
+  /** Install into an app using this ESM's Vue runtime, before mounting. */
+  install(app: { provide(key: symbol, value: PluginFetch): unknown }): void;
+  /** Abort requests and active response bodies; terminal and idempotent. */
   dispose(): void;
 }
 export interface FormMessage {

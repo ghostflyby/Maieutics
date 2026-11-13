@@ -109,6 +109,8 @@ Deno.test("shared output client is a self-contained browser ESM with its public 
     const name of [
       "createOutputRenderer",
       "createFormRenderer",
+      "createPluginHttpClient",
+      "useFetch",
       "renderTurn",
       "renderSubagents",
       "mountVueIsland",

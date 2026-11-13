@@ -31,6 +31,13 @@ Current form behavior and migration examples live in the
 
 ## Remaining architecture
 
+Transport decision: [ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) uses HTTP
+as the primary channel for new plugin components. The implemented foundation provides scoped
+gateway credentials, native streaming Request/Response, and the shared ESM's Vue `useFetch()`.
+Business actions use HTTP requests/responses; long-lived projections may use SSE/NDJSON body
+streams. Existing forms retain their comm protocol during migration. The component catalog and
+automatic notebook binding to approved plugin contexts are not yet implemented.
+
 The current declarative form channel is not a general Vue business-model protocol. Further work
 must keep the executable authoritative for conversation state while allowing an approved plugin
 worker to own business data.
@@ -74,7 +81,9 @@ mirror without recompilation or rerunning component setup.
 
 1. Owned Vue business models, bounded projection codec and revisioned snapshot attachment, with
    explicit session/worker-generation admission and joined shutdown.
-2. Typed action request/result/error/cancel routing, independent of render/rendered envelopes.
+2. HTTP model/action endpoints with validation, explicit session/revision context and cancellation,
+   independent of render/rendered envelopes. Add subscription framing and resumption deliberately;
+   the Fetch foundation does not automatically reconnect or replay requests.
 3. Approved reusable Vue component catalog in the shared ESM and matching SSR dependency resolution.
    Do not restore a custom family registry, paint engine or injected component-source dialect.
 4. Integrate VitePress embedding, resource delivery and richer reusable controls through normal Vue

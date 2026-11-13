@@ -13,7 +13,7 @@ advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-10
+Last updated: 2026-11-13
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -721,9 +721,10 @@ There is no insertion of guessed script/tag closings. A new valid prefix can inc
 references and updated TOC definitions because the entire accepted prefix is parsed together.
 
 The first accepted component uses isolated SSR and ships initial HTML plus the full factory.
-After delivery, the extension's bounded initialization hint requests compile-only updates: the
-service compiles the new render function/CSS but executes no SSR setup and returns no new component
-factory. This avoids hydrating new server-initial state over interactive client state. Recovery or
+After a correlated browser commit, the extension uses a bounded initialization hint to request
+compile-only updates: the service compiles the new render function/CSS but executes no SSR setup
+and returns no new component factory. This avoids hydrating new server-initial state over interactive
+client state. Recovery or
 hint eviction can require fresh SSR; deterministic presentation setup remains required, and external
 producers still belong to authorized tools. The service does not retain JS closures or a shared VM.
 All frontends share compilation/initial SSR through Deno; each frontend owns its local UI state.
@@ -747,6 +748,16 @@ hints, and Vue unmount stops effects exactly once. Hints and source ancestry are
 entries. A pending tail retains the last usable interactive prefix. A sealed incomplete or invalid
 update reports a local status while preserving the last usable presentation; it cannot silently
 substitute JS `undefined` or a false conditional branch.
+
+The 2026-11-13 commit handshake registers a bounded delivery receipt before posting each result,
+so even a synchronous host can acknowledge it. Only the existing browser `applied` message with
+`engine:"vue"`, matching document/request identity, current source epoch and a progressive setup
+identity establishes initialization. Sending a factory does not prove that hydration succeeded.
+Native/SSR commits clear initialization, and an older receipt cannot resurrect a scope after a
+newer fallback. Rewrites, cancellation, source eviction and disposal invalidate obsolete receipts.
+The bridge retains at most 128 outstanding receipts; eviction conservatively requires full SSR
+until a current mount is confirmed. A reply that retains an already mounted app after an unavailable
+update does not falsely confirm a new setup. No HTTP or notebook schema changes are introduced.
 
 Coverage checks delayed prefix delivery, compile-only selection, rewrite/revert epochs, cancellation,
 wire validation, isolated SSR, and the real controller publishing live MIME before terminal frames.
@@ -911,7 +922,7 @@ permanently readonly; legacy component sources are discarded. The form contract 
 UI capability version 2; rendering capabilities and assistant SSR/progressive semantics are unchanged.
 Built-in form rendering is client-side; it does not add SSR model hydration or a plugin catalog.
 
-The VS Code form bridge bounds cached live states to 1,024 models. An excess new open is rejected
+Each VS Code form comm scope bounds cached live states to 1,024 models. An excess new open is rejected
 locally with `form_state_limit`; only that model's mounted views receive a readonly/closed
 notification. The shared receive pump and admitted models remain usable, including state updates,
 actions and refresh opens at capacity. No upstream producer is closed by this frontend-local limit.
@@ -920,10 +931,36 @@ Actual transport loss still makes all retained views readonly. Regression covera
 rejects the next open, verifies surviving interactions and tests admission after capacity is freed;
 the standalone ESM export gate also asserts `createFormRenderer`.
 
+As of 2026-11-13, the notebook host owns a separate comm scope per editor, bound to the notebook's
+explicit pinned session. Renderer model/view IDs do not select that session, and an unbound file
+cannot borrow the foreground session. State is posted only to its owning editor, allowing two
+sessions or two editors to use overlapping model/output IDs. The last view unmount, tab/document close
+or session repin cancels and joins that editor's socket without closing the upstream model or
+another editor's attachment. Retired receive pumps cannot publish into a replacement scope; retained
+views are made readonly immediately. The registry admits at most 128 active/retiring editor scopes,
+and messages without a current owning notebook tab cannot create one. Tab closure is observed separately because the host
+can retain a notebook document after closing its editor. State delivery uses captured tab-group
+ownership so another editor of the same notebook is retained.
+Terminal disposal joins every owned connection. Existing form MIME, comm framing and frozen
+snapshot semantics are unchanged. Unit coverage controls pending startup and replacement races;
+the actual notebook test drives two pinned sessions through the production renderer messaging and
+real comm sockets, then repins/closes them independently.
+
+Local validation for the 2026-11-13 presentation-lifecycle increment passes 707 Deno tests, 20 Node
+scenarios, 27 actual VS Code cases, and 1,679 .NET cases (1,671 passed, eight existing platform or
+external-service skips). Type, lint, format, warning-as-error build and diff checks pass; rebuilding
+the browser ESM leaves the committed asset unchanged. The new notebook regression fails against
+the unmodified main branch by observing a foreground-session socket where the pinned session is
+required. The commit-handshake regressions likewise fail before the fix. One initial full Deno run
+hit the existing queue-watcher reconciliation race; its focused rerun and subsequent full runs pass.
+No executable or SSR bundle sources changed, so NativeAOT publishing and offline SSR rebuilding
+are not repeated. Linux/Windows verification remains with PR CI.
+
 General business-model projections, correlated action results and approved reusable Vue component
 registration remain the next stages in the [migration roadmap](vue-reactive-ui-migration.md).
 
-Validation on macOS arm64: 681 Deno tests and 20 Node scenarios, 1,679 .NET cases
+The 2026-11-12 form migration validation on macOS arm64 passed 681 Deno tests and 20 Node scenarios,
+1,679 .NET cases
 (1,671 passed; eight existing platform/external-MCP skips), 25 real VS Code cases and 13 published
 NativeAOT process smokes pass. The real notebook tests exercise both current and migrated historical
 form MIME through the production serializer/renderer registration; browser tests verify field

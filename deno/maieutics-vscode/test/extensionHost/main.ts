@@ -34,6 +34,7 @@ import {
 import { FrontendError } from "../../protocol.ts";
 import { registerCommandCompletion } from "../../completion.ts";
 import { testNotebookVueFormAsync, testVueFormsAsync } from "./forms.ts";
+import { testFormSessionsAsync } from "./formSessions.ts";
 import { testPluginHttpAsync } from "./pluginHttp.ts";
 import { testTurnRendererAsync } from "./turnRenderer.ts";
 import { testNotebookSsrAsync, testSsrRenderingAsync } from "./ssrRendering.ts";
@@ -1156,6 +1157,10 @@ const tests: HostTest[] = [
   {
     name: "restored Markdown waits for the connection already starting during reload",
     run: () => testRenderingDuringConnectionAsync(workspaceRoot()),
+  },
+  {
+    name: "live notebook forms use their pinned sessions and release only their own connections",
+    run: testFormSessionsAsync,
   },
   {
     name: "the actual extension tolerates broken projects and registers folder changes",

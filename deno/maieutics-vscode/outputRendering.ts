@@ -66,7 +66,15 @@ export class OutputRenderingBridge {
   #pump: Promise<void> | undefined;
   #closed = false;
   readonly #initialized = new Map<string, { source: string; epoch: number }>();
-  readonly #sources = new Map<string, { text: string; epoch: number; progressive: boolean }>();
+  readonly #sources = new Map<
+    string,
+    { text: string; epoch: number; progressive: boolean; applied: number }
+  >();
+  readonly #deliveries = new Map<
+    string,
+    { documentId: string; source: string; epoch: number; sequence: number; vue: boolean }
+  >();
+  #deliverySequence = 0;
   #epoch = 0;
 
   constructor(private readonly options: OutputRenderingOptions) {}
@@ -98,12 +106,34 @@ export class OutputRenderingBridge {
       return;
     }
     if (typeof value.documentId !== "string") return;
-    if (value.type === "applied" && value.engine === "native") {
+    if (value.type === "applied") {
       if (
+        value.engine === "native" &&
         typeof value.native === "object" && value.native !== null && "error" in value.native &&
         typeof value.native.error === "string"
       ) {
         this.options.log("Native Markdown rendering failed; displaying plain source.");
+      }
+      if (
+        typeof value.requestId !== "string" ||
+        !["native", "ssr", "vue"].includes(String(value.engine))
+      ) {
+        return;
+      }
+      const delivery = this.#deliveries.get(value.requestId);
+      if (delivery?.documentId !== value.documentId) return;
+      this.#deliveries.delete(value.requestId);
+      const source = this.#sources.get(value.documentId);
+      if (
+        !source || source.epoch !== delivery.epoch || delivery.sequence <= source.applied ||
+        !source.text.startsWith(delivery.source)
+      ) return;
+      source.applied = delivery.sequence;
+      if (value.engine === "vue" && delivery.vue) {
+        this.#initialized.delete(value.documentId);
+        this.#initialized.set(value.documentId, { source: delivery.source, epoch: delivery.epoch });
+      } else if (value.engine !== "vue") {
+        this.#initialized.delete(value.documentId);
       }
       return;
     }
@@ -116,6 +146,7 @@ export class OutputRenderingBridge {
         this.#initialized.delete(value.documentId);
         this.#pending.delete(value.documentId);
         this.#latest.delete(value.documentId);
+        this.#forgetDeliveries(value.documentId);
       }
       if (
         this.#active?.documentId === value.documentId &&
@@ -173,12 +204,14 @@ export class OutputRenderingBridge {
       text: request.text,
       epoch,
       progressive: request.progressive === true,
+      applied: sameEpoch ? previous.applied : 0,
     });
     if (this.#sources.size > 64) {
       const oldest = this.#sources.keys().next().value;
       if (oldest !== undefined) {
         this.#sources.delete(oldest);
         this.#initialized.delete(oldest);
+        this.#forgetDeliveries(oldest);
       }
     }
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
@@ -198,6 +231,7 @@ export class OutputRenderingBridge {
     this.#latest.clear();
     this.#initialized.clear();
     this.#sources.clear();
+    this.#deliveries.clear();
     this.#active?.controller.abort();
     await this.#pump;
   }
@@ -256,6 +290,18 @@ export class OutputRenderingBridge {
           !this.#closed && !controller.signal.aborted && latest?.epoch === request.epoch &&
           (latest?.requestId === request.requestId || progress)
         ) {
+          // Register before posting: an in-process host can acknowledge synchronously.
+          // Delivery alone never establishes a mounted Vue scope.
+          this.#deliveries.set(request.requestId, {
+            documentId: request.documentId,
+            source: result?.renderedSource ?? request.text,
+            epoch: request.epoch,
+            sequence: ++this.#deliverySequence,
+            vue: request.progressive === true && /^[a-f\d]{64}$/i.test(result?.vue?.setupKey ?? ""),
+          });
+          if (this.#deliveries.size > 128) {
+            this.#deliveries.delete(this.#deliveries.keys().next().value ?? "");
+          }
           await this.options.post(
             result === undefined
               ? {
@@ -278,23 +324,9 @@ export class OutputRenderingBridge {
                 ...(result.vue ? { vue: result.vue } : {}),
               },
           );
-          const active = this.#latest.get(request.documentId);
-          if (
-            !this.#closed && request.progressive && result?.vue &&
-            active !== undefined && active.epoch === request.epoch && active.progressive &&
-            active.text.startsWith(result.renderedSource ?? request.text)
-          ) {
-            this.#initialized.delete(request.documentId);
-            this.#initialized.set(request.documentId, {
-              source: result.renderedSource ?? request.text,
-              epoch: request.epoch ?? 0,
-            });
-            if (this.#initialized.size > 64) {
-              this.#initialized.delete(this.#initialized.keys().next().value ?? "");
-            }
-          }
         }
       } catch {
+        this.#deliveries.delete(request.requestId);
         this.options.log("Output renderer message delivery failed.");
       } finally {
         if (this.#latest.get(request.documentId)?.requestId === request.requestId) {
@@ -302,6 +334,12 @@ export class OutputRenderingBridge {
         }
         this.#active = undefined;
       }
+    }
+  }
+
+  #forgetDeliveries(documentId: string): void {
+    for (const [requestId, delivery] of this.#deliveries) {
+      if (delivery.documentId === documentId) this.#deliveries.delete(requestId);
     }
   }
 

@@ -1,3 +1,5 @@
+/// <reference lib="deno.ns" />
+/// <reference lib="es2024.promise" />
 import { assert, assertEquals } from "@std/assert";
 import { OutputRenderingBridge, type RenderedMarkdown } from "./outputRendering.ts";
 
@@ -309,7 +311,7 @@ Deno.test("template binding updates keep the source identity and discard an olde
   }
 });
 
-Deno.test("progressive bridge publishes prefixes and switches to compile-only after first Vue delivery", async () => {
+Deno.test("progressive compilation requires a browser commit rather than successful delivery", async () => {
   const first = Promise.withResolvers<RenderedMarkdown>();
   const started = Promise.withResolvers<void>();
   const options: unknown[] = [];
@@ -328,7 +330,11 @@ Deno.test("progressive bridge publishes prefixes and switches to compile-only af
         started.resolve();
         return await first.promise;
       }
-      return { ...snapshot(""), renderedSource: text, vue: { ...vue, code: "" } };
+      return {
+        ...snapshot(""),
+        renderedSource: text,
+        vue: { ...vue, code: progressive?.compileOnly ? "" : "initial" },
+      };
     },
     post: (message) => {
       posted.push(message as Record<string, unknown>);
@@ -349,10 +355,17 @@ Deno.test("progressive bridge publishes prefixes and switches to compile-only af
     first.resolve({ ...snapshot("SSR"), renderedSource: "first", vue });
     await Promise.all([initial, later]);
     assertEquals(options, [{ compileOnly: false, streaming: true }, {
-      compileOnly: true,
+      compileOnly: false,
       streaming: true,
     }]);
     assertEquals(posted.map((x) => x.renderedSource), ["first", "first second"]);
+    await bridge.handle({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: "doc",
+      requestId: "r2",
+      engine: "vue",
+    });
     await bridge.handle(live(3, "first second sealed", false));
     assertEquals(options.at(-1), { compileOnly: true, streaming: false });
     await bridge.handle(live(4, "rewritten"));
@@ -362,6 +375,166 @@ Deno.test("progressive bridge publishes prefixes and switches to compile-only af
     assertEquals(options.at(-1), { compileOnly: false, streaming: true });
   } finally {
     first.resolve({ ...snapshot(""), vue });
+    await bridge.dispose();
+  }
+});
+
+Deno.test("only current correlated Vue commits can establish or retire a progressive scope", async () => {
+  const modes: boolean[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: (_id, text, _signal, _template, _vue, _assistant, progressive) => {
+      modes.push(progressive?.compileOnly === true);
+      return Promise.resolve({
+        ...snapshot(text),
+        vue: {
+          version: 1,
+          code: "initial",
+          scopeId: "data-v-doc",
+          setupKey: "a".repeat(64),
+          renderCode: "render",
+        },
+      });
+    },
+    post: () => Promise.resolve(),
+    log() {},
+  });
+  const live = (n: number, text: string) => ({
+    ...request(n, text),
+    assistant: true,
+    progressive: true,
+    streaming: true,
+  });
+  const applied = (requestId: string, engine = "vue") =>
+    bridge.handle({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: "doc",
+      requestId,
+      engine,
+    });
+  try {
+    await bridge.handle(live(1, "first"));
+    await applied("unknown");
+    await bridge.handle(live(2, "first second"));
+    assertEquals(
+      modes,
+      [false, false],
+      "An unsolicited commit cannot authorize render-only output",
+    );
+    await applied("r2");
+    await bridge.handle(live(3, "first second third"));
+    assertEquals(modes.at(-1), true);
+    await applied("r3", "native");
+    await applied("r1");
+    await bridge.handle(live(4, "first second third fourth"));
+    assertEquals(
+      modes.at(-1),
+      false,
+      "An older Vue commit cannot resurrect a scope after fallback",
+    );
+    await bridge.handle(live(5, "rewritten"));
+    await applied("r4");
+    await bridge.handle(live(6, "rewritten later"));
+    assertEquals(modes.at(-1), false, "A previous source epoch cannot initialize the replacement");
+    await bridge.handle({ source: "maieutics-output", type: "cancel", documentId: "doc" });
+    await applied("r6");
+    await bridge.handle(live(7, "rewritten later again"));
+    assertEquals(modes.at(-1), false, "Disposal invalidates outstanding commit receipts");
+  } finally {
+    await bridge.dispose();
+  }
+});
+
+Deno.test("a synchronous browser commit is observed before message delivery returns", async () => {
+  const modes: boolean[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: (_id, text, _signal, _template, _vue, _assistant, progressive) => {
+      modes.push(progressive?.compileOnly === true);
+      return Promise.resolve({
+        ...snapshot(text),
+        vue: { version: 1, code: "initial", scopeId: "data-v-doc", setupKey: "a".repeat(64) },
+      });
+    },
+    post: async (message) => {
+      const reply = message as { requestId: string };
+      await bridge.handle({
+        source: "maieutics-output",
+        type: "applied",
+        documentId: "doc",
+        requestId: reply.requestId,
+        engine: "vue",
+      });
+    },
+    log() {},
+  });
+  try {
+    for (const revision of [1, 2]) {
+      await bridge.handle({
+        ...request(revision, "text".repeat(revision)),
+        assistant: true,
+        progressive: true,
+        streaming: true,
+      });
+    }
+    assertEquals(modes, [false, true]);
+  } finally {
+    await bridge.dispose();
+  }
+});
+
+Deno.test("evicted or failed deliveries cannot authorize compile-only rendering", async () => {
+  const modes: boolean[] = [];
+  let failDelivery = false;
+  const bridge = new OutputRenderingBridge({
+    render: (_id, text, _signal, _template, _vue, _assistant, progressive) => {
+      modes.push(progressive?.compileOnly === true);
+      return Promise.resolve({
+        ...snapshot(text),
+        vue: {
+          version: 1,
+          code: "initial",
+          scopeId: "data-v-doc",
+          setupKey: "a".repeat(64),
+        },
+      });
+    },
+    post: () => failDelivery ? Promise.reject(new Error("Disconnected")) : Promise.resolve(),
+    log() {},
+  });
+  const live = (revision: number) =>
+    bridge.handle({
+      ...request(revision, "x".repeat(revision)),
+      assistant: true,
+      progressive: true,
+      streaming: true,
+    });
+  const applied = (revision: number) =>
+    bridge.handle({
+      source: "maieutics-output",
+      type: "applied",
+      documentId: "doc",
+      requestId: `r${revision}`,
+      engine: "vue",
+    });
+  try {
+    for (let revision = 1; revision <= 129; revision++) await live(revision);
+    await applied(1);
+    await live(130);
+    assertEquals(
+      modes.at(-1),
+      false,
+      "Evicting an unconfirmed receipt must conservatively retain full SSR",
+    );
+    failDelivery = true;
+    await live(131);
+    await applied(131);
+    failDelivery = false;
+    await live(132);
+    assertEquals(modes.at(-1), false, "A failed post cannot leave an admissible commit receipt");
+    await applied(132);
+    await live(133);
+    assertEquals(modes.at(-1), true);
+  } finally {
     await bridge.dispose();
   }
 });

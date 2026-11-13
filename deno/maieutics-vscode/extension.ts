@@ -41,7 +41,7 @@ import {
   guessAttachmentMediaType,
   parseAttachmentMarkers,
 } from "./attachments.ts";
-import { UiBridge } from "./uiBridge.ts";
+import { UiBridgeRegistry } from "./uiBridge.ts";
 import { OutputRenderingBridge } from "./outputRendering.ts";
 import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
@@ -253,8 +253,9 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   const formChannel = vscode.notebooks.createRendererMessaging("maieutics-form-renderer");
-  const uiBridge = new UiBridge({
-    connect: async (signal) => {
+  const formEditorGroups = new WeakMap<vscode.NotebookEditor, vscode.TabGroup>();
+  const uiBridge = new UiBridgeRegistry<vscode.NotebookEditor>({
+    connect: async (sessionId, signal) => {
       const client = await clientOf();
       signal.throwIfAborted();
       // The comm capability gate (ADR 0024): an older server without comm
@@ -268,11 +269,10 @@ export function activate(context: vscode.ExtensionContext): void {
         );
       }
 
-      const session = await client.session(signal);
-      return client.commSocket(session.id, { signal });
+      return client.commSocket(sessionId, { signal });
     },
-    post: (message) => {
-      void Promise.resolve(formChannel.postMessage(message)).catch(
+    post: (editor, message) => {
+      void Promise.resolve(formChannel.postMessage(message, editor)).catch(
         (error: unknown) => output?.appendLine(`form post failed: ${error}`),
       );
     },
@@ -307,12 +307,49 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
-    formChannel.onDidReceiveMessage(({ message }) => {
-      void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
-        output?.appendLine(`form bridge failed: ${error}`)
+    formChannel.onDidReceiveMessage(({ editor, message }) => {
+      if (editor.notebook.isClosed) return;
+      const group = vscode.window.tabGroups.all.find((group) =>
+        group.viewColumn === editor.viewColumn
+      );
+      if (
+        !group?.tabs.some((tab) =>
+          tab.input instanceof vscode.TabInputNotebook &&
+          tab.input.uri.toString() === editor.notebook.uri.toString()
+        )
+      ) return;
+      formEditorGroups.set(editor, group);
+      void uiBridge.handleRendererMessage(
+        editor,
+        readStoredSessionId(editor.notebook.metadata),
+        message,
+      ).catch((error: unknown) => output?.appendLine(`form bridge failed: ${error}`));
+    }),
+    vscode.workspace.onDidCloseNotebookDocument((document) => {
+      void uiBridge.releaseWhere((editor) => editor.notebook === document).catch(() =>
+        output?.appendLine("Form notebook cleanup failed.")
       );
     }),
-    { dispose: () => void uiBridge.dispose().catch(() => {}) },
+    vscode.window.tabGroups.onDidChangeTabs(({ closed }) => {
+      for (const tab of closed) {
+        if (!(tab.input instanceof vscode.TabInputNotebook)) continue;
+        const uri = tab.input.uri.toString();
+        void uiBridge.releaseWhere((editor) =>
+          editor.notebook.uri.toString() === uri && formEditorGroups.get(editor) === tab.group
+        ).catch(() => output?.appendLine("Form editor cleanup failed."));
+      }
+    }),
+    vscode.workspace.onDidChangeNotebookDocument(({ notebook, metadata }) => {
+      if (metadata === undefined) return;
+      const sessionId = readStoredSessionId(notebook.metadata);
+      void uiBridge.releaseWhere((editor, boundSessionId) =>
+        editor.notebook === notebook && boundSessionId !== sessionId
+      ).catch(() => output?.appendLine("Form session cleanup failed."));
+    }),
+    {
+      dispose: () =>
+        void uiBridge.dispose().catch(() => output?.appendLine("Form bridge cleanup failed.")),
+    },
     {
       dispose: () =>
         void renderingBridge.dispose().catch(() =>

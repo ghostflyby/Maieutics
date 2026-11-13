@@ -52,6 +52,12 @@ evaluation is not a separate authentication gate. Unexpected change-stream failu
 diagnostic and release only the affected registration. Service changes use the existing
 per-element collection codec, so replacing a function handler does not attempt structured cloning.
 
+Resuming after `undefined` creates a fresh mount token even within the same registration. The old
+URL remains revoked and browser clients must rediscover the surface. The real-worker pause/resume
+test asserts validity before pause, 404 while paused, token rotation and continued 404 for the old
+URL after resume. Shutdown fault doubles clean up their underlying gateway before injecting a
+rejection, so the host remains its sole disposal owner on both success and failure paths.
+
 A published HTTP root is an active actor reference and pins its worker against idle reclamation.
 Explicit stop/reload/revocation still withdraws it. Idle maintenance has an awaitable completion
 boundary so tests can advance its supplied clock and assert completed stops without sleeping.

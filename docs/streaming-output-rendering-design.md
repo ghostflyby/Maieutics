@@ -962,6 +962,11 @@ cross the per-element collection codec instead of cloning functions. Real kernel
 now verifies scoped URL invalidation through approval revocation and fresh credentials after
 re-approval. Shutdown preserves all stage failures using `AggregateError` when needed.
 
+Pause/resume coverage also pins the existing URL lifecycle: root admission survives `undefined`,
+but the live mount token does not. Resume publishes a new URL; the old one remains 404. Clients
+must rediscover the surface after a pause. Shutdown failure fixtures retain sole host ownership
+by cleaning up the underlying gateway before returning the injected failure.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

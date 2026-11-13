@@ -70,8 +70,14 @@ Deno.test("an undefined HTTP root retains admission until unprovide and rejects 
     await host.startAll();
     await waitForMounts(gateway, (mounts) => mounts.length === 1);
     const address = await gateway.startRouter({ token: "host-only-token" });
+    const initialToken = gateway.snapshots()[0].accessToken;
+    const initialUrl = `http://127.0.0.1:${address.port}/${initialToken}/plugins/shared/`;
+    assertEquals(await (await fetch(initialUrl)).text(), "a");
     await host.invoke("shared", "./a", "ToolPreInvoke", { action: "hide" });
     await waitForMounts(gateway, (mounts) => mounts.length === 0);
+    const paused = await fetch(initialUrl);
+    assertEquals(paused.status, 404, "Pausing a mount revokes its scoped URL");
+    await paused.body?.cancel();
     assertEquals(await host.invoke("shared", "./b", "ToolPreInvoke", {}), {
       accepted: false,
       name: "AdmissionRejected",
@@ -80,6 +86,14 @@ Deno.test("an undefined HTTP root retains admission until unprovide and rejects 
     await waitForMounts(gateway, (mounts) => mounts.length === 1);
     const mountA = gateway.snapshots()[0];
     assertEquals(mountA.specifier, "@maieutics/shared/a");
+    assertNotEquals(
+      mountA.accessToken,
+      initialToken,
+      "Resuming the same registration creates a new mount token; clients must rediscover its surface",
+    );
+    const expired = await fetch(initialUrl);
+    assertEquals(expired.status, 404, "Resuming must not revive a URL revoked by the pause");
+    await expired.body?.cancel();
     assertEquals(
       await (await fetch(`http://127.0.0.1:${address.port}/${mountA.accessToken}/plugins/shared/`))
         .text(),

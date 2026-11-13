@@ -17,7 +17,9 @@ for (const failing of [[], ["storage"], ["http"], ["storage", "http"]]) {
     const gateway = new (class extends HttpGateway {
       override dispose(): Promise<void> {
         calls.push("http");
-        return failing.includes("http") ? Promise.reject(httpError) : super.dispose();
+        return super.dispose().then(() => {
+          if (failing.includes("http")) throw httpError;
+        });
       }
     })();
     const host = new PluginHost({
@@ -39,7 +41,6 @@ for (const failing of [[], ["storage"], ["http"], ["storage", "http"]]) {
       assertEquals(calls, ["storage", "http"], "Repeated disposal must not start another teardown");
     } finally {
       host.dispose();
-      await HttpGateway.prototype.dispose.call(gateway);
     }
   });
 }

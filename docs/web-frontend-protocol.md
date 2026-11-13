@@ -46,7 +46,8 @@ appears on first presentation and remains the fallback. On unchanged-layout upda
 stays attached until the next matching response or a fully prepared latest native fallback commits;
 intermediate native renders do not replace it. Identical committed source/mode/bindings need no new
 request. This is a frontend presentation policy; server requests remain stateless. A local `applied`
-acknowledgement follows DOM application for verification; it is not a frontend event frame or an Agent completion signal.
+acknowledgement follows DOM application and confirms the committed frontend engine; it is not a
+frontend event frame or an Agent completion signal.
 SSR HTML is derived presentation and is not saved into notebook v1 snapshots.
 Live assistant text nodes and restored snapshots carry `application/vnd.maieutics.turn+json` so they
 enter this renderer; native Markdown fallback happens inside it. Legacy Markdown-node metadata
@@ -1216,6 +1217,14 @@ while retaining the instance, refs, computed bindings and hooks; full factories 
 can also update an existing matching scope without re-running setup. Script rewrites start a new
 source epoch and require a full initial factory. Template changes invalidate compiler render caches.
 Complete synchronous setup is required; arbitrary later declarations and async setup are unsupported.
+
+The notebook bridge enables `compileOnly` only after a correlated local `applied` acknowledgement
+confirms a Vue commit for a current progressive result. Message delivery alone is insufficient.
+Correlated current fallback commits invalidate that hint, including admission-overload fallbacks;
+stale acknowledgements after rewrites, newer commits or
+disposal cannot restore it. Receipt retention is bounded, and an evicted hint requires a full initial
+result. Receipts store identities, epoch, sequence and accepted prefix length rather than retaining
+source snapshots. This is frontend-local coordination; the authenticated stateless HTTP shapes are unchanged.
 
 Supporting VS Code controllers emit the existing runtime assistant MIME during live text streaming.
 Model HTML/source text or persisted marker fields cannot opt into this provenance. Clients without

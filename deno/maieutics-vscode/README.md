@@ -19,6 +19,12 @@ Jupyter kernel involved (ADR 0023).
 - Multi-session servers (`capabilities.multiSession`): every session-addressed route is served
   directly, so each notebook simply targets its pinned session — an unpinned notebook creates its
   own instead of competing for the foreground, and two notebooks run turns concurrently.
+- Live forms connect to their notebook's pinned session, with one owned comm scope per editor and
+  targeted state delivery. Unbound files cannot attach through the foreground session. Closing or
+  repinning one notebook, or unmounting its last form, releases that editor's connection while other
+  views and upstream form models remain live. Hidden editors release their sockets and resume
+  registered forms when shown again; no browser mount retry or action replay is needed. Initial
+  mounts wait with diagnostics if visibility has not arrived yet, without requiring a Tab snapshot.
 - Sessions tree: grouped by the workspace each session was created in (current workspace first and
   expanded), with a current-workspace-only filter toggle in the view title. Fork branches render
   directly under their root (lineage adjacency, branch badge in the description). Context menus

@@ -17,7 +17,7 @@ import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
 import { registerCommandCompletion } from "./completion.ts";
 import { registerSkillInteraction } from "./skillInteraction.ts";
-import { connect, type Connection, renderingConnection } from "./connection.ts";
+import { connect, type Connection, renderingConnection, waitForStartup } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
@@ -41,7 +41,7 @@ import {
   guessAttachmentMediaType,
   parseAttachmentMarkers,
 } from "./attachments.ts";
-import { UiBridge } from "./uiBridge.ts";
+import { UiBridgeViews } from "./uiBridge.ts";
 import { OutputRenderingBridge } from "./outputRendering.ts";
 import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
@@ -253,9 +253,13 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   const formChannel = vscode.notebooks.createRendererMessaging("maieutics-form-renderer");
-  const uiBridge = new UiBridge({
-    connect: async (signal) => {
-      const client = await clientOf();
+  const uiBridge = new UiBridgeViews<vscode.NotebookEditor>({
+    session: (editor) =>
+      editor.notebook.isClosed ? undefined : readStoredSessionId(editor.notebook.metadata),
+    visible: (editor) => vscode.window.visibleNotebookEditors.includes(editor),
+    connect: async (sessionId, signal) => {
+      signal.throwIfAborted();
+      const client = await waitForStartup(clientOf(), signal);
       signal.throwIfAborted();
       // The comm capability gate (ADR 0024): an older server without comm
       // support would otherwise hang on a socket that never opens.
@@ -268,11 +272,10 @@ export function activate(context: vscode.ExtensionContext): void {
         );
       }
 
-      const session = await client.session(signal);
-      return client.commSocket(session.id, { signal });
+      return client.commSocket(sessionId, { signal });
     },
-    post: (message) => {
-      void Promise.resolve(formChannel.postMessage(message)).catch(
+    post: (editor, message) => {
+      void Promise.resolve(formChannel.postMessage(message, editor)).catch(
         (error: unknown) => output?.appendLine(`form post failed: ${error}`),
       );
     },
@@ -307,12 +310,33 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
-    formChannel.onDidReceiveMessage(({ message }) => {
-      void uiBridge.handleRendererMessage(message).catch((error: unknown) =>
+    formChannel.onDidReceiveMessage(({ editor, message }) => {
+      if (editor.notebook.isClosed) return;
+      void uiBridge.handleRendererMessage(editor, message).catch((error: unknown) =>
         output?.appendLine(`form bridge failed: ${error}`)
       );
     }),
-    { dispose: () => void uiBridge.dispose().catch(() => {}) },
+    vscode.workspace.onDidCloseNotebookDocument((document) => {
+      void uiBridge.releaseWhere((editor) => editor.notebook === document).catch(() =>
+        output?.appendLine("Form notebook cleanup failed.")
+      );
+    }),
+    vscode.window.onDidChangeVisibleNotebookEditors((editors) => {
+      void uiBridge.updateVisible(editors).catch(() =>
+        output?.appendLine("Form visibility update failed.")
+      );
+    }),
+    vscode.workspace.onDidChangeNotebookDocument(({ notebook, metadata }) => {
+      if (metadata === undefined) return;
+      const sessionId = readStoredSessionId(notebook.metadata);
+      void uiBridge.releaseWhere((editor, boundSessionId) =>
+        editor.notebook === notebook && boundSessionId !== sessionId
+      ).catch(() => output?.appendLine("Form session cleanup failed."));
+    }),
+    {
+      dispose: () =>
+        void uiBridge.dispose().catch(() => output?.appendLine("Form bridge cleanup failed.")),
+    },
     {
       dispose: () =>
         void renderingBridge.dispose().catch(() =>

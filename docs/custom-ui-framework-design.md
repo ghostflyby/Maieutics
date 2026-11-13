@@ -22,7 +22,18 @@ The kernel and plugin host retain approval, session and comm ownership. The brid
 `maieutics.form` target and actions from a mounted matching view with confirmed live state. The
 form renderer is a presentation component, not a worker or a new permissions authority.
 
-The VS Code bridge admits at most 1,024 live form states. At capacity it skips only a new model's
+The VS Code host binds each editor's comm scope to its notebook's pinned session and targets state
+delivery to that editor. An unbound notebook cannot attach through the foreground session. The last
+view unmount, editor disappearance or session repin releases the editor's socket without closing the
+producer or other editors' views. Visibility owns the connection independently of document lifetime
+and without comparing TabGroup snapshots. Hidden editors retain only weak mount identities; showing
+them resumes confirmed state without another browser mount or replaying actions. An early mount is
+retained with diagnostic readonly feedback until visibility admission. Dormant views never migrate
+to another session. Replacement mounts proceed while retired connections are being joined.
+Retired scopes cannot publish into replacements. At most 128 active/retiring editor scopes are
+admitted; an excess mount receives local readonly `form_scope_limit` feedback.
+
+Each editor scope admits at most 1,024 live form states. At capacity it skips only a new model's
 open, logs `form_state_limit`, and sends any mounted views of that model a local
 `closed` notification with `code:"form_state_limit"`. Existing models can still refresh, receive
 updates and send actions; their shared socket stays connected. The rejected producer is not closed

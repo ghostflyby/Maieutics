@@ -279,10 +279,6 @@ internal sealed class WorkspaceEditFunctions
                 bytes.Length,
                 diff);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (IsRecoverable(exception))
         {
             throw ToAgentToolException(exception);
@@ -519,10 +515,6 @@ internal sealed class WorkspaceEditFunctions
                 _maximumDiffLines);
             return new EditTextResult(file.Uri, occurrences, bounded.Bytes.Length, bytes.Length, diff!);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (IsRecoverable(exception))
         {
             throw ToAgentToolException(exception);
@@ -553,10 +545,6 @@ internal sealed class WorkspaceEditFunctions
             }
 
             return new ApplyPatchResult(files.ToImmutable());
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (Exception exception) when (IsRecoverable(exception))
         {
@@ -826,7 +814,8 @@ internal sealed class WorkspaceEditFunctions
     /// file lines. With an anchor, the pattern must start on the line after
     /// the anchor (or insert there when the section has no removed lines);
     /// without one, the pattern's first occurrence at or after the previous
-    /// section's end is used. Line comparison ignores carriage returns.</summary>
+    /// section's end is used. The seek cursor stays within the current line
+    /// list after each replacement. Line comparison ignores carriage returns.</summary>
     private static string ApplyChangeSections(
         string before,
         string displayPath,
@@ -896,7 +885,7 @@ internal sealed class WorkspaceEditFunctions
 
     private static int FindLine(List<string> lines, int start, string value)
     {
-        for (var index = Math.Max(0, start); index < lines.Count; index++)
+        for (var index = start; index < lines.Count; index++)
             if (string.Equals(lines[index], value, StringComparison.Ordinal))
                 return index;
 
@@ -916,9 +905,9 @@ internal sealed class WorkspaceEditFunctions
 
     private static int FindPattern(List<string> lines, int start, ImmutableArray<string> pattern)
     {
-        if (pattern.Length == 0) return Math.Max(0, Math.Min(start, lines.Count));
+        if (pattern.Length == 0) return start;
 
-        for (var index = Math.Max(0, start); index + pattern.Length <= lines.Count; index++)
+        for (var index = start; index + pattern.Length <= lines.Count; index++)
             if (MatchAt(lines, index, pattern))
                 return index;
 

@@ -187,10 +187,6 @@ internal sealed class WorkspaceFunctions
                     ? EncodeCursor(logicalRoot.Uri, snapshot.Version, page[^1].Name)
                     : null);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (Exception exception) when (IsRecoverable(exception))
         {
             throw ToAgentToolException(exception);
@@ -355,10 +351,6 @@ internal sealed class WorkspaceFunctions
                 requestedStartLine,
                 maximumLines,
                 cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (ResourceException exception)
         {
@@ -556,10 +548,6 @@ internal sealed class WorkspaceFunctions
                 exclude,
                 readPolicy,
                 cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (RegexMatchTimeoutException)
         {

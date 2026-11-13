@@ -54,10 +54,6 @@ internal sealed class ResourceFunctions
 
             return new ResourceCatalogResult(resources.ToImmutable(), _registry.GetConflicts());
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
         catch (ResourceException exception)
         {
             throw new AgentToolException(exception.Code, exception.Message);

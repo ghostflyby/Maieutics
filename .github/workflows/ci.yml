@@ -133,7 +133,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
           cache: true
           cache-dependency-path: '**/*.csproj'
 
@@ -210,7 +210,10 @@ jobs:
           # Filtering uses the MTP-native class filter: xUnit under MTP does not accept
           # the VSTest-style --filter, and unknown arguments are forwarded to the test
           # application (which then fails with exit 5).
-          args=("$TEST_PROJECTS" --configuration Release)
+          # The pinned 10.0.100 band rejects a positional solution argument, so the
+          # solution goes via --solution; project scopes keep the positional form.
+          if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args=(--solution "$TEST_PROJECTS"); else args=("$TEST_PROJECTS"); fi
+          args+=(--configuration Release)
           if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--no-restore --no-build); fi
           if [ "$TEST_PROJECTS" = "Maieutics.slnx" ]; then args+=(--minimum-expected-tests 1000); fi
           if [ -n "$TEST_FILTER" ]; then args+=(--filter-class "$TEST_FILTER"); fi
@@ -275,7 +278,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
           cache: true
           cache-dependency-path: '**/*.csproj'
 

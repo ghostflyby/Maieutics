@@ -6,12 +6,13 @@ import { encodeCommEnvelope } from "../../shared/comm_codec.ts";
 // A real WebSocket fixture for the activated extension's per-notebook form routing.
 const stop = Promise.withResolvers<void>();
 const lifetime = new AbortController();
-const sockets = new Map<string, WebSocket>();
-const closed = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
-const openingEvents: string[] = [];
+const sockets = new Map<number, { sessionId: string; socket: WebSocket }>();
+const closed = new Map<number, ReturnType<typeof Promise.withResolvers<void>>>();
+const openingEvents: { sessionId: string; connectionId: number }[] = [];
+let nextConnectionId = 0;
 let openingReady = Promise.withResolvers<void>();
 let foregroundReads = 0;
-const barrier = (map: typeof closed, id: string) => {
+const barrier = (map: typeof closed, id: number) => {
   let value = map.get(id);
   if (!value) {
     value = Promise.withResolvers<void>();
@@ -27,10 +28,30 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
     return json({ ok: true });
   }
   if (url.pathname === "/test/stats") {
-    return json({ sessions: [...sockets.keys()], foregroundReads });
+    return json({
+      sessions: [...sockets.values()].map((value) => value.sessionId),
+      connections: [...sockets].map(([connectionId, value]) => ({
+        connectionId,
+        sessionId: value.sessionId,
+      })),
+      foregroundReads,
+    });
+  }
+  if (url.pathname === "/test/update") {
+    const value = sockets.get(Number(url.searchParams.get("id")));
+    if (!value) return new Response("Connection closed", { status: 409 });
+    value.socket.send(
+      encodeCommEnvelope(2, {
+        kind: 1,
+        commId: "scoped-form",
+        data: { method: "update", state: { title: "Still live" } },
+        buffers: [],
+      }),
+    );
+    return json({ ok: true });
   }
   if (url.pathname === "/test/wait" || url.pathname === "/test/next-open") {
-    const id = url.searchParams.get("id") ?? "";
+    const id = Number(url.searchParams.get("id"));
     const ready = url.pathname === "/test/next-open" ? openingReady : barrier(closed, id);
     const aborted = Promise.withResolvers<never>();
     const abort = () => aborted.reject(new DOMException("Fixture request cancelled", "AbortError"));
@@ -39,9 +60,9 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
     try {
       await Promise.race([ready.promise, aborted.promise]);
       if (url.pathname === "/test/next-open") {
-        const sessionId = openingEvents.shift();
+        const opening = openingEvents.shift();
         if (openingEvents.length === 0) openingReady = Promise.withResolvers<void>();
-        return json({ sessionId });
+        return json(opening);
       }
       return json({ ok: true });
     } finally {
@@ -52,12 +73,13 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
   const comm = /^\/v1\/agent\/sessions\/([a-f\d]{32})\/comms$/.exec(url.pathname);
   if (comm) {
     const id = comm[1];
+    const connectionId = ++nextConnectionId;
     const { socket, response } = Deno.upgradeWebSocket(request);
     socket.onopen = () => {
       console.error(`Form fixture socket opened: ${id}`);
-      openingEvents.push(id);
+      openingEvents.push({ sessionId: id, connectionId });
       openingReady.resolve();
-      sockets.set(id, socket);
+      sockets.set(connectionId, { sessionId: id, socket });
       socket.send(JSON.stringify({ live: [], replayed: false, truncated: false }));
       socket.send(encodeCommEnvelope(1, {
         kind: 0,
@@ -69,8 +91,8 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, asy
     };
     socket.onclose = () => {
       console.error(`Form fixture socket closed: ${id}`);
-      if (sockets.get(id) === socket) sockets.delete(id);
-      barrier(closed, id).resolve();
+      sockets.delete(connectionId);
+      barrier(closed, connectionId).resolve();
     };
     return response;
   }
@@ -106,6 +128,6 @@ try {
   await stop.promise;
 } finally {
   lifetime.abort();
-  for (const socket of sockets.values()) socket.close();
+  for (const { socket } of sockets.values()) socket.close();
   await server.shutdown();
 }

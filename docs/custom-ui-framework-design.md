@@ -24,9 +24,12 @@ form renderer is a presentation component, not a worker or a new permissions aut
 
 The VS Code host binds each editor's comm scope to its notebook's pinned session and targets state
 delivery to that editor. An unbound notebook cannot attach through the foreground session. The last
-view unmount, tab/document close or session repin releases the editor's socket without closing the
-producer or other editors' views. Tab closure is observed independently because VS Code can retain
-the document after its tab closes; messages without a current owning notebook tab are ignored.
+view unmount, editor disappearance or session repin releases the editor's socket without closing the
+producer or other editors' views. Visibility owns the connection independently of document lifetime
+and without comparing TabGroup snapshots. Hidden editors retain only weak mount identities; showing
+them resumes confirmed state without another browser mount or replaying actions. An early mount is
+retained with diagnostic readonly feedback until visibility admission. Dormant views never migrate
+to another session. Replacement mounts proceed while retired connections are being joined.
 Retired scopes cannot publish into replacements. At most 128 active/retiring editor scopes are
 admitted; an excess mount receives local readonly `form_scope_limit` feedback.
 

@@ -49,6 +49,12 @@ export async function renderingConnection(
 ): Promise<Connection | undefined> {
   signal.throwIfAborted();
   if (current !== undefined || starting === undefined) return current;
+  return await waitForStartup(starting, signal);
+}
+
+/** Cancel this wait while the connection owner continues to observe shared startup. */
+export async function waitForStartup<T>(starting: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
   let abort = () => {};
   const cancelled = new Promise<never>((_, reject) => {
     abort = () => reject(signal.reason);

@@ -173,9 +173,8 @@ export class UiBridgeRegistry<Owner> {
       !["mount", "unmount", "event"].includes(String(message.type))
     ) return;
     let scope = this.#scopes.get(owner);
-    let retired: Promise<void> | undefined;
     if (scope && scope.sessionId !== sessionId) {
-      retired = this.#retire(owner, scope);
+      this.#retire(owner, scope);
       scope = undefined;
     }
     if (!scope && sessionId && message.type === "mount") {
@@ -187,7 +186,6 @@ export class UiBridgeRegistry<Owner> {
           modelId: message.modelId,
           code: "form_scope_limit",
         });
-        await retired;
         return;
       }
       const created: UiBridgeScope = {
@@ -204,7 +202,6 @@ export class UiBridgeRegistry<Owner> {
       this.#scopes.set(owner, created);
       scope = created;
     }
-    await retired;
     if (!scope || this.#closed || this.#scopes.get(owner) !== scope) return;
     if (message.type === "mount") scope.views.set(message.viewId, message.modelId);
     if (message.type === "unmount" && scope.views.get(message.viewId) === message.modelId) {
@@ -264,5 +261,122 @@ async function joinUiScopes(pending: readonly Promise<void>[]): Promise<void> {
   );
   if (failures.length) {
     throw new AggregateError(failures.map((result) => result.reason), "Form scope cleanup failed.");
+  }
+}
+
+export interface UiBridgeViewsOptions<Owner extends object> extends UiBridgeRegistryOptions<Owner> {
+  session(owner: Owner): string | undefined;
+  visible(owner: Owner): boolean;
+}
+
+/** Visible editors own connections; dormant mount identities are weak and resume without browser retries. */
+export class UiBridgeViews<Owner extends object> {
+  readonly #registry: UiBridgeRegistry<Owner>;
+  readonly #active = new Set<Owner>();
+  #mounts = new WeakMap<Owner, { sessionId: string; views: Map<string, string> }>();
+  #closed = false;
+
+  constructor(private readonly options: UiBridgeViewsOptions<Owner>) {
+    this.#registry = new UiBridgeRegistry(options);
+  }
+
+  async handleRendererMessage(owner: Owner, message: unknown): Promise<void> {
+    if (
+      this.#closed || !isRecord(message) || message.source !== SOURCE ||
+      typeof message.modelId !== "string" || !message.modelId ||
+      typeof message.viewId !== "string" || !message.viewId ||
+      !["mount", "unmount", "event"].includes(String(message.type))
+    ) return;
+    const sessionId = this.options.session(owner);
+    let mounts = this.#mounts.get(owner);
+    if (mounts && mounts.sessionId !== sessionId) {
+      this.#mounts.delete(owner);
+      this.#active.delete(owner);
+      this.#release(owner);
+      mounts = undefined;
+    }
+    if (!sessionId) return;
+    if (message.type === "mount") {
+      mounts ??= { sessionId, views: new Map() };
+      mounts.views.set(message.viewId, message.modelId);
+      this.#mounts.set(owner, mounts);
+    } else if (mounts?.views.get(message.viewId) !== message.modelId) return;
+    if (message.type === "unmount") {
+      mounts?.views.delete(message.viewId);
+      if (mounts?.views.size === 0) this.#mounts.delete(owner);
+    }
+    if (!this.options.visible(owner)) {
+      this.#active.delete(owner);
+      this.#release(owner);
+      if (message.type === "mount") {
+        this.options.log("Form mount deferred until its editor is visible.");
+        this.options.post(owner, {
+          source: SOURCE,
+          type: "closed",
+          modelId: message.modelId,
+          code: "form_view_inactive",
+        });
+      }
+      return;
+    }
+    this.#active.add(owner);
+    await this.#registry.handleRendererMessage(owner, sessionId, message);
+    if (!this.#mounts.has(owner)) this.#active.delete(owner);
+  }
+
+  /** Suspend disappeared editors and restore their registered views when they become visible again. */
+  async updateVisible(owners: readonly Owner[]): Promise<void> {
+    if (this.#closed) return;
+    const pending: Promise<void>[] = [];
+    for (const owner of this.#active) {
+      if (this.options.visible(owner)) continue;
+      this.#active.delete(owner);
+      pending.push(this.#registry.releaseWhere((candidate) => candidate === owner));
+    }
+    for (const owner of owners) {
+      if (!this.options.visible(owner)) continue;
+      if (this.#active.has(owner)) continue;
+      const mounts = this.#mounts.get(owner);
+      if (!mounts) continue;
+      if (mounts.sessionId !== this.options.session(owner)) {
+        this.#mounts.delete(owner);
+        continue;
+      }
+      this.#active.add(owner);
+      for (const [viewId, modelId] of mounts.views) {
+        pending.push(
+          this.#registry.handleRendererMessage(owner, mounts.sessionId, {
+            source: SOURCE,
+            type: "mount",
+            viewId,
+            modelId,
+          }),
+        );
+      }
+    }
+    await joinUiScopes(pending);
+  }
+
+  async releaseWhere(predicate: (owner: Owner, sessionId: string) => boolean): Promise<void> {
+    for (const owner of this.#active) {
+      const mounts = this.#mounts.get(owner);
+      if (!mounts || !predicate(owner, mounts.sessionId)) continue;
+      this.#mounts.delete(owner);
+      this.#active.delete(owner);
+    }
+    await this.#registry.releaseWhere(predicate);
+  }
+
+  dispose(): Promise<void> {
+    this.#closed = true;
+    this.#mounts = new WeakMap();
+    this.#active.clear();
+    return this.#registry.dispose();
+  }
+
+  #release(owner: Owner): void {
+    void this.#registry.releaseWhere((candidate) => candidate === owner).catch(() =>
+      this.options.log("Form view cleanup failed.")
+    );
   }
 }

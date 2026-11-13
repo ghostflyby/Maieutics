@@ -539,6 +539,94 @@ Deno.test("evicted or failed deliveries cannot authorize compile-only rendering"
   }
 });
 
+Deno.test("compacted receipts still reject an unrelated rendered source prefix", async () => {
+  const modes: boolean[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: (_id, _text, _signal, _template, _vue, _assistant, progressive) => {
+      modes.push(progressive?.compileOnly === true);
+      return Promise.resolve({
+        ...snapshot(""),
+        renderedSource: "other",
+        vue: { version: 1, code: "initial", scopeId: "data-v-doc", setupKey: "a".repeat(64) },
+      });
+    },
+    post: async (value) => {
+      const message = value as { documentId: string; requestId: string };
+      await bridge.handle({
+        source: "maieutics-output",
+        type: "applied",
+        documentId: message.documentId,
+        requestId: message.requestId,
+        engine: "vue",
+      });
+    },
+    log() {},
+  });
+  try {
+    for (const revision of [1, 2]) {
+      await bridge.handle({
+        ...request(revision, "source".repeat(revision)),
+        assistant: true,
+        progressive: true,
+        streaming: true,
+      });
+    }
+    assertEquals(
+      modes,
+      [false, false],
+      "Source length alone cannot establish a prefix across unrelated content",
+    );
+  } finally {
+    await bridge.dispose();
+  }
+});
+
+Deno.test("overload fallback uses the same bounded publication and delivery-failure handling", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<RenderedMarkdown>();
+  const logs: string[] = [];
+  const posts: { type: string; requestId: string }[] = [];
+  const bridge = new OutputRenderingBridge({
+    render: async (documentId) => {
+      if (documentId === "active") {
+        started.resolve();
+        return await release.promise;
+      }
+      return { ...snapshot(""), documentId };
+    },
+    post: async (value) => {
+      const message = value as { type: string; requestId: string; documentId: string };
+      posts.push(message);
+      if (message.requestId === "overflow") {
+        await bridge.handle({
+          source: "maieutics-output",
+          type: "applied",
+          requestId: message.requestId,
+          documentId: message.documentId,
+          engine: "native",
+        });
+        throw new Error("Fixture delivery failed");
+      }
+    },
+    log: (message) => logs.push(message),
+  });
+  const active = bridge.handle({ ...request(1), documentId: "active" });
+  await started.promise;
+  const queued = Array.from(
+    { length: 64 },
+    (_, index) => bridge.handle({ ...request(index + 2), documentId: `queued${index}` }),
+  );
+  try {
+    await bridge.handle({ ...request(100), requestId: "overflow", documentId: "excess" });
+    assertEquals(posts.at(-1)?.type, "unavailable");
+    assertEquals(logs, ["Output renderer message delivery failed."]);
+  } finally {
+    release.resolve({ ...snapshot(""), documentId: "active" });
+    await Promise.all([active, ...queued]);
+    await bridge.dispose();
+  }
+});
+
 Deno.test("a rewrite invalidates pending Vue initialization even if source returns to an old prefix", async () => {
   const first = Promise.withResolvers<RenderedMarkdown>();
   const started = Promise.withResolvers<void>();

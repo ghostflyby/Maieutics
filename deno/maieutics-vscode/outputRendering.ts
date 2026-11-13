@@ -65,14 +65,14 @@ export class OutputRenderingBridge {
   #active: { documentId: string; requestId: string; controller: AbortController } | undefined;
   #pump: Promise<void> | undefined;
   #closed = false;
-  readonly #initialized = new Map<string, { source: string; epoch: number }>();
+  readonly #initialized = new Map<string, { length: number; epoch: number }>();
   readonly #sources = new Map<
     string,
     { text: string; epoch: number; progressive: boolean; applied: number }
   >();
   readonly #deliveries = new Map<
     string,
-    { documentId: string; source: string; epoch: number; sequence: number; vue: boolean }
+    { documentId: string; length: number; epoch: number; sequence: number; vue: boolean }
   >();
   #deliverySequence = 0;
   #epoch = 0;
@@ -126,12 +126,12 @@ export class OutputRenderingBridge {
       const source = this.#sources.get(value.documentId);
       if (
         !source || source.epoch !== delivery.epoch || delivery.sequence <= source.applied ||
-        !source.text.startsWith(delivery.source)
+        source.text.length < delivery.length
       ) return;
       source.applied = delivery.sequence;
       if (value.engine === "vue" && delivery.vue) {
         this.#initialized.delete(value.documentId);
-        this.#initialized.set(value.documentId, { source: delivery.source, epoch: delivery.epoch });
+        this.#initialized.set(value.documentId, { length: delivery.length, epoch: delivery.epoch });
       } else if (value.engine !== "vue") {
         this.#initialized.delete(value.documentId);
       }
@@ -215,7 +215,7 @@ export class OutputRenderingBridge {
       }
     }
     if (this.#pending.size >= 64 && !this.#pending.has(request.documentId)) {
-      await this.options.post({ ...this.#identity(request), type: "unavailable" });
+      await this.#publish(request);
       return;
     }
     if (!request.progressive) this.#initialized.delete(request.documentId);
@@ -258,9 +258,8 @@ export class OutputRenderingBridge {
           request.progressive
             ? {
               compileOnly: this.#initialized.get(request.documentId)?.epoch === request.epoch &&
-                request.text.startsWith(
-                  this.#initialized.get(request.documentId)?.source ?? "\0",
-                ),
+                request.text.length >=
+                  (this.#initialized.get(request.documentId)?.length ?? Infinity),
               streaming: request.streaming === true,
             }
             : undefined,
@@ -290,50 +289,62 @@ export class OutputRenderingBridge {
           !this.#closed && !controller.signal.aborted && latest?.epoch === request.epoch &&
           (latest?.requestId === request.requestId || progress)
         ) {
-          // Register before posting: an in-process host can acknowledge synchronously.
-          // Delivery alone never establishes a mounted Vue scope.
-          this.#deliveries.set(request.requestId, {
-            documentId: request.documentId,
-            source: result?.renderedSource ?? request.text,
-            epoch: request.epoch,
-            sequence: ++this.#deliverySequence,
-            vue: request.progressive === true && /^[a-f\d]{64}$/i.test(result?.vue?.setupKey ?? ""),
-          });
-          if (this.#deliveries.size > 128) {
-            this.#deliveries.delete(this.#deliveries.keys().next().value ?? "");
-          }
-          await this.options.post(
-            result === undefined
-              ? {
-                ...this.#identity(request),
-                type: "unavailable",
-                ...(failureDiagnostics ? { diagnostics: failureDiagnostics } : {}),
-              }
-              : {
-                ...this.#identity(request),
-                type: "rendered",
-                html: result.html,
-                css: result.css,
-                ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
-                ...(request.streaming
-                  ? { streaming: true, renderedSource: result.renderedSource ?? request.text }
-                  : {}),
-                ...(request.progressive && result.renderedSource !== undefined
-                  ? { renderedSource: result.renderedSource }
-                  : {}),
-                ...(result.vue ? { vue: result.vue } : {}),
-              },
-          );
+          await this.#publish(request, result, failureDiagnostics);
         }
-      } catch {
-        this.#deliveries.delete(request.requestId);
-        this.options.log("Output renderer message delivery failed.");
       } finally {
         if (this.#latest.get(request.documentId)?.requestId === request.requestId) {
           this.#latest.delete(request.documentId);
         }
         this.#active = undefined;
       }
+    }
+  }
+
+  async #publish(
+    request: RenderRequest,
+    result?: RenderedMarkdown,
+    failureDiagnostics?: RenderDiagnostic[],
+  ): Promise<void> {
+    // An epoch proves append-only ancestry; receipts retain lengths rather than source snapshots.
+    const prefix = result?.renderedSource ?? request.text;
+    if (request.text.startsWith(prefix)) {
+      this.#deliveries.set(request.requestId, {
+        documentId: request.documentId,
+        length: prefix.length,
+        epoch: request.epoch,
+        sequence: ++this.#deliverySequence,
+        vue: request.progressive === true && /^[a-f\d]{64}$/i.test(result?.vue?.setupKey ?? ""),
+      });
+      if (this.#deliveries.size > 128) {
+        this.#deliveries.delete(this.#deliveries.keys().next().value ?? "");
+      }
+    }
+    try {
+      await this.options.post(
+        result === undefined
+          ? {
+            ...this.#identity(request),
+            type: "unavailable",
+            ...(failureDiagnostics ? { diagnostics: failureDiagnostics } : {}),
+          }
+          : {
+            ...this.#identity(request),
+            type: "rendered",
+            html: result.html,
+            css: result.css,
+            ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}),
+            ...(request.streaming
+              ? { streaming: true, renderedSource: result.renderedSource ?? request.text }
+              : {}),
+            ...(request.progressive && result.renderedSource !== undefined
+              ? { renderedSource: result.renderedSource }
+              : {}),
+            ...(result.vue ? { vue: result.vue } : {}),
+          },
+      );
+    } catch {
+      this.#deliveries.delete(request.requestId);
+      this.options.log("Output renderer message delivery failed.");
     }
   }
 

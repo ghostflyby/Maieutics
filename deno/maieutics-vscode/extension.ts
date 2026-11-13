@@ -17,7 +17,7 @@ import { platform } from "node:os";
 import { FrontendClient } from "./client.ts";
 import { registerCommandCompletion } from "./completion.ts";
 import { registerSkillInteraction } from "./skillInteraction.ts";
-import { connect, type Connection, renderingConnection } from "./connection.ts";
+import { connect, type Connection, renderingConnection, waitForStartup } from "./connection.ts";
 import { cellHistoryState, frontierIndex, readTurnBinding } from "./cellHistory.ts";
 import { TurnOutputMime } from "./turnView.ts";
 import { MaieuticsNotebookController, type NotebookBridge, taggedCell } from "./controller.ts";
@@ -41,7 +41,7 @@ import {
   guessAttachmentMediaType,
   parseAttachmentMarkers,
 } from "./attachments.ts";
-import { UiBridgeRegistry } from "./uiBridge.ts";
+import { UiBridgeViews } from "./uiBridge.ts";
 import { OutputRenderingBridge } from "./outputRendering.ts";
 import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
@@ -253,10 +253,13 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   const formChannel = vscode.notebooks.createRendererMessaging("maieutics-form-renderer");
-  const formEditorGroups = new WeakMap<vscode.NotebookEditor, vscode.TabGroup>();
-  const uiBridge = new UiBridgeRegistry<vscode.NotebookEditor>({
+  const uiBridge = new UiBridgeViews<vscode.NotebookEditor>({
+    session: (editor) =>
+      editor.notebook.isClosed ? undefined : readStoredSessionId(editor.notebook.metadata),
+    visible: (editor) => vscode.window.visibleNotebookEditors.includes(editor),
     connect: async (sessionId, signal) => {
-      const client = await clientOf();
+      signal.throwIfAborted();
+      const client = await waitForStartup(clientOf(), signal);
       signal.throwIfAborted();
       // The comm capability gate (ADR 0024): an older server without comm
       // support would otherwise hang on a socket that never opens.
@@ -309,35 +312,19 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     formChannel.onDidReceiveMessage(({ editor, message }) => {
       if (editor.notebook.isClosed) return;
-      const group = vscode.window.tabGroups.all.find((group) =>
-        group.viewColumn === editor.viewColumn
+      void uiBridge.handleRendererMessage(editor, message).catch((error: unknown) =>
+        output?.appendLine(`form bridge failed: ${error}`)
       );
-      if (
-        !group?.tabs.some((tab) =>
-          tab.input instanceof vscode.TabInputNotebook &&
-          tab.input.uri.toString() === editor.notebook.uri.toString()
-        )
-      ) return;
-      formEditorGroups.set(editor, group);
-      void uiBridge.handleRendererMessage(
-        editor,
-        readStoredSessionId(editor.notebook.metadata),
-        message,
-      ).catch((error: unknown) => output?.appendLine(`form bridge failed: ${error}`));
     }),
     vscode.workspace.onDidCloseNotebookDocument((document) => {
       void uiBridge.releaseWhere((editor) => editor.notebook === document).catch(() =>
         output?.appendLine("Form notebook cleanup failed.")
       );
     }),
-    vscode.window.tabGroups.onDidChangeTabs(({ closed }) => {
-      for (const tab of closed) {
-        if (!(tab.input instanceof vscode.TabInputNotebook)) continue;
-        const uri = tab.input.uri.toString();
-        void uiBridge.releaseWhere((editor) =>
-          editor.notebook.uri.toString() === uri && formEditorGroups.get(editor) === tab.group
-        ).catch(() => output?.appendLine("Form editor cleanup failed."));
-      }
+    vscode.window.onDidChangeVisibleNotebookEditors((editors) => {
+      void uiBridge.updateVisible(editors).catch(() =>
+        output?.appendLine("Form visibility update failed.")
+      );
     }),
     vscode.workspace.onDidChangeNotebookDocument(({ notebook, metadata }) => {
       if (metadata === undefined) return;

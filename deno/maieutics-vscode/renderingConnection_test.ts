@@ -1,6 +1,7 @@
 /// <reference lib="deno.ns" />
+/// <reference lib="es2024.promise" />
 import { assertEquals, assertRejects } from "@std/assert";
-import { type Connection, renderingConnection } from "./connection.ts";
+import { type Connection, renderingConnection, waitForStartup } from "./connection.ts";
 import { FrontendClient } from "./client.ts";
 
 function connection(): Connection {
@@ -31,6 +32,17 @@ Deno.test("rendering joins existing startup and keeps offline opening disconnect
   starting.resolve(ready);
   assertEquals(await rendering, ready);
   assertEquals(await renderingConnection(ready, undefined, lifetime.signal), ready);
+});
+
+Deno.test("a form wait aborts before shared client startup completes", async () => {
+  const startup = Promise.withResolvers<string>();
+  const lifetime = new AbortController();
+  const waiting = waitForStartup(startup.promise, lifetime.signal);
+  const rejected = assertRejects(() => waiting, DOMException, "form retired");
+  lifetime.abort(new DOMException("form retired", "AbortError"));
+  await rejected;
+  startup.resolve("shared client remains owned");
+  assertEquals(await startup.promise, "shared client remains owned");
 });
 
 Deno.test("cancelling rendering leaves connection startup owned and observes its failure", async () => {

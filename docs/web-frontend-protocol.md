@@ -1220,9 +1220,11 @@ Complete synchronous setup is required; arbitrary later declarations and async s
 
 The notebook bridge enables `compileOnly` only after a correlated local `applied` acknowledgement
 confirms a Vue commit for a current progressive result. Message delivery alone is insufficient.
-Fallback commits invalidate that hint; stale acknowledgements after rewrites, newer commits or
+Correlated current fallback commits invalidate that hint, including admission-overload fallbacks;
+stale acknowledgements after rewrites, newer commits or
 disposal cannot restore it. Receipt retention is bounded, and an evicted hint requires a full initial
-result. This is frontend-local coordination; the authenticated stateless HTTP shapes are unchanged.
+result. Receipts store identities, epoch, sequence and accepted prefix length rather than retaining
+source snapshots. This is frontend-local coordination; the authenticated stateless HTTP shapes are unchanged.
 
 Supporting VS Code controllers emit the existing runtime assistant MIME during live text streaming.
 Model HTML/source text or persisted marker fields cannot opt into this provenance. Clients without

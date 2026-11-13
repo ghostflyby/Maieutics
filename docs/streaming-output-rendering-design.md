@@ -13,7 +13,7 @@ advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-13
+Last updated: 2026-11-14
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
@@ -753,11 +753,16 @@ The 2026-11-13 commit handshake registers a bounded delivery receipt before post
 so even a synchronous host can acknowledge it. Only the existing browser `applied` message with
 `engine:"vue"`, matching document/request identity, current source epoch and a progressive setup
 identity establishes initialization. Sending a factory does not prove that hydration succeeded.
-Native/SSR commits clear initialization, and an older receipt cannot resurrect a scope after a
+Correlated current Native/SSR commits clear initialization, and an older receipt cannot resurrect a scope after a
 newer fallback. Rewrites, cancellation, source eviction and disposal invalidate obsolete receipts.
 The bridge retains at most 128 outstanding receipts; eviction conservatively requires full SSR
 until a current mount is confirmed. A reply that retains an already mounted app after an unavailable
 update does not falsely confirm a new setup. No HTTP or notebook schema changes are introduced.
+
+The 2026-11-14 review routes admission-overload `unavailable` replies through that same receipt
+publication path. Receipts and initialization hints retain accepted prefix lengths, not source
+snapshots. Prefix validity is checked before publication; append-only ancestry is established by
+the source epoch. Rewrites still invalidate the epoch even when the new text has the same length.
 
 Coverage checks delayed prefix delivery, compile-only selection, rewrite/revert epochs, cancellation,
 wire validation, isolated SSR, and the real controller publishing live MIME before terminal frames.
@@ -934,17 +939,30 @@ the standalone ESM export gate also asserts `createFormRenderer`.
 As of 2026-11-13, the notebook host owns a separate comm scope per editor, bound to the notebook's
 explicit pinned session. Renderer model/view IDs do not select that session, and an unbound file
 cannot borrow the foreground session. State is posted only to its owning editor, allowing two
-sessions or two editors to use overlapping model/output IDs. The last view unmount, tab/document close
+sessions or two editors to use overlapping model/output IDs. The last view unmount, editor disappearance
 or session repin cancels and joins that editor's socket without closing the upstream model or
 another editor's attachment. Retired receive pumps cannot publish into a replacement scope; retained
 views are made readonly immediately. The registry admits at most 128 active/retiring editor scopes,
-and messages without a current owning notebook tab cannot create one. Tab closure is observed separately because the host
-can retain a notebook document after closing its editor. State delivery uses captured tab-group
-ownership so another editor of the same notebook is retained.
+and hidden editors hold no socket, model-state mirror or admission slot. The 2026-11-14 review uses
+visible NotebookEditor lifetimes rather than TabGroup object identity or a tab-snapshot admission
+guard. Dormant registrations retain only session/model/view identities in a WeakMap. Visibility
+restores them without a browser mount retry or replaying actions; a session change invalidates them.
+An early mount is retained with diagnostic readonly feedback until its editor becomes visible.
+Replacement admission does not await old teardown, and a cancelled form wait leaves shared kernel
+startup owned by the connection host. Old startup and cleanup remain observed and joined at disposal.
 Terminal disposal joins every owned connection. Existing form MIME, comm framing and frozen
 snapshot semantics are unchanged. Unit coverage controls pending startup and replacement races;
 the actual notebook test drives two pinned sessions through the production renderer messaging and
-real comm sockets, then repins/closes them independently.
+real comm sockets, then opens one notebook in two groups and closes only one. It asserts the shared
+document remains open, the closed editor's exact connection terminates, and the other connection
+can still receive updates. Fixture files are deleted on success and failure, with absence asserted.
+
+The 2026-11-14 review passes 713 Deno tests, 20 Node scenarios, 27 real VS Code scenarios, and
+1,679 .NET cases (1,671 passed, eight existing skips), with warning-free build and type/lint/format
+checks. The sole replacement-mount test and overload-publication failure test are independently
+red on the prior implementation. The shared-document two-editor scenario asserts that document
+closure cannot account for releasing only one socket. No executable/SSR assets changed; local
+NativeAOT publish and offline SSR rebuild are not repeated.
 
 Local validation for the 2026-11-13 presentation-lifecycle increment passes 707 Deno tests, 20 Node
 scenarios, 27 actual VS Code cases, and 1,679 .NET cases (1,671 passed, eight existing platform or

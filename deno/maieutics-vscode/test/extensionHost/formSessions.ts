@@ -29,6 +29,8 @@ export async function testFormSessionsAsync(): Promise<void> {
   const previous = settings.get<string>("discoveryFile");
   const discoveryUri = vscode.Uri.joinPath(root, "form-session-discovery.json");
   const documents: vscode.NotebookDocument[] = [];
+  const createdUris: vscode.Uri[] = [];
+  const connections: { sessionId: string; connectionId: number }[] = [];
   const lifetime = new AbortController();
   let url: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -54,6 +56,7 @@ export async function testFormSessionsAsync(): Promise<void> {
     if (line.done) throw new Error(`Missing fixture readiness. ${stderr}`);
     const discovery = JSON.parse(line.value) as { url: string };
     url = discovery.url;
+    createdUris.push(discoveryUri);
     await vscode.workspace.fs.writeFile(discoveryUri, new TextEncoder().encode(line.value));
     await settings.update(
       "discoveryFile",
@@ -73,6 +76,7 @@ export async function testFormSessionsAsync(): Promise<void> {
       await vscode.commands.executeCommand("maieutics.showStatus");
       for (const [index, id] of ["a".repeat(32), "b".repeat(32)].entries()) {
         const uri = vscode.Uri.joinPath(root, `form-session-${index}.maieuticsnb`);
+        createdUris.push(uri);
         const notebook = emptyNotebook();
         notebook.session = { serverSessionId: id };
         await vscode.workspace.fs.writeFile(
@@ -106,7 +110,11 @@ export async function testFormSessionsAsync(): Promise<void> {
             String(document.metadata.maieuticsSessionId)
           }, outputs=${document.cellAt(0).outputs.length}`,
         );
-        const connected = await request("/test/next-open") as { sessionId: string };
+        const connected = await request("/test/next-open") as {
+          sessionId: string;
+          connectionId: number;
+        };
+        connections.push(connected);
         if (connected.sessionId !== id) {
           throw new Error(
             `Form connected to ${connected.sessionId}; its notebook is pinned to ${id}`,
@@ -129,16 +137,33 @@ export async function testFormSessionsAsync(): Promise<void> {
         vscode.NotebookEdit.updateNotebookMetadata({ maieuticsSessionId: "c".repeat(32) }),
       ]);
       if (!await vscode.workspace.applyEdit(repin)) throw new Error("Form notebook repin failed");
-      await request(`/test/wait?id=${"a".repeat(32)}&closed`);
+      await request(`/test/wait?id=${connections[0].connectionId}`);
       const retained = await request("/test/stats") as { sessions: string[] };
       if (retained.sessions.join() !== "b".repeat(32)) {
         throw new Error("Repinning one notebook disturbed the other form session");
       }
       await first.save();
       const second = documents[1];
+      const duplicate = await vscode.window.showNotebookDocument(second, {
+        viewColumn: vscode.ViewColumn.One,
+        preserveFocus: true,
+        preview: false,
+      });
+      const duplicateConnection = await request("/test/next-open") as {
+        sessionId: string;
+        connectionId: number;
+      };
+      if (duplicateConnection.sessionId !== "b".repeat(32)) {
+        throw new Error("The second editor borrowed another session");
+      }
+      if (
+        vscode.window.visibleNotebookEditors.filter((editor) => editor.notebook === second)
+          .length !== 2
+      ) throw new Error("The shared notebook must be visible in two editor groups");
       const tabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) =>
         tab.input instanceof vscode.TabInputNotebook &&
-        tab.input.uri.toString() === second.uri.toString()
+        tab.input.uri.toString() === second.uri.toString() &&
+        tab.group.viewColumn === duplicate.viewColumn
       );
       if (tabs.length !== 1) {
         throw new Error(`Expected one form notebook tab, found ${tabs.length}`);
@@ -146,8 +171,19 @@ export async function testFormSessionsAsync(): Promise<void> {
       if (!await vscode.window.tabGroups.close(tabs, true)) {
         throw new Error("Form notebook close failed");
       }
-      console.log(`Form session fixture: closed tab; document.isClosed=${second.isClosed}`);
-      await request(`/test/wait?id=${"b".repeat(32)}&closed`);
+      if (second.isClosed) {
+        throw new Error("Closing one editor must keep the shared notebook document open");
+      }
+      await request(`/test/wait?id=${duplicateConnection.connectionId}`);
+      const shared = await request("/test/stats") as { connections: { connectionId: number }[] };
+      if (
+        shared.connections.length !== 1 ||
+        shared.connections[0].connectionId !== connections[1].connectionId
+      ) throw new Error("Closing one group must retain the other group's exact socket");
+      await request(`/test/update?id=${connections[1].connectionId}`);
+      if (second.isClosed) {
+        throw new Error("The retained editor's document must still be open after socket teardown");
+      }
     };
     await scenario();
   } finally {
@@ -192,11 +228,41 @@ export async function testFormSessionsAsync(): Promise<void> {
         };
         await Promise.race([stopping(), expired]);
       } finally {
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-          await exited.catch(() => {});
+        try {
+          if (child.exitCode === null) {
+            child.kill("SIGKILL");
+            await exited.catch(() => {});
+          }
+        } finally {
+          await deleteFixtureFiles(createdUris);
         }
       }
     }
+  }
+  for (const uri of createdUris) {
+    try {
+      await vscode.workspace.fs.stat(uri);
+    } catch (error) {
+      if (error instanceof vscode.FileSystemError && error.code === "FileNotFound") continue;
+      throw error;
+    }
+    throw new Error(`Form session fixture was not removed: ${uri.toString()}`);
+  }
+}
+
+async function deleteFixtureFiles(uris: readonly vscode.Uri[]): Promise<void> {
+  const cleanup = await Promise.allSettled(uris.map(async (uri) => {
+    try {
+      await vscode.workspace.fs.delete(uri);
+    } catch (error) {
+      if (!(error instanceof vscode.FileSystemError) || error.code !== "FileNotFound") throw error;
+    }
+  }));
+  const failures = cleanup.filter((result) => result.status === "rejected");
+  if (failures.length) {
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      "Form fixture cleanup failed",
+    );
   }
 }

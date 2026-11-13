@@ -2,7 +2,7 @@
 /// <reference lib="es2024.promise" />
 import { assertEquals } from "@std/assert";
 import type { CommFrame, CommMessage } from "./protocol.ts";
-import { UiBridge, UiBridgeRegistry, type UiCommSocket } from "./uiBridge.ts";
+import { UiBridge, UiBridgeRegistry, UiBridgeViews, type UiCommSocket } from "./uiBridge.ts";
 
 function fixture() {
   const sent: CommMessage[] = [], posted: unknown[] = [];
@@ -436,12 +436,13 @@ Deno.test("an unbound editor or a stale action cannot establish a form connectio
       "Repinning freezes old views without attaching their actions elsewhere",
     );
     assertEquals(f.sent, []);
-    assertEquals(f.closeCount, 1);
     assertEquals(posted.at(-1), {
       source: "maieutics-form",
       type: "closed",
       modelId: "shared-model",
     });
+    await registry.dispose();
+    assertEquals(f.closeCount, 1, "Registry disposal joins the independently retired socket");
   } finally {
     await registry.dispose();
   }
@@ -452,12 +453,14 @@ Deno.test("a late connection cannot publish into the editor's replacement scope"
   const connecting = Promise.withResolvers<UiCommSocket>();
   const started = Promise.withResolvers<void>();
   const posted: unknown[] = [];
+  let replacementStarts = 0;
   const registry = new UiBridgeRegistry<string>({
     connect: (sessionId) => {
       if (sessionId === "old") {
         started.resolve();
         return connecting.promise;
       }
+      replacementStarts++;
       return Promise.resolve(current.socket);
     },
     post: (_owner, message) => posted.push(message),
@@ -467,7 +470,12 @@ Deno.test("a late connection cannot publish into the editor's replacement scope"
   await started.promise;
   const replacement = registry.handleRendererMessage("editor", "current", formMessage());
   try {
-    await registry.handleRendererMessage("editor", "current", formMessage());
+    assertEquals(
+      replacementStarts,
+      1,
+      "A replacement must start before retired startup is released",
+    );
+    await replacement;
     await current.emit(formOpen("Replacement"));
     const before = posted.length;
     connecting.resolve(old.socket);
@@ -564,4 +572,123 @@ Deno.test("host closure delivery failure does not abandon another editor's conne
   await registry.dispose();
   assertEquals([a.closeCount, b.closeCount], [1, 1]);
   assertEquals(logs, ["Form closure delivery failed.", "Form closure delivery failed."]);
+});
+
+Deno.test("an early mount is retained and resumes without another renderer mount", async () => {
+  const first = fixture(), resumed = fixture();
+  const owner = { sessionId: "session", visible: false };
+  const posts: unknown[] = [];
+  const logs: string[] = [];
+  const sockets = [first.socket, resumed.socket];
+  let connections = 0;
+  const views = new UiBridgeViews<typeof owner>({
+    session: (owner) => owner.sessionId,
+    visible: (owner) => owner.visible,
+    connect: () => {
+      connections++;
+      const socket = sockets.shift();
+      if (!socket) throw new Error("Unexpected connection");
+      return Promise.resolve(socket);
+    },
+    post: (_owner, message) => posts.push(message),
+    log: (message) => logs.push(message),
+  });
+  try {
+    await views.handleRendererMessage(owner, formMessage());
+    assertEquals(connections, 0);
+    assertEquals((posts.at(-1) as { code: string }).code, "form_view_inactive");
+    assertEquals(logs, ["Form mount deferred until its editor is visible."]);
+    await views.updateVisible([owner]);
+    assertEquals(connections, 0, "An obsolete visibility snapshot cannot activate a hidden editor");
+    owner.visible = true;
+    await views.updateVisible([owner]);
+    await first.emit(formOpen("First"));
+    await views.handleRendererMessage(owner, formMessage("event"));
+    assertEquals(first.sent.length, 1, "Visibility admission must recover the original mount");
+    owner.visible = false;
+    await views.updateVisible([]);
+    assertEquals(first.closeCount, 1);
+    owner.visible = true;
+    await views.updateVisible([owner]);
+    await resumed.emit(formOpen("Resumed"));
+    await views.handleRendererMessage(owner, formMessage("event"));
+    assertEquals(connections, 2);
+    assertEquals(resumed.sent.length, 1, "Resumption must not replay the earlier business action");
+  } finally {
+    await views.dispose();
+  }
+  assertEquals(resumed.closeCount, 1);
+});
+
+Deno.test("disappearing editors release only their connection while a shared document remains live", async () => {
+  const a = fixture(), b = fixture();
+  const first = { sessionId: "session", visible: true };
+  const second = { sessionId: "session", visible: true };
+  const sockets = [a.socket, b.socket];
+  const views = new UiBridgeViews<typeof first>({
+    session: (owner) => owner.sessionId,
+    visible: (owner) => owner.visible,
+    connect: () => {
+      const socket = sockets.shift();
+      if (!socket) throw new Error("Unexpected connection");
+      return Promise.resolve(socket);
+    },
+    post() {},
+    log() {},
+  });
+  try {
+    for (const owner of [first, second]) await views.handleRendererMessage(owner, formMessage());
+    await a.emit(formOpen("Shared"));
+    await b.emit(formOpen("Shared"));
+    first.visible = false;
+    await views.updateVisible([second]);
+    assertEquals([a.closeCount, b.closeCount], [1, 0]);
+    await views.handleRendererMessage(second, formMessage("event"));
+    assertEquals(b.sent.length, 1);
+    first.sessionId = "different";
+    first.visible = true;
+    await views.updateVisible([first, second]);
+    assertEquals(sockets.length, 0, "A dormant mount cannot migrate into a different session");
+  } finally {
+    await views.dispose();
+  }
+});
+
+Deno.test("retired mount completion cannot remove a replacement from visibility tracking", async () => {
+  const old = fixture(), current = fixture();
+  const connecting = Promise.withResolvers<UiCommSocket>();
+  const started = Promise.withResolvers<void>();
+  const owner = { sessionId: "old", visible: true };
+  const views = new UiBridgeViews<typeof owner>({
+    session: (owner) => owner.sessionId,
+    visible: (owner) => owner.visible,
+    connect: (sessionId) => {
+      if (sessionId === "old") {
+        started.resolve();
+        return connecting.promise;
+      }
+      return Promise.resolve(current.socket);
+    },
+    post() {},
+    log() {},
+  });
+  const mounting = views.handleRendererMessage(owner, formMessage());
+  await started.promise;
+  const unmounting = views.handleRendererMessage(owner, formMessage("unmount"));
+  owner.sessionId = "current";
+  try {
+    await views.handleRendererMessage(owner, formMessage());
+    connecting.resolve(old.socket);
+    await Promise.all([mounting, unmounting]);
+    owner.visible = false;
+    await views.updateVisible([]);
+    assertEquals(
+      current.closeCount,
+      1,
+      "Visibility must still own the replacement after retired work completes",
+    );
+  } finally {
+    connecting.resolve(old.socket);
+    await views.dispose();
+  }
 });

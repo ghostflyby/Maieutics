@@ -42,6 +42,16 @@ Approval revocation follows the same worker-stop path. These tokens authorize a 
 an individual notebook session; explicit session/view/generation context and scoped business-model
 attachment remain subsequent work.
 
+HTTP admission reserves one root per plugin before waking the providing worker. The reservation
+belongs to the registration, including an initial or later `undefined` value; `undefined` removes
+the live mount and its URL but does not release root ownership. A second worker (or a second
+registration in the same worker) is rejected at its `provide()` call. Only `unprovide`, stream
+completion/failure, or worker withdrawal releases the reservation. Admission policy uses these
+reservations, not just live mounts. Worker identity is derived by the host; mapping it for policy
+evaluation is not a separate authentication gate. Unexpected change-stream failures log a fixed
+diagnostic and release only the affected registration. Service changes use the existing
+per-element collection codec, so replacing a function handler does not attempt structured cloning.
+
 A published HTTP root is an active actor reference and pins its worker against idle reclamation.
 Explicit stop/reload/revocation still withdraws it. Idle maintenance has an awaitable completion
 boundary so tests can advance its supplied clock and assert completed stops without sleeping.
@@ -69,6 +79,11 @@ not implemented; it will require explicit read policy and matching snapshot revi
 Promise cannot be structured-cloned. Its host-side rejection is observed even when the worker does
 not wait. `request.signal` and transferred response cancellation retain ADR 0021's semantics.
 
+Host shutdown attempts storage stop, synchronous disposal and HTTP completion even when an earlier
+stage fails. A single failure preserves its original identity; multiple failures are returned in an
+`AggregateError` in stage order. HTTP teardown cannot replace the storage failure in a `finally`.
+Fault tests use separately owned injected infrastructure, without modifying shared prototypes.
+
 ## Verification and next steps
 
 Coverage includes real HTTP and two plugin workers without network grants, cross-plugin rejection,
@@ -79,13 +94,21 @@ The actual VS Code browser test exercises native Fetch, CORS, binary, incrementa
 unmount using the committed ESM. Compiler tests verify explicit linking and denied SSR I/O. Kernel
 tests cover scoped discovery and compatibility with older mount descriptors.
 
+The 2026-11-13 review adds real-worker A → undefined → rejected B → restored A → unprovide → B
+coverage, and drives the actual kernel approval revoke/re-approve path against the HTTP listener:
+the original scoped URL answers 404 after revoke, re-approval supplies a fresh usable URL, and the
+old URL stays revoked. Shutdown coverage includes success, each individual failure, combined
+failures and repeated disposal. The admission and combined-failure regressions fail on unfixed code.
+
 Next: approved reusable Vue component delivery, binding each component to its verified plugin mount
 in the notebook adapter, session/model projections over HTTP, and explicit SSE/NDJSON subscription
 helpers. No catalog, automatic notebook mount injection, generic business-model synchronization,
 automatic reconnection or migration of existing forms is claimed by this foundation.
 
-Local validation on macOS arm64: 692 Deno tests, 20 Node scenarios, 1,679 .NET cases
-(1,671 passed, eight existing platform/external-service skips), 26 actual VS Code cases and
-13 NativeAOT process smokes pass. Warning-free Release build and osx-arm64 publish, type/lint/format,
-offline SSR smoke and deterministic committed browser/SSR artifact rebuild checks pass. Other
+Review validation on macOS arm64 (2026-11-13): 697 Deno tests, 20 Node scenarios, 1,679 .NET cases
+(1,671 passed, eight existing platform/external-service skips) and 13 NativeAOT process smokes pass.
+The approval revoke/re-approve HTTP test passes against the real kernel manager and Deno host.
+Release build, osx-arm64 publish and type/lint/format checks pass. The 26 actual VS Code cases,
+offline SSR and committed browser/SSR artifact rebuild checks passed in the 2026-11-12 foundation;
+this review changes no browser or SSR artifact sources and does not repeat those checks. Other
 platforms are covered by PR CI rather than claimed as local results.

@@ -98,3 +98,11 @@ roots pin their workers against automatic idle reclamation until withdrawn. Requ
 bodies retain native binary streams, backpressure and cancellation. HTTP delivery completion crosses
 workers through callable Promise observation methods instead of cloning a Promise. No new listener
 or Deno permission kind is added by this integration.
+
+One root is reserved per plugin at admission, including while its value is `undefined`. That value
+pauses serving but retains ownership; only unprovide, stream termination or worker withdrawal
+releases the registration. A competing provide fails at the caller rather than terminating an
+existing owner's change stream. Unexpected stream failures emit a fixed diagnostic. Shutdown retains
+a single original error or aggregates several resource failures, and repeated disposal does not
+start another teardown. The resource-injection constructor seam transfers ownership to the host and
+permits isolated failure tests.

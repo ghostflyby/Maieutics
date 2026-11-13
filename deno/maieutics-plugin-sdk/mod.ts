@@ -1304,7 +1304,7 @@ async function remoteProvideImpl(
       providerKey: string,
     ): Promise<void>;
   };
-  await collection.add(initial, changes, providerKey);
+  await collection.add(initial, markCollectionStream(changes), providerKey);
 }
 
 /** Routes unprovide() of a remote contribution back to the defining worker,

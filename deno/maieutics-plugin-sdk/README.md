@@ -200,6 +200,13 @@ be non-idempotent, and to reach outside. Omitting the block entirely and passing
 thing. A non-boolean hint or a blank/oversized title fails the declaration at load time rather than
 silently keeping the default.
 
+## HTTP contribution lifetime
+
+HTTP service contributions retain their one-root registration across `undefined` pauses. Use
+`unprovide(registration)` to release it before another worker provides the plugin's root. Remote
+contribution change streams encode every item through the collection codec, including function
+handler replacements; they are not limited to structured-clone values.
+
 ## Deno permissions
 
 The SDK module itself performs no runtime I/O and requires no permissions to import. Plugins

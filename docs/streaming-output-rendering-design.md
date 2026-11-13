@@ -956,6 +956,12 @@ delivery and notebook-side assignment of plugin context are also subsequent work
 comms remain usable. Tests cover real workers, isolation/revocation, binary/streaming/cancellation,
 Vue scopes, browser native Fetch, SSR denial and compatible kernel discovery.
 
+Review follow-up (2026-11-13): root admission lasts for the registration even while its live value
+is `undefined`; another provider fails at `provide()` until the owner releases it. Handler changes
+cross the per-element collection codec instead of cloning functions. Real kernel/Deno coverage
+now verifies scoped URL invalidation through approval revocation and fresh credentials after
+re-approval. Shutdown preserves all stage failures using `AggregateError` when needed.
+
 ## Document state and presentation units
 
 Each document retains source and a monotonically increasing source version, parsed structure,

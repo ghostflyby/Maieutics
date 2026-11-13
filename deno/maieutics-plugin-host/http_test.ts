@@ -1,8 +1,106 @@
 import { assert, assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
+import type { HttpGateway, HttpMountSnapshot } from "./http.ts";
 
 const sdk = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const worker = new URL("./worker_entry.ts", import.meta.url).href;
+
+function waitForMounts(
+  gateway: HttpGateway,
+  predicate: (mounts: HttpMountSnapshot[]) => boolean,
+): Promise<void> {
+  if (predicate(gateway.snapshots())) return Promise.resolve();
+  const ready = Promise.withResolvers<void>();
+  const unsubscribe = gateway.onMountsChanged(() => {
+    if (predicate(gateway.snapshots())) ready.resolve();
+  });
+  const timer = setTimeout(
+    () => ready.reject(new Error("HTTP mount transition did not complete")),
+    5_000,
+  );
+  return ready.promise.finally(() => {
+    clearTimeout(timer);
+    unsubscribe();
+  });
+}
+
+Deno.test("an undefined HTTP root retains admission until unprovide and rejects another worker at its provide call", async () => {
+  const root = Deno.makeTempDirSync({ prefix: "http-admission-" });
+  Deno.writeTextFileSync(
+    `${root}/a.ts`,
+    `
+    import {defineExtensionPoint,provide,unprovide,http,shallowRef} from ${JSON.stringify(sdk)};
+    const handler = () => new Response('a');
+    const state = shallowRef(handler);
+    const registration = provide(http,state);
+    export const command = defineExtensionPoint('ToolPreInvoke', request => {
+      if (request.action === 'hide') state.value = undefined;
+      if (request.action === 'show') state.value = handler;
+      if (request.action === 'release') unprovide(registration);
+      return {};
+    });
+  `,
+  );
+  Deno.writeTextFileSync(
+    `${root}/b.ts`,
+    `
+    import {defineExtensionPoint,provide,http,shallowRef} from ${JSON.stringify(sdk)};
+    export const command = defineExtensionPoint('ToolPreInvoke', () => {
+      try { provide(http,shallowRef(() => new Response('b'))); return {accepted:true}; }
+      catch(error) { return {accepted:false,name:error.name}; }
+    });
+  `,
+  );
+  const host = new PluginHost({
+    sdkUrl: sdk,
+    workerEntryUrl: worker,
+    plugins: [{
+      id: "shared",
+      rootDir: root,
+      permissions: { read: [root] },
+      workers: ["a", "b"].map((name) => ({
+        exportName: `./${name}`,
+        entryUrl: new URL(`file://${root}/${name}.ts`).href,
+        specifier: `@maieutics/shared/${name}`,
+      })),
+    }],
+  });
+  const gateway = host.httpGateway();
+  try {
+    await host.startAll();
+    await waitForMounts(gateway, (mounts) => mounts.length === 1);
+    const address = await gateway.startRouter({ token: "host-only-token" });
+    await host.invoke("shared", "./a", "ToolPreInvoke", { action: "hide" });
+    await waitForMounts(gateway, (mounts) => mounts.length === 0);
+    assertEquals(await host.invoke("shared", "./b", "ToolPreInvoke", {}), {
+      accepted: false,
+      name: "AdmissionRejected",
+    }, "A dormant registration still owns the root; B must fail synchronously at provide()");
+    await host.invoke("shared", "./a", "ToolPreInvoke", { action: "show" });
+    await waitForMounts(gateway, (mounts) => mounts.length === 1);
+    const mountA = gateway.snapshots()[0];
+    assertEquals(mountA.specifier, "@maieutics/shared/a");
+    assertEquals(
+      await (await fetch(`http://127.0.0.1:${address.port}/${mountA.accessToken}/plugins/shared/`))
+        .text(),
+      "a",
+    );
+    await host.invoke("shared", "./a", "ToolPreInvoke", { action: "release" });
+    await waitForMounts(gateway, (mounts) => mounts.length === 0);
+    assertEquals(await host.invoke("shared", "./b", "ToolPreInvoke", {}), { accepted: true });
+    await waitForMounts(gateway, (mounts) => mounts.length === 1);
+    const mountB = gateway.snapshots()[0];
+    assertEquals(mountB.specifier, "@maieutics/shared/b");
+    assertEquals(
+      await (await fetch(`http://127.0.0.1:${address.port}/${mountB.accessToken}/plugins/shared/`))
+        .text(),
+      "b",
+    );
+  } finally {
+    await host.shutdown();
+    Deno.removeSync(root, { recursive: true });
+  }
+});
 
 function config(root: string, id: string): PluginConfig {
   const dir = `${root}/${id}`;

@@ -32,7 +32,7 @@ import {
   answerAdmission,
 } from "../maieutics-plugin-sdk/admission.ts";
 import { evaluateAdmissionHook, setAdmissionHook } from "../maieutics-plugin-sdk/reactive.ts";
-import { http } from "../maieutics-plugin-sdk/http.ts";
+import { http, HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 import {
@@ -128,6 +128,7 @@ export class HttpGateway {
   readonly #providerPlugins = new Map<string, string>();
   readonly #providers = new Set<HttpProvider>();
   readonly #registrations = new Map<string, symbol>();
+  readonly #admissions = new Map<string, { specifier: string; providerKey: string }>();
   #disposed = false;
   #closing: Promise<void> | undefined;
   readonly #routerListeners = new Set<() => void>();
@@ -138,11 +139,9 @@ export class HttpGateway {
     // from the same plugin fails at its own provide() call site.
     setAdmissionHook(CONTRACT_NAME, (context) => {
       const root = this.#providerPlugins.get(context.providerSpecifier);
-      if (!root) return "unknown HTTP provider";
+      // admit() supplies this mapping from host-derived worker identity before evaluating policy.
       const duplicate = context.existingProviders.some(
-        (specifier) =>
-          specifier !== context.providerSpecifier &&
-          this.#providerPlugins.get(specifier) === root,
+        (specifier) => this.#providerPlugins.get(specifier) === root,
       );
       if (duplicate) {
         return `plugin '${root}' already provides an HTTP root; only one root per plugin is allowed`;
@@ -177,19 +176,35 @@ export class HttpGateway {
    */
   admit(frame: AdmissionRequestFrame, providerSpecifier: string, pluginId: string): void {
     if (!(frame.sab instanceof SharedArrayBuffer)) return;
-    this.#providerPlugins.set(providerSpecifier, pluginId);
     const mailbox = admissionMailboxFor(frame.sab);
-    answerAdmission(mailbox, () =>
-      evaluateAdmissionHook(frame.ep ?? CONTRACT_NAME, {
+    answerAdmission(mailbox, () => {
+      if (this.#disposed) return "http_gateway_disposed";
+      this.#providerPlugins.set(providerSpecifier, pluginId);
+      const isHttp = frame.ep === CONTRACT_NAME && frame.def === HTTP_AGGREGATOR_SPECIFIER;
+      if (isHttp && !frame.providerKey.startsWith(`${providerSpecifier}:`)) {
+        return "invalid_http_provider";
+      }
+      const verdict = evaluateAdmissionHook(frame.ep ?? CONTRACT_NAME, {
         extensionPoint: frame.ep ?? CONTRACT_NAME,
         providerSpecifier,
         providerModule: frame.providerModule ?? "",
         existingProviders: [
           ...new Set(
-            [...this.#mounts.values()].map((mount) => mount.specifier),
+            isHttp
+              ? [...this.#admissions.values()].map((admission) => admission.specifier)
+              : [...this.#mounts.values()].map((mount) => mount.specifier),
           ),
         ],
-      }));
+      });
+      if (typeof verdict === "string") return verdict;
+      // Reserve before waking provide(): undefined pauses service, not ownership of its root.
+      if (isHttp) {
+        this.#admissions.set(pluginId, {
+          specifier: providerSpecifier,
+          providerKey: frame.providerKey,
+        });
+      }
+    });
   }
 
   /**
@@ -266,6 +281,9 @@ export class HttpGateway {
     for (const key of this.#registrations.keys()) {
       if (key.startsWith(`${specifier}:`)) this.#registrations.delete(key);
     }
+    for (const [plugin, admission] of this.#admissions) {
+      if (admission.specifier === specifier) this.#admissions.delete(plugin);
+    }
     this.#providerPlugins.delete(specifier);
     return Promise.all(completions).then(() => undefined);
   }
@@ -276,6 +294,8 @@ export class HttpGateway {
     this.#disposed = true;
     const stopped = [...new Set([...this.#providers].map((provider) => provider.specifier))]
       .map((specifier) => this.withdrawProvider(specifier));
+    this.#admissions.clear();
+    this.#providerPlugins.clear();
     this.#closing = Promise.all([...stopped, this.stopRouter()]).then(() => undefined);
     return this.#closing;
   }
@@ -289,6 +309,9 @@ export class HttpGateway {
       if (typeof providerKey === "string" && providerKey.length > 0) {
         if (!providerKey.startsWith(`${provider.specifier}:`)) {
           throw new Error("invalid_http_provider");
+        }
+        if (this.#admissions.get(provider.pluginId)?.providerKey !== providerKey) {
+          throw new Error("http_admission_required");
         }
         if (this.#registrations.has(providerKey)) throw new Error("duplicate_http_root");
         this.#mount(providerKey, initial, provider);
@@ -309,6 +332,7 @@ export class HttpGateway {
           throw new Error("invalid_http_provider");
         }
         this.#registrations.delete(providerKey);
+        this.#releaseAdmission(provider, providerKey);
         this.#unmount(providerKey);
       }
 
@@ -318,6 +342,12 @@ export class HttpGateway {
       [`${CONTRACT_NAME}.add`]: add,
       [`${CONTRACT_NAME}.remove`]: remove,
     };
+  }
+
+  #releaseAdmission(provider: HttpProvider, providerKey: string): void {
+    if (this.#admissions.get(provider.pluginId)?.providerKey === providerKey) {
+      this.#admissions.delete(provider.pluginId);
+    }
   }
 
   #mount(
@@ -376,13 +406,19 @@ export class HttpGateway {
         if (value === undefined) this.#unmount(providerKey);
         else this.#mount(providerKey, value, provider);
       }
-    } catch {
-      // A failed change stream means the provider is unreachable.
+    } catch (error) {
+      console.error(
+        "[plugin-host] HTTP contribution stream failed:",
+        error instanceof Error && error.message === "duplicate_http_root"
+          ? "duplicate_http_root"
+          : "http_change_stream_failed",
+      );
     } finally {
       provider.lifetime.signal.removeEventListener("abort", abort);
     }
     if (this.#registrations.get(providerKey) === registration) {
       this.#registrations.delete(providerKey);
+      this.#releaseAdmission(provider, providerKey);
       this.#unmount(providerKey);
     }
   }

@@ -253,6 +253,12 @@ function specifierOf(_plugin: PluginConfig, worker: PluginWorkerConfig): string 
   return worker.specifier;
 }
 
+/** Optional owned infrastructure; supplying a resource transfers its lifetime to the host. */
+export interface HostResources {
+  storage?: PluginStoragePool;
+  http?: HttpGateway;
+}
+
 export class PluginHost {
   readonly extensions: RegisteredExtension[] = [];
 
@@ -314,8 +320,9 @@ export class PluginHost {
     return this.#http ??= new HttpGateway();
   }
 
-  constructor(options: HostOptions) {
+  constructor(options: HostOptions, resources: HostResources = {}) {
     this.#options = options;
+    this.#http = resources.http;
     // The pool workers' grants are narrower than the host's: read+write on
     // the plugin-data root plus read on the materialized module directories
     // (the pool worker entry, the engine, and the shared channel module).
@@ -324,7 +331,7 @@ export class PluginHost {
       dirnameOf(filePathOf(BOOTSTRAP_WRAPPER_URL)),
     ];
     const dataRoot = options.storageDataRoot;
-    this.#storage = new PluginStoragePool({
+    this.#storage = resources.storage ?? new PluginStoragePool({
       readDirs: dataRoot === undefined ? moduleDirs : [...moduleDirs, dataRoot],
       writeDirs: dataRoot === undefined ? [] : [dataRoot],
     });
@@ -937,6 +944,7 @@ export class PluginHost {
   }
 
   dispose(): void {
+    if (this.#disposed) return;
     // Fence first: queued lifecycle mutations and every wave boundary check
     // this, so an in-flight reload can neither finish nor resurrect workers.
     this.#disposed = true;
@@ -974,12 +982,24 @@ export class PluginHost {
    * the fast synchronous teardown used by tests and crash paths (a terminated
    * pool worker is crash-equivalent for SQLite: WAL recovery on reopen). */
   async shutdown(): Promise<void> {
+    const failures: unknown[] = [];
     try {
       await this.#storage.shutdown();
-    } finally {
-      this.dispose();
-      await this.#httpStopping;
+    } catch (error) {
+      failures.push(error);
     }
+    try {
+      this.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.#httpStopping;
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Plugin host shutdown failed");
   }
 
   // —— Acquire router (main side) ——

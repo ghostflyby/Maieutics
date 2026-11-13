@@ -877,6 +877,11 @@ public sealed class PluginHostIntegrationTests
         var registry = new ReplControlSessionRegistry();
         var socketPath = ReplControlHost.CreateSocketPath();
         var pluginsRoot = CreateRootWithoutExtraPlugin();
+        File.AppendAllText(Path.Combine(pluginsRoot, "mod.ts"), """
+
+            import { provide, shallowRef, http } from "jsr:@maieutics/plugin-sdk@^0.3";
+            provide(http, shallowRef(() => new Response("approved-http")));
+            """);
         var manager = new PluginHostManager(
             pluginsRoot,
             Path.Combine(Path.GetTempPath(), $"mc-plugin-data-{Guid.NewGuid():N}"),
@@ -904,6 +909,20 @@ public sealed class PluginHostIntegrationTests
                     timeout.Token))
                 .Single().PluginId;
 
+            await WaitForRegistryConditionAsync(manager, ReplExtensionPointName.McpDiscover,
+                _ => manager.GetHttpGateway()?.Mounts.Any(mount =>
+                    mount.PluginId == rootPluginId && mount.Live && !string.IsNullOrEmpty(mount.AccessToken)) is true,
+                timeout.Token);
+            var originalUrl = Assert.Single(manager.GetPluginSurfaces(manager.GetHttpGateway()),
+                surface => surface.Id == rootPluginId).PageUrl;
+            Assert.NotNull(originalUrl);
+            using var http = new HttpClient();
+            using (var live = await http.GetAsync(originalUrl, timeout.Token))
+            {
+                Assert.Equal(System.Net.HttpStatusCode.OK, live.StatusCode);
+                Assert.Equal("approved-http", await live.Content.ReadAsStringAsync(timeout.Token));
+            }
+
             // Revocation drives the stop form of plugin.reload end to end (ADR 0037):
             // the live host closes the worker, its post-stop registry frame withdraws
             // the registration, and the kernel classifies the plugin pending.
@@ -911,10 +930,13 @@ public sealed class PluginHostIntegrationTests
             await WaitForRegistryConditionAsync(
                 manager,
                 ReplExtensionPointName.McpDiscover,
-                registrations => registrations.Count == 0,
+                registrations => registrations.Count == 0 && manager.GetHttpGateway() is { } gateway &&
+                    gateway.Mounts.All(mount => mount.PluginId != rootPluginId || !mount.Live),
                 timeout.Token);
             Assert.Empty(manager.GetRegistrations(ReplExtensionPointName.McpDiscover));
             Assert.Equal(1, manager.GetStatus().PendingApprovals);
+            using (var revoked = await http.GetAsync(originalUrl, timeout.Token))
+                Assert.Equal(System.Net.HttpStatusCode.NotFound, revoked.StatusCode);
 
             // Re-approval upserts the worker back without a host-process restart. The
             // approve snapshot's registration copy derives from the STALE pre-revoke
@@ -933,6 +955,18 @@ public sealed class PluginHostIntegrationTests
                 timeout.Token);
             Assert.NotEmpty(manager.GetRegistrations(ReplExtensionPointName.McpDiscover));
             Assert.Equal(0, manager.GetStatus().PendingApprovals);
+            await WaitForRegistryConditionAsync(manager, ReplExtensionPointName.McpDiscover,
+                _ => manager.GetHttpGateway()?.Mounts.Any(mount =>
+                    mount.PluginId == rootPluginId && mount.Live && !string.IsNullOrEmpty(mount.AccessToken)) is true,
+                timeout.Token);
+            var restoredUrl = Assert.Single(manager.GetPluginSurfaces(manager.GetHttpGateway()),
+                surface => surface.Id == rootPluginId).PageUrl;
+            Assert.NotNull(restoredUrl);
+            Assert.NotEqual(originalUrl, restoredUrl);
+            using (var restored = await http.GetAsync(restoredUrl, timeout.Token))
+                Assert.Equal(System.Net.HttpStatusCode.OK, restored.StatusCode);
+            using (var stillRevoked = await http.GetAsync(originalUrl, timeout.Token))
+                Assert.Equal(System.Net.HttpStatusCode.NotFound, stillRevoked.StatusCode);
         }
 
         if (Directory.Exists(pluginsRoot)) await TempArea.DeleteAsync(pluginsRoot, CancellationToken.None);

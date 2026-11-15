@@ -103,9 +103,12 @@ function encode(value: AsyncIterable<unknown>, ctx: EncodeContext): unknown {
   // release), so the original iterable's object graph becomes collectable even
   // while the actor stays alive.
   let stopFn: () => void = () => {};
-  stopFn = startStreamProducer(channel, iterable, () => {
+  const producer = startStreamProducer(channel, iterable, () => {
     state.producerStops.delete(stopFn);
+    ctx.registry.unregisterChannel(channel);
   });
+  stopFn = producer;
+  ctx.registry.trackTask(producer.completion);
   state.producerStops.add(stopFn);
   // Messageport transports hand over a port; Mux transports hand over a token.
   const handle: StreamHandle = {
@@ -131,6 +134,7 @@ function decode(
     channel,
     () => {
       state.consumerFails.delete(failFn);
+      ctx.registry.unregisterChannel(channel);
       unregister(); // explicit path: done/error/return/fail — no GC release later
     },
   );

@@ -266,6 +266,7 @@ function releaseRefId(refId: string): void {
     ownerChannelsByRefId.delete(refId);
   }
   ownerStrongRefs.delete(refId);
+  notifyStrongRefCount();
 }
 
 /** Owner-side explicit release: the actor decides its byref object dies. */
@@ -277,6 +278,21 @@ export function releaseRef(obj: object): void {
 /** How many objects the owner is holding strongly (release probe). */
 export function ownerStrongRefCount(): number {
   return ownerStrongRefs.size;
+}
+
+const strongRefWaiters = new Set<{ count: number; resolve(): void }>();
+function notifyStrongRefCount(): void {
+  for (const waiter of strongRefWaiters) {
+    if (waiter.count === ownerStrongRefs.size) {
+      strongRefWaiters.delete(waiter);
+      waiter.resolve();
+    }
+  }
+}
+/** Deterministic fixture signal for explicit reference release. */
+export function waitForOwnerStrongRefCount(count: number): Promise<void> {
+  if (count === ownerStrongRefs.size) return Promise.resolve();
+  return new Promise<void>((resolve) => strongRefWaiters.add({ count, resolve }));
 }
 
 /** Tombstone finalizer: whatever caused the object's collection, sweep the
@@ -293,6 +309,7 @@ const refIdFinalizer = new FinalizationRegistry<string>((id) => {
   }
   objByRefId.delete(id);
   ownerStrongRefs.delete(id);
+  notifyStrongRefCount();
 });
 
 function refIdFor(obj: object): string {
@@ -755,6 +772,11 @@ function materializeChannel(
 /** The default (messageport-shaped) transport used by main-side decodes without a real transport. */
 function defaultTransport(): DecodeContext["transport"] {
   return {
+    closed: false,
+    reason: undefined,
+    onClose() {
+      return () => {};
+    },
     kind: "messageport",
     send() {},
     onMessage() {},
@@ -941,6 +963,7 @@ function trackOwnerChannel(
   const obj = objByRefId.get(refId)?.deref();
   if (obj !== undefined && !ownerStrongRefs.has(refId)) {
     ownerStrongRefs.set(refId, obj);
+    notifyStrongRefCount();
   }
 }
 
@@ -957,6 +980,7 @@ function untrackOwnerChannel(refId: string, channel: Channel): void {
       ownerChannelsByRefId.delete(refId);
       // Last channel closed: the object is now collectable (mode-2 release).
       ownerStrongRefs.delete(refId);
+      notifyStrongRefCount();
     }
   }
 }

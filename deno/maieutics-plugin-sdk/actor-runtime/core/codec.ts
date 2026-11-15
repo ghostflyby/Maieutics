@@ -26,7 +26,8 @@
 /** Field name inside a placeholder that identifies the codec tag. */
 export const CODEC_PLACEHOLDER_KEY = "__wCodec";
 
-import type { Channel } from "./channel.ts";
+import { type Channel, wrapPort } from "./channel.ts";
+import { createLifetime } from "./lifetime.ts";
 import type { Transport } from "./transport.ts";
 
 export interface EncodeContext {
@@ -116,6 +117,29 @@ export function isNativelyClonable(v: object): boolean {
 }
 
 export class PayloadCodecRegistry {
+  #tasks = new Set<Promise<void>>();
+  #taskErrors: unknown[] = [];
+  #taskErrorCount = 0;
+
+  /** Own asynchronous codec cleanup, including generator finally blocks. */
+  trackTask(task: Promise<void>): void {
+    const observed = task.catch((error) => {
+      this.#taskErrorCount++;
+      if (this.#taskErrors.length < 128) this.#taskErrors.push(error);
+    }).finally(() => this.#tasks.delete(observed));
+    this.#tasks.add(observed);
+  }
+
+  /** Join work after failAll has requested cancellation. */
+  async join(): Promise<void> {
+    while (this.#tasks.size) await Promise.all([...this.#tasks]);
+    if (this.#taskErrorCount) {
+      throw new AggregateError(
+        this.#taskErrors,
+        `Actor codec cleanup failed (${this.#taskErrorCount} failures; at most 128 retained)`,
+      );
+    }
+  }
   #codecs = new Map<string, Codec>();
   #order: Codec[] = [];
   #codecState = new Map<Codec, unknown>();
@@ -330,11 +354,24 @@ export class PayloadCodecRegistry {
 
   /** Actor terminated/crashed: ask every codec to clean up its resources (channels, listeners). */
   failAll(): void {
+    const errors: unknown[] = [];
     for (const codec of this.#order) {
-      codec.onRegistryFail?.(this.#codecState.get(codec));
+      try {
+        codec.onRegistryFail?.(this.#codecState.get(codec));
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    for (const channel of this.#channels) channel.close();
+    for (const channel of this.#channels) {
+      try {
+        channel.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     this.#channels.clear();
+    this.#codecState.clear();
+    if (errors.length) throw new AggregateError(errors, "Actor codec cleanup failed");
   }
 }
 
@@ -348,31 +385,24 @@ export class PayloadCodecRegistry {
 let defaultTransport: Transport | undefined;
 function defaultMessagePortTransport(): Transport {
   if (!defaultTransport) {
-    const { port2 } = new MessageChannel();
-    // Keep port2 referenced so the port pair stays open.
-    void port2;
+    const life = createLifetime();
     defaultTransport = {
       kind: "messageport",
+      get closed() {
+        return life.closed;
+      },
+      get reason() {
+        return life.reason;
+      },
+      onClose: life.onClose,
+      close: life.close,
       send() {},
       onMessage() {},
-      openChannel() {
-        const { port1: p1, port2: p2 } = new MessageChannel();
-        return {
-          channel: {
-            closed: false,
-            port: p1,
-            kind: "messageport",
-            send() {},
-            onMessage() {},
-            close() {
-              p1.close();
-            },
-          },
-          token: p2,
-        };
-      },
       onChannel() {},
-      close() {},
+      openChannel() {
+        const { port1, port2 } = new MessageChannel();
+        return { channel: wrapPort(port1), token: port2 };
+      },
     };
   }
   return defaultTransport;

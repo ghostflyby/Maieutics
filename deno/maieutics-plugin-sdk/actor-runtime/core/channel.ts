@@ -21,6 +21,8 @@
  */
 
 import type { EncodeContext } from "./codec.ts";
+import type { Transport } from "./transport.ts";
+import { ActorTransportError, createLifetime, type Lifetime } from "./lifetime.ts";
 
 export interface ChannelOptions {
   /** Called once when this endpoint closes: by close(), peer closure, or an error. */
@@ -29,25 +31,11 @@ export interface ChannelOptions {
   onMessageError?: () => void;
 }
 
-export interface Channel {
-  readonly closed: boolean;
-  /** The underlying MessagePort; transferring it to a peer moves the channel (reference hand-off). */
+export interface Channel extends Lifetime {
   readonly port: MessagePort;
-  /**
-   * How this channel crosses the boundary: "messageport" (the peer end is a
-   * MessagePort, transferable with the placeholder) or "framed" (the peer end
-   * is established by a Mux token over the parent transport). Codecs that can
-   * work either way (e.g. iterable) use this to choose their frame format;
-   * codecs that fundamentally require a MessagePort (e.g. remote-ref's
-   * liveness planes) only run on "messageport".
-   */
   readonly kind?: "messageport" | "framed";
-  /** Send a frame to the peer; transferable ports/buffers go in the second argument. */
   send(message: unknown, transfer?: Transferable[]): void;
-  /** Register the inbound frame handler (a second call replaces the first). */
   onMessage(handler: (message: unknown) => void): void;
-  /** Close this endpoint; idempotent. */
-  close(): void;
 }
 
 /**
@@ -83,7 +71,7 @@ export function openChannel(
   // AND rides in the placeholder so the peer's decode can connect the token
   // to the inbound channel.
   if (transport.kind === "framed" || transport.kind === "message") {
-    const opened = transport.openChannel();
+    const opened = transport.openChannel(options);
     transport.send(opened.token);
     return { channel: opened.channel, token: opened.token };
   }
@@ -101,155 +89,154 @@ export function connectChannel(
 }
 
 /** Wrap a local/transferred MessagePort as a Channel (exported for transport adapters). */
-export function wrapPort(
-  port: MessagePort,
-  options: ChannelOptions = {},
-): Channel {
-  let closed = false;
+export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Channel {
+  const life = createLifetime();
   let handler: ((message: unknown) => void) | undefined;
-
+  life.onClose(() => {
+    port.onmessage = null;
+    port.onmessageerror = null;
+    port.close();
+  });
+  if (options.onClosed) life.onClose(options.onClosed);
   port.onmessage = (ev: MessageEvent<unknown>) => {
-    if (!closed) handler?.(ev.data);
+    if (!life.closed) handler?.(ev.data);
   };
   port.onmessageerror = () => {
     options.onMessageError?.();
-    close();
+    life.close(new ActorTransportError("decode", "Actor channel decoding failed"));
   };
-
-  const close = (): void => {
-    if (closed) return;
-    closed = true;
-    try {
-      port.close();
-    } catch {
-      // The port may already be detached by a transfer (reference hand-off);
-      // close() on a detached port throws — closing is still "done".
-    }
-    options.onClosed?.();
-  };
-
+  port.start?.();
   return {
-    get closed(): boolean {
-      return closed;
+    get closed() {
+      return life.closed;
     },
-    get port(): MessagePort {
+    get reason() {
+      return life.reason;
+    },
+    get port() {
       return port;
     },
     kind: "messageport",
-    send(message: unknown, transfer?: Transferable[]): void {
-      if (closed) return;
+    onClose: life.onClose,
+    close: life.close,
+    send(message, transfer) {
+      if (life.closed) return;
       port.postMessage(message, transfer ? { transfer } : undefined);
     },
-    onMessage(h: (message: unknown) => void): void {
+    onMessage(h) {
       handler = h;
     },
-    close,
   };
 }
 
-/**
- * A Mux channel carries an internal `_ch` id (set by createMux's makeChannel).
- * Token-based channel establishment matches an inbound channel to a pending
- * token by that id. Used by the token-connection helper below.
- */
-interface MuxChannelShape extends Channel {
-  _ch?: number;
+type TokenTransport = Pick<
+  Transport,
+  "onChannel" | "claimOrphan" | "onClose" | "close" | "closed" | "reason"
+>;
+interface PendingToken {
+  channel?: Channel;
+  bind(channel: Channel): void;
+  proxy: Channel;
 }
+const dispatchers = new WeakMap<TokenTransport, Map<number, PendingToken>>();
 
-/**
- * Resolve a Mux token ({ __mux: "open", ch }) to the peer's Channel on the
- * transport. The channel may already have arrived (transport.onChannel fired
- * before this call) or arrive later; the returned Channel is the same object
- * either way. The transport's onChannel is registered once and dispatches to
- * all pending tokens by channel id.
- */
+/** Resolve a channel token without dropping sends or closure before the peer arrives. */
 export function connectToken(
-  transport: {
-    onChannel(h: (channel: Channel) => void): void;
-    claimOrphan?(ch: number): Channel | undefined;
-  },
+  transport: TokenTransport,
   token: { __mux: "open"; ch: number },
 ): Channel {
-  const chId = token.ch;
-  // Per-transport dispatcher: one onChannel registration routes every inbound
-  // Mux channel to the pending entry for its id. Channels that arrived before
-  // any claim (orphaned in the Mux) are taken via claimOrphan.
-  let dispatcher = dispatchers.get(transport);
-  if (!dispatcher) {
-    const pendingByCh = new Map<number, PendingToken>();
+  if (!token || token.__mux !== "open" || !Number.isSafeInteger(token.ch) || token.ch < 0) {
+    throw new ActorTransportError("protocol", "Invalid Actor channel token");
+  }
+  let pending = dispatchers.get(transport);
+  if (!pending) {
+    pending = new Map();
+    dispatchers.set(transport, pending);
+    const entries = pending;
     transport.onChannel((channel) => {
-      const mux = channel as MuxChannelShape;
-      if (mux._ch === undefined) return;
-      const entry = pendingByCh.get(mux._ch);
-      if (entry) {
-        pendingByCh.delete(mux._ch);
-        entry.channel = channel;
-        entry.resolve?.();
+      const id = (channel as Channel & { _ch?: number })._ch;
+      if (id !== undefined) {
+        const entry = entries.get(id);
+        if (entry) {
+          entries.delete(id);
+          entry.bind(channel);
+        }
       }
     });
-    dispatcher = { pendingByCh };
-    dispatchers.set(transport, dispatcher);
-  }
-  // The channel may already be orphaned in the Mux (open control arrived before
-  // decode). Claim it so its data isn't lost while we wait.
-  const orphan = transport.claimOrphan?.(chId);
-  if (orphan) {
-    const existing = dispatcher.pendingByCh.get(chId);
-    if (existing && !existing.channel) {
-      dispatcher.pendingByCh.delete(chId);
-      existing.channel = orphan;
-      existing.resolve?.();
-    }
-    return orphan;
-  }
-  const existing = dispatcher.pendingByCh.get(chId);
-  if (existing && existing.channel) return existing.channel;
-  // Not arrived yet (or arrived but unresolved): return a proxy that resolves
-  // once the channel arrives.
-  const entry: PendingToken = existing ?? {
-    channel: undefined,
-    resolve: undefined,
-  };
-  if (!existing) {
-    entry._ready = new Promise<void>((resolve) => {
-      entry.resolve = resolve;
+    transport.onClose((reason) => {
+      for (const entry of entries.values()) entry.proxy.close(reason);
+      entries.clear();
     });
-    dispatcher.pendingByCh.set(chId, entry);
   }
-  const ready = entry._ready ?? Promise.resolve();
+  const orphan = transport.claimOrphan?.(token.ch);
+  if (orphan) return orphan;
+  const existing = pending.get(token.ch);
+  if (existing) return existing.proxy;
+  if (pending.size >= 1024) {
+    throw new ActorTransportError("capacity", "Actor token wait budget exceeded");
+  }
+  const life = createLifetime();
+  const messages: Array<{ value: unknown; transfer?: Transferable[] }> = [];
+  let inbound: ((value: unknown) => void) | undefined;
+  let real: Channel | undefined;
+  const entries = pending;
+  life.onClose((reason) => {
+    entries.delete(token.ch);
+    messages.length = 0;
+    real?.close(reason);
+  });
   const proxy: Channel = {
-    get closed(): boolean {
-      return entry.channel?.closed ?? true;
+    get closed() {
+      return life.closed;
+    },
+    get reason() {
+      return life.reason;
     },
     get port(): MessagePort {
       throw new Error("Mux channels have no MessagePort");
     },
-    send(message, transfer) {
-      entry.channel?.send(message, transfer);
+    kind: "framed",
+    onClose: life.onClose,
+    close: life.close,
+    send(value, transfer) {
+      if (life.closed) return;
+      if (real) real.send(value, transfer);
+      else {
+        if (messages.length >= 128) {
+          const error = new ActorTransportError(
+            "capacity",
+            "Actor pending channel mailbox exceeded",
+          );
+          transport.close(error);
+          throw error;
+        }
+        messages.push({ value, transfer });
+      }
     },
     onMessage(h) {
-      if (entry.channel) entry.channel.onMessage(h);
-      else void ready.then(() => entry.channel!.onMessage(h));
-    },
-    close() {
-      entry.channel?.close();
+      inbound = h;
+      real?.onMessage(h);
     },
   };
+  const entry: PendingToken = {
+    proxy,
+    bind(channel) {
+      if (life.closed) {
+        channel.close(life.reason);
+        return;
+      }
+      real = channel;
+      channel.onClose(life.close);
+      if (inbound) channel.onMessage(inbound);
+      for (const message of messages.splice(0)) {
+        if (!life.closed) channel.send(message.value, message.transfer);
+      }
+    },
+  };
+  pending.set(token.ch, entry);
+  if (transport.closed) life.close(transport.reason);
   return proxy;
 }
-
-interface PendingToken {
-  channel: Channel | undefined;
-  resolve: (() => void) | undefined;
-  _ready?: Promise<void>;
-}
-
-// Transport → pending-token dispatcher (module-level; a transport has exactly
-// one onChannel handler, shared by all tokens).
-const dispatchers = new WeakMap<
-  { onChannel(h: (channel: Channel) => void): void },
-  { pendingByCh: Map<number, PendingToken> }
->();
 
 /** GC-based release: see the module docs. Returns an unregister function (call on explicit close). */
 export function registerRelease(

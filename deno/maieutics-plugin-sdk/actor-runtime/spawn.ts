@@ -1,3 +1,4 @@
+import { attachLazyIterator } from "./core/lazy_iterator.ts";
 /**
  * Main-thread entry point: wraps a Worker into a type-safe Actor proxy.
  *
@@ -333,38 +334,7 @@ setMainAcquire(routeAcquireMain);
  * Exported so an actor pool (which reuses the Remote<T> shape) applies the
  * same laziness to its routed calls.
  */
-export function attachLazyIterator(p: Promise<unknown>): void {
-  let attached = false;
-  Object.defineProperty(p, Symbol.asyncIterator, {
-    configurable: true,
-    value() {
-      if (!attached) {
-        attached = true;
-        void p.catch(() => {}); // avoid unhandled rejection while awaiting later
-      }
-      let iterator: AsyncIterator<unknown> | undefined;
-      let started = false;
-      return {
-        async next(): Promise<IteratorResult<unknown>> {
-          if (!started) {
-            started = true;
-            const inner = await p as AsyncIterable<unknown>;
-            iterator = inner[Symbol.asyncIterator]();
-          }
-          return iterator!.next();
-        },
-        async return(value?: unknown): Promise<IteratorResult<unknown>> {
-          if (iterator) {
-            const r = iterator.return?.(value);
-            return r ? await r : { done: true, value };
-          }
-          // never started: the worker generator never ran, nothing to cancel
-          return { done: true, value };
-        },
-      };
-    },
-  });
-}
+export { attachLazyIterator } from "./core/lazy_iterator.ts";
 
 /** Lifecycle methods attached to the proxy (not part of Remote<T> itself). */
 export interface ActorHandle {

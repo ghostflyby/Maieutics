@@ -7,3 +7,6 @@ License: Apache License, Version 2.0 (see LICENSE).
 
 This copy is maintained as part of Maieutics. Package imports and test fixture
 locations have been adapted to the Maieutics SDK package and build pipeline.
+Subsequent Maieutics changes add browser connections, separate host-only adapters,
+observable transport lifetimes and admission budgets, and credit-driven streams
+(internal Actor protocol version 2). See ADR 0053.

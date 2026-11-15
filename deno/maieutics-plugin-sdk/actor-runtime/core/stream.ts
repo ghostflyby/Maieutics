@@ -1,201 +1,171 @@
-/**
- * Stream channel primitives: pump an AsyncIterable into a Channel, and rebuild a
- * local AsyncIterable from one. The iterable codec (core/codecs/iterable.ts)
- * owns matching and placeholder translation; this file only provides the
- * type-agnostic stream protocol on top of the generic Channel abstraction.
- *
- * Stream protocol (consumer ↔ producer):
- *   consumer → producer  { type: "start" }    lazy start on first next(); no iteration, no producer work
- *   producer → consumer  { type: "item", value } | { type: "done" } | { type: "error", error }
- *   consumer → producer  { type: "release" }   consumer GC'd or explicitly returned the stream; producer releases
- *
- * Semantics:
- *   - Lazy: iteration starts only after "start".
- *   - Backpressure: items are delivered only while the consumer's next() is pending;
- *     the generator awaits between messages.
- *   - Release: calls iterator.return() (runs generator finally).
- *   - Death: fail() from createRemoteIterable rejects all pending next() calls.
- */
-
+/** Credit-driven streams: one next() authorizes one producer iteration. */
 import { ActorDiedError, RemoteError, type SerializedError, serializeError } from "./protocol.ts";
+import { ActorTransportError } from "./lifetime.ts";
 import type { Channel } from "./channel.ts";
 
 type StreamFrame =
-  | { type: "start" }
+  | { type: "start" | "next" | "release" }
   | { type: "item"; value: unknown }
   | { type: "done" }
-  | { type: "error"; error: SerializedError }
-  | { type: "release" };
+  | { type: "error"; error: SerializedError };
+export interface StreamProducerStop {
+  (): void;
+  readonly completion: Promise<void>;
+}
 
-/**
- * Producer side: pump an AsyncIterable into a channel. The returned stop()
- * cancels/closes and is safe to call repeatedly. onStopped fires exactly once
- * (on the first stop) and lets the caller remove registry bookkeeping.
- */
+/** Own the producer and its asynchronous generator cleanup until completion settles. */
 export function startStreamProducer(
   channel: Channel,
   iterable: AsyncIterable<unknown>,
   onStopped?: () => void,
-): () => void {
-  const iterator = iterable[Symbol.asyncIterator]();
-  let started = false;
+): StreamProducerStop {
+  const finished = Promise.withResolvers<void>();
+  void finished.promise.catch(() => {}); // the completion remains observable to the owning registry
+  let iterator: AsyncIterator<unknown> | undefined;
   let stopped = false;
-
-  channel.onMessage((message) => {
-    const frame = message as StreamFrame;
-    if (frame.type === "start") {
-      if (!started) {
-        started = true;
-        void pump();
-      }
-    } else if (frame.type === "release") {
-      stop();
-    }
-  });
-
-  function stop(): void {
+  let running = false;
+  let credits = 0;
+  const stop = (() => {
     if (stopped) return;
     stopped = true;
     channel.close();
-    const ret = iterator.return?.();
-    if (ret) void ret.catch(() => {});
-    // Self-remove from the codec's bookkeeping; idempotent thanks to `stopped`.
-    onStopped?.();
-  }
-
-  async function pump(): Promise<void> {
+    const cleanup = async () => {
+      try {
+        await iterator?.return?.();
+        onStopped?.();
+        finished.resolve();
+      } catch (error) {
+        finished.reject(error);
+      }
+    };
+    void cleanup();
+  }) as StreamProducerStop;
+  Object.defineProperty(stop, "completion", { value: finished.promise });
+  const pump = async (): Promise<void> => {
+    running = true;
     try {
-      while (!stopped) {
+      iterator ??= iterable[Symbol.asyncIterator]();
+      while (credits > 0 && !stopped) {
+        credits--;
         const result = await iterator.next();
-        if (stopped) break;
+        if (stopped) return;
         if (result.done) {
           channel.send({ type: "done" } satisfies StreamFrame);
-          break;
+          stop();
+          return;
         }
-        channel.send(
-          { type: "item", value: result.value } satisfies StreamFrame,
-        );
+        channel.send({ type: "item", value: result.value } satisfies StreamFrame);
       }
-    } catch (e) {
+    } catch (error) {
       if (!stopped) {
-        channel.send(
-          {
-            type: "error",
-            error: serializeError(e),
-          } satisfies StreamFrame,
-        );
+        channel.send({ type: "error", error: serializeError(error) } satisfies StreamFrame);
       }
-    } finally {
       stop();
+    } finally {
+      running = false;
     }
-  }
-
+  };
+  channel.onClose(stop);
+  channel.onMessage((message) => {
+    const frame = message as StreamFrame;
+    if (frame.type === "release") {
+      stop();
+      return;
+    }
+    if (frame.type !== "start" && frame.type !== "next") return;
+    if (credits >= 128) {
+      channel.close(new ActorTransportError("capacity", "Actor stream demand budget exceeded"));
+      return;
+    }
+    credits++;
+    if (!running && !stopped) {
+      void pump().catch((error) => {
+        finished.reject(error);
+        stop();
+      });
+    }
+  });
   return stop;
 }
 
-/**
- * Consumer side: rebuild a local AsyncIterable from a channel.
- * fail() rejects all pending next() calls when the actor dies, so they don't hang.
- * onReleased fires exactly once (when the stream ends by any path: done/error,
- * explicit return(), or fail) and lets the caller remove registry bookkeeping.
- */
+/** Rebuild a single-consumer stream without a producer-controlled item queue. */
 export function createRemoteIterable(
   channel: Channel,
   onReleased?: () => void,
 ): { iterable: AsyncIterable<unknown>; fail: () => void; detach: () => void } {
-  const queue: StreamFrame[] = [];
   const waiters: Array<{
-    resolve: (result: IteratorResult<unknown>) => void;
+    resolve: (value: IteratorResult<unknown>) => void;
     reject: (reason: unknown) => void;
   }> = [];
   let closed = false;
+  let acquired = false;
   let released = false;
-  let failure: SerializedError | undefined;
-
-  const detach = (): void => {
-    if (released) return;
-    released = true;
-    onReleased?.();
-  };
-
-  const deliver = (frame: StreamFrame): void => {
-    const waiter = waiters.shift();
-    if (!waiter) {
-      // Only item/done/error are consumed; start/release never reach the consumer
-      if (
-        frame.type === "item" || frame.type === "done" || frame.type === "error"
-      ) {
-        queue.push(frame);
-      }
-      return;
+  let failure: unknown;
+  const detach = () => {
+    if (!released) {
+      released = true;
+      onReleased?.();
     }
-    if (frame.type === "item") {
-      waiter.resolve({ done: false, value: frame.value });
-    } else if (frame.type === "done") {
-      waiter.resolve({ done: true, value: undefined });
-    } else if (frame.type === "error") {
-      waiter.reject(new RemoteError(frame.error));
-    } else waiter.resolve({ done: true, value: undefined });
   };
-
-  channel.onMessage((message) => {
-    const frame = message as StreamFrame;
-    deliver(frame);
-    if (frame.type === "done" || frame.type === "error") {
-      if (frame.type === "error") failure = frame.error;
-      closed = true;
-      channel.close();
-      detach();
-    }
-  });
-
-  const fail = (): void => {
+  const finish = (reason?: unknown) => {
     if (closed) return;
-    failure = serializeError(new ActorDiedError());
     closed = true;
-    channel.close();
-    while (waiters.length) {
-      const waiter = waiters.shift()!;
-      waiter.reject(new RemoteError(failure!));
+    failure = reason;
+    for (const waiter of waiters.splice(0)) {
+      if (reason !== undefined) waiter.reject(reason);
+      else waiter.resolve({ done: true, value: undefined });
     }
+    channel.close(reason);
     detach();
   };
-
-  const toResult = (frame: StreamFrame): IteratorResult<unknown> => {
-    if (frame.type === "item") return { done: false, value: frame.value };
-    if (frame.type === "done") return { done: true, value: undefined };
-    if (frame.type === "error") throw new RemoteError(frame.error);
-    return { done: true, value: undefined }; // start/release never appear in the consumer queue
-  };
-
+  channel.onClose((reason) => {
+    if (!closed) finish(reason ?? new ActorDiedError());
+  });
+  channel.onMessage((message) => {
+    if (closed) return;
+    const frame = message as StreamFrame;
+    if (frame.type === "item") {
+      const waiter = waiters.shift();
+      if (!waiter) {
+        finish(new ActorTransportError("protocol", "Actor stream item arrived without demand"));
+        return;
+      }
+      waiter.resolve({ done: false, value: frame.value });
+    } else if (frame.type === "done") finish();
+    else if (frame.type === "error") finish(new RemoteError(frame.error));
+  });
   const iterable: AsyncIterable<unknown> = {
     [Symbol.asyncIterator]() {
+      if (acquired) throw new Error("Actor stream has a single consumer");
+      acquired = true;
       let started = false;
       return {
-        next(): Promise<IteratorResult<unknown>> {
-          if (!started) {
-            started = true;
-            channel.send({ type: "start" } satisfies StreamFrame);
-          }
-          if (failure) return Promise.reject(new RemoteError(failure));
-          const frame = queue.shift();
-          if (frame) return Promise.resolve(toResult(frame));
+        next() {
+          if (failure !== undefined) return Promise.reject(failure);
           if (closed) return Promise.resolve({ done: true, value: undefined });
-          return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+          if (waiters.length >= 128) {
+            return Promise.reject(
+              new ActorTransportError("capacity", "Actor stream pending demand exceeded"),
+            );
+          }
+          const result = new Promise<IteratorResult<unknown>>((resolve, reject) =>
+            waiters.push({ resolve, reject })
+          );
+          channel.send({ type: started ? "next" : "start" } satisfies StreamFrame);
+          started = true;
+          return result;
         },
-        return(): Promise<IteratorResult<unknown>> {
-          // Explicit abandon: tell the producer to release, then detach locally.
-          // A finalizer path (see the iterable codec) may also send "release";
-          // stop() on the producer side is idempotent.
-          channel.send({ type: "release" } satisfies StreamFrame);
-          channel.close();
-          closed = true;
-          detach();
+        return() {
+          if (!closed) channel.send({ type: "release" } satisfies StreamFrame);
+          finish();
           return Promise.resolve({ done: true, value: undefined });
         },
       };
     },
   };
-
-  return { iterable, fail, detach };
+  return {
+    iterable,
+    fail: () => finish(new RemoteError(serializeError(new ActorDiedError()))),
+    detach,
+  };
 }

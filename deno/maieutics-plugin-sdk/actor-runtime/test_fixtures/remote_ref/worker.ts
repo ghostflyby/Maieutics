@@ -9,6 +9,7 @@ import {
   remoteRef,
   remoteRefCodec,
   setLivenessParams,
+  waitForOwnerStrongRefCount,
 } from "./ref_codec.ts";
 
 /** How many real objects were released via [Symbol.dispose] — observable probe. */
@@ -84,6 +85,9 @@ export const rpc = {
   /** How many objects this worker holds strongly (release probe). */
   strongRefCount(): number {
     return ownerStrongRefCount();
+  },
+  waitForStrongRefCount(count: number): Promise<void> {
+    return waitForOwnerStrongRefCount(count);
   },
   /** Configure liveness params (test hook). */
   setLiveness(intervalMs: number, timeoutMs: number): string {

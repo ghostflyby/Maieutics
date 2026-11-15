@@ -30,7 +30,7 @@ export { serveNode, serveProcess, serveWorker } from "./worker_runtime.ts";
 export type { LinkHandle, ServeWorkerOptions, WorkerApi } from "./worker_runtime.ts";
 export { connectActor } from "./core/connect.ts";
 export type { ConnectedActor } from "./core/connect.ts";
-export { fromMessagePort, fromNodeIpc, fromWebSocket, messageTransport } from "./core/transport.ts";
+export { fromMessagePort, fromNodeIpc, messageTransport } from "./core/transport.ts";
 export type {
   MessageTransport,
   Transport,
@@ -49,3 +49,9 @@ export type {
   TransferReturn,
   TransferReturnConfig,
 } from "./core/transfer.ts";
+
+export { fromWebSocket } from "./core/transport_v8.ts";
+export { createActorConnection } from "./core/connection.ts";
+export type { ActorConnection, ActorConnectionOptions } from "./core/connection.ts";
+export { webSocketTransport } from "./core/websocket.ts";
+export type { WebSocketTransportOptions, WireCodec } from "./core/websocket.ts";

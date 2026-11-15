@@ -28,6 +28,7 @@
 
 import type { Channel } from "./channel.ts";
 import type { Transport } from "./transport.ts";
+import { createLifetime } from "./lifetime.ts";
 
 export interface ConnectedActor {
   /** The logical channel opened on the transport. */
@@ -42,6 +43,8 @@ export interface ConnectedActor {
  * transport messages feed the channel's handler (last handler wins).
  */
 function mainChannel(transport: Transport): Channel {
+  const life = createLifetime();
+  transport.onClose(life.close);
   let closed = false;
   let handler: ((message: unknown) => void) | undefined;
   transport.onMessage((ev) => {
@@ -49,8 +52,12 @@ function mainChannel(transport: Transport): Channel {
   });
   return {
     get closed(): boolean {
-      return closed;
+      return closed || life.closed;
     },
+    get reason() {
+      return life.reason;
+    },
+    onClose: life.onClose,
     get port(): MessagePort {
       throw new Error("The main channel has no MessagePort");
     },
@@ -64,6 +71,7 @@ function mainChannel(transport: Transport): Channel {
     close() {
       if (closed) return;
       closed = true;
+      life.close();
       transport.close();
     },
   };
@@ -78,6 +86,12 @@ export function connectActor(
     return { channel: mainChannel(transport), transport };
   }
   const opened = transport.openChannel();
+  if (transport.kind === "messageport") {
+    transport.send({ type: "__open-actor", name, port: opened.token }, [
+      opened.token as MessagePort,
+    ]);
+    return { channel: opened.channel, transport };
+  }
   // Mux handshake: the token is a control frame on the main channel — the
   // peer's Mux opens its end + acks (and the channel may carry data before the
   // __open-actor frame is processed, so send token first, name second).

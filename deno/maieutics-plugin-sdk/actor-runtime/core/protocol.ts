@@ -3,15 +3,15 @@
  *
  * Frames are the only language on the channel. Every RPC call maps to a
  * `request`/`response` pair, correlated by a monotonically increasing id
- * (responses may arrive out of order; a single worker thread naturally processes
- * requests serially, matching the Actor model's "one actor processes messages in order").
+ * (responses may arrive out of order; asynchronous methods may interleave.
+ * Business operations that require serialization need an owner-level gate).
  *
  * Values ride on postMessage's structured clone: deeply nested objects, Map/Set, Date,
  * TypedArray, ArrayBuffer (copied) and more are supported natively — no custom serialization.
  */
 
 /** Protocol version, checked at handshake; a mismatch kills the actor. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /**
  * Cross-thread errors are serialized manually rather than relying on structured clone.

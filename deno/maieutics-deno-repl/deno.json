@@ -10,7 +10,9 @@
     "@maieutics/plugin-sdk/actor/codecs": "../maieutics-plugin-sdk/actor-runtime/codecs.ts",
     "@ghostflyby/worker-actor": "../maieutics-plugin-sdk/actor-runtime/mod.ts",
     "@ghostflyby/worker-actor/codec": "../maieutics-plugin-sdk/actor-runtime/codec.ts",
-    "@ghostflyby/worker-actor/codecs": "../maieutics-plugin-sdk/actor-runtime/codecs.ts"
+    "@ghostflyby/worker-actor/codecs": "../maieutics-plugin-sdk/actor-runtime/codecs.ts",
+    "@maieutics/plugin-sdk/actor/browser": "../maieutics-plugin-sdk/actor-runtime/browser.ts",
+    "@ghostflyby/worker-actor/browser": "../maieutics-plugin-sdk/actor-runtime/browser.ts"
   },
   "exports": {
     ".": "./main.ts",

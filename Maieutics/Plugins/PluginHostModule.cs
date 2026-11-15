@@ -48,9 +48,11 @@ internal sealed class PluginHostModule
             "@ghostflyby/worker-actor",
             "@ghostflyby/worker-actor/codec",
             "@ghostflyby/worker-actor/codecs",
+            "@ghostflyby/worker-actor/browser",
             "@maieutics/plugin-sdk/actor",
             "@maieutics/plugin-sdk/actor/codec",
             "@maieutics/plugin-sdk/actor/codecs",
+            "@maieutics/plugin-sdk/actor/browser",
             "@vue/reactivity",
             "@maieutics/plugin-sdk"
         };
@@ -74,6 +76,7 @@ internal sealed class PluginHostModule
                 writer.WriteString(name, "./maieutics-plugin-sdk/actor-runtime/mod.ts");
                 writer.WriteString($"{name}/codec", "./maieutics-plugin-sdk/actor-runtime/codec.ts");
                 writer.WriteString($"{name}/codecs", "./maieutics-plugin-sdk/actor-runtime/codecs.ts");
+                writer.WriteString($"{name}/browser", "./maieutics-plugin-sdk/actor-runtime/browser.ts");
             }
             writer.WriteString("@vue/reactivity", "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js");
             foreach (var (key, value) in mergedImports)

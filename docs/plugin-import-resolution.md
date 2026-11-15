@@ -114,7 +114,7 @@ plus a diagnostics list reusing the graph-exclusion shape (`PluginId`, `Reason`,
 
 | Rule | Condition | Action |
 |---|---|---|
-| R1 | Key is reserved: `@maieutics/plugin-sdk/actor` or legacy `@ghostflyby/worker-actor` (including `/codec` and `/codecs`), `@vue/reactivity`, `@maieutics/plugin-sdk` | Skip, Information log. Reserved keys are owned by the host materialization (imports + `links`) |
+| R1 | Key is reserved: `@maieutics/plugin-sdk/actor` or legacy `@ghostflyby/worker-actor` (including `/codec`, `/codecs`, and `/browser`), `@vue/reactivity`, `@maieutics/plugin-sdk` | Skip, Information log. Reserved keys are owned by the host materialization (imports + `links`) |
 | R2 | Key normalizes (strip `jsr:` prefix, strip `@version` segment — same rule as the SDK hook) to a discovered plugin specifier (`<name>/<entrypoint>`) | Skip, Warning. Actor imports are owned by the load hook's canonical match, which precedes native resolution; a map entry would create a second, competing resolution path |
 | R3 | Value starts with `./` or `../` | Absolutize against the plugin root: `new Uri(Path.GetFullPath(Path.Combine(root, value))).AbsoluteUri` (import-map relative values resolve against the config's own directory, which is the kernel temp dir — always wrong for plugins) |
 | R4 | Value is scheme-ful (`jsr:`, `npm:`, `https:`, `node:`, `data:`) or absolute | Keep verbatim |
@@ -140,9 +140,11 @@ unchanged otherwise:
     "@maieutics/plugin-sdk/actor": "./maieutics-plugin-sdk/actor-runtime/mod.ts",
     "@maieutics/plugin-sdk/actor/codec": "./maieutics-plugin-sdk/actor-runtime/codec.ts",
     "@maieutics/plugin-sdk/actor/codecs": "./maieutics-plugin-sdk/actor-runtime/codecs.ts",
+    "@maieutics/plugin-sdk/actor/browser": "./maieutics-plugin-sdk/actor-runtime/browser.ts",
     "@ghostflyby/worker-actor": "./maieutics-plugin-sdk/actor-runtime/mod.ts",
     "@ghostflyby/worker-actor/codec": "./maieutics-plugin-sdk/actor-runtime/codec.ts",
     "@ghostflyby/worker-actor/codecs": "./maieutics-plugin-sdk/actor-runtime/codecs.ts",
+    "@ghostflyby/worker-actor/browser": "./maieutics-plugin-sdk/actor-runtime/browser.ts",
     "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js",
     "@acme/widget": "jsr:@acme/widget@^0.3",
     "@std/path": "jsr:@std/path@^1"

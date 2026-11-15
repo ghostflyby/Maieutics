@@ -41,7 +41,7 @@ export type { ConnectedActor } from "./core/connect.ts";
 
 export { createRemoteIterable, startStreamProducer } from "./core/stream.ts";
 
-export { createMux, framedTransport, messageTransport } from "./core/transport.ts";
+export { createMux, messageTransport } from "./core/transport.ts";
 export type {
   MessageTransport,
   Mux,
@@ -104,3 +104,5 @@ export type {
 } from "./core/transfer.ts";
 
 export type { CodecValueTypes, SyncOrAsync, TransformCallbacks } from "./core/type-utils.ts";
+
+export { framedTransport } from "./core/transport_v8.ts";

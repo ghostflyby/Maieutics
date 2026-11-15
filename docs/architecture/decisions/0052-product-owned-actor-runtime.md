@@ -39,8 +39,7 @@ The runtime has one implementation in development, published SDKs, and materiali
 The original repository remains intact as provenance; product builds no longer require its JSR
 package.
 
-Browser integration remains separate work: isolate browser-compatible modules, choose the wire
-encoding contract, propagate decode and disconnect failures, bound transport admission and queues,
-carry network transport context through product actor references, and scope capabilities to
-authenticated sessions, views, and connection generations. ADR 0051's HTTP decision is unchanged
-until a browser actor transport is explicitly designed and verified.
+ADR 0053 adds browser-compatible runtime connections, pluggable wire encoding, failure propagation,
+and transport budgets. Product integration remains separate: carry network transport context
+through product actor references and scope capabilities to authenticated sessions, views, and
+connection generations. ADR 0051's HTTP decision remains in effect.

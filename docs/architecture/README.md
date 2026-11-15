@@ -250,6 +250,7 @@ transcript.
 - [ADR 0031](decisions/0031-deno-model-orchestration.md): The Deno model-orchestration surface
 - [ADR 0032](decisions/0032-content-provenance.md): Content provenance and the injection-defense pipeline
 - [ADR 0052](decisions/0052-product-owned-actor-runtime.md): Product-owned TypeScript Actor runtime
+- [ADR 0053](decisions/0053-browser-actor-connections.md): Browser-capable Actor connections
 
 ## Explicitly deferred
 

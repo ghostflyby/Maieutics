@@ -1,0 +1,65 @@
+# ADR 0053: Browser-capable Actor connections
+
+Status: Accepted
+
+## Context
+
+ADR 0052 makes the Actor runtime product-owned. Its common transport module still imported
+`node:v8`, its network decoder swallowed errors, pending channel closure was incomplete, and
+stream producers enumerated without consumer demand. Browser participation also needs an
+explicit connection owner instead of the Worker-global registry.
+
+## Decision
+
+Expose `@maieutics/plugin-sdk/actor/browser` for browser bundles. Keep shared MessagePort, Mux,
+RPC, codec, and connection primitives free of static host adapter dependencies. Move V8 byte
+framing and the existing host WebSocket encoding into `core/transport_v8.ts`; preserve their host
+entry exports. The browser entry supports native Workers and MessageChannel as well as network
+connections. Publication and embedded-resource ownership stay with the SDK.
+
+`webSocketTransport` adopts an already OPEN WebSocket and owns its message/error/close listeners
+and disposal. The host provides a `WireCodec`, including its supported value set and binary
+representation. The library does not infer an encoding or turn binary into JSON/base64. Decode
+receives the transport cancellation signal; closing stops the owned wait and observes late
+decoder rejection. Existing host-only V8 transport remains available separately.
+
+`createActorConnection` is a symmetric, explicitly owned runtime with a per-connection registry.
+Each peer advertises only its provided named plain-object method surfaces. The hello frame is
+`{type:"actor:hello",version,kind,codecs,actors}`; unknown fields are tolerated. Version, transport
+kind, and ordered codec tags must match. Calls use existing correlated request/response envelopes
+on named channels. Unknown future controls are tolerated; malformed known frames fail the owner.
+Inherited methods and unadvertised surfaces are not callable. This entry does not install a
+Worker-global registry or enable the product's specifier-based acquire router.
+
+Each connection exposes `ready`, a terminal `closed` cause, its cancellation `signal`, and
+`completion` joining cooperative RPC dispatch and codec cleanup. Explicit reference disposal
+releases its channel. Disconnect fails calls once, aborts dependents, and closes established,
+unclaimed, and not-yet-acknowledged channels. Queued sends on unresolved tokens survive until
+binding, and closure before binding remains terminal. Reconnection creates a fresh connection
+and fresh references; no action replay occurs. Async methods may interleave; business owners
+retain their existing serialization gates.
+
+Runtime protocol **2** changes streaming to demand credits: `start` or `next` authorizes one
+producer iteration, and `release` requests cleanup. Streams remain lazy, have one consumer, and
+admit at most 128 outstanding pulls. Version 1 peers fail the handshake. This is the internal
+Actor protocol, not a frontend REST/event or persisted notebook format change.
+
+Transport budgets bound channel count, a shared inbound mailbox, asynchronous decoding count and
+bytes, pending calls, and WebSocket frame/buffer bytes. Decode or send failure and admission
+overflow terminate the owner with a typed `ActorTransportError`; messages are not silently lost
+under pressure. Result decoding rejects the correlated call before propagating the fatal error.
+Generator cleanup has an observed completion and remains joinable through the codec registry.
+
+## Verification and remaining integration
+
+Conformance runs the same sources in real headless Chromium against a local Deno WebSocket peer:
+typed binary RPC, browser-callable surfaces, callbacks, slow-consumer streaming, cancellation,
+remote errors, disconnect isolation, MessageChannel, and browser Workers. The runner checks that
+bundles contain no Node/Deno host dependencies and owns its process, profile, sockets, and server.
+Focused tests control startup cancellation, decode failure, admission saturation, pending channel
+binding/closure, RPC failure correlation, and cleanup errors through explicit completion signals.
+
+This does not grant browser code kernel authority. The frontend host must authenticate admission,
+bind capabilities to session/view/connection generations, enforce approval revocation, and design
+product reference routing before notebook renderers attach. ADR 0051's plugin HTTP surface remains
+in effect; this change adds no product network endpoint and no reverse REPL execution capability.

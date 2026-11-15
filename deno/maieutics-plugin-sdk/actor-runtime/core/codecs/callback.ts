@@ -124,7 +124,9 @@ function encode(fn: AnyFunction, ctx: EncodeContext): unknown {
       // The channel is done: drop the strong hold and the registry pin, so a
       // released callback (and its closure) is collectable.
       fnByChannel.delete(channel);
-      fnChannel.delete(fn);
+      const owned = fnChannels.get(fn);
+      owned?.delete(channel);
+      if (owned?.size === 0) fnChannels.delete(fn);
       ctx.registry.unregisterChannel(channel);
     },
   });
@@ -134,10 +136,13 @@ function encode(fn: AnyFunction, ctx: EncodeContext): unknown {
   // the channel is open (conditional-strong, aligned with refs): the function
   // stays alive during caller use and becomes collectable once released.
   fnByChannel.set(channel, fn);
-  fnChannel.set(fn, channel);
+  const owned = fnChannels.get(fn) ?? new Set<Channel>();
+  owned.add(channel);
+  fnChannels.set(fn, owned);
   const handler = makeRpcHandler(
     { [CALL]: fn as (...args: never[]) => unknown },
     ctx.registry,
+    ctx.transport,
   );
   channel.onMessage((message) => {
     const frame = message as CallbackFrame;
@@ -162,12 +167,12 @@ function encode(fn: AnyFunction, ctx: EncodeContext): unknown {
 // it. Release (releaseCallback) closes the channel, so the function and its
 // closure become collectable — aligned with the ref conditional-strong model.
 const fnByChannel = new Map<Channel, AnyFunction>();
-const fnChannel = new WeakMap<AnyFunction, Channel>();
+const fnChannels = new WeakMap<AnyFunction, Set<Channel>>();
 
 /** Owner-side explicit release: the actor decides its callback dies. */
 export function releaseCallback(fn: AnyFunction): void {
-  const channel = fnChannel.get(fn);
-  if (channel) {
+  const channels = fnChannels.get(fn);
+  for (const channel of channels ? [...channels] : []) {
     channel.send({ type: "released" } satisfies CallbackFrame);
     channel.close(); // onClosed drops the strong hold
   }
@@ -188,6 +193,7 @@ function decode(
   ctx.registry.registerChannel(channel);
   const state = getState(ctx);
   const proxy = createRpcProxy(ctx.registry, {
+    transport: ctx.transport,
     send: (request, transfer) => channel.send(requestFrame(request), transfer),
     isDead: () => channel.closed,
     deadReason: () => new Error("Callback disposed"),
@@ -205,6 +211,10 @@ function decode(
     }
   });
   let unregisterRelease: () => void = () => {};
+  channel.onClose((reason) => {
+    proxy.rejectAll(reason);
+    ctx.registry.unregisterChannel(channel);
+  });
 
   const dispose = (): void => {
     channel.send({ type: "dispose" } satisfies CallbackFrame);

@@ -755,6 +755,11 @@ function materializeChannel(
 /** The default (messageport-shaped) transport used by main-side decodes without a real transport. */
 function defaultTransport(): DecodeContext["transport"] {
   return {
+    closed: false,
+    reason: undefined,
+    onClose() {
+      return () => {};
+    },
     kind: "messageport",
     send() {},
     onMessage() {},

@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { fromWebSocket } from "./core/transport.ts";
+import { fromWebSocket } from "./core/transport_v8.ts";
 import { createRpcProxy, makeRpcHandler, requestFrame, sendRpcResult } from "./core/rpc.ts";
 import type { ResponseFrame } from "./core/protocol.ts";
 import { PayloadCodecRegistry } from "./core/codec.ts";

@@ -289,27 +289,30 @@ Deno.test("acquire: multi-hop sharing A→main→B→C all reach the same owner 
   await c.dispose();
 });
 
-Deno.test("release: mode-2 object's strong hold drops once the holder releases it", async () => {
+Deno.test("release: mode-2 strong hold drops on explicit holder disposal", async () => {
   const actor = await spawnRefActor();
-  const base = await actor.strongRefCount(); // 0 normally
-  // Acquire an ephemeral object (only reachable through its reference), then
-  // drop the reference on this side. The owner's conditional strong hold must
-  // disappear (release probe), making the object collectable — deterministic,
-  // unlike relying on finalizer timing.
-  await (async () => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const base = await actor.strongRefCount();
     const ref = await actor.createEphemeral();
     await (ref as RemoteRef<CounterRef>).increment();
-    assertEquals(await actor.strongRefCount(), base + 1); // held while in use
-    // abandon: the async IIFE frame releases the reference
-  })();
-  await waitFor2(async () => (await actor.strongRefCount()) === base);
-  assertEquals(await actor.strongRefCount(), base);
-  if (forceGc) {
-    // GC is a bonus: the object should eventually be collected.
-    forceGc();
-    await yieldToEventLoop(4);
+    assertEquals(await actor.strongRefCount(), base + 1);
+    const released = actor.waitForStrongRefCount(base);
+    (ref as RemoteRef<CounterRef>).dispose();
+    await Promise.race([
+      released,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Explicit reference release did not drop the owner strong hold")),
+          3000,
+        );
+      }),
+    ]);
+    assertEquals(await actor.strongRefCount(), base);
+  } finally {
+    clearTimeout(timer);
+    await actor.dispose();
   }
-  await actor.dispose();
 });
 
 Deno.test("release: owner releaseRef broadcasts — peers die immediately", async () => {

@@ -9,9 +9,11 @@ public sealed class PluginImportMergerTests
     [InlineData("@maieutics/plugin-sdk/actor", "mod.ts")]
     [InlineData("@maieutics/plugin-sdk/actor/codec", "codec.ts")]
     [InlineData("@maieutics/plugin-sdk/actor/codecs", "codecs.ts")]
+    [InlineData("@maieutics/plugin-sdk/actor/browser", "browser.ts")]
     [InlineData("@ghostflyby/worker-actor", "mod.ts")]
     [InlineData("@ghostflyby/worker-actor/codec", "codec.ts")]
     [InlineData("@ghostflyby/worker-actor/codecs", "codecs.ts")]
+    [InlineData("@ghostflyby/worker-actor/browser", "browser.ts")]
     public void ActorRuntimeImportsResolveToEmbeddedSourcesAndCannotBeReplaced(string key, string file)
     {
         var merged = PluginImportMerger.Merge(

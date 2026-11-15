@@ -82,6 +82,10 @@ jobs:
         working-directory: deno
         run: deno task test
 
+      - name: Actor runtime in a real browser
+        working-directory: deno/maieutics-plugin-sdk
+        run: deno task test:actor:browser
+
       - name: Verify committed offline SSR assets
         working-directory: deno/maieutics-output-renderer
         run: |

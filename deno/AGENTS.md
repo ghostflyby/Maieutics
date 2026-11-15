@@ -14,7 +14,10 @@
   context and result types, `defineExtensionPoint`, discovery descriptors. `actor-runtime/` is the
   product-owned lower-level Actor implementation (ADR 0052). It must not depend on SDK discovery,
   plugin Host, kernel, frontend, or Agent code. Its sources ship in the SDK package and executable;
-  its tests and fixtures run only in the workspace.
+  its tests and fixtures run only in the workspace. Browser connections use the explicit owner in
+  `actor-runtime/core/connection.ts`; keep host-only V8 adapters out of the browser entry. Browser
+  conformance must exercise a real browser and keep its server, process, profile, and sockets owned
+  by the test runner (ADR 0053).
 - `maieutics-plugin-host/` — Out-of-process plugin host. The kernel spawns this process with a
   plugin configuration file and control channel address; it creates one permission-scoped worker per
   plugin export subpath, scans workers for extension points, and bridges `extension.*` bus messages

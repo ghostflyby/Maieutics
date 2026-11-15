@@ -31,6 +31,7 @@ import {
   type TransferReturn,
 } from "./transfer.ts";
 import type { Transport } from "./transport.ts";
+import { ActorTransportError, positiveLimit } from "./lifetime.ts";
 import type { TransformCallbacks } from "./type-utils.ts";
 
 // The RPC boundary is inherently dynamic; concrete method types are derived by
@@ -130,7 +131,7 @@ export function makeRpcHandler(
   transferReturn?: TransferReturn,
 ): (request: RpcRequest) => Promise<RpcResult> {
   return async (request) => {
-    const fn = api[request.method];
+    const fn = Object.hasOwn(api, request.method) ? api[request.method] : undefined;
     if (typeof fn !== "function") {
       return {
         ok: false,
@@ -142,7 +143,7 @@ export function makeRpcHandler(
     }
     try {
       const args = registry.decode(request.args, transport) as unknown[];
-      const value = await fn(...args);
+      const value = await fn.apply(api, args);
       const transfer: Transferable[] = [];
       // Return-side move: the worker encodes the return value; if a move
       // policy names this method, keep the value in the payload and list it in
@@ -168,6 +169,8 @@ export function makeRpcHandler(
 }
 
 export interface RpcProxyOptions {
+  /** Maximum simultaneous calls owned by this proxy. */
+  maxPendingCalls?: number;
   /** Encode request args and send the request frame over the channel. */
   send: (request: RpcRequest, transfer: Transferable[]) => void;
   /** Returns true once the channel is dead; calls then reject with deadReason(). */
@@ -199,11 +202,17 @@ export function createRpcProxy(
     reject: (reason: unknown) => void;
   }>();
   let nextId = 1;
+  const maxPending = positiveLimit(options.maxPendingCalls, 1024);
   const deadReason = options.deadReason ?? (() => new ActorDiedError());
 
   return {
     call(method, args): Promise<unknown> {
       if (options.isDead?.()) return Promise.reject(deadReason());
+      if (pending.size >= maxPending) {
+        return Promise.reject(
+          new ActorTransportError("capacity", "Actor pending call budget exceeded"),
+        );
+      }
       return new Promise((resolve, reject) => {
         const id = nextId++;
         const transfer: Transferable[] = [];
@@ -240,9 +249,13 @@ export function createRpcProxy(
       const call = pending.get(response.id);
       if (!call) return; // unknown id: possibly a late response after close
       pending.delete(response.id);
-      if (response.ok) {
-        call.resolve(registry.decode(response.value, options.transport));
-      } else call.reject(new RemoteError(response.error));
+      try {
+        if (response.ok) call.resolve(registry.decode(response.value, options.transport));
+        else call.reject(new RemoteError(response.error));
+      } catch (error) {
+        call.reject(error);
+        throw error;
+      }
     },
     rejectAll(reason): void {
       for (const call of pending.values()) call.reject(reason);

@@ -1,5 +1,6 @@
+import { framedTransport } from "./core/transport_v8.ts";
 import { assertEquals } from "@std/assert";
-import { framedTransport, fromMessagePort, messageTransport } from "./core/transport.ts";
+import { fromMessagePort, messageTransport } from "./core/transport.ts";
 import { connectChannel } from "./core/channel.ts";
 import type { Channel } from "./core/channel.ts";
 

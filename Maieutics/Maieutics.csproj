@@ -70,7 +70,8 @@
     <DenoRuntimeModule Include="..\deno\maieutics-plugin-host\**\*.ts" Package="maieutics-plugin-host" Exclude="..\deno\maieutics-plugin-host\**\*_test.ts"/>
     <DenoRuntimeModule Include="..\deno\maieutics-runtime\**\*.ts" Package="maieutics-runtime" Exclude="..\deno\maieutics-runtime\**\*_test.ts;..\deno\maieutics-runtime\test_fixtures\**"/>
     <DenoRuntimeModule Include="..\deno\shared\**\*.ts" Package="shared" Exclude="..\deno\shared\**\*_test.ts"/>
-    <EmbeddedResource Include="@(DenoRuntimeModule)" LogicalName="Deno/%(Package)/%(RecursiveDir)%(Filename)%(Extension)"/>
+    <!-- RecursiveDir uses host separators; resource keys use '/' on every platform. -->
+    <EmbeddedResource Include="@(DenoRuntimeModule)" LogicalName="$([System.String]::Copy('Deno/%(Package)/%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))"/>
     <EmbeddedResource Include="..\deno\maieutics-deno-repl\deno.json" LogicalName="Deno/maieutics-deno-repl/deno.json"/>
     <EmbeddedResource Include="..\deno\deno.lock" LogicalName="Deno/maieutics-deno-repl/deno.lock"/>
     <EmbeddedResource Include="..\deno\maieutics-plugin-sdk\deno.json" LogicalName="Deno/maieutics-plugin-sdk/deno.json"/>

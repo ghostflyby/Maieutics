@@ -31,6 +31,7 @@ public sealed partial class DenoEmbeddedModulesTests
         var names = typeof(DenoReplModule).Assembly.GetManifestResourceNames()
             .Where(name => name.StartsWith("Deno/", StringComparison.Ordinal))
             .ToArray();
+        Assert.DoesNotContain(names, name => name.Contains('\\'));
 
         foreach (var package in ExpectedPackages)
         {

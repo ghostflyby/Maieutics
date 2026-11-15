@@ -1,3 +1,4 @@
+import { aggregateFailures } from "./core/failures.ts";
 import { ActorTransportError } from "./core/lifetime.ts";
 import { frameRecord, isResponse, isSerializedError, record } from "./core/validation.ts";
 import { handshakeError } from "./core/handshake.ts";
@@ -430,7 +431,7 @@ async function spawnOnTransport<
     if (!deliberate) stage(() => options.onDeath?.(reason));
     void Promise.allSettled([registry.join(), worker.completion]).then((results) => {
       const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-      if (errors.length) finished.reject(new AggregateError(errors, "Actor cleanup failed"));
+      if (errors.length) finished.reject(aggregateFailures(errors, "Actor cleanup failed"));
       else finished.resolve();
     });
   }
@@ -443,7 +444,7 @@ async function spawnOnTransport<
   // carrying any transferred MessagePorts (e.g. reference-acquire handshakes).
   worker.onMessage((ev) => {
     // A plugin shares this Worker global and may post diagnostics outside Actor's protocol.
-    if (!record(ev.data) || typeof ev.data.type !== "string") return;
+    if (rawWorker && (!record(ev.data) || typeof ev.data.type !== "string")) return;
     const checked = frameRecord(ev.data);
     if (checked.type === "__actor-failed") {
       if (
@@ -564,7 +565,7 @@ async function spawnOnTransport<
     try {
       await finished.promise;
     } catch (cleanup) {
-      throw new AggregateError([error, cleanup], "Actor startup and cleanup failed", {
+      throw aggregateFailures([error, cleanup], "Actor startup and cleanup failed", {
         cause: error,
       });
     }

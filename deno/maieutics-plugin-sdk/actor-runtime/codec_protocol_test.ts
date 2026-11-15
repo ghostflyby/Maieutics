@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertInstanceOf } from "@std/assert";
+import { assert, assertEquals, assertInstanceOf, assertThrows } from "@std/assert";
 import { PayloadCodecRegistry } from "./core/codec.ts";
 import { type Channel, connectChannel, connectToken, wrapPort } from "./core/channel.ts";
 import { abortSignalCodec, releaseAbortSignal } from "./core/codecs/abort_signal.ts";
@@ -113,6 +113,12 @@ for (const native of [true, false]) {
           );
           assertEquals(sender.active.size, 0);
           assertEquals(receiver.active.size, 0);
+          assertInstanceOf(signal.reason, ActorTransportError);
+          assertEquals(
+            signal.reason.code,
+            "closed",
+            "Explicit release retires the capability with a typed closed reason",
+          );
           assert(
             !peers.a.closed && !peers.b.closed,
             "Retired capabilities must not consume channel admission",
@@ -204,6 +210,44 @@ for (const native of [true, false]) {
     }
   }
 }
+
+Deno.test("unreleased live signals exhaust the declared channel budget and fail the owner", async () => {
+  const peers = pair(false);
+  peers.a.onClose(peers.b.close);
+  peers.b.onClose(peers.a.close);
+  const sender = new TrackingRegistry().register(abortSignalCodec) as TrackingRegistry;
+  const receiver = new TrackingRegistry().register(abortSignalCodec) as TrackingRegistry;
+  const originals: AbortSignal[] = [];
+  const remote: AbortSignal[] = [];
+  try {
+    for (let i = 0; i < 4; i++) {
+      const signal = new AbortController().signal;
+      originals.push(signal);
+      remote.push(receiver.decode(sender.encode(signal, [], peers.a), peers.b) as AbortSignal);
+    }
+    assertEquals(sender.active.size, 4);
+    assertEquals(receiver.active.size, 4);
+    assert(remote.every((signal) => !signal.aborted));
+    const failure = assertThrows(
+      () => sender.encode(new AbortController().signal, [], peers.a),
+      ActorTransportError,
+    );
+    assertEquals(failure.code, "capacity");
+    assert(peers.a.closed && peers.b.closed);
+    assert(remote.every((signal) => signal.aborted));
+    assert(
+      originals.every((signal) => !signal.aborted),
+      "Budget failure must not mutate source signals",
+    );
+    assertEquals(sender.active.size, 0);
+    assertEquals(receiver.active.size, 0);
+  } finally {
+    sender.failAll();
+    receiver.failAll();
+    peers.close();
+    await Promise.all([sender.join(), receiver.join()]);
+  }
+});
 
 Deno.test("MessagePort dispatch exceptions become typed owner failures", async () => {
   const ports = new MessageChannel();

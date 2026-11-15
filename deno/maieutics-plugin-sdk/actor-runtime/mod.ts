@@ -24,7 +24,7 @@ export type {
   SpawnOptions,
   SpawnProcessOptions,
 } from "./spawn.ts";
-export { createActorPool } from "./pool.ts";
+export { ActorPoolConstructionError, createActorPool } from "./pool.ts";
 export type { ActorPool, ActorPoolOptions } from "./pool.ts";
 export { serveNode, serveProcess, serveWorker } from "./worker_runtime.ts";
 export type { LinkHandle, RuntimeHandle, ServeWorkerOptions, WorkerApi } from "./worker_runtime.ts";

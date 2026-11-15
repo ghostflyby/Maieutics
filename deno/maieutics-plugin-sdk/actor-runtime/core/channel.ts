@@ -128,7 +128,9 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
       return port;
     },
     kind: "messageport",
-    completion: life.completion,
+    get completion() {
+      return life.completion;
+    },
     onClose: life.onClose,
     close: life.close,
     send(message, transfer) {
@@ -214,7 +216,9 @@ export function connectToken(
       throw new Error("Mux channels have no MessagePort");
     },
     kind: "framed",
-    completion: life.completion,
+    get completion() {
+      return life.completion;
+    },
     onClose: life.onClose,
     close: life.close,
     send(value, transfer) {

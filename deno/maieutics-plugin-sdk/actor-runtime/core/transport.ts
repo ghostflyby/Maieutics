@@ -1,3 +1,4 @@
+import { aggregateFailures } from "./failures.ts";
 /** Web-standard Actor transports. V8 byte framing lives in transport_v8.ts. */
 import { type Channel, type ChannelOptions, wrapPort } from "./channel.ts";
 import { protocolFailure } from "./validation.ts";
@@ -81,7 +82,7 @@ export function fromMessagePort(port: MessageEndpoint, options: TransportOptions
     }
     channels.clear();
     buffered.length = 0;
-    if (errors.length) throw new AggregateError(errors, "Actor MessagePort cleanup failed");
+    if (errors.length) throw aggregateFailures(errors, "Actor MessagePort cleanup failed");
   });
   if (options.onClosed) life.onClose(options.onClosed);
   port.onmessage = (ev: MessageEvent<unknown>) => {
@@ -105,7 +106,9 @@ export function fromMessagePort(port: MessageEndpoint, options: TransportOptions
   port.start?.();
   return {
     kind: "messageport",
-    completion: life.completion,
+    get completion() {
+      return life.completion;
+    },
     get closed() {
       return life.closed;
     },
@@ -206,7 +209,9 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
     const channel: MuxChannel = {
       _ch: ch,
       kind: "framed",
-      completion: channelLife.completion,
+      get completion() {
+        return channelLife.completion;
+      },
       get closed() {
         return channelLife.closed;
       },
@@ -262,7 +267,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
     orphaned.clear();
     buffered.length = 0;
     bufferedCount = 0;
-    if (errors.length) throw new AggregateError(errors, "Actor Mux cleanup failed");
+    if (errors.length) throw aggregateFailures(errors, "Actor Mux cleanup failed");
   });
   if (options.onClosed) life.onClose(options.onClosed);
   const deliver = (frame: unknown): void => {
@@ -309,7 +314,9 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
   };
   return {
     kind: "framed",
-    completion: life.completion,
+    get completion() {
+      return life.completion;
+    },
     get closed() {
       return life.closed;
     },
@@ -410,15 +417,20 @@ export function messageTransport(options: MessageTransportOptions): MessageTrans
       processing = false;
     }
   };
-  const completion = terminal.promise.then(async () => {
-    const results = await Promise.allSettled([task, mux.completion]);
-    const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-    if (errors.length) throw new AggregateError(errors, "Actor message transport cleanup failed");
-  });
-  void completion.catch(() => {});
+  const completion = () => {
+    const snapshot = terminal.promise.then(async () => {
+      const results = await Promise.allSettled([task, mux.completion]);
+      const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+      if (errors.length) throw aggregateFailures(errors, "Actor message transport cleanup failed");
+    });
+    void snapshot.catch(() => {});
+    return snapshot;
+  };
   return {
     kind: "message",
-    completion,
+    get completion() {
+      return completion();
+    },
     get closed() {
       return mux.closed;
     },

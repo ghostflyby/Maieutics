@@ -1,3 +1,4 @@
+import { aggregateFailures } from "./failures.ts";
 /** Host-only adapters using node:v8; browser transports supply their own wire codec. */
 import { ActorTransportError, positiveLimit } from "./lifetime.ts";
 import { createDecoder, createEncoder, deserialize, serialize } from "./frame.ts";
@@ -52,12 +53,18 @@ export function framedTransport(
     () => mux.close(),
     fail,
   );
-  const completion = Promise.all([incoming, outgoing]).then(async () => {
+  const pumps = Promise.all([incoming, outgoing]).then(async () => {
     await Promise.all([...writes]);
     writer.releaseLock();
-    await mux.completion;
   });
-  void completion.catch(fail);
+  const completion = () => {
+    const snapshot = Promise.allSettled([pumps, mux.completion]).then((results) => {
+      const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+      if (errors.length) throw aggregateFailures(errors, "Actor framed transport cleanup failed");
+    });
+    void snapshot.catch(fail);
+    return snapshot;
+  };
   return {
     get closed() {
       return mux.closed;
@@ -66,7 +73,9 @@ export function framedTransport(
       return mux.reason;
     },
     kind: "framed",
-    completion,
+    get completion() {
+      return completion();
+    },
     onClose: mux.onClose,
     close: mux.close,
     send: mux.send,

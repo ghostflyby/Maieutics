@@ -1,3 +1,4 @@
+import { aggregateFailures, FailureCollector } from "./core/failures.ts";
 /**
  * Actor pool: a lightweight combinator over a homogeneous set of Workers.
  *
@@ -36,6 +37,26 @@ import { attachLazyIterator, spawn } from "./spawn_worker.ts";
 import type { ActorHandle, Remote } from "./spawn_worker.ts";
 import type { TransferArgs } from "./core/transfer.ts";
 import type { CodecValueTypes } from "./core/type-utils.ts";
+
+/** A synchronous pool construction failure whose completion reports construction plus cleanup causes. */
+export class ActorPoolConstructionError extends Error {
+  readonly completion: Promise<void>;
+  constructor(cause: unknown, cleanup: Promise<void>) {
+    super(
+      `Actor pool construction failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "ActorPoolConstructionError";
+    this.completion = cleanup.then(() => {
+      throw cause;
+    }, (error) => {
+      throw aggregateFailures([cause, error], "Actor pool construction and cleanup failed", {
+        cause,
+      });
+    });
+    void this.completion.catch(() => {});
+  }
+}
 
 export interface ActorPoolOptions<
   C extends readonly Codec<unknown>[] = readonly Codec<unknown>[],
@@ -85,7 +106,9 @@ interface Member<T, Pass extends unknown = never> {
   inFlight: number;
   /** Live = not dead AND not disposed (a slot still spawning counts as live). */
   dead: boolean;
-  factoryFailure?: unknown;
+  factoryFailure?: { reason: unknown };
+  deathReason?: { reason: unknown };
+  replacement?: { completion: Promise<void>; cancel(): void };
 }
 
 const EMPTY: unique symbol = Symbol("pool-empty");
@@ -104,7 +127,17 @@ export function createActorPool<
     .fill(EMPTY);
   let disposed = false;
   let disposal: Promise<void> | undefined;
-  const spawns = new Set<Promise<void>>();
+  const tasks = new Set<Promise<void>>();
+  const owned = new WeakSet<Promise<void>>();
+  const failures = new FailureCollector();
+  const own = (task: Promise<void>) => {
+    if (owned.has(task)) return;
+    owned.add(task);
+    const observed = task.catch((error) => failures.record(error)).finally(() =>
+      tasks.delete(observed)
+    );
+    tasks.add(observed);
+  };
   let rrCursor = 0;
 
   const spawnMember = (index: number, factory = options.spawnWorker): void => {
@@ -124,19 +157,42 @@ export function createActorPool<
     const retire = (reason: unknown): void => {
       if (disposed || slot.dead) return;
       slot.dead = true;
+      slot.deathReason = { reason };
       try {
         options.onMemberDead?.(index, reason);
       } finally {
         if (options.replace && !disposed) {
-          try {
-            spawnMember(
-              index,
-              typeof options.replace === "function" ? options.replace : options.spawnWorker,
-            );
-          } catch (error) {
-            slot.factoryFailure = error;
-            options.onMemberDead?.(index, error);
-          }
+          // A fresh owned task prevents recursive handshakes from starving cancellation.
+          const finished = Promise.withResolvers<void>();
+          const timer = setTimeout(() => {
+            slot.replacement = undefined;
+            try {
+              if (!disposed) {
+                spawnMember(
+                  index,
+                  typeof options.replace === "function" ? options.replace : options.spawnWorker,
+                );
+              }
+            } catch (error) {
+              slot.factoryFailure = { reason: error };
+              try {
+                options.onMemberDead?.(index, error);
+              } catch (observer) {
+                failures.record(observer);
+              }
+            } finally {
+              finished.resolve();
+            }
+          }, 0);
+          slot.replacement = {
+            completion: finished.promise,
+            cancel() {
+              clearTimeout(timer);
+              slot.replacement = undefined;
+              finished.resolve();
+            },
+          };
+          own(finished.promise);
         }
       }
     };
@@ -153,11 +209,21 @@ export function createActorPool<
           return;
         }
         slot.actor = actor;
+        own(actor.completion);
       },
-      retire,
+      (error) => {
+        if (disposed || slot.dead) {
+          const expected = aggregateFailures([
+            ...(slot.stop.signal.aborted ? [slot.stop.signal.reason] : []),
+            ...(slot.deathReason ? [slot.deathReason.reason] : []),
+          ], "Expected member termination").errors;
+          const errors = aggregateFailures([error], "Actor member startup cleanup failed").errors
+            .filter((cause) => !expected.includes(cause));
+          if (errors.length) throw aggregateFailures(errors, "Actor member startup cleanup failed");
+        } else retire(error);
+      },
     );
-    spawns.add(slot.ready);
-    void slot.ready.then(() => spawns.delete(slot.ready), () => {});
+    own(slot.ready);
   };
 
   const dispose = (): Promise<void> => {
@@ -166,13 +232,15 @@ export function createActorPool<
     const cleanup = members.flatMap((member) => {
       if (member === EMPTY) return [];
       member.dead = true;
+      member.replacement?.cancel();
       member.stop.abort(new ActorDiedError());
       return member.actor ? [member.actor.dispose()] : [];
     });
-    disposal = Promise.allSettled([...spawns, ...cleanup]).then((results) => {
-      const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-      if (errors.length) throw new AggregateError(errors, "Actor pool cleanup failed");
-    });
+    for (const task of cleanup) own(task);
+    disposal = (async () => {
+      while (tasks.size) await Promise.all([...tasks]);
+      if (failures.hasErrors) throw failures.error("Actor pool cleanup failed");
+    })();
     void disposal.catch(() => {});
     return disposal;
   };
@@ -180,9 +248,10 @@ export function createActorPool<
   try {
     for (let i = 0; i < size; i++) spawnMember(i);
   } catch (error) {
-    void dispose().catch((cleanup) =>
-      console.error("Actor pool construction cleanup failed", cleanup)
-    );
+    const cleanup = dispose();
+    if (members.some((member) => member !== EMPTY)) {
+      throw new ActorPoolConstructionError(error, cleanup);
+    }
     throw error;
   }
 
@@ -228,19 +297,28 @@ export function createActorPool<
    * Wait until at least one member is ready (spawn resolved), then re-pick.
    * Returns undefined if the pool is disposed or every member is dead.
    */
-  const waitForReady = async (): Promise<void> => {
-    const pending = members.filter((m): m is Member<T> =>
-      m !== EMPTY && !m.dead && m.actor === undefined
-    );
-    if (pending.length === 0) return;
-    await Promise.race(pending.map((m) => m.ready));
+  const waitForReady = async (index?: number): Promise<void> => {
+    while (!disposed) {
+      const slots = (index === undefined ? members : [members[index]])
+        .filter((member): member is Member<T> => member !== EMPTY && member !== undefined);
+      if (slots.some(isLive)) return;
+      const pending = slots.flatMap((member) =>
+        member.replacement
+          ? [member.replacement.completion]
+          : !member.dead && !member.actor
+          ? [member.ready]
+          : []
+      );
+      if (!pending.length) return;
+      await Promise.race(pending);
+    }
   };
 
   const unavailable = (): unknown => {
     const failed = members.find((member) =>
       member !== EMPTY && member.factoryFailure !== undefined
     );
-    return failed && failed !== EMPTY ? failed.factoryFailure : new ActorDiedError();
+    return failed && failed !== EMPTY ? failed.factoryFailure?.reason : new ActorDiedError();
   };
   const call = (method: string, args: unknown[]): Promise<unknown> => {
     if (disposed) return Promise.reject(new ActorDiedError());
@@ -275,12 +353,9 @@ export function createActorPool<
   ): Promise<unknown> => {
     if (disposed) return Promise.reject(new ActorDiedError());
     let member = members[index];
-    const ready = member !== EMPTY && isLive(member)
-      ? Promise.resolve()
-      : (member !== EMPTY && !member.dead ? member.ready : Promise.resolve())
-        .then(() => {
-          member = members[index];
-        });
+    const ready = waitForReady(index).then(() => {
+      member = members[index];
+    });
     const out = ready.then(() => {
       if (disposed) throw new ActorDiedError();
       if (member === EMPTY || !isLive(member)) throw unavailable();

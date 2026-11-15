@@ -68,17 +68,26 @@ AbortSignal channels use a terminal `release` acknowledgment after aborted statu
 Both endpoints unregister on teardown, including pre-aborted signals. A nonterminal signal may
 outlive its RPC and remains a live capability. `releaseAbortSignal` explicitly retires capabilities
 at scope end without aborting the original source. It releases one decoded endpoint or all exported
-endpoints of an original signal; retired remote signals abort. Live capability admission remains
+endpoints of an original signal. Explicitly retired remote signals abort with
+`ActorTransportError("closed")`, not the platform's default `AbortError`; transport failure keeps
+its terminal cause and source abort keeps the transmitted source reason. Live capability admission remains
 bounded, and owners must release signals that will never abort. RPC completion does not imply release. Codec channels validate
 frame records and known payload shapes; malformed frames and dispatch failures carry typed
 protocol causes to the connection owner. Decode failure is established before cleanup hooks run.
 Transport/channel closure does not throw observer errors from event handlers; their completion
-joins owned channel cleanup and reports bounded aggregates. Unknown future control types remain
-tolerated. Legacy Worker spawn also ignores non-Actor diagnostic messages without a string `type`,
-because the plugin and Actor share the Worker global; malformed known Actor frames still fail it.
+joins owned channel cleanup and reports bounded, flat aggregates deduplicated by error identity.
+Late close observers are also protected: subsequent reads of `completion` include their failures,
+while a previously returned, settled promise remains a snapshot. Unknown future control types remain
+tolerated. Only `spawn(new Worker(...))` ignores diagnostic messages without a string `type`,
+because the plugin and Actor share the Worker global. `spawn(transport)` is a dedicated endpoint,
+including MessagePort, process IPC and Mux, and rejects typeless frames. Malformed known Actor
+frames fail their owner on every source.
 
 Pool factories run synchronously, so construction failure reaches the caller and cancels members
-already starting. Replacement factory failures remain observable through the member-death callback
+already starting. When construction has already acquired members, `ActorPoolConstructionError`
+carries the construction cause and a joinable `completion` that aggregates cleanup failures.
+Replacement attempts run as owned cancellable tasks to avoid synchronous recursion; disposal
+cancels scheduled attempts and joins startup and retired-member cleanup. Replacement factory failures remain observable through the member-death callback
 and rejection of calls when the pool has no live member.
 
 ## Verification and remaining integration

@@ -59,7 +59,8 @@ function registerSignalRelease(signal: AbortSignal, release: () => void): () => 
 /**
  * Retire cancellation capabilities when their owning scope ends, even without aborting the source.
  * A decoded signal releases its endpoint; an original signal releases all of its exported endpoints.
- * Retired remote signals abort locally. Releasing is idempotent and does not abort the original source.
+ * Retired remote signals abort locally with ActorTransportError("closed"), not a default AbortError.
+ * Releasing is idempotent and does not abort the original source.
  */
 export function releaseAbortSignal(signal: AbortSignal): void {
   const errors: unknown[] = [];
@@ -176,9 +177,8 @@ function decode(
   let closed = false;
   let unregisterRelease = () => {};
 
-  // teardown is the single idempotent release path; abortLocal decides whether
-  // the rebuilt signal is also aborted (failAll / deserialization error) or the
-  // channel is just torn down (peer aborted or released).
+  // Explicit release/owner loss aborts with the channel's terminal cause. A propagated
+  // source abort already applied its own reason before calling teardown(false).
   const failAllCleanup = (): void => teardown(true);
   function teardown(abortLocal: boolean): void {
     if (closed) return;

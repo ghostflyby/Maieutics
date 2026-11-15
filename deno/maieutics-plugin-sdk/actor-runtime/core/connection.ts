@@ -1,3 +1,4 @@
+import { aggregateFailures } from "./failures.ts";
 /** An explicitly owned, bidirectional Actor connection; no worker-global registry is used. */
 import type { Remote } from "../spawn_worker.ts";
 import { type Codec, PayloadCodecRegistry } from "./codec.ts";
@@ -211,9 +212,13 @@ export function createActorConnection<T extends { [K in keyof T]: RpcApi }>(
     }
   }
   const completion = terminal.promise.then(async () => {
-    await Promise.all([...dispatches]);
-    await registry.join();
-    await transport.completion;
+    const results = await Promise.allSettled([
+      Promise.all([...dispatches]),
+      registry.join(),
+      transport.completion,
+    ]);
+    const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+    if (errors.length) throw aggregateFailures(errors, "Actor connection codec cleanup failed");
   });
   // The owner can await completion after handling closed without an interim unhandled rejection.
   void completion.catch(() => {});

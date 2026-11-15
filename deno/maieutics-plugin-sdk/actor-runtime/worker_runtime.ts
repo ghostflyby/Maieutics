@@ -1,3 +1,4 @@
+import { aggregateFailures } from "./core/failures.ts";
 /**
  * Actor-side runtime: registers the module's top-level rpc object as an Actor,
  * handles request frames and replies with responses. Two entry points share
@@ -164,7 +165,7 @@ function ownRuntime(
   const completion = terminal.promise.then(async () => {
     const results = await Promise.allSettled([registry.join(), transport.completion]);
     const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-    if (errors.length) throw new AggregateError(errors, "Actor runtime cleanup failed");
+    if (errors.length) throw aggregateFailures(errors, "Actor runtime cleanup failed");
   });
   void completion.catch(() => {}); // Preserved on RuntimeHandle for the owning host.
   return { completion, close: transport.close };

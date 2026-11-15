@@ -51,7 +51,9 @@ function mainChannel(transport: Transport): Channel {
     if (!closed) handler?.(ev.data);
   });
   return {
-    completion: life.completion,
+    get completion() {
+      return life.completion;
+    },
     get closed(): boolean {
       return closed || life.closed;
     },

@@ -1,3 +1,5 @@
+import { connectProcessActor } from "./core/process_actor.ts";
+import { aggregateFailures } from "./core/failures.ts";
 /** Host-only process creation; excluded from the browser module graph. */
 import { type Codec, PayloadCodecRegistry } from "./core/codec.ts";
 import { ActorDiedError, type Frame } from "./core/protocol.ts";
@@ -16,7 +18,6 @@ import {
   attachLazyIterator,
   getActorRegistry,
   type Remote,
-  spawn,
 } from "./spawn_worker.ts";
 
 import { frameRecord, isResponse } from "./core/validation.ts";
@@ -72,38 +73,7 @@ export async function spawnProcess<
   entrypoint: string,
   options: SpawnProcessOptions<C> = {},
 ): Promise<Remote<T, CodecValueTypes<C>> & ActorHandle> {
-  const process = await startProcess(entrypoint, options);
-  const { transport } = process;
-  let actor: Remote<T, CodecValueTypes<C>> & ActorHandle;
-  try {
-    actor = await spawn<T, C>(transport, options);
-  } catch (error) {
-    try {
-      await process.stop();
-    } catch (cleanup) {
-      throw new AggregateError([error, cleanup], "Actor process startup and cleanup failed", {
-        cause: error,
-      });
-    }
-    throw error;
-  }
-  const completion = Promise.allSettled([actor.completion, process.completion]).then((results) => {
-    const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-    if (errors.length) throw new AggregateError(errors, "Actor process cleanup failed");
-  });
-  void completion.catch(() => {});
-  return new Proxy(actor, {
-    get(target, property) {
-      if (property === "completion") return completion;
-      if (property === "dispose") {
-        return () => {
-          void target.dispose(); // The same rejection is preserved by completion.
-          return completion;
-        };
-      }
-      return Reflect.get(target, property);
-    },
-  });
+  return await connectProcessActor<T, C>(await startProcess(entrypoint, options), options);
 }
 
 async function startProcess(entrypoint: string, options: SpawnProcessOptions) {
@@ -272,7 +242,7 @@ export async function spawnNode<
   const completion = terminal.promise.then(async () => {
     const results = await Promise.allSettled([registry.join(), process.completion]);
     const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-    if (errors.length) throw new AggregateError(errors, "Actor node cleanup failed");
+    if (errors.length) throw aggregateFailures(errors, "Actor node cleanup failed");
   });
   void completion.catch(() => {});
   function finish(reason: unknown, deliberate = false): void {

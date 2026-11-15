@@ -1,3 +1,4 @@
+import { FailureCollector } from "./failures.ts";
 /**
  * Pluggable Codec mechanism: a registry for custom transport of RPC payloads.
  *
@@ -118,14 +119,12 @@ export function isNativelyClonable(v: object): boolean {
 
 export class PayloadCodecRegistry {
   #tasks = new Set<Promise<void>>();
-  #taskErrors: unknown[] = [];
-  #taskErrorCount = 0;
+  #failures = new FailureCollector();
 
   /** Own asynchronous codec cleanup, including generator finally blocks. */
   trackTask(task: Promise<void>): void {
     const observed = task.catch((error) => {
-      this.#taskErrorCount++;
-      if (this.#taskErrors.length < 128) this.#taskErrors.push(error);
+      this.#failures.record(error);
     }).finally(() => this.#tasks.delete(observed));
     this.#tasks.add(observed);
   }
@@ -133,12 +132,7 @@ export class PayloadCodecRegistry {
   /** Join work after failAll has requested cancellation. */
   async join(): Promise<void> {
     while (this.#tasks.size) await Promise.all([...this.#tasks]);
-    if (this.#taskErrorCount) {
-      throw new AggregateError(
-        this.#taskErrors,
-        `Actor codec cleanup failed (${this.#taskErrorCount} failures; at most 128 retained)`,
-      );
-    }
+    if (this.#failures.hasErrors) throw this.#failures.error("Actor codec cleanup failed");
   }
   #codecs = new Map<string, Codec>();
   #order: Codec[] = [];
@@ -370,10 +364,7 @@ export class PayloadCodecRegistry {
   failAll(): void {
     if (this.#failed) return;
     this.#failed = true;
-    const record = (error: unknown) => {
-      this.#taskErrorCount++;
-      if (this.#taskErrors.length < 128) this.#taskErrors.push(error);
-    };
+    const record = (error: unknown) => this.#failures.record(error);
     for (const codec of this.#order) {
       try {
         codec.onRegistryFail?.(this.#codecState.get(codec));

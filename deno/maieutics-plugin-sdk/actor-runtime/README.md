@@ -76,28 +76,40 @@ acquire router. Asynchronous methods may interleave; business serialization belo
 Closing is terminal: calls reject, signals abort, channels and subscriptions release, and completion
 joins cooperative dispatches and generator cleanup. Reconnection creates new references; writes are
 never replayed automatically. MessagePort owners must supply a lifetime signal for abrupt peer death
-that the platform cannot report as a channel event.
+that the platform cannot report as a channel event. Only `spawn(new Worker(...))` tolerates untyped
+plugin diagnostics on the shared Worker global. `spawn(transport)` uses a dedicated Actor protocol
+endpoint and fails its owner on malformed frames, including records without `type`.
 
 Worker/process Actor handles reserve `dispose`, `completion`, and `then` from the remote method
 surface. Pool factories are evaluated synchronously: construction failures reach the caller and
-cancel already-starting members. A replacement factory failure is reported through `onMemberDead`
-and remains the rejection reason for calls when no member is available. `dispose()` terminates the
-owner and returns the shared `completion` promise; codec cleanup failures are reported there after
-other teardown stages finish. `failAll()` is terminal and idempotent: it requests all cleanup
-without throwing, rejects later codec admission, and `join()` reports recorded cleanup errors.
-Actor-side `serveWorker`/`serveProcess`/`serveNode` return a runtime handle with the same observable
-completion. Channel/transport `close()` makes the terminal transition synchronously without throwing
-observer errors; `completion` joins owned channel cleanup and reports bounded aggregates.
-`messageerror` establishes a decode cause before cleanup.
+cancel already-starting members. If members have already started, the thrown
+`ActorPoolConstructionError` exposes the original error as `cause` and a `completion` promise; await
+that promise to observe the construction failure together with any cleanup failures. A replacement
+factory failure is reported through `onMemberDead` and remains the rejection reason for calls when
+no member is available. Replacements run on owned, cancellable tasks so repeated handshake failures
+cannot recurse synchronously. Disposal cancels scheduled replacements and joins startup and
+retired-member cleanup. `dispose()` terminates the owner and returns the shared `completion`
+promise; codec cleanup failures are reported there after other teardown stages finish. `failAll()`
+is terminal and idempotent: it requests all cleanup without throwing, rejects later codec admission,
+and `join()` reports recorded cleanup errors. Actor-side `serveWorker`/`serveProcess`/`serveNode`
+return a runtime handle with the same observable completion. Channel/transport `close()` makes the
+terminal transition synchronously without throwing observer errors; `completion` joins owned channel
+cleanup and reports bounded, flat aggregates deduplicated by error identity. Distinct errors with
+the same message remain distinct. Close observers are synchronous and protected even when registered
+late. Reading that channel/transport's `completion` again includes late failures; a previously
+returned, settled promise remains a snapshot. `messageerror` establishes a decode cause before
+cleanup.
 
 AbortSignal codecs release both endpoints after terminal status. A signal retained for later use is
 a live capability and consumes a channel until abort, explicit release, or owner closure; RPC return
 alone does not retire it. End its owning scope with `releaseAbortSignal(signal)` from
 `@maieutics/plugin-sdk/actor/codecs` (also exported by the browser entry). Releasing a decoded
 signal retires that endpoint; releasing an original signal retires all its exported endpoints.
-Remote signals abort on retirement; the original source signal is not aborted. Repeated release is
-harmless. Hosts must release never-aborted signals when finished with them to keep admission
-bounded; automatic collection is not a lifetime guarantee.
+Remote signals abort on retirement with `ActorTransportError` whose `code` is `"closed"`, rather
+than the platform's default `AbortError`. Transport failure instead preserves its terminal cause; a
+source abort preserves the transmitted source reason. The original source signal is not aborted.
+Repeated release is harmless. Hosts must release never-aborted signals when finished with them to
+keep admission bounded; automatic collection is not a lifetime guarantee.
 
 The handshake checks protocol version, transport kind, and ordered codec tags. Runtime protocol 2
 adds one-credit-per-`next()` streaming; version 1 peers fail the handshake. Creating a stream does

@@ -1,3 +1,4 @@
+import { FailureCollector } from "./failures.ts";
 /** Synchronous, observable terminal state shared by transports and channels. */
 export interface Lifetime {
   readonly closed: boolean;
@@ -31,21 +32,23 @@ export function createLifetime(): OwnedLifetime {
   let reason: unknown;
   const listeners = new Set<(reason: unknown) => void>();
   const tasks = new Set<Promise<void>>();
-  const errors: unknown[] = [];
-  let errorCount = 0;
+  const failures = new FailureCollector();
   const finished = Promise.withResolvers<void>();
   void finished.promise.catch(() => {}); // The owning channel/transport exposes the rejection.
-  const record = (error: unknown) => {
-    errorCount++;
-    if (errors.length < 128) errors.push(error);
-  };
+  const record = (error: unknown) => failures.record(error);
   const own = (task: Promise<void> | undefined): void => {
     if (!task) return;
     const observed = task.catch(record).finally(() => tasks.delete(observed));
     tasks.add(observed);
   };
   return {
-    completion: finished.promise,
+    get completion() {
+      const snapshot = finished.promise.then(() => {
+        if (failures.hasErrors) throw failures.error("Actor close cleanup failed");
+      });
+      void snapshot.catch(() => {});
+      return snapshot;
+    },
     own,
     get closed() {
       return closed;
@@ -54,8 +57,13 @@ export function createLifetime(): OwnedLifetime {
       return reason;
     },
     onClose(listener) {
-      if (closed) listener(reason);
-      else listeners.add(listener);
+      if (closed) {
+        try {
+          listener(reason);
+        } catch (error) {
+          record(error);
+        }
+      } else listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
@@ -74,14 +82,7 @@ export function createLifetime(): OwnedLifetime {
       listeners.clear();
       const join = async () => {
         while (tasks.size) await Promise.all([...tasks]);
-        if (errorCount) {
-          finished.reject(
-            new AggregateError(
-              errors,
-              `Actor close cleanup failed (${errorCount} failures; at most 128 retained)`,
-            ),
-          );
-        } else finished.resolve();
+        finished.resolve();
       };
       void join();
     },

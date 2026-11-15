@@ -15,7 +15,7 @@
  * Channel protocol:
  *   sender → receiver  { type: "status"; aborted; reason? }   // initial state
  *   sender → receiver  { type: "abort"; reason? }             // abort propagation
- *   receiver → sender  { type: "release" }                    // rebuilt signal was GC'd
+ *   either direction  { type: "release" }                    // terminal delivery or explicit release
  *
  * Semantics:
  *   - On failAll (actor terminated/crashed) the receiver-side rebuilt signal is
@@ -26,8 +26,9 @@
  *     requires holding the rebuilt AbortController, and an AbortController
  *     strongly references its signal (controller.signal), which would pin the
  *     signal forever and never fire a finalizer. Release is therefore driven by
- *     explicit frames only: abort/status teardown and failAll. A "release"
- *     frame handler is kept defensively for forward compatibility.
+ *     explicit frames only: abort/status teardown, releaseAbortSignal(), and failAll.
+ *     A nonterminal capability remains live until its owner releases it; RPC completion
+ *     alone cannot release a signal that the receiver may retain for later use.
  *   - Sender and receiver both self-remove from the codec's bookkeeping once
  *     their channel is done, so ports/listeners don't linger past the signal's
  *     lifetime.
@@ -43,6 +44,34 @@ import {
 import { connectChannel, connectToken, openChannel } from "../channel.ts";
 import { ActorTransportError } from "../lifetime.ts";
 import { frameRecord } from "../validation.ts";
+
+const releases = new WeakMap<AbortSignal, Set<() => void>>();
+function registerSignalRelease(signal: AbortSignal, release: () => void): () => void {
+  const owned = releases.get(signal) ?? new Set<() => void>();
+  owned.add(release);
+  releases.set(signal, owned);
+  return () => {
+    owned.delete(release);
+    if (!owned.size) releases.delete(signal);
+  };
+}
+
+/**
+ * Retire cancellation capabilities when their owning scope ends, even without aborting the source.
+ * A decoded signal releases its endpoint; an original signal releases all of its exported endpoints.
+ * Retired remote signals abort locally. Releasing is idempotent and does not abort the original source.
+ */
+export function releaseAbortSignal(signal: AbortSignal): void {
+  const errors: unknown[] = [];
+  for (const release of [...releases.get(signal) ?? []]) {
+    try {
+      release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "Actor AbortSignal release failed");
+}
 
 interface AbortFrame {
   type: "status" | "abort" | "release";
@@ -81,20 +110,34 @@ function encode(signal: AbortSignal, ctx: EncodeContext): unknown {
   ctx.registry.registerChannel(channel, ctx.transport);
   const state = getState(ctx);
   let stopped = false;
+  let unregisterRelease = () => {};
 
   const onAbort = (): void => {
     signal.removeEventListener("abort", onAbort);
-    channel.send({ type: "abort", reason: signal.reason } satisfies AbortFrame);
+    try {
+      channel.send({ type: "abort", reason: signal.reason } satisfies AbortFrame);
+    } catch (error) {
+      ctx.registry.trackTask(Promise.reject(error));
+      cleanup();
+    }
   };
   const cleanup = (): void => {
     if (stopped) return;
     stopped = true;
     signal.removeEventListener("abort", onAbort);
     state.senders.delete(cleanup);
+    unregisterRelease();
     ctx.registry.unregisterChannel(channel);
     channel.close();
   };
   state.senders.add(cleanup);
+  unregisterRelease = registerSignalRelease(signal, () => {
+    try {
+      channel.send({ type: "release" } satisfies AbortFrame);
+    } finally {
+      cleanup();
+    }
+  });
   channel.onClose(cleanup);
   channel.onMessage((message) => {
     const frame = frameRecord(message);
@@ -131,6 +174,7 @@ function decode(
     );
   ctx.registry.registerChannel(channel, ctx.transport);
   let closed = false;
+  let unregisterRelease = () => {};
 
   // teardown is the single idempotent release path; abortLocal decides whether
   // the rebuilt signal is also aborted (failAll / deserialization error) or the
@@ -140,12 +184,20 @@ function decode(
     if (closed) return;
     closed = true;
     state.receivers.delete(failAllCleanup);
+    unregisterRelease();
     ctx.registry.unregisterChannel(channel);
     channel.close();
-    if (abortLocal && !controller.signal.aborted) controller.abort();
+    if (abortLocal && !controller.signal.aborted) controller.abort(channel.reason);
   }
 
   state.receivers.add(failAllCleanup);
+  unregisterRelease = registerSignalRelease(controller.signal, () => {
+    try {
+      channel.send({ type: "release" } satisfies AbortFrame);
+    } finally {
+      teardown(true);
+    }
+  });
   channel.onClose(() => teardown(true));
   channel.onMessage((message) => {
     const frame = frameRecord(message);
@@ -159,7 +211,7 @@ function decode(
       } finally {
         teardown(false);
       }
-    } else if (frame.type === "release") teardown(false);
+    } else if (frame.type === "release") teardown(true);
   });
 
   return controller.signal;

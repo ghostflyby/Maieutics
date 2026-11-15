@@ -19,7 +19,7 @@ export function isRequest(value: unknown): value is RpcRequest {
 
 export function isResponse(value: unknown): value is RpcResponse {
   return record(value) && Number.isSafeInteger(value.id) && Number(value.id) > 0 &&
-    (value.ok === true && Object.hasOwn(value, "value") ||
+    (value.ok === true ||
       value.ok === false && isSerializedError(value.error));
 }
 

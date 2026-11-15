@@ -5,7 +5,7 @@
  *
  *   import { createErrorCodec } from "…/codecs";
  */
-export { abortSignalCodec } from "./core/codecs/abort_signal.ts";
+export { abortSignalCodec, releaseAbortSignal } from "./core/codecs/abort_signal.ts";
 export { callbackCodec, releaseCallback } from "./core/codecs/callback.ts";
 export type { RemoteCallback } from "./core/codecs/callback.ts";
 export { createErrorCodec, errorCodec } from "./core/codecs/error.ts";

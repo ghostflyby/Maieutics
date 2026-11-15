@@ -1,6 +1,6 @@
 /** Real headless Chromium conformance with an owned profile, process, server and verdict. */
 import { createActorConnection, webSocketTransport } from "../browser.ts";
-import { testWireCodec } from "./browser_wire_codec.ts";
+import { jsonWireCodec, testWireCodec } from "./browser_wire_codec.ts";
 import { waitWithSignal } from "../core/lifetime.ts";
 
 const roots: Record<string, string[]> = {
@@ -124,15 +124,23 @@ try {
       else verdict.reject(new Error(String(result.error)));
       return new Response("received");
     }
-    if (url.pathname === "/ws" && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+    if (
+      ["/ws", "/ws/json"].includes(url.pathname) &&
+      request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    ) {
       const { socket, response } = Deno.upgradeWebSocket(request);
       socket.addEventListener("open", () => {
-        const transport = webSocketTransport(socket, { codec: testWireCodec });
+        const transport = webSocketTransport(socket, {
+          codec: url.pathname === "/ws/json" ? jsonWireCodec : testWireCodec,
+        });
         let count = 0;
         let produced = 0;
         const released = Promise.withResolvers<void>();
         let signal = new AbortController().signal;
         const api = {
+          empty(): void {},
+          invokeEmpty: (callback: () => Promise<void>) => callback(),
+          nothing: () => null,
           echo: (bytes: Uint8Array) => bytes,
           increment: () => ++count,
           async *numbers() {

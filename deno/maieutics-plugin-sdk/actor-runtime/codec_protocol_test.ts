@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertInstanceOf } from "@std/assert";
 import { PayloadCodecRegistry } from "./core/codec.ts";
 import { type Channel, connectChannel, connectToken, wrapPort } from "./core/channel.ts";
-import { abortSignalCodec } from "./core/codecs/abort_signal.ts";
+import { abortSignalCodec, releaseAbortSignal } from "./core/codecs/abort_signal.ts";
 import { callbackCodec, type RemoteCallback } from "./core/codecs/callback.ts";
 import { iterableCodec } from "./core/codecs/iterable.ts";
 import { ActorTransportError, waitWithSignal } from "./core/lifetime.ts";
@@ -83,6 +83,49 @@ for (const native of [true, false]) {
       await Promise.all([sender.join(), receiver.join()]);
     }
   });
+
+  for (const side of ["sender", "receiver"]) {
+    Deno.test(`never-aborted signals have bounded channels with explicit ${side} release (${native ? "MessagePort" : "Mux"})`, async () => {
+      const peers = pair(native);
+      const sender = new TrackingRegistry().register(abortSignalCodec) as TrackingRegistry;
+      const receiver = new TrackingRegistry().register(abortSignalCodec) as TrackingRegistry;
+      try {
+        for (let i = 0; i < 1200; i++) {
+          const original = new AbortController().signal;
+          const transfer: Transferable[] = [];
+          const handle = structuredClone(sender.encode(original, transfer, peers.a), { transfer });
+          const signal = receiver.decode(handle, peers.b) as AbortSignal;
+          const channel = [...sender.active][0];
+          const closed = new Promise<void>((resolve) => channel.onClose(() => resolve()));
+          const aborted = signal.aborted
+            ? Promise.resolve()
+            : new Promise<void>((resolve) =>
+              signal.addEventListener("abort", () => resolve(), { once: true })
+            );
+          releaseAbortSignal(side === "sender" ? original : signal);
+          await waitWithSignal(Promise.all([closed, aborted]), AbortSignal.timeout(5000));
+          releaseAbortSignal(original);
+          releaseAbortSignal(signal);
+          assertEquals(
+            original.aborted,
+            false,
+            "Releasing an exported capability must not cancel its source",
+          );
+          assertEquals(sender.active.size, 0);
+          assertEquals(receiver.active.size, 0);
+          assert(
+            !peers.a.closed && !peers.b.closed,
+            "Retired capabilities must not consume channel admission",
+          );
+        }
+      } finally {
+        sender.failAll();
+        receiver.failAll();
+        peers.close();
+        await Promise.all([sender.join(), receiver.join()]);
+      }
+    });
+  }
 
   for (const tag of ["iterable", "callback", "abort-signal"]) {
     Deno.test(`malformed ${tag} producer frame fails its owner (${native ? "MessagePort" : "Mux"})`, async () => {

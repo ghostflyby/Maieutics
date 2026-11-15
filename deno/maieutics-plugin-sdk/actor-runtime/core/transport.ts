@@ -58,6 +58,7 @@ export function fromMessagePort(port: MessageEndpoint, options: TransportOptions
       throw error;
     }
     channels.add(channel);
+    life.own(channel.completion);
     channel.onClose(() => channels.delete(channel));
     return channel;
   };
@@ -104,6 +105,7 @@ export function fromMessagePort(port: MessageEndpoint, options: TransportOptions
   port.start?.();
   return {
     kind: "messageport",
+    completion: life.completion,
     get closed() {
       return life.closed;
     },
@@ -204,6 +206,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
     const channel: MuxChannel = {
       _ch: ch,
       kind: "framed",
+      completion: channelLife.completion,
       get closed() {
         return channelLife.closed;
       },
@@ -242,6 +245,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
       },
     };
     channels.set(ch, channel);
+    life.own(channelLife.completion);
     return channel;
   };
   life.onClose((reason) => {
@@ -305,6 +309,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
   };
   return {
     kind: "framed",
+    completion: life.completion,
     get closed() {
       return life.closed;
     },
@@ -405,9 +410,15 @@ export function messageTransport(options: MessageTransportOptions): MessageTrans
       processing = false;
     }
   };
+  const completion = terminal.promise.then(async () => {
+    const results = await Promise.allSettled([task, mux.completion]);
+    const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Actor message transport cleanup failed");
+  });
+  void completion.catch(() => {});
   return {
     kind: "message",
-    completion: terminal.promise.then(() => task),
+    completion,
     get closed() {
       return mux.closed;
     },

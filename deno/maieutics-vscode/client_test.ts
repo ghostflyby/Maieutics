@@ -1300,6 +1300,8 @@ Deno.test("queue watcher reconciles once per (re)connect and applies snapshots",
       },
     });
     await waitApplied(1);
+    assertEquals(watcher.lastSnapshot?.items.map((item) => item.id), ["item-1", "item-2"]);
+    assertEquals(snapshots.at(-1)?.items.length, 2);
 
     // The reconnect hello reconciles again: one GET per (re)connect, and the
     // GET applies the server's truth — the scripted frame (as if its frame

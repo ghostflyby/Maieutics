@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createActorPool } from "./pool.ts";
 import { createMux } from "./core/transport.ts";
 import { PROTOCOL_VERSION } from "./core/protocol.ts";
@@ -66,4 +66,76 @@ Deno.test("pool disposal cancels and joins an in-progress handshake", async () =
   await waitWithSignal(pool.dispose(), AbortSignal.timeout(5000));
   assert(transport.closed, "Dispose must finish the pending member's teardown before resolving");
   assertEquals(pool.size, 0);
+});
+
+for (const replace of [false, true]) {
+  Deno.test(`pool exposes synchronous factory failures to its caller (replace: ${replace})`, async () => {
+    const failure = new Error("factory sentinel");
+    let pool: ReturnType<typeof createActorPool> | undefined;
+    try {
+      assertEquals(
+        assertThrows(() => {
+          pool = createActorPool({
+            spawnWorker() {
+              throw failure;
+            },
+            replace,
+          });
+        }),
+        failure,
+      );
+    } finally {
+      await pool?.dispose();
+    }
+  });
+}
+
+Deno.test("pool construction failure closes members already starting", async () => {
+  const transport = createMux(() => {});
+  let count = 0;
+  let pool: ReturnType<typeof createActorPool> | undefined;
+  try {
+    assertThrows(
+      () => {
+        pool = createActorPool({
+          size: 2,
+          signal: null,
+          spawnWorker() {
+            if (++count === 1) return transport;
+            throw new Error("second factory failed");
+          },
+        });
+      },
+      Error,
+      "second factory failed",
+    );
+    assert(
+      transport.closed,
+      "A failed constructor must synchronously cancel earlier member owners",
+    );
+  } finally {
+    await pool?.dispose();
+    transport.close();
+  }
+});
+
+Deno.test("a throwing replacement factory reports its error and preserves the failure for calls", async () => {
+  const failure = new Error("replacement factory sentinel");
+  const reported = Promise.withResolvers<void>();
+  const pool = createActorPool<{ add(a: number, b: number): number }>({
+    spawnWorker: () => source(false),
+    replace() {
+      throw failure;
+    },
+    onMemberDead(_index, reason) {
+      if (reason === failure) reported.resolve();
+    },
+  });
+  try {
+    await waitWithSignal(reported.promise, AbortSignal.timeout(5000));
+    assertEquals(await pool.add(1, 2).catch((error) => error), failure);
+    assertEquals(pool.size, 0);
+  } finally {
+    await pool.dispose();
+  }
 });

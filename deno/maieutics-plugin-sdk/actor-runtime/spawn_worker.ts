@@ -1,5 +1,5 @@
 import { ActorTransportError } from "./core/lifetime.ts";
-import { frameRecord, isResponse, isSerializedError } from "./core/validation.ts";
+import { frameRecord, isResponse, isSerializedError, record } from "./core/validation.ts";
 import { handshakeError } from "./core/handshake.ts";
 import { attachLazyIterator } from "./core/lazy_iterator.ts";
 /**
@@ -364,10 +364,8 @@ async function spawnOnTransport<
   options: SpawnOptions<C> = {},
   rawWorker?: Worker,
 ): Promise<Remote<T, CodecValueTypes<C>> & ActorHandle> {
-  // Constraint: the worker handshake is not buffered — call spawn() right after
-  // `new Worker(...)`. If messages arrive before the onmessage handler below is
-  // set (e.g. another await in between), the handshake is lost and spawn()
-  // waits until the handshake timeout.
+  // Attach immediately after Worker creation. The transport buffers frames after
+  // attachment; messages emitted before attachment still belong to the host's Worker scope.
   const registry = new PayloadCodecRegistry();
   // User codecs register first (can override a built-in of the same tag); built-ins fill in after.
   for (const codec of options.codecs ?? []) registry.register(codec);
@@ -444,6 +442,8 @@ async function spawnOnTransport<
   // Transport onMessage delivers { data, ports } wrappers (MessageEvent-like),
   // carrying any transferred MessagePorts (e.g. reference-acquire handshakes).
   worker.onMessage((ev) => {
+    // A plugin shares this Worker global and may post diagnostics outside Actor's protocol.
+    if (!record(ev.data) || typeof ev.data.type !== "string") return;
     const checked = frameRecord(ev.data);
     if (checked.type === "__actor-failed") {
       if (

@@ -55,6 +55,7 @@ export function framedTransport(
   const completion = Promise.all([incoming, outgoing]).then(async () => {
     await Promise.all([...writes]);
     writer.releaseLock();
+    await mux.completion;
   });
   void completion.catch(fail);
   return {

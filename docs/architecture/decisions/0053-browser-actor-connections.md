@@ -31,6 +31,9 @@ Each peer advertises only its provided named plain-object method surfaces. The h
 `{type:"actor:hello",version,kind,codecs,actors}`; unknown fields are tolerated. Version, transport
 kind, and ordered codec tags must match. Calls use existing correlated request/response envelopes
 on named channels. Unknown future controls are tolerated; malformed known frames fail the owner.
+Successful RPC replies may omit `value`; the receiver interprets omission as `undefined`, while
+explicit `null` stays distinct. Plain JSON codecs therefore support void RPC and callback replies
+without a private undefined marker. Other payload values follow the selected codec's value contract.
 Inherited methods and unadvertised surfaces are not callable. This entry does not install a
 Worker-global registry or enable the product's specifier-based acquire router.
 
@@ -62,9 +65,21 @@ settle the owner's pending calls (Worker `close()` alone does not notify the par
 surface; only MessagePorts are closed via `close()`, while Worker termination belongs to the owner.
 
 AbortSignal channels use a terminal `release` acknowledgment after aborted status or abort delivery.
-Both endpoints unregister on teardown, including pre-aborted signals. Codec channels validate
+Both endpoints unregister on teardown, including pre-aborted signals. A nonterminal signal may
+outlive its RPC and remains a live capability. `releaseAbortSignal` explicitly retires capabilities
+at scope end without aborting the original source. It releases one decoded endpoint or all exported
+endpoints of an original signal; retired remote signals abort. Live capability admission remains
+bounded, and owners must release signals that will never abort. RPC completion does not imply release. Codec channels validate
 frame records and known payload shapes; malformed frames and dispatch failures carry typed
-protocol causes to the connection owner. Unknown future control types remain tolerated.
+protocol causes to the connection owner. Decode failure is established before cleanup hooks run.
+Transport/channel closure does not throw observer errors from event handlers; their completion
+joins owned channel cleanup and reports bounded aggregates. Unknown future control types remain
+tolerated. Legacy Worker spawn also ignores non-Actor diagnostic messages without a string `type`,
+because the plugin and Actor share the Worker global; malformed known Actor frames still fail it.
+
+Pool factories run synchronously, so construction failure reaches the caller and cancels members
+already starting. Replacement factory failures remain observable through the member-death callback
+and rejection of calls when the pool has no live member.
 
 ## Verification and remaining integration
 

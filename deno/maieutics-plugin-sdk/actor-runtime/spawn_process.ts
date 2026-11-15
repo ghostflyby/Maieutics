@@ -78,7 +78,13 @@ export async function spawnProcess<
   try {
     actor = await spawn<T, C>(transport, options);
   } catch (error) {
-    await process.stop();
+    try {
+      await process.stop();
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "Actor process startup and cleanup failed", {
+        cause: error,
+      });
+    }
     throw error;
   }
   const completion = Promise.allSettled([actor.completion, process.completion]).then((results) => {

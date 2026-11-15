@@ -49,7 +49,7 @@ export interface RequestFrame {
 
 /** Actor → caller: call result; ok=false carries the serialized error. */
 export type ResponseFrame =
-  | { type: "response"; id: number; ok: true; value: unknown }
+  | { type: "response"; id: number; ok: true; value?: unknown }
   | { type: "response"; id: number; ok: false; error: SerializedError };
 
 export type Frame =

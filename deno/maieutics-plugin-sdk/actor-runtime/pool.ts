@@ -85,6 +85,7 @@ interface Member<T, Pass extends unknown = never> {
   inFlight: number;
   /** Live = not dead AND not disposed (a slot still spawning counts as live). */
   dead: boolean;
+  factoryFailure?: unknown;
 }
 
 const EMPTY: unique symbol = Symbol("pool-empty");
@@ -107,6 +108,8 @@ export function createActorPool<
   let rrCursor = 0;
 
   const spawnMember = (index: number, factory = options.spawnWorker): void => {
+    // Factory errors belong to the constructing caller, before any asynchronous handshake.
+    const source = factory();
     const slot: Member<T, CodecValueTypes<C>> = {
       inFlight: 0,
       dead: false,
@@ -118,24 +121,31 @@ export function createActorPool<
       slot.stop.signal,
       options.signal ?? AbortSignal.timeout(10_000),
     ]);
-    const ready = Promise.resolve().then(() =>
-      spawn<T, C>(factory(), {
-        codecs: options.codecs,
-        signal: lifetime,
-        transferArgs: options.transferArgs,
-        onDeath: (reason) => {
-          if (disposed || slot.dead) return;
-          slot.dead = true;
-          options.onMemberDead?.(index, reason);
-          if (options.replace && !disposed) {
+    const retire = (reason: unknown): void => {
+      if (disposed || slot.dead) return;
+      slot.dead = true;
+      try {
+        options.onMemberDead?.(index, reason);
+      } finally {
+        if (options.replace && !disposed) {
+          try {
             spawnMember(
               index,
               typeof options.replace === "function" ? options.replace : options.spawnWorker,
             );
+          } catch (error) {
+            slot.factoryFailure = error;
+            options.onMemberDead?.(index, error);
           }
-        },
-      })
-    );
+        }
+      }
+    };
+    const ready = spawn<T, C>(source, {
+      codecs: options.codecs,
+      signal: lifetime,
+      transferArgs: options.transferArgs,
+      onDeath: retire,
+    });
     slot.ready = ready.then(
       async (actor) => {
         if (disposed) {
@@ -144,18 +154,37 @@ export function createActorPool<
         }
         slot.actor = actor;
       },
-      (error) => {
-        if (!slot.dead && !disposed) {
-          slot.dead = true;
-          options.onMemberDead?.(index, error);
-        }
-      },
+      retire,
     );
     spawns.add(slot.ready);
     void slot.ready.then(() => spawns.delete(slot.ready), () => {});
   };
 
-  for (let i = 0; i < size; i++) spawnMember(i);
+  const dispose = (): Promise<void> => {
+    if (disposal) return disposal;
+    disposed = true;
+    const cleanup = members.flatMap((member) => {
+      if (member === EMPTY) return [];
+      member.dead = true;
+      member.stop.abort(new ActorDiedError());
+      return member.actor ? [member.actor.dispose()] : [];
+    });
+    disposal = Promise.allSettled([...spawns, ...cleanup]).then((results) => {
+      const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+      if (errors.length) throw new AggregateError(errors, "Actor pool cleanup failed");
+    });
+    void disposal.catch(() => {});
+    return disposal;
+  };
+
+  try {
+    for (let i = 0; i < size; i++) spawnMember(i);
+  } catch (error) {
+    void dispose().catch((cleanup) =>
+      console.error("Actor pool construction cleanup failed", cleanup)
+    );
+    throw error;
+  }
 
   const isLive = (m: Member<T>): boolean => !disposed && !m.dead && m.actor !== undefined;
 
@@ -207,6 +236,12 @@ export function createActorPool<
     await Promise.race(pending.map((m) => m.ready));
   };
 
+  const unavailable = (): unknown => {
+    const failed = members.find((member) =>
+      member !== EMPTY && member.factoryFailure !== undefined
+    );
+    return failed && failed !== EMPTY ? failed.factoryFailure : new ActorDiedError();
+  };
   const call = (method: string, args: unknown[]): Promise<unknown> => {
     if (disposed) return Promise.reject(new ActorDiedError());
     // Resolve the member synchronously when possible; otherwise wait for the
@@ -220,7 +255,8 @@ export function createActorPool<
       member = pickMember(method, args);
     });
     const out = ready.then(() => {
-      if (disposed || !member) throw new ActorDiedError();
+      if (disposed) throw new ActorDiedError();
+      if (!member) throw unavailable();
       member.inFlight++;
       const p = (member.actor![method as keyof Remote<T>] as unknown as (
         ...a: unknown[]
@@ -246,7 +282,8 @@ export function createActorPool<
           member = members[index];
         });
     const out = ready.then(() => {
-      if (disposed || member === EMPTY || !isLive(member)) throw new ActorDiedError();
+      if (disposed) throw new ActorDiedError();
+      if (member === EMPTY || !isLive(member)) throw unavailable();
       const m = member;
       m.inFlight++;
       const p = (m.actor![method as keyof Remote<T>] as unknown as (
@@ -257,23 +294,6 @@ export function createActorPool<
     });
     attachLazyIterator(out);
     return out;
-  };
-
-  const dispose = (): Promise<void> => {
-    if (disposal) return disposal;
-    disposed = true;
-    const cleanup = members.flatMap((member) => {
-      if (member === EMPTY) return [];
-      member.dead = true;
-      member.stop.abort(new ActorDiedError());
-      return member.actor ? [member.actor.dispose()] : [];
-    });
-    disposal = Promise.allSettled([...spawns, ...cleanup]).then((results) => {
-      const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
-      if (errors.length) throw new AggregateError(errors, "Actor pool cleanup failed");
-    });
-    void disposal.catch(() => {});
-    return disposal;
   };
 
   const pool = new Proxy({} as ActorPool<T>, {

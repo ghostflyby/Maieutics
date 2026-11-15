@@ -47,9 +47,12 @@ its existing V8-based `fromWebSocket` adapter.
 
 The host selects a `WireCodec` with synchronous `encode(value)` and optionally asynchronous
 `decode(message, signal)`. Its value contract must cover the data and codec placeholders exchanged
-by both peers. No browser wire encoding is chosen implicitly. Binary remains binary; the conformance
-fixture uses native binary attachments and is not a production encoding standard. Hosts establish
-and authorize an OPEN WebSocket before handing ownership to `webSocketTransport`.
+by both peers. Successful RPC replies may omit `value`; omission means `undefined`, so plain JSON
+codecs support `void` RPC and callback results without an undefined marker. Explicit `null` remains
+`null`. Other payload values still follow the chosen codec's documented value contract. No browser
+wire encoding is chosen implicitly. Binary remains binary; the conformance fixture uses native
+binary attachments and is not a production encoding standard. Hosts establish and authorize an OPEN
+WebSocket before handing ownership to `webSocketTransport`.
 
 ```ts
 import { createActorConnection, webSocketTransport } from "@maieutics/plugin-sdk/actor/browser";
@@ -76,12 +79,25 @@ never replayed automatically. MessagePort owners must supply a lifetime signal f
 that the platform cannot report as a channel event.
 
 Worker/process Actor handles reserve `dispose`, `completion`, and `then` from the remote method
-surface. `dispose()` terminates the owner and returns the shared `completion` promise; codec cleanup
-failures are reported there after other teardown stages finish. `failAll()` is terminal and
-idempotent: it requests all cleanup without throwing, rejects later codec admission, and `join()`
-reports recorded cleanup errors. Actor-side `serveWorker`/`serveProcess`/`serveNode` return a
-runtime handle with the same observable completion. AbortSignal codecs release both endpoints after
-delivery of terminal status, including pre-aborted signals.
+surface. Pool factories are evaluated synchronously: construction failures reach the caller and
+cancel already-starting members. A replacement factory failure is reported through `onMemberDead`
+and remains the rejection reason for calls when no member is available. `dispose()` terminates the
+owner and returns the shared `completion` promise; codec cleanup failures are reported there after
+other teardown stages finish. `failAll()` is terminal and idempotent: it requests all cleanup
+without throwing, rejects later codec admission, and `join()` reports recorded cleanup errors.
+Actor-side `serveWorker`/`serveProcess`/`serveNode` return a runtime handle with the same observable
+completion. Channel/transport `close()` makes the terminal transition synchronously without throwing
+observer errors; `completion` joins owned channel cleanup and reports bounded aggregates.
+`messageerror` establishes a decode cause before cleanup.
+
+AbortSignal codecs release both endpoints after terminal status. A signal retained for later use is
+a live capability and consumes a channel until abort, explicit release, or owner closure; RPC return
+alone does not retire it. End its owning scope with `releaseAbortSignal(signal)` from
+`@maieutics/plugin-sdk/actor/codecs` (also exported by the browser entry). Releasing a decoded
+signal retires that endpoint; releasing an original signal retires all its exported endpoints.
+Remote signals abort on retirement; the original source signal is not aborted. Repeated release is
+harmless. Hosts must release never-aborted signals when finished with them to keep admission
+bounded; automatic collection is not a lifetime guarantee.
 
 The handshake checks protocol version, transport kind, and ordered codec tags. Runtime protocol 2
 adds one-credit-per-`next()` streaming; version 1 peers fail the handshake. Creating a stream does
@@ -95,10 +111,10 @@ Set `MAIEUTICS_ACTOR_BROWSER` to a browser executable when it is not at a standa
 The runner owns an isolated profile, local server, process, and verdict channel, and removes them on
 completion. Browser scenarios cover binary RPC, bidirectional capabilities, callbacks, stream
 backpressure, cancellation, errors, disconnect isolation, MessageChannel, and browser Workers,
-including uncloneable arguments, callback results, and worker results. CI installs a pinned Chrome
-for Testing archive and checks its version. Runner cleanup shares a 10s total budget, escalating
-SIGTERM to SIGKILL after 2s. `deno task check:publish` asserts the actual SDK publish plan excludes
-tests and fixtures.
+including uncloneable arguments, callback results, worker results, and plain JSON void replies. CI
+installs a pinned Chrome for Testing archive and checks its version. Runner cleanup shares a 10s
+total budget, escalating SIGTERM to SIGKILL after 2s. `deno task check:publish` asserts the actual
+SDK publish plan excludes tests and fixtures.
 
 This is a runtime foundation. The product's `actor_ref.ts` acquire routing, authenticated notebook
 session/view/generation admission, and renderer integration still require a separate design.

@@ -87,7 +87,7 @@ export interface RpcRequest {
 
 /** One result frame (channel-agnostic). */
 export type RpcResponse =
-  | { id: number; ok: true; value: unknown }
+  | { id: number; ok: true; value?: unknown }
   | { id: number; ok: false; error: SerializedError };
 
 /** Build the wire `request` frame for one RPC call (the shared envelope). */
@@ -250,8 +250,14 @@ export function createRpcProxy(
       if (!call) return; // unknown id: possibly a late response after close
       pending.delete(response.id);
       try {
-        if (response.ok) call.resolve(registry.decode(response.value, options.transport));
-        else call.reject(new RemoteError(response.error));
+        if (response.ok) {
+          call.resolve(
+            registry.decode(
+              Object.hasOwn(response, "value") ? response.value : undefined,
+              options.transport,
+            ),
+          );
+        } else call.reject(new RemoteError(response.error));
       } catch (error) {
         call.reject(error);
         throw error;

@@ -1,9 +1,13 @@
 import { createActorConnection, fromMessagePort, spawn, webSocketTransport } from "../browser.ts";
-import { testWireCodec } from "./browser_wire_codec.ts";
+import { jsonWireCodec, testWireCodec } from "./browser_wire_codec.ts";
+import type { WireCodec } from "../browser.ts";
 import type * as WorkerModule from "./browser_worker.ts";
 
 export interface BrowserServices {
   service: {
+    empty(): void;
+    invokeEmpty(callback: () => Promise<void>): Promise<void>;
+    nothing(): null;
     echo(bytes: Uint8Array): Uint8Array;
     increment(): number;
     numbers(): AsyncIterable<number>;
@@ -22,7 +26,7 @@ export interface BrowserServices {
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-async function open(endpoint: string) {
+async function open(endpoint: string, codec: WireCodec = testWireCodec) {
   const socket = new WebSocket(endpoint);
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => resolve();
@@ -30,7 +34,7 @@ async function open(endpoint: string) {
   });
   socket.onopen = null;
   socket.onerror = null;
-  const transport = webSocketTransport(socket, { codec: testWireCodec });
+  const transport = webSocketTransport(socket, { codec });
   const connection = createActorConnection<BrowserServices>(transport, {
     actors: { ui: { describe: () => "browser UI" } },
   });
@@ -47,6 +51,21 @@ export async function runBrowserConformance(
   const first = await open(endpoint);
   const second = await open(endpoint);
   try {
+    const json = await open(`${endpoint}/json`, jsonWireCodec);
+    try {
+      const api = json.connection.actor("service");
+      assert(await api.empty() === undefined, "Plain JSON void RPC must stay connected");
+      assert(
+        await api.invokeEmpty(() => {}) === undefined,
+        "Plain JSON callback void results must be accepted",
+      );
+      assert(await api.nothing() === null, "Explicit null must remain distinct");
+      assert(await api.increment() === 1, "JSON void replies must preserve future calls");
+      passed.push("plain JSON void RPC and callback replies");
+    } finally {
+      json.connection.close();
+      await json.connection.completion;
+    }
     const actor = first.connection.actor("service");
     const bytes = new Uint8Array([9, 0, 255, 1, 9]).subarray(1, 4);
     const echoed = await actor.echo(bytes);

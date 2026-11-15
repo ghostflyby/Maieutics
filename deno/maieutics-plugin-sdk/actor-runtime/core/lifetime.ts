@@ -2,6 +2,8 @@
 export interface Lifetime {
   readonly closed: boolean;
   readonly reason: unknown;
+  /** Reports close-observer and owned cleanup failures after the terminal transition. */
+  readonly completion?: Promise<void>;
   onClose(listener: (reason: unknown) => void): () => void;
   close(reason?: unknown): void;
 }
@@ -18,12 +20,33 @@ export class ActorTransportError extends Error {
   }
 }
 
-/** Notify all owners exactly once, including observers attached after closure. */
-export function createLifetime(): Lifetime {
+interface OwnedLifetime extends Lifetime {
+  readonly completion: Promise<void>;
+  own(task: Promise<void> | undefined): void;
+}
+
+/** Close synchronously without throwing; completion joins cleanup and reports observer failures. */
+export function createLifetime(): OwnedLifetime {
   let closed = false;
   let reason: unknown;
   const listeners = new Set<(reason: unknown) => void>();
+  const tasks = new Set<Promise<void>>();
+  const errors: unknown[] = [];
+  let errorCount = 0;
+  const finished = Promise.withResolvers<void>();
+  void finished.promise.catch(() => {}); // The owning channel/transport exposes the rejection.
+  const record = (error: unknown) => {
+    errorCount++;
+    if (errors.length < 128) errors.push(error);
+  };
+  const own = (task: Promise<void> | undefined): void => {
+    if (!task) return;
+    const observed = task.catch(record).finally(() => tasks.delete(observed));
+    tasks.add(observed);
+  };
   return {
+    completion: finished.promise,
+    own,
     get closed() {
       return closed;
     },
@@ -41,16 +64,26 @@ export function createLifetime(): Lifetime {
       if (closed) return;
       closed = true;
       reason = cause;
-      const errors: unknown[] = [];
       for (const listener of listeners) {
         try {
           listener(cause);
         } catch (error) {
-          errors.push(error);
+          record(error);
         }
       }
       listeners.clear();
-      if (errors.length) throw new AggregateError(errors, "Actor close observers failed");
+      const join = async () => {
+        while (tasks.size) await Promise.all([...tasks]);
+        if (errorCount) {
+          finished.reject(
+            new AggregateError(
+              errors,
+              `Actor close cleanup failed (${errorCount} failures; at most 128 retained)`,
+            ),
+          );
+        } else finished.resolve();
+      };
+      void join();
     },
   };
 }

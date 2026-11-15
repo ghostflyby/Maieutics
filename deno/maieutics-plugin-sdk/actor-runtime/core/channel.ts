@@ -99,6 +99,13 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
     port.close();
   });
   if (options.onClosed) life.onClose(options.onClosed);
+  if (options.onMessageError) {
+    life.onClose((reason) => {
+      if (reason instanceof ActorTransportError && reason.code === "decode") {
+        options.onMessageError?.();
+      }
+    });
+  }
   port.onmessage = (ev: MessageEvent<unknown>) => {
     if (life.closed) return;
     try {
@@ -107,13 +114,8 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
       life.close(protocolFailure(error));
     }
   };
-  port.onmessageerror = () => {
-    try {
-      options.onMessageError?.();
-    } finally {
-      life.close(new ActorTransportError("decode", "Actor channel decoding failed"));
-    }
-  };
+  port.onmessageerror = () =>
+    life.close(new ActorTransportError("decode", "Actor channel decoding failed"));
   port.start?.();
   return {
     get closed() {
@@ -126,6 +128,7 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
       return port;
     },
     kind: "messageport",
+    completion: life.completion,
     onClose: life.onClose,
     close: life.close,
     send(message, transfer) {
@@ -211,6 +214,7 @@ export function connectToken(
       throw new Error("Mux channels have no MessagePort");
     },
     kind: "framed",
+    completion: life.completion,
     onClose: life.onClose,
     close: life.close,
     send(value, transfer) {
@@ -241,6 +245,7 @@ export function connectToken(
         return;
       }
       real = channel;
+      life.own(channel.completion);
       channel.onClose(life.close);
       if (inbound) channel.onMessage(inbound);
       for (const message of messages.splice(0)) {

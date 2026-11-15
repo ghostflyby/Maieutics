@@ -173,6 +173,7 @@ export class PayloadCodecRegistry {
       throw new ActorTransportError("closed", "Actor codec registry is closed");
     }
     this.#channels.add(channel);
+    if (channel.completion) this.trackTask(channel.completion);
     channel.onClose((reason) => {
       this.#channels.delete(channel);
       if (reason instanceof ActorTransportError && reason.code !== "closed") {

@@ -157,3 +157,20 @@ Deno.test("a buffered incompatible handshake fails the initialized owner", async
     transport.close();
   }
 });
+
+Deno.test("plugin diagnostic objects on the shared Worker do not kill its Actor", async () => {
+  const owned = worker();
+  try {
+    const actor = await spawn<typeof rpc>(owned.source);
+    await actor.diagnostic();
+    assertEquals(
+      await actor.echo(42),
+      42,
+      "The strict-successor response must survive a diagnostic object",
+    );
+    assert(!owned.terminated);
+    await actor.dispose();
+  } finally {
+    owned.source.terminate();
+  }
+});

@@ -36,7 +36,7 @@
  * contract this manager implements.
  */
 
-import { type ActorHandle, type Remote, spawnProcess } from "@ghostflyby/worker-actor";
+import { type ActorHandle, type Remote, spawnProcess } from "@maieutics/plugin-sdk/actor";
 import type { ReplEnvelope } from "../shared/protocol.ts";
 import type {
   HostReplDerivePayload,

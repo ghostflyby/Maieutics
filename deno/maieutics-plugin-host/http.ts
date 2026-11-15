@@ -40,13 +40,13 @@ import {
   callbackCodec,
   errorCodec,
   iterableCodec,
-} from "@ghostflyby/worker-actor/codecs";
+} from "@maieutics/plugin-sdk/actor/codecs";
 import {
   connectChannel,
   makeRpcHandler,
   PayloadCodecRegistry,
-} from "@ghostflyby/worker-actor/codec";
-import type { Remote } from "@ghostflyby/worker-actor";
+} from "@maieutics/plugin-sdk/actor/codec";
+import type { Remote } from "@maieutics/plugin-sdk/actor";
 
 /** A live HTTP root contributed by one plugin worker. */
 export interface HttpMount {

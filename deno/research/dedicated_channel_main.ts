@@ -1,7 +1,7 @@
 // Research main: open a dedicated channel to a process actor (token handed
 // back over RPC) and verify it carries custom frames bidirectionally.
 import type * as WorkerModule from "./dedicated_channel_worker.ts";
-import { spawnProcess } from "@ghostflyby/worker-actor";
+import { spawnProcess } from "@maieutics/plugin-sdk/actor";
 
 const actor = await spawnProcess<typeof WorkerModule.rpc>(
   new URL("./dedicated_channel_worker.ts", import.meta.url).pathname,

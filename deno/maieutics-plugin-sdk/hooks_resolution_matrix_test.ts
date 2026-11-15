@@ -23,7 +23,9 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
       Path.join(dir, "deno.json"),
       JSON.stringify({
         imports: {
-          "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
+          "@maieutics/plugin-sdk/actor": new URL("./actor-runtime/mod.ts", import.meta.url).href,
+          "@maieutics/plugin-sdk/actor/codec":
+            new URL("./actor-runtime/codec.ts", import.meta.url).href,
           bytes10: "jsr:@std/bytes@1.0",
           stralias: "npm:chalk@^5",
           btilde: "jsr:@std/bytes@~1.0",

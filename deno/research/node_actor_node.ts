@@ -1,8 +1,8 @@
 // Research: multi-actor node (serveNode). One process serves two named actors
 // over the fork IPC transport; the host connects each and can also open
 // dedicated channels via the node transport (openChannel + token handoff).
-import { serveNode } from "@ghostflyby/worker-actor";
-import { getActiveTransport } from "@ghostflyby/worker-actor/codec";
+import { serveNode } from "@maieutics/plugin-sdk/actor";
+import { getActiveTransport } from "@maieutics/plugin-sdk/actor/codec";
 
 export const actors = {
   repl: {

@@ -28,9 +28,9 @@ internal sealed class DenoReplModule
     internal string MainUrl => _modules.Value.MainUrl;
 
     /// <summary>File URL of the REPL <em>process</em> entry (<c>process_main.ts</c>), the child
-    /// module the plugin host derives via worker-actor <c>spawnProcess</c> (ADR 0020). It is
+    /// module the plugin host derives via the internal actor runtime's <c>spawnProcess</c> (ADR 0020). It is
     /// materialized beside <c>deno.json</c>, so the host-derived child resolves its
-    /// <c>@ghostflyby/worker-actor</c> import through the config discovered upward from the entry
+    /// <c>@maieutics/plugin-sdk/actor</c> import through the config discovered upward from the entry
     /// module.</summary>
     internal string ProcessMainUrl => _modules.Value.ProcessMainUrl;
 

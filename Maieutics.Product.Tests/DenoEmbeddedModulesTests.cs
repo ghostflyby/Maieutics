@@ -41,6 +41,10 @@ public sealed partial class DenoEmbeddedModulesTests
         Assert.Contains("Deno/maieutics-deno-repl/deno.json", names);
         Assert.Contains("Deno/maieutics-deno-repl/deno.lock", names);
         Assert.Contains("Deno/maieutics-plugin-sdk/deno.json", names);
+        foreach (var module in new[] { "mod.ts", "codec.ts", "codecs.ts", "core/transport.ts", "LICENSE", "NOTICE" })
+        {
+            Assert.Contains($"Deno/maieutics-plugin-sdk/actor-runtime/{module}", names);
+        }
         // Tests and fixtures are excluded by design; they run in the deno workspace.
         Assert.DoesNotContain(names, item => Regex.IsMatch(item, "^Deno/.*/.*_test\\.ts$"));
         Assert.DoesNotContain(names, item => Regex.IsMatch(item, "^Deno/.*/test_fixtures/.*$"));

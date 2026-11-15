@@ -4,7 +4,7 @@
 // that wakes the blocked worker early).
 
 import { assertEquals } from "@std/assert";
-import { spawn } from "@ghostflyby/worker-actor";
+import { spawn } from "@maieutics/plugin-sdk/actor";
 import { INPUT_MAILBOX_LINK_LABEL } from "./repl_actor.ts";
 import { InputMailboxKind } from "./input_mailbox.ts";
 import { spawnBootstrapWorker } from "../maieutics-runtime/worker_factory.ts";

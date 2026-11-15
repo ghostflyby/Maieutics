@@ -33,7 +33,7 @@ import {
   CODEC_PLACEHOLDER_KEY,
   type DecodeContext,
   type EncodeContext,
-} from "@ghostflyby/worker-actor/codec";
+} from "./actor-runtime/codec.ts";
 
 interface HttpPlaceholder {
   [CODEC_PLACEHOLDER_KEY]: "maieutics/http";

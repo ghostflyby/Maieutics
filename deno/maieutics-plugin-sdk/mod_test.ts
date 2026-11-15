@@ -73,7 +73,7 @@ Deno.test("defineExtensionPoint rejects a bare object without a handler", () => 
   );
 });
 
-Deno.test("the sdk module imports only worker-actor, Vue reactivity and its local modules", async () => {
+Deno.test("the sdk module imports only its local runtime, Vue reactivity and its local modules", async () => {
   const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
   const imports = [...source.matchAll(/^import[^\n]*?from\s+"([^"]+)"/gm)].map((match) => match[1]);
   assert(imports.length > 0, "expected at least one import in the sdk module");
@@ -85,8 +85,7 @@ Deno.test("the sdk module imports only worker-actor, Vue reactivity and its loca
         specifier === "./http.ts" ||
         specifier === "./admission.ts" ||
         specifier === "./http_codec.ts" ||
-        specifier === "@ghostflyby/worker-actor" ||
-        specifier.startsWith("@ghostflyby/worker-actor/") ||
+        specifier.startsWith("./actor-runtime/") ||
         specifier === "@vue/reactivity",
       `unexpected import '${specifier}' in the sdk module`,
     );

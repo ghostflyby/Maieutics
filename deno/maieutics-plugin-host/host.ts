@@ -13,7 +13,7 @@
  * acquisition the two workers talk directly; the host is out of the data path.
  */
 
-import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
+import { type ActorHandle, type Remote, spawn } from "@maieutics/plugin-sdk/actor";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";

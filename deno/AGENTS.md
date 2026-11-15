@@ -11,7 +11,10 @@
   package whose deno.json carries a `maieutics` marker; extension points are identified by versioned
   `Symbol.for` markers (`maieutics/extensionPoint/v1/...`), and implementations are objects with a
   `handler` method or callable functions. Domains: extension point markers, per-extension-point
-  context and result types, `defineExtensionPoint`, discovery descriptors.
+  context and result types, `defineExtensionPoint`, discovery descriptors. `actor-runtime/` is the
+  product-owned lower-level Actor implementation (ADR 0052). It must not depend on SDK discovery,
+  plugin Host, kernel, frontend, or Agent code. Its sources ship in the SDK package and executable;
+  its tests and fixtures run only in the workspace.
 - `maieutics-plugin-host/` — Out-of-process plugin host. The kernel spawns this process with a
   plugin configuration file and control channel address; it creates one permission-scoped worker per
   plugin export subpath, scans workers for extension points, and bridges `extension.*` bus messages

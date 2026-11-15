@@ -24,7 +24,7 @@ import {
   type EncodeContext,
   openChannel,
   registerRelease,
-} from "@ghostflyby/worker-actor/codec";
+} from "./actor-runtime/codec.ts";
 
 export const COLLECTION_STREAM_TAG = "maieutics/collection-stream";
 const COLLECTION_STREAM_BRAND = Symbol.for("maieutics/collectionStream/v1");

@@ -1,5 +1,10 @@
 # Maieutics plugin SDK
 
+The SDK includes the product-owned Actor runtime under `actor-runtime/` (ADR 0052), exported as
+`@maieutics/plugin-sdk/actor`, `/actor/codec`, and `/actor/codecs`. Host, SDK, and REPL use the same
+local sources; no separate `worker-actor` JSR package is required. Its license, origin commit,
+boundaries, and test command are documented in [the runtime README](actor-runtime/README.md).
+
 SDK for writing Maieutics script plugins. A plugin is a standard Deno package:
 
 - `deno.json` with `name`, `version`, `exports` (one subpath per extension carrier module), the

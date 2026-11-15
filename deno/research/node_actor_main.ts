@@ -2,8 +2,8 @@
 // node transport. Verify: named actors, plus a dedicated channel opened on the
 // node transport (host connects the token) carrying custom frames both ways.
 import type * as NodeModule from "./node_actor_node.ts";
-import { spawnNode } from "@ghostflyby/worker-actor";
-import { connectToken } from "@ghostflyby/worker-actor/codec";
+import { spawnNode } from "@maieutics/plugin-sdk/actor";
+import { connectToken } from "@maieutics/plugin-sdk/actor/codec";
 
 const node = await spawnNode<typeof NodeModule.actors>(
   new URL("./node_actor_node.ts", import.meta.url).pathname,

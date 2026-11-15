@@ -5,7 +5,7 @@
  * construction through the patched `Worker` and reports the typed error.
  */
 
-import { serveWorker } from "@ghostflyby/worker-actor";
+import { serveWorker } from "@maieutics/plugin-sdk/actor";
 import { installBootstrapMarker } from "../bootstrap_contract.ts";
 import { installWorkerPatch } from "../worker_patch.ts";
 

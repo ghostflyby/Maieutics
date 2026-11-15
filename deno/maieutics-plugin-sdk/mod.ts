@@ -43,8 +43,8 @@ import {
   getActiveRegistry,
   type PeerRpc,
   registerControlHandler,
-} from "@ghostflyby/worker-actor/codec";
-import { attachLazyIterator, type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+} from "./actor-runtime/codec.ts";
+import { attachLazyIterator, type LinkHandle, serveWorker } from "./actor-runtime/mod.ts";
 import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 import { admissionMailboxFor, type AdmissionRequestFrame, answerAdmission } from "./admission.ts";
 import { httpCodec } from "./http_codec.ts";

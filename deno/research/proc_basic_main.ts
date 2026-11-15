@@ -1,7 +1,7 @@
 // Research: spawn a process actor via spawnProcess (worker-actor 0.4.0, JSR).
 // Verifies: cross-process RPC, AsyncIterable returns, dispose.
 import type * as WorkerModule from "./proc_basic_worker.ts";
-import { spawnProcess } from "@ghostflyby/worker-actor";
+import { spawnProcess } from "@maieutics/plugin-sdk/actor";
 
 const actor = await spawnProcess<typeof WorkerModule.rpc>(
   new URL("./proc_basic_worker.ts", import.meta.url).pathname,

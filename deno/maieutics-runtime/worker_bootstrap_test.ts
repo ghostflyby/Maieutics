@@ -14,7 +14,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { spawn } from "@ghostflyby/worker-actor";
+import { spawn } from "@maieutics/plugin-sdk/actor";
 import { readBootstrapMarker } from "./bootstrap_contract.ts";
 import { spawnBootstrapWorker } from "./worker_factory.ts";
 import type * as ClassicProbe from "./test_fixtures/classic_probe.ts";

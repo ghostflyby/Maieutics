@@ -5,8 +5,8 @@
 // on the WORKER side (which has getActiveTransport()): the worker calls
 // transport.openChannel() and hands the Mux token back to the host over RPC.
 // The host then connects the token. Both directions carry custom frames.
-import { serveProcess } from "@ghostflyby/worker-actor";
-import { getActiveTransport } from "@ghostflyby/worker-actor/codec";
+import { serveProcess } from "@maieutics/plugin-sdk/actor";
+import { getActiveTransport } from "@maieutics/plugin-sdk/actor/codec";
 
 export const rpc = {
   /** Opens a fresh logical channel on the process transport; returns the Mux token for the host. */

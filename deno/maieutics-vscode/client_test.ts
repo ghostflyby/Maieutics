@@ -1262,13 +1262,31 @@ Deno.test("queue watcher reconciles once per (re)connect and applies snapshots",
   try {
     const controller = new AbortController();
     const snapshots: QueueState[] = [];
+    const applied = [
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+    ];
+    const waitApplied = async (index: number) => {
+      const deadline = setTimeout(
+        () => applied[index].reject(new Error("Queue snapshot was not applied")),
+        5000,
+      );
+      try {
+        await applied[index].promise;
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
     const watcher = new QueueWatcher(client, "a".repeat(32), (snapshot) => {
       snapshots.push(snapshot);
+      applied[snapshots.length - 1]?.resolve();
     }, () => {});
     const pump = pumpWatcher(client, watcher, controller.signal);
 
     // The connect hello reconciles with exactly one GET /queue.
-    await waitFor(() => queue.getHits() === 1);
+    await waitApplied(0);
+    assertEquals(queue.getHits(), 1);
     assertEquals(watcher.lastSnapshot?.sessionId, "a".repeat(32));
 
     // A scripted mutation frame applies as full state.
@@ -1281,13 +1299,15 @@ Deno.test("queue watcher reconciles once per (re)connect and applies snapshots",
         capacity: 8,
       },
     });
-    await waitFor(() => watcher.lastSnapshot?.items.length === 2);
+    await waitApplied(1);
 
     // The reconnect hello reconciles again: one GET per (re)connect, and the
     // GET applies the server's truth — the scripted frame (as if its frame
     // had been missed) is replaced wholesale.
     eventConnections()[0].close();
-    await waitFor(() => queue.getHits() === 2 && eventConnections().length === 2);
+    await waitApplied(2);
+    assertEquals(queue.getHits(), 2);
+    assertEquals(eventConnections().length, 2);
     assertEquals(eventConnections()[1].sinceSequence, 0);
     assertEquals(snapshots.at(-1)?.items.length, 0);
 

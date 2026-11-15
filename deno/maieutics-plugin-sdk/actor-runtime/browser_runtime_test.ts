@@ -4,6 +4,7 @@ import {
   connectToken,
   createActorConnection,
   createRpcProxy,
+  fromMessagePort,
   messageTransport,
   PayloadCodecRegistry,
 } from "./browser.ts";
@@ -259,6 +260,55 @@ Deno.test("Actor handshake rejects a different stream protocol version", async (
   await within(connection.completion);
 });
 
+for (const mismatch of ["kind", "codec tags", "codec order"]) {
+  Deno.test(`Actor handshake rejects incompatible ${mismatch}`, async () => {
+    const transport = messageTransport({ send() {} });
+    const connection = createActorConnection(transport);
+    const verdict = assertRejects(
+      () => connection.ready,
+      ActorTransportError,
+      "handshake mismatch",
+    );
+    transport.deliver({
+      type: "actor:hello",
+      version: PROTOCOL_VERSION,
+      kind: mismatch === "kind" ? "messageport" : "message",
+      codecs: mismatch === "codec tags"
+        ? ["iterable", "error", "callback"]
+        : mismatch === "codec order"
+        ? ["error", "iterable", "abort-signal", "callback"]
+        : ["iterable", "error", "abort-signal", "callback"],
+      actors: [],
+    });
+    await within(verdict);
+    assert(transport.closed);
+    await within(connection.completion);
+  });
+}
+
+Deno.test("browser entry module graph excludes host process and V8 adapters without tree-shaking", async () => {
+  const output = await new Deno.Command(Deno.execPath(), {
+    args: ["info", "--json", new URL("./browser.ts", import.meta.url).href],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert(output.success, new TextDecoder().decode(output.stderr));
+  const graph = JSON.parse(new TextDecoder().decode(output.stdout)) as {
+    modules: Array<{ specifier: string }>;
+  };
+  assert(graph.modules.some((module) => module.specifier.endsWith("/spawn_worker.ts")));
+  for (const module of graph.modules) {
+    assert(
+      !module.specifier.startsWith("node:"),
+      `Browser dependency must be Web-standard: ${module.specifier}`,
+    );
+    assert(
+      !/\/(spawn_process|transport_v8|frame)\.ts$/.test(module.specifier),
+      `Host module entered browser graph: ${module.specifier}`,
+    );
+  }
+});
+
 Deno.test("Mux mailboxes share one connection budget across channels", () => {
   const transport = messageTransport({ send() {}, maxBufferedMessages: 1 });
   transport.deliver({ __mux: "open", ch: 1 });
@@ -428,5 +478,41 @@ Deno.test("closing one connection preserves revocation of a callback shared by a
         secondServer.completion,
       ]),
     );
+  }
+});
+
+Deno.test("a late MessagePort RPC result cannot reopen codec channels after owner closure", async () => {
+  const ports = new MessageChannel();
+  const entered = Promise.withResolvers<void>();
+  const result = Promise.withResolvers<AsyncIterable<number>>();
+  const server = createActorConnection(fromMessagePort(ports.port1), {
+    actors: {
+      service: {
+        values() {
+          entered.resolve();
+          return result.promise;
+        },
+      },
+    },
+  });
+  const client = createActorConnection<{ service: { values(): Promise<AsyncIterable<number>> } }>(
+    fromMessagePort(ports.port2),
+  );
+  try {
+    await within(client.ready);
+    const pending = client.actor("service").values();
+    const rejected = assertRejects(() => pending);
+    await within(entered.promise);
+    client.close();
+    await within(server.closed);
+    result.resolve((async function* () {
+      yield 1;
+    })());
+    await within(Promise.all([server.completion, client.completion, rejected]));
+  } finally {
+    client.close();
+    server.close();
+    ports.port1.close();
+    ports.port2.close();
   }
 });

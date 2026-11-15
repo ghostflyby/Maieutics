@@ -4,3 +4,6 @@ export const rpc = {
     return "pong";
   },
 };
+
+declare const self: { postMessage(message: unknown): void };
+self.postMessage({ type: "fixture:loaded" });

@@ -27,7 +27,7 @@ export type {
 export { createActorPool } from "./pool.ts";
 export type { ActorPool, ActorPoolOptions } from "./pool.ts";
 export { serveNode, serveProcess, serveWorker } from "./worker_runtime.ts";
-export type { LinkHandle, ServeWorkerOptions, WorkerApi } from "./worker_runtime.ts";
+export type { LinkHandle, RuntimeHandle, ServeWorkerOptions, WorkerApi } from "./worker_runtime.ts";
 export { connectActor } from "./core/connect.ts";
 export type { ConnectedActor } from "./core/connect.ts";
 export { fromMessagePort, fromNodeIpc, messageTransport } from "./core/transport.ts";

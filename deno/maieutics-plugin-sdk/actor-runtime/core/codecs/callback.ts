@@ -43,6 +43,8 @@ import {
 } from "../channel.ts";
 import { createRpcProxy, makeRpcHandler, requestFrame, sendRpcResult } from "../rpc.ts";
 import type { RequestFrame, ResponseFrame } from "../protocol.ts";
+import { ActorTransportError } from "../lifetime.ts";
+import { frameRecord, isRequest, isResponse, protocolFailure } from "../validation.ts";
 
 /** The single method name on the owner-side API surface. */
 const CALL = "call";
@@ -130,7 +132,7 @@ function encode(fn: AnyFunction, ctx: EncodeContext): unknown {
       ctx.registry.unregisterChannel(channel);
     },
   });
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   // The owner side is exactly a single-function Actor: one method, the same
   // makeRpcHandler machinery the main channel and links use. Strong hold while
   // the channel is open (conditional-strong, aligned with refs): the function
@@ -145,14 +147,25 @@ function encode(fn: AnyFunction, ctx: EncodeContext): unknown {
     ctx.transport,
   );
   channel.onMessage((message) => {
-    const frame = message as CallbackFrame;
+    const frame = frameRecord(message);
     if (frame.type === "request") {
-      void handler(frame).then((res) =>
-        sendRpcResult(res, (result, transfer) => channel.send(result, transfer))
+      if (!isRequest(frame) || frame.method !== CALL) {
+        throw new ActorTransportError("protocol", "Invalid Actor callback request frame");
+      }
+      ctx.registry.trackTask(
+        handler(frame).then((res) => {
+          if (!channel.closed) {
+            sendRpcResult(res, (result, transfer) => channel.send(result, transfer));
+          }
+        }).catch((error) => {
+          ctx.transport.close(protocolFailure(error));
+        }),
       );
     } else if (frame.type === "dispose") {
       // No [Symbol.dispose] hook for plain functions; close the channel.
       channel.close();
+    } else if (frame.type === "response" || frame.type === "released") {
+      throw new ActorTransportError("protocol", "Invalid Actor callback owner frame");
     }
   });
   const handle: CallbackHandle = {
@@ -190,7 +203,7 @@ function decode(
       ctx.transport,
       placeholder.token as { __mux: "open"; ch: number },
     );
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   const state = getState(ctx);
   const proxy = createRpcProxy(ctx.registry, {
     transport: ctx.transport,
@@ -201,13 +214,23 @@ function decode(
   // Route inbound result frames to the pending calls (createRpcProxy owns the
   // pending map but not the transport — the channel handler must feed it).
   channel.onMessage((message) => {
-    const frame = message as CallbackFrame;
-    if (frame.type === "response") proxy.deliver(frame);
-    else if (frame.type === "released") {
+    const frame = frameRecord(message);
+    if (frame.type === "response") {
+      if (!isResponse(frame)) {
+        throw new ActorTransportError("protocol", "Invalid Actor callback response frame");
+      }
+      try {
+        proxy.deliver(frame);
+      } catch (error) {
+        throw protocolFailure(error);
+      }
+    } else if (frame.type === "released") {
       // The owner released the callback: die immediately (no round trip).
       proxy.rejectAll(new Error("Callback released by its owner"));
       channel.close();
       dropProxy(state, cb);
+    } else if (frame.type === "request" || frame.type === "dispose") {
+      throw new ActorTransportError("protocol", "Invalid Actor callback caller frame");
     }
   });
   let unregisterRelease: () => void = () => {};

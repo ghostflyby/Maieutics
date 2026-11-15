@@ -1,6 +1,7 @@
 /** Real headless Chromium conformance with an owned profile, process, server and verdict. */
 import { createActorConnection, webSocketTransport } from "../browser.ts";
 import { testWireCodec } from "./browser_wire_codec.ts";
+import { waitWithSignal } from "../core/lifetime.ts";
 
 const roots: Record<string, string[]> = {
   darwin: [
@@ -42,11 +43,13 @@ let passed: string[] = [];
 let failure: unknown;
 async function cleanup(): Promise<void> {
   const errors: unknown[] = [];
-  const attempt = async (work: Promise<unknown>) => {
+  const budget = AbortSignal.timeout(10_000);
+  const grace = AbortSignal.timeout(2000);
+  const attempt = async (stage: string, work: Promise<unknown>) => {
     try {
-      await work;
+      await waitWithSignal(work, budget);
     } catch (error) {
-      errors.push(error);
+      errors.push(new Error(`Actor browser cleanup failed during ${stage}`, { cause: error }));
     }
   };
   if (child) {
@@ -55,8 +58,17 @@ async function cleanup(): Promise<void> {
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) errors.push(error);
     }
-    await attempt(child.status);
-    if (logs) await attempt(logs);
+    try {
+      await waitWithSignal(child.status, grace);
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) errors.push(error);
+      }
+      await attempt("browser exit", child.status);
+    }
+    if (logs) await attempt("stderr drain", logs);
   }
   for (const connection of sessions) {
     try {
@@ -65,9 +77,12 @@ async function cleanup(): Promise<void> {
       errors.push(error);
     }
   }
-  await attempt(Promise.all(sessions.map((connection) => connection.completion)));
-  if (server) await attempt(server.shutdown());
-  await attempt(Deno.remove(directory, { recursive: true }));
+  await attempt(
+    "Actor connections",
+    Promise.all(sessions.map((connection) => connection.completion)),
+  );
+  if (server) await attempt("HTTP server", server.shutdown());
+  await attempt("temporary profile", Deno.remove(directory, { recursive: true }));
   if (errors.length) throw new AggregateError(errors, "Actor browser runner cleanup failed");
 }
 try {
@@ -202,6 +217,8 @@ try {
   child = new Deno.Command(browser, {
     args: [
       "--headless=new",
+      // CI serves only owned loopback fixtures; downloaded Chrome has no image-installed sandbox profile.
+      ...(Deno.env.get("CI") === "true" && Deno.build.os === "linux" ? ["--no-sandbox"] : []),
       "--disable-gpu",
       "--no-first-run",
       "--no-default-browser-check",

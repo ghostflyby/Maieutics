@@ -41,6 +41,8 @@ import {
   getCodecState,
 } from "../codec.ts";
 import { connectChannel, connectToken, openChannel } from "../channel.ts";
+import { ActorTransportError } from "../lifetime.ts";
+import { frameRecord } from "../validation.ts";
 
 interface AbortFrame {
   type: "status" | "abort" | "release";
@@ -76,36 +78,36 @@ function getState(ctx: { codecState: Map<Codec, unknown> }): AbortCodecState {
 
 function encode(signal: AbortSignal, ctx: EncodeContext): unknown {
   const { channel, peerPort, token } = openChannel(ctx);
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   const state = getState(ctx);
   let stopped = false;
 
-  const post = (frame: AbortFrame): void => {
-    if (!stopped) channel.send(frame);
-  };
-
-  post({ type: "status", aborted: signal.aborted, reason: signal.reason });
-
   const onAbort = (): void => {
-    post({ type: "abort", reason: signal.reason });
-    cleanup();
+    signal.removeEventListener("abort", onAbort);
+    channel.send({ type: "abort", reason: signal.reason } satisfies AbortFrame);
   };
-
-  // cleanup self-removes from the registry, so the source signal's graph is
-  // collectable once the channel is done, even while the actor stays alive.
-  let cleanup: () => void = () => {};
-  cleanup = (): void => {
+  const cleanup = (): void => {
     if (stopped) return;
     stopped = true;
     signal.removeEventListener("abort", onAbort);
-    channel.close();
     state.senders.delete(cleanup);
+    ctx.registry.unregisterChannel(channel);
+    channel.close();
   };
-
-  if (!signal.aborted) {
-    signal.addEventListener("abort", onAbort, { once: true });
-  }
   state.senders.add(cleanup);
+  channel.onClose(cleanup);
+  channel.onMessage((message) => {
+    const frame = frameRecord(message);
+    if (frame.type === "release") cleanup();
+    else if (frame.type === "status" || frame.type === "abort") {
+      throw new ActorTransportError("protocol", "Invalid Actor abort sender frame");
+    }
+  });
+  if (!signal.aborted) signal.addEventListener("abort", onAbort, { once: true });
+  // Keep the endpoint alive until the receiver acknowledges the terminal status.
+  channel.send(
+    { type: "status", aborted: signal.aborted, reason: signal.reason } satisfies AbortFrame,
+  );
   const handle: AbortSignalHandle = {
     [CODEC_PLACEHOLDER_KEY]: "abort-signal",
     ...(peerPort !== undefined ? { port: peerPort } : { token }),
@@ -127,7 +129,7 @@ function decode(
       ctx.transport,
       placeholder.token as { __mux: "open"; ch: number },
     );
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   let closed = false;
 
   // teardown is the single idempotent release path; abortLocal decides whether
@@ -137,26 +139,28 @@ function decode(
   function teardown(abortLocal: boolean): void {
     if (closed) return;
     closed = true;
-    channel.close();
     state.receivers.delete(failAllCleanup);
+    ctx.registry.unregisterChannel(channel);
+    channel.close();
     if (abortLocal && !controller.signal.aborted) controller.abort();
   }
 
-  channel.onMessage((message) => {
-    const frame = message as AbortFrame;
-    if (frame.type === "status") {
-      if (frame.aborted && !controller.signal.aborted) {
-        controller.abort(frame.reason);
-      }
-    } else if (frame.type === "abort") {
-      if (!controller.signal.aborted) controller.abort(frame.reason);
-      teardown(false);
-    } else if (frame.type === "release") {
-      teardown(false);
-    }
-  });
-
   state.receivers.add(failAllCleanup);
+  channel.onClose(() => teardown(true));
+  channel.onMessage((message) => {
+    const frame = frameRecord(message);
+    if (frame.type === "status" && typeof frame.aborted !== "boolean") {
+      throw new ActorTransportError("protocol", "Invalid Actor abort status frame");
+    }
+    if (frame.type === "abort" || frame.type === "status" && frame.aborted) {
+      controller.abort(frame.reason);
+      try {
+        channel.send({ type: "release" } satisfies AbortFrame);
+      } finally {
+        teardown(false);
+      }
+    } else if (frame.type === "release") teardown(false);
+  });
 
   return controller.signal;
 }

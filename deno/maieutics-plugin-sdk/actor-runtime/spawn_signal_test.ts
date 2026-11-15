@@ -1,5 +1,6 @@
-import { assert, assertEquals, assertInstanceOf } from "@std/assert";
+import { assert, assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 import { spawn } from "@maieutics/plugin-sdk/actor";
+import { waitWithSignal } from "./core/lifetime.ts";
 import type * as CalcWorkerModule from "./test_fixtures/calculator/worker.ts";
 
 const CALC_URL = import.meta.resolve(
@@ -11,45 +12,50 @@ const HANGING_URL = import.meta.resolve(
   new URL("./test_fixtures/hanging_worker.ts", import.meta.url).href,
 );
 
-function hangResult(p: Promise<unknown>, ms: number): Promise<unknown> {
-  return Promise.race([
-    p.then(() => "resolved" as const, (e: unknown) => e),
-    new Promise((r) => setTimeout(() => r("still-pending"), ms)),
-  ]);
+function hangingWorker() {
+  const source = new Worker(HANGING_URL, { type: "module" });
+  const ready = new Promise<void>((resolve) =>
+    source.addEventListener("message", () => resolve(), { once: true })
+  );
+  return { source, ready };
 }
 
-Deno.test("spawn signal: default timeout still applies", async () => {
-  const outcome = await hangResult(
-    spawn(new Worker(HANGING_URL, { type: "module" })),
-    200,
-  );
-  // Default 10s timeout: still pending shortly after creation, then... the
-  // hanging worker eventually times out on its own, so just assert the pending
-  // phase here; the exact rejection is covered by the explicit-signal test.
-  assertEquals(outcome, "still-pending");
-  // cleanup: drop the dangling worker
-  // (the handshake timeout will kill it; nothing else to do)
-});
+for (const signal of [undefined, null] as const) {
+  Deno.test(`spawn signal: ${signal === null ? "null disables" : "default permits"} the pending handshake`, async () => {
+    const { source, ready } = hangingWorker();
+    let settled = false;
+    const creation = spawn(source, { signal });
+    void creation.then(() => {
+      settled = true;
+    }, () => {
+      settled = true;
+    });
+    try {
+      await waitWithSignal(ready, AbortSignal.timeout(5000));
+      assertEquals(
+        settled,
+        false,
+        "Loading the fixture without a handshake must leave creation pending",
+      );
+      source.dispatchEvent(new ErrorEvent("error", { message: "owned test shutdown" }));
+      await assertRejects(() => creation, Error, "owned test shutdown");
+    } finally {
+      source.terminate();
+    }
+  });
+}
 
 Deno.test("spawn signal: user signal aborts creation and propagates reason", async () => {
   const controller = new AbortController();
-  const p = spawn(new Worker(HANGING_URL, { type: "module" }), {
-    signal: controller.signal,
-  });
-  await new Promise((r) => setTimeout(r, 20));
-  controller.abort(new Error("user cancelled"));
-  const outcome = await p.then(() => "resolved" as const, (e: unknown) => e);
-  assertInstanceOf(outcome, Error);
-  assertEquals((outcome as Error).message, "user cancelled");
-});
-
-Deno.test("spawn signal: null disables interruption entirely", async () => {
-  const p = spawn(new Worker(HANGING_URL, { type: "module" }), {
-    signal: null,
-  });
-  const outcome = await hangResult(p, 200);
-  // No interrupt at all: still pending after 200ms, no rejection
-  assertEquals(outcome, "still-pending");
+  const { source, ready } = hangingWorker();
+  const creation = spawn(source, { signal: controller.signal });
+  try {
+    await waitWithSignal(ready, AbortSignal.timeout(5000));
+    controller.abort(new Error("user cancelled"));
+    await assertRejects(() => creation, Error, "user cancelled");
+  } finally {
+    source.terminate();
+  }
 });
 
 Deno.test("spawn signal: signal no longer affects the actor after resolve", async () => {

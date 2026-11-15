@@ -41,7 +41,9 @@ integration remain separate work.
 Import `@maieutics/plugin-sdk/actor/browser` when bundling for a browser. It exports Worker actors,
 Web-standard transports, codecs, and `createActorConnection`; it excludes process creation and the
 V8 wire adapter. Browser artifact checks reject residual `node:` imports or `Deno` runtime access.
-The default host entry retains its existing V8-based `fromWebSocket` adapter.
+The complete browser module graph excludes the host-only `spawn_process.ts` and V8 adapters; Worker
+creation is shared through `spawn_worker.ts`. The default host entry retains process creation and
+its existing V8-based `fromWebSocket` adapter.
 
 The host selects a `WireCodec` with synchronous `encode(value)` and optionally asynchronous
 `decode(message, signal)`. Its value contract must cover the data and codec placeholders exchanged
@@ -73,6 +75,14 @@ joins cooperative dispatches and generator cleanup. Reconnection creates new ref
 never replayed automatically. MessagePort owners must supply a lifetime signal for abrupt peer death
 that the platform cannot report as a channel event.
 
+Worker/process Actor handles reserve `dispose`, `completion`, and `then` from the remote method
+surface. `dispose()` terminates the owner and returns the shared `completion` promise; codec cleanup
+failures are reported there after other teardown stages finish. `failAll()` is terminal and
+idempotent: it requests all cleanup without throwing, rejects later codec admission, and `join()`
+reports recorded cleanup errors. Actor-side `serveWorker`/`serveProcess`/`serveNode` return a
+runtime handle with the same observable completion. AbortSignal codecs release both endpoints after
+delivery of terminal status, including pre-aborted signals.
+
 The handshake checks protocol version, transport kind, and ordered codec tags. Runtime protocol 2
 adds one-credit-per-`next()` streaming; version 1 peers fail the handshake. Creating a stream does
 not enumerate it, and releasing it runs the producer's cleanup. A stream has one consumer and at
@@ -84,7 +94,11 @@ Run `deno task test:actor:browser` from the SDK directory for real headless Chro
 Set `MAIEUTICS_ACTOR_BROWSER` to a browser executable when it is not at a standard Chrome/Edge path.
 The runner owns an isolated profile, local server, process, and verdict channel, and removes them on
 completion. Browser scenarios cover binary RPC, bidirectional capabilities, callbacks, stream
-backpressure, cancellation, errors, disconnect isolation, MessageChannel, and browser Workers.
+backpressure, cancellation, errors, disconnect isolation, MessageChannel, and browser Workers,
+including uncloneable arguments, callback results, and worker results. CI installs a pinned Chrome
+for Testing archive and checks its version. Runner cleanup shares a 10s total budget, escalating
+SIGTERM to SIGKILL after 2s. `deno task check:publish` asserts the actual SDK publish plan excludes
+tests and fixtures.
 
 This is a runtime foundation. The product's `actor_ref.ts` acquire routing, authenticated notebook
 session/view/generation admission, and renderer integration still require a separate design.

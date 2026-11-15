@@ -23,6 +23,7 @@
 import type { EncodeContext } from "./codec.ts";
 import type { Transport } from "./transport.ts";
 import { ActorTransportError, createLifetime, type Lifetime } from "./lifetime.ts";
+import { protocolFailure } from "./validation.ts";
 
 export interface ChannelOptions {
   /** Called once when this endpoint closes: by close(), peer closure, or an error. */
@@ -99,11 +100,19 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
   });
   if (options.onClosed) life.onClose(options.onClosed);
   port.onmessage = (ev: MessageEvent<unknown>) => {
-    if (!life.closed) handler?.(ev.data);
+    if (life.closed) return;
+    try {
+      handler?.(ev.data);
+    } catch (error) {
+      life.close(protocolFailure(error));
+    }
   };
   port.onmessageerror = () => {
-    options.onMessageError?.();
-    life.close(new ActorTransportError("decode", "Actor channel decoding failed"));
+    try {
+      options.onMessageError?.();
+    } finally {
+      life.close(new ActorTransportError("decode", "Actor channel decoding failed"));
+    }
   };
   port.start?.();
   return {
@@ -121,7 +130,13 @@ export function wrapPort(port: MessagePort, options: ChannelOptions = {}): Chann
     close: life.close,
     send(message, transfer) {
       if (life.closed) return;
-      port.postMessage(message, transfer ? { transfer } : undefined);
+      try {
+        port.postMessage(message, transfer ? { transfer } : undefined);
+      } catch (cause) {
+        const error = new ActorTransportError("send", "Actor channel send failed", { cause });
+        life.close(error);
+        throw error;
+      }
     },
     onMessage(h) {
       handler = h;

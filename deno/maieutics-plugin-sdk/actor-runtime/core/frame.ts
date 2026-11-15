@@ -167,7 +167,7 @@ export function createDecoder(options: FrameOptions = {}): TransformStream<
     },
     // A half-frame at close (truncated stream) is an error, not a silent drop.
     flush(controller) {
-      if (stage === "payload" && payloadFilled < payloadLen) {
+      if (headerFilled > 0 || stage === "payload" && payloadFilled < payloadLen) {
         controller.error(new Error("truncated frame at stream end"));
         return;
       }

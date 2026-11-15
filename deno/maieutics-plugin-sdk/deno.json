@@ -31,12 +31,13 @@
     "check": "deno check .",
     "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --unstable-worker-options",
     "test:actor": "deno test --allow-read --allow-run --allow-env --allow-net actor-runtime/",
-    "test:actor:browser": "deno run --allow-run --allow-read --allow-write --allow-net=127.0.0.1 --allow-env actor-runtime/test_fixtures/browser_runner.ts"
+    "test:actor:browser": "deno run --allow-run --allow-read --allow-write --allow-net=127.0.0.1 --allow-env actor-runtime/test_fixtures/browser_runner.ts",
+    "check:publish": "deno run --allow-run actor-runtime/test_fixtures/publish_check.ts"
   },
   "publish": {
     "exclude": [
-      "actor-runtime/**/*_test.ts",
-      "actor-runtime/test_fixtures/"
+      "**/*_test.ts",
+      "actor-runtime/test_fixtures/**"
     ]
   }
 }

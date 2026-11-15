@@ -97,7 +97,7 @@ function encode(value: AsyncIterable<unknown>, ctx: EncodeContext): unknown {
   // iterator returns itself — so the same iterator is reused, no new state.
   const iterable = isAsyncIterable(value) ? value : toAsyncIterable(value as Iterable<unknown>);
   const { channel, peerPort, token } = openChannel(ctx);
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   const state = getState(ctx);
   // stopFn self-removes from the registry once the stream ends (done/error/
   // release), so the original iterable's object graph becomes collectable even
@@ -126,7 +126,7 @@ function decode(
     ctx.transport,
     placeholder.token as { __mux: "open"; ch: number },
   );
-  ctx.registry.registerChannel(channel);
+  ctx.registry.registerChannel(channel, ctx.transport);
   const state = getState(ctx);
   let failFn: () => void = () => {};
   let unregister: () => void = () => {};

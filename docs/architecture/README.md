@@ -249,6 +249,25 @@ transcript.
 - [ADR 0030](decisions/0030-subagent-runs.md): Tool-scoped subagent runs on the task plane
 - [ADR 0031](decisions/0031-deno-model-orchestration.md): The Deno model-orchestration surface
 - [ADR 0032](decisions/0032-content-provenance.md): Content provenance and the injection-defense pipeline
+- [ADR 0033](decisions/0033-plugin-scoped-mcp-data-file.md): Plugin-Scoped MCP Data File
+- [ADR 0034](decisions/0034-mcp-adjustment-chain.md): The MCP Adjustment Chain
+- [ADR 0035](decisions/0035-service-worker-lifecycle.md): Service-Worker Lifecycle for Plugin Workers
+- [ADR 0036](decisions/0036-plugin-triggers.md): Plugin Triggers — Runtime-Held Event Sources
+- [ADR 0037](decisions/0037-plugin-declaration-approval.md): Plugin Declaration Approval
+- [ADR 0038](decisions/0038-universal-custom-ui-framework.md): Universal Custom UI Framework
+- [ADR 0039](decisions/0039-skill-discovery-and-instruction-catalog.md): Skill Discovery and the Skill Instruction Catalog
+- [ADR 0040](decisions/0040-plugin-contributions.md): Plugin Contribution Framework
+- [ADR 0041](decisions/0041-mcp-prompt-references.md): MCP Prompt References — the Selection Loop Generalized to Server-Defined Prompts
+- [ADR 0042](decisions/0042-frontend-ide-capability-bridge.md): Frontend IDE Capability Bridge — Problems and Language Services Through a Generalized Reverse Request
+- [ADR 0043](decisions/0043-model-callable-plugin-tools.md): Model-Callable Plugin Tools
+- [ADR 0044](decisions/0044-tool-approval-gate.md): The Tool-Approval Gate
+- [ADR 0045](decisions/0045-process-sandbox-for-deno-children.md): Kernel-Sandboxed Process Spawns for Deno Children
+- [ADR 0046](decisions/0046-automatic-session-titles.md): Task title policies and session display metadata
+- [ADR 0047](decisions/0047-live-vue-output-components.md): Explicit live Vue output components
+- [ADR 0048](decisions/0048-default-live-assistant-vue.md): Default Vue rendering for completed live assistant answers
+- [ADR 0049](decisions/0049-system-prompt-extensions.md): System Prompt Extensions
+- [ADR 0050](decisions/0050-retire-custom-component-families.md): 0050 — Retire custom component families and use Vue
+- [ADR 0051](decisions/0051-plugin-scoped-http-fetch.md): Plugin-scoped HTTP and Vue Fetch
 - [ADR 0052](decisions/0052-product-owned-actor-runtime.md): Product-owned TypeScript Actor runtime
 - [ADR 0053](decisions/0053-browser-actor-connections.md): Browser-capable Actor connections
 

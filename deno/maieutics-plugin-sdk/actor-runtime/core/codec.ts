@@ -27,7 +27,7 @@
 export const CODEC_PLACEHOLDER_KEY = "__wCodec";
 
 import { type Channel, wrapPort } from "./channel.ts";
-import { createLifetime } from "./lifetime.ts";
+import { ActorTransportError, createLifetime } from "./lifetime.ts";
 import type { Transport } from "./transport.ts";
 
 export interface EncodeContext {
@@ -144,6 +144,7 @@ export class PayloadCodecRegistry {
   #order: Codec[] = [];
   #codecState = new Map<Codec, unknown>();
   #channels = new Set<Channel>();
+  #failed = false;
 
   register(codec: Codec): this {
     if (this.#codecs.has(codec.tag)) {
@@ -166,8 +167,18 @@ export class PayloadCodecRegistry {
    * Track a channel opened by a codec so failAll() closes it when the actor
    * dies. close() is idempotent, so a channel that already ended is a no-op.
    */
-  registerChannel(channel: Channel): void {
+  registerChannel(channel: Channel, transport?: Transport): void {
+    if (this.#failed) {
+      channel.close();
+      throw new ActorTransportError("closed", "Actor codec registry is closed");
+    }
     this.#channels.add(channel);
+    channel.onClose((reason) => {
+      this.#channels.delete(channel);
+      if (reason instanceof ActorTransportError && reason.code !== "closed") {
+        transport?.close(reason);
+      }
+    });
   }
 
   /**
@@ -195,6 +206,7 @@ export class PayloadCodecRegistry {
     transfer: Transferable[],
     transport?: Transport,
   ): unknown {
+    if (this.#failed) throw new ActorTransportError("closed", "Actor codec registry is closed");
     return this.#encodeWalk(
       value,
       transfer,
@@ -280,6 +292,7 @@ export class PayloadCodecRegistry {
 
   /** After receiving: rebuild placeholders into original values (deeply nested, expanded automatically). */
   decode(value: unknown, transport?: Transport): unknown {
+    if (this.#failed) throw new ActorTransportError("closed", "Actor codec registry is closed");
     return this.#decodeWalk(
       value,
       transport ?? defaultMessagePortTransport(),
@@ -352,26 +365,30 @@ export class PayloadCodecRegistry {
     return v;
   }
 
-  /** Actor terminated/crashed: ask every codec to clean up its resources (channels, listeners). */
+  /** Request all cleanup once without throwing; join() reports failures after all stages finish. */
   failAll(): void {
-    const errors: unknown[] = [];
+    if (this.#failed) return;
+    this.#failed = true;
+    const record = (error: unknown) => {
+      this.#taskErrorCount++;
+      if (this.#taskErrors.length < 128) this.#taskErrors.push(error);
+    };
     for (const codec of this.#order) {
       try {
         codec.onRegistryFail?.(this.#codecState.get(codec));
       } catch (error) {
-        errors.push(error);
+        record(error);
       }
     }
     for (const channel of this.#channels) {
       try {
         channel.close();
       } catch (error) {
-        errors.push(error);
+        record(error);
       }
     }
     this.#channels.clear();
     this.#codecState.clear();
-    if (errors.length) throw new AggregateError(errors, "Actor codec cleanup failed");
   }
 }
 

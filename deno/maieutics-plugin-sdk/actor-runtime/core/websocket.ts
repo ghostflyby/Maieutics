@@ -67,7 +67,15 @@ export function webSocketTransport(
     },
   });
   const onMessage = (event: MessageEvent) => {
-    if (byteLength(event.data) > maxMessage) {
+    const value: unknown = event.data;
+    if (
+      !(typeof value === "string" || value instanceof ArrayBuffer || value instanceof Uint8Array ||
+        value instanceof Blob)
+    ) {
+      transport.close(new ActorTransportError("protocol", "Unsupported Actor WebSocket message"));
+      return;
+    }
+    if (byteLength(value) > maxMessage) {
       transport.close(
         new ActorTransportError("capacity", "Actor WebSocket receive budget exceeded"),
       );

@@ -10,6 +10,7 @@ const marker = readBootstrapMarker();
 // Report that bootstrap completed, then never call serveWorker: the actor
 // handshake must time out and the owner must observe the death.
 (self as unknown as { postMessage(value: unknown): void }).postMessage({
+  type: "fixture:bootstrapped",
   phase: "no-handshake-bootstrapped",
   marker,
 });

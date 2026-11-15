@@ -1,5 +1,5 @@
 /** An explicitly owned, bidirectional Actor connection; no worker-global registry is used. */
-import type { Remote } from "../spawn.ts";
+import type { Remote } from "../spawn_worker.ts";
 import { type Codec, PayloadCodecRegistry } from "./codec.ts";
 import { connectActor } from "./connect.ts";
 import { type Channel, connectChannel, connectToken } from "./channel.ts";
@@ -10,15 +10,7 @@ import { callbackCodec } from "./codecs/callback.ts";
 import { attachLazyIterator } from "./lazy_iterator.ts";
 import { ActorTransportError, positiveLimit } from "./lifetime.ts";
 import { PROTOCOL_VERSION } from "./protocol.ts";
-import {
-  createRpcProxy,
-  makeRpcHandler,
-  requestFrame,
-  type RpcApi,
-  type RpcRequest,
-  type RpcResponse,
-  sendRpcResult,
-} from "./rpc.ts";
+import { createRpcProxy, makeRpcHandler, requestFrame, type RpcApi, sendRpcResult } from "./rpc.ts";
 import type { Transport } from "./transport.ts";
 
 export interface ActorConnectionOptions {
@@ -39,18 +31,7 @@ export interface ActorConnection<T extends { [K in keyof T]: RpcApi }> {
   actor<K extends keyof T & string>(name: K): Remote<T[K]> & Disposable;
   close(reason?: unknown): void;
 }
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
-function isRequest(value: unknown): value is RpcRequest {
-  return record(value) && Number.isSafeInteger(value.id) && Number(value.id) > 0 &&
-    typeof value.method === "string" && value.method.length <= 256 && Array.isArray(value.args);
-}
-function isResponse(value: unknown): value is RpcResponse {
-  return record(value) && Number.isSafeInteger(value.id) && Number(value.id) > 0 &&
-    (value.ok === true || value.ok === false && record(value.error) &&
-        typeof value.error.name === "string" && typeof value.error.message === "string");
-}
+import { isRequest, isResponse, record } from "./validation.ts";
 
 /** Connect symmetric peers over an already established, host-authorized transport. */
 export function createActorConnection<T extends { [K in keyof T]: RpcApi }>(

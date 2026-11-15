@@ -53,6 +53,12 @@ export type ResponseFrame =
   | { type: "response"; id: number; ok: false; error: SerializedError };
 
 export type Frame =
+  /** Worker → owner: terminal runtime failure before the worker closes itself. */
+  | {
+    type: "__actor-failed";
+    error: SerializedError;
+    code: import("./lifetime.ts").ActorTransportError["code"];
+  }
   /** Sent by the worker once the module is loaded and its API is ready; spawn() waits for it.
    *  codecs is the worker-side registered codec tag list, checked against the host's.
    *  kind is the transport kind (messageport / message / framed); a mismatch with

@@ -4,7 +4,12 @@ Scratch verification for migrating the Deno REPL under the plugin extension host
 cross-process APIs. **Temporary, on a research branch — not part of the product module graph** (not
 embedded, not wired into the workspace `deno.json`).
 
-## Findings (verified against `jsr:@ghostflyby/worker-actor@0.4.0`, published 2026-08-24)
+## Findings
+
+The original experiments used `@ghostflyby/worker-actor` 0.4.0. The scripts now resolve Actor
+imports to the product-owned runtime under `../maieutics-plugin-sdk/actor-runtime/`, imported from
+upstream 0.7.0 and maintained with internal protocol 2 (ADRs 0052 and 0053). The table records the
+original experiments; rerun the scripts against the local runtime when relying on a result.
 
 | Experiment                                                                             | File                  | Result                                                                  |
 | -------------------------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------- |
@@ -23,12 +28,10 @@ embedded, not wired into the workspace `deno.json`).
   `spawnProcess` does **not** expose the transport (small library gap for the host-connects-token
   pattern).
 - Remote-refs (capability sharing) work across processes in **both directions** (verified with the
-  library's `examples/remote_ref/ref_codec.ts` pattern).
+  runtime's `test_fixtures/remote_ref/ref_codec.ts` pattern).
 
 ## Notes
 
-- `deno.json` here pins `minimumDependencyAge: 0` because 0.4.0 was published the same day; not
-  needed once the version is older than 24h.
 - The directory is NOT in `deno/deno.json` workspace; run each `*_main.ts` with
   `--allow-read --allow-run --allow-env`.
 - Reference codec copied from worker-actor `examples/remote_ref/ref_codec.ts` for self-containment.

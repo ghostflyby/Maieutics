@@ -82,6 +82,27 @@ jobs:
         working-directory: deno
         run: deno task test
 
+      - name: Verify SDK publish contents
+        working-directory: deno/maieutics-plugin-sdk
+        run: deno task check:publish
+
+      # Chrome for Testing publishes immutable, versioned archives.
+      # https://github.com/GoogleChromeLabs/chrome-for-testing
+      - name: Install pinned Actor conformance browser
+        env:
+          ACTOR_CHROME_VERSION: "157.0.8103.78"
+        run: |
+          browser_root="$RUNNER_TEMP/maieutics-actor-chrome"
+          curl --fail --location --retry 3 \
+            "https://storage.googleapis.com/chrome-for-testing-public/$ACTOR_CHROME_VERSION/linux64/chrome-linux64.zip" \
+            --output "$RUNNER_TEMP/maieutics-actor-chrome.zip"
+          unzip -q "$RUNNER_TEMP/maieutics-actor-chrome.zip" -d "$browser_root"
+          browser_path="$browser_root/chrome-linux64/chrome"
+          browser_version=$("$browser_path" --version)
+          echo "$browser_version"
+          [[ "$browser_version" == *" $ACTOR_CHROME_VERSION"* ]]
+          echo "MAIEUTICS_ACTOR_BROWSER=$browser_path" >> "$GITHUB_ENV"
+
       - name: Actor runtime in a real browser
         working-directory: deno/maieutics-plugin-sdk
         run: deno task test:actor:browser

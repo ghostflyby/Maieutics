@@ -31,6 +31,7 @@ import {
   PROTOCOL_VERSION,
   type RequestFrame,
   type ResponseFrame,
+  serializeError,
 } from "./core/protocol.ts";
 import { type Codec, PayloadCodecRegistry } from "./core/codec.ts";
 import { type Channel, connectChannel, connectToken } from "./core/channel.ts";
@@ -54,6 +55,8 @@ import { errorCodec } from "./core/codecs/error.ts";
 import { abortSignalCodec } from "./core/codecs/abort_signal.ts";
 import { callbackCodec } from "./core/codecs/callback.ts";
 import type { TransferReturn } from "./core/transfer.ts";
+import { frameRecord, isRequest, isResponse, protocolFailure } from "./core/validation.ts";
+import { ActorTransportError } from "./core/lifetime.ts";
 // Deno types `self` as Window by default; in a worker script it is actually a
 // DedicatedWorkerGlobalScope. Only the members used are declared here, so we
 // don't depend on lib.webworker.
@@ -61,6 +64,7 @@ declare const self: {
   postMessage(message: unknown, options?: { transfer?: Transferable[] }): void;
   onmessage: ((ev: MessageEvent<Frame>) => void) | null;
   close(): void;
+  onmessageerror: ((ev: MessageEvent<unknown>) => void) | null;
 };
 
 /**
@@ -129,6 +133,43 @@ export interface ServeWorkerOptions {
   onLink?: (link: LinkHandle) => void;
 }
 
+/** Completion of an actor-side runtime, including codec cleanup failures. */
+export interface RuntimeHandle {
+  readonly completion: Promise<void>;
+  close(reason?: unknown): void;
+}
+
+function ownRuntime(
+  registry: PayloadCodecRegistry,
+  transport: Transport,
+  release: () => void,
+  onFailure?: (reason: ActorTransportError) => void,
+): RuntimeHandle {
+  const terminal = Promise.withResolvers<void>();
+  transport.onClose((reason) => {
+    registry.failAll();
+    try {
+      if (reason instanceof ActorTransportError && reason.code !== "closed") onFailure?.(reason);
+    } catch (error) {
+      registry.trackTask(Promise.reject(error));
+    }
+    try {
+      release();
+    } catch (error) {
+      registry.trackTask(Promise.reject(error));
+    } finally {
+      terminal.resolve();
+    }
+  });
+  const completion = terminal.promise.then(async () => {
+    const results = await Promise.allSettled([registry.join(), transport.completion]);
+    const errors = results.flatMap((r) => r.status === "rejected" ? [r.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Actor runtime cleanup failed");
+  });
+  void completion.catch(() => {}); // Preserved on RuntimeHandle for the owning host.
+  return { completion, close: transport.close };
+}
+
 /**
  * Shared RPC runtime over a Transport main channel. Handles request
  * frames (decode args → await → encode result), reference-acquire control
@@ -141,7 +182,8 @@ function createRuntime(
   options: ServeWorkerOptions,
   transport: Transport,
   close: () => void,
-): void {
+  onFailure?: (reason: ActorTransportError) => void,
+): RuntimeHandle {
   const registry = new PayloadCodecRegistry();
   for (const codec of options.codecs ?? []) registry.register(codec);
   for (
@@ -166,8 +208,13 @@ function createRuntime(
     options.transferReturn,
   );
 
-  transport.onMessage(async (ev) => {
-    const frame = ev.data as Frame;
+  const owner = ownRuntime(registry, transport, close, onFailure);
+  const dispatch = async (ev: { data: unknown }): Promise<void> => {
+    const checked = frameRecord(ev.data);
+    if (checked.type === "request" && !isRequest(checked)) {
+      throw new ActorTransportError("protocol", "Invalid Actor request frame");
+    }
+    const frame = checked as unknown as Frame;
     if (frame.type === "request") {
       const res = await mainHandler(frame);
       sendRpcResult(
@@ -180,7 +227,7 @@ function createRuntime(
       // Direct link to a peer worker, bypassing the main thread. Values and
       // RPC calls on it are encoded/decoded through this worker's registry.
       const channel = connectChannel(frame.port);
-      registry.registerChannel(channel); // failAll closes every open link too
+      registry.registerChannel(channel, transport); // failAll closes every open link too
       links.set(frame.label, channel);
       let valueHandler: ((value: unknown) => void) | undefined;
       // Peer-callable surface: defaults to the main-thread api; serve() overrides.
@@ -206,16 +253,29 @@ function createRuntime(
           return undefined;
         },
       });
+      channel.onClose((reason) => {
+        proxy.rejectAll(reason);
+        registry.unregisterChannel(channel);
+        links.delete(frame.label);
+      });
       channel.onMessage((message) => {
-        const linkFrame = message as LinkFrame;
+        const checked = frameRecord(message);
+        if (
+          checked.type === "request" && !isRequest(checked) ||
+          checked.type === "response" && !isResponse(checked)
+        ) {
+          throw new ActorTransportError("protocol", "Invalid Actor link RPC frame");
+        }
+        const linkFrame = checked as unknown as LinkFrame;
         if (linkFrame.type === "__link-value") {
           valueHandler?.(registry.decode(linkFrame.value));
         } else if (linkFrame.type === "request") {
-          void linkHandler(linkFrame).then((res) =>
-            sendRpcResult(
-              res,
-              (result, transfer) => channel.send(result, transfer),
-            )
+          registry.trackTask(
+            linkHandler(linkFrame).then((res) => {
+              if (!channel.closed) {
+                sendRpcResult(res, (result, transfer) => channel.send(result, transfer));
+              }
+            }).catch((error) => transport.close(protocolFailure(error))),
           );
         } else if (linkFrame.type === "response") {
           proxy.deliver(linkFrame);
@@ -269,9 +329,11 @@ function createRuntime(
       return;
     }
     if (frame.type === "dispose") {
-      registry.failAll();
-      close();
+      transport.close();
     }
+  };
+  transport.onMessage((ev) => {
+    registry.trackTask(dispatch(ev).catch((error) => transport.close(protocolFailure(error))));
   });
 
   // Module loaded, API ready — spawn() wakes up from pending on this frame.
@@ -281,34 +343,38 @@ function createRuntime(
     codecs: registry.tags,
     kind: transport.kind,
   });
+  return owner;
 }
 
 /** Worker runtime: main channel = self.postMessage, links over transferred ports. */
 export function serveWorker(
   api: WorkerApi,
   options: ServeWorkerOptions = {},
-): void {
+): RuntimeHandle {
   // self is a DedicatedWorkerGlobalScope: wrap it as a MessagePort-shaped
   // source so fromMessagePort yields a messageport-type Transport — the same
   // abstraction every actor channel runs on (openChannel hands transferred
   // ports, exactly like the main-thread Worker path).
   const port = {
     onmessage: null as ((ev: MessageEvent<unknown>) => void) | null,
+    onmessageerror: null as ((ev: MessageEvent<unknown>) => void) | null,
     postMessage(
       message: unknown,
       opts?: { transfer?: Transferable[] },
     ): void {
       self.postMessage(message, opts);
     },
-    close(): void {
-      self.close();
-    },
   } as unknown as MessagePort;
   const transport = fromMessagePort(port);
   // Bridge the worker's inbound messages into the fake port's onmessage
   // (fromMessagePort reads the port's onmessage).
   self.onmessage = (ev) => port.onmessage?.(ev);
-  createRuntime(api, options, transport, () => self.close());
+  self.onmessageerror = (ev) => port.onmessageerror?.(ev);
+  return createRuntime(api, options, transport, () => self.close(), (reason) => {
+    self.postMessage(
+      { type: "__actor-failed", code: reason.code, error: serializeError(reason) } satisfies Frame,
+    );
+  });
 }
 
 /**
@@ -325,7 +391,7 @@ export function serveWorker(
 export function serveProcess(
   api: WorkerApi,
   options: Omit<ServeWorkerOptions, "onLink"> = {},
-): void {
+): RuntimeHandle {
   // node:child_process environment: process.send / process.on("message").
   const proc = (globalThis as { process?: unknown }).process as {
     send(message: unknown): void;
@@ -343,7 +409,7 @@ export function serveProcess(
   // Wire the IPC channel into the message-kind transport: inbound IPC messages
   // feed the Mux deliver.
   proc.on("message", (message) => transport.deliver(message));
-  createRuntime(
+  return createRuntime(
     api,
     options,
     transport,
@@ -369,7 +435,7 @@ export function serveProcess(
 export function serveNode(
   rpcs: Record<string, WorkerApi>,
   options: Omit<ServeWorkerOptions, "onLink"> = {},
-): void {
+): RuntimeHandle {
   // Build a registry with the same codec setup as the single-actor runtimes.
   const registry = new PayloadCodecRegistry();
   for (const codec of options.codecs ?? []) registry.register(codec);
@@ -414,7 +480,7 @@ export function serveNode(
       channel.close();
       return;
     }
-    registry.registerChannel(channel);
+    registry.registerChannel(channel, transport);
     actorChannels.add(channel);
     const handler = makeRpcHandler(
       rpcs[name],
@@ -422,14 +488,20 @@ export function serveNode(
       transport,
       options.transferReturn,
     );
+    channel.onClose(() => actorChannels.delete(channel));
     channel.onMessage((message) => {
-      const frame = message as Frame;
+      const checked = frameRecord(message);
+      if (checked.type === "request" && !isRequest(checked)) {
+        throw new ActorTransportError("protocol", "Invalid Actor node request frame");
+      }
+      const frame = checked as unknown as Frame;
       if (frame.type === "request") {
-        void handler(frame).then((res) =>
-          sendRpcResult(
-            res,
-            (result, transfer) => channel.send(result, transfer),
-          )
+        registry.trackTask(
+          handler(frame).then((res) => {
+            if (!channel.closed) {
+              sendRpcResult(res, (result, transfer) => channel.send(result, transfer));
+            }
+          }).catch((error) => transport.close(protocolFailure(error))),
         );
       } else if (frame.type === "dispose") {
         channel.close();
@@ -438,8 +510,12 @@ export function serveNode(
     });
   };
 
+  const owner = ownRuntime(registry, transport, () => {
+    for (const ch of [...actorChannels]) ch.close();
+    actorChannels.clear();
+  });
   transport.onMessage((ev) => {
-    const frame = ev.data as Frame;
+    const frame = frameRecord(ev.data) as unknown as Frame;
     if (frame.type === "handshake") {
       // Peer-initiated? No — the node announces itself. Handled below.
       return;
@@ -452,9 +528,6 @@ export function serveNode(
       return;
     }
     if (frame.type === "dispose") {
-      registry.failAll();
-      for (const ch of actorChannels) ch.close();
-      actorChannels.clear();
       transport.close();
     }
   });
@@ -468,4 +541,5 @@ export function serveNode(
     kind: transport.kind,
     actors: names,
   });
+  return owner;
 }

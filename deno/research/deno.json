@@ -8,6 +8,5 @@
     "@ghostflyby/worker-actor/codecs": "../maieutics-plugin-sdk/actor-runtime/codecs.ts",
     "@maieutics/plugin-sdk/actor/browser": "../maieutics-plugin-sdk/actor-runtime/browser.ts",
     "@ghostflyby/worker-actor/browser": "../maieutics-plugin-sdk/actor-runtime/browser.ts"
-  },
-  "minimumDependencyAge": 0
+  }
 }

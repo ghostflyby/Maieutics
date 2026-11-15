@@ -2,6 +2,7 @@
 import { ActorDiedError, RemoteError, type SerializedError, serializeError } from "./protocol.ts";
 import { ActorTransportError } from "./lifetime.ts";
 import type { Channel } from "./channel.ts";
+import { frameRecord, isSerializedError } from "./validation.ts";
 
 type StreamFrame =
   | { type: "start" | "next" | "release" }
@@ -28,15 +29,25 @@ export function startStreamProducer(
   const stop = (() => {
     if (stopped) return;
     stopped = true;
-    channel.close();
+    const errors: unknown[] = [];
+    try {
+      channel.close();
+    } catch (error) {
+      errors.push(error);
+    }
     const cleanup = async () => {
       try {
         await iterator?.return?.();
-        onStopped?.();
-        finished.resolve();
       } catch (error) {
-        finished.reject(error);
+        errors.push(error);
       }
+      try {
+        onStopped?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length) finished.reject(new AggregateError(errors, "Actor stream cleanup failed"));
+      else finished.resolve();
     };
     void cleanup();
   }) as StreamProducerStop;
@@ -57,22 +68,30 @@ export function startStreamProducer(
         channel.send({ type: "item", value: result.value } satisfies StreamFrame);
       }
     } catch (error) {
-      if (!stopped) {
-        channel.send({ type: "error", error: serializeError(error) } satisfies StreamFrame);
+      try {
+        if (!stopped) {
+          channel.send({ type: "error", error: serializeError(error) } satisfies StreamFrame);
+        }
+      } finally {
+        stop();
       }
-      stop();
     } finally {
       running = false;
     }
   };
   channel.onClose(stop);
   channel.onMessage((message) => {
-    const frame = message as StreamFrame;
+    const frame = frameRecord(message);
     if (frame.type === "release") {
       stop();
       return;
     }
-    if (frame.type !== "start" && frame.type !== "next") return;
+    if (frame.type !== "start" && frame.type !== "next") {
+      if (["item", "done", "error"].includes(frame.type as string)) {
+        throw new ActorTransportError("protocol", "Invalid Actor stream producer frame");
+      }
+      return;
+    }
     if (credits >= 128) {
       channel.close(new ActorTransportError("capacity", "Actor stream demand budget exceeded"));
       return;
@@ -115,16 +134,22 @@ export function createRemoteIterable(
       if (reason !== undefined) waiter.reject(reason);
       else waiter.resolve({ done: true, value: undefined });
     }
-    channel.close(reason);
-    detach();
+    try {
+      channel.close(reason);
+    } finally {
+      detach();
+    }
   };
   channel.onClose((reason) => {
     if (!closed) finish(reason ?? new ActorDiedError());
   });
   channel.onMessage((message) => {
     if (closed) return;
-    const frame = message as StreamFrame;
+    const frame = frameRecord(message);
     if (frame.type === "item") {
+      if (!Object.hasOwn(frame, "value")) {
+        throw new ActorTransportError("protocol", "Invalid Actor stream item frame");
+      }
       const waiter = waiters.shift();
       if (!waiter) {
         finish(new ActorTransportError("protocol", "Actor stream item arrived without demand"));
@@ -132,7 +157,14 @@ export function createRemoteIterable(
       }
       waiter.resolve({ done: false, value: frame.value });
     } else if (frame.type === "done") finish();
-    else if (frame.type === "error") finish(new RemoteError(frame.error));
+    else if (frame.type === "error") {
+      if (!isSerializedError(frame.error)) {
+        throw new ActorTransportError("protocol", "Invalid Actor stream error frame");
+      }
+      finish(new RemoteError(frame.error));
+    } else if (["start", "next", "release"].includes(frame.type as string)) {
+      throw new ActorTransportError("protocol", "Invalid Actor stream consumer frame");
+    }
   });
   const iterable: AsyncIterable<unknown> = {
     [Symbol.asyncIterator]() {

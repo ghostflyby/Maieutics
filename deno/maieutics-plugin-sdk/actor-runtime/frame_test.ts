@@ -92,3 +92,15 @@ Deno.test("encodeFrame throws when payload exceeds maxFrame", async () => {
     RangeError,
   );
 });
+
+for (const length of [1, 2, 3]) {
+  Deno.test(`decoder rejects a truncated ${length}-byte header`, async () => {
+    const decoder = createDecoder();
+    const output = readAll(decoder.readable);
+    const failed = assertRejects(() => output, Error, "truncated frame");
+    const writer = decoder.writable.getWriter();
+    await writer.write(new Uint8Array(length));
+    await assertRejects(() => writer.close(), Error, "truncated frame");
+    await failed;
+  });
+}

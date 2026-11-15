@@ -14,7 +14,10 @@ explicit connection owner instead of the Worker-global registry.
 Expose `@maieutics/plugin-sdk/actor/browser` for browser bundles. Keep shared MessagePort, Mux,
 RPC, codec, and connection primitives free of static host adapter dependencies. Move V8 byte
 framing and the existing host WebSocket encoding into `core/transport_v8.ts`; preserve their host
-entry exports. The browser entry supports native Workers and MessageChannel as well as network
+entry exports. Worker creation lives in `spawn_worker.ts`; Deno process creation lives in the
+host-only `spawn_process.ts`, with `spawn.ts` retaining the host facade. The browser module graph
+must contain neither process creation nor Node adapters, without requiring tree-shaking.
+The browser entry supports native Workers and MessageChannel as well as network
 connections. Publication and embedded-resource ownership stay with the SDK.
 
 `webSocketTransport` adopts an already OPEN WebSocket and owns its message/error/close listeners
@@ -49,13 +52,29 @@ bytes, pending calls, and WebSocket frame/buffer bytes. Decode or send failure a
 overflow terminate the owner with a typed `ActorTransportError`; messages are not silently lost
 under pressure. Result decoding rejects the correlated call before propagating the fatal error.
 Generator cleanup has an observed completion and remains joinable through the codec registry.
+`failAll()` requests every codec/channel cleanup once and records failures without throwing;
+`join()` reports the aggregate after cleanup. Worker/process handles expose `completion`, and
+repeated `dispose()` shares that completion. Actor-side runtime handles expose cleanup completion
+too. Send failure closes the owner, rejects pending/future calls, and terminates an owned Worker
+or child regardless of cleanup failures. A Worker runtime sends a terminal `__actor-failed`
+control frame with its typed transport cause before closing itself, so result-send failures also
+settle the owner's pending calls (Worker `close()` alone does not notify the parent). Worker endpoints use their actual structured-clone
+surface; only MessagePorts are closed via `close()`, while Worker termination belongs to the owner.
+
+AbortSignal channels use a terminal `release` acknowledgment after aborted status or abort delivery.
+Both endpoints unregister on teardown, including pre-aborted signals. Codec channels validate
+frame records and known payload shapes; malformed frames and dispatch failures carry typed
+protocol causes to the connection owner. Unknown future control types remain tolerated.
 
 ## Verification and remaining integration
 
 Conformance runs the same sources in real headless Chromium against a local Deno WebSocket peer:
 typed binary RPC, browser-callable surfaces, callbacks, slow-consumer streaming, cancellation,
 remote errors, disconnect isolation, MessageChannel, and browser Workers. The runner checks that
-bundles contain no Node/Deno host dependencies and owns its process, profile, sockets, and server.
+browser module graph and bundles contain no host dependencies and owns its process, profile,
+sockets, and server. CI installs Chrome for Testing at a pinned version and checks its version;
+runner cleanup has one total budget with SIGTERM-to-SIGKILL escalation. The CI-only browser
+sandbox flag applies only to owned loopback fixtures, not product child permissions.
 Focused tests control startup cancellation, decode failure, admission saturation, pending channel
 binding/closure, RPC failure correlation, and cleanup errors through explicit completion signals.
 

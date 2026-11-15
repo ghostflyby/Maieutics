@@ -1,5 +1,6 @@
 /** Web-standard Actor transports. V8 byte framing lives in transport_v8.ts. */
 import { type Channel, type ChannelOptions, wrapPort } from "./channel.ts";
+import { protocolFailure } from "./validation.ts";
 import {
   ActorTransportError,
   createLifetime,
@@ -31,8 +32,17 @@ export type MuxFrame =
   | { __mux: "open" | "close"; ch: number }
   | { __mux: "data"; ch: number; value: unknown };
 
+/** The structured-clone surface shared by MessagePort, Worker and worker globals. */
+export interface MessageEndpoint {
+  onmessage: ((ev: MessageEvent<unknown>) => void) | null;
+  onmessageerror: ((ev: MessageEvent<unknown>) => void) | null;
+  postMessage(message: unknown, options?: { transfer?: Transferable[] }): void;
+  close?(): void;
+  start?(): void;
+}
+
 /** Native structured-clone transport; the owning host supplies peer-death detection. */
-export function fromMessagePort(port: MessagePort, options: TransportOptions = {}): Transport {
+export function fromMessagePort(port: MessageEndpoint, options: TransportOptions = {}): Transport {
   const life = createLifetime();
   const channels = new Set<Channel>();
   const buffered: TransportMessage[] = [];
@@ -54,11 +64,23 @@ export function fromMessagePort(port: MessagePort, options: TransportOptions = {
   life.onClose((reason) => {
     port.onmessage = null;
     port.onmessageerror = null;
-    port.close();
-    for (const channel of [...channels]) channel.close(reason);
+    const errors: unknown[] = [];
+    for (
+      const close of [
+        () => port.close?.(),
+        ...[...channels].map((channel) => () => channel.close(reason)),
+        ...buffered.flatMap((frame) => frame.ports.map((peer) => () => peer.close())),
+      ]
+    ) {
+      try {
+        close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     channels.clear();
-    for (const frame of buffered) for (const peer of frame.ports) peer.close();
     buffered.length = 0;
+    if (errors.length) throw new AggregateError(errors, "Actor MessagePort cleanup failed");
   });
   if (options.onClosed) life.onClose(options.onClosed);
   port.onmessage = (ev: MessageEvent<unknown>) => {
@@ -74,7 +96,7 @@ export function fromMessagePort(port: MessagePort, options: TransportOptions = {
         buffered.push({ data: ev.data, ports: ev.ports });
       }
     } catch (error) {
-      life.close(error);
+      life.close(protocolFailure(error));
     }
   };
   port.onmessageerror = () =>
@@ -91,10 +113,11 @@ export function fromMessagePort(port: MessagePort, options: TransportOptions = {
     onClose: life.onClose,
     close: life.close,
     send(frame, transfer) {
-      if (life.closed) return;
+      if (life.closed) throw life.reason;
       try {
         port.postMessage(frame, transfer ? { transfer } : undefined);
-      } catch (error) {
+      } catch (cause) {
+        const error = new ActorTransportError("send", "Actor MessagePort send failed", { cause });
         life.close(error);
         throw error;
       }
@@ -103,7 +126,13 @@ export function fromMessagePort(port: MessagePort, options: TransportOptions = {
       handler = h;
       while (buffered.length && !life.closed) {
         const next = buffered.shift();
-        if (next) h(next);
+        if (next) {
+          try {
+            h(next);
+          } catch (error) {
+            life.close(protocolFailure(error));
+          }
+        }
       }
     },
     onChannel(h) {
@@ -148,7 +177,10 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
     if (life.closed) return;
     try {
       write(frame);
-    } catch (error) {
+    } catch (cause) {
+      const error = cause instanceof ActorTransportError
+        ? cause
+        : new ActorTransportError("send", "Actor transport send failed", { cause });
       life.close(error);
       throw error;
     }
@@ -190,7 +222,11 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
         inbound = h;
         while (messages.length && !channelLife.closed) {
           bufferedCount--;
-          h(messages.shift());
+          try {
+            h(messages.shift());
+          } catch (error) {
+            life.close(protocolFailure(error));
+          }
         }
       },
       deliver(value) {
@@ -209,12 +245,20 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
     return channel;
   };
   life.onClose((reason) => {
-    for (const channel of [...channels.values()]) channel.close(reason);
+    const errors: unknown[] = [];
+    for (const channel of [...channels.values()]) {
+      try {
+        channel.close(reason);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     channels.clear();
     pending.clear();
     orphaned.clear();
     buffered.length = 0;
     bufferedCount = 0;
+    if (errors.length) throw new AggregateError(errors, "Actor Mux cleanup failed");
   });
   if (options.onClosed) life.onClose(options.onClosed);
   const deliver = (frame: unknown): void => {
@@ -256,7 +300,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
         bufferedCount++;
       }
     } catch (error) {
-      life.close(error);
+      life.close(protocolFailure(error));
     }
   };
   return {
@@ -280,7 +324,7 @@ export function createMux(write: (frame: unknown) => void, options: TransportOpt
           try {
             h(next);
           } catch (error) {
-            life.close(error);
+            life.close(protocolFailure(error));
           }
         }
       }
@@ -408,7 +452,9 @@ export function fromNodeIpc(
   return messageTransport({
     ...options,
     send(message) {
-      send(message);
+      if (!send(message)) {
+        throw new ActorTransportError("send", "Actor IPC send failed or exceeded its queue budget");
+      }
     },
   });
 }

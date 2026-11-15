@@ -39,6 +39,9 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
     await Deno.writeTextFile(
       Path.join(dir, "probe_static_aliases.ts"),
       [
+        `import { spawn } from "@maieutics/plugin-sdk/actor";`,
+        `import { PayloadCodecRegistry } from "@maieutics/plugin-sdk/actor/codec";`,
+        `console.log("static local Actor:", typeof spawn === "function" && typeof PayloadCodecRegistry === "function" ? "OK" : "BROKEN");`,
         `import { concat } from "bytes10/concat";`,
         `import { basename } from "pathcare/basename";`,
         `console.log("static alias bytes@1.0:", typeof concat === "function" ? "OK" : "BROKEN");`,
@@ -55,6 +58,8 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
         `});`,
         `await import("./probe_static_aliases.ts");`,
         `const probes = [`,
+        `  ["dynamic local Actor", () => import("@maieutics/plugin-sdk/actor")],`,
+        `  ["dynamic local Actor codec", () => import("@maieutics/plugin-sdk/actor/codec")],`,
         `  ["dynamic alias bytes@1.0", () => import("bytes10/concat")],`,
         `  ["dynamic alias bytes@~1.0", () => import("btilde/concat")],`,
         `  ["dynamic alias path@^1", () => import("pathcare/basename")],`,
@@ -82,6 +87,9 @@ Deno.test("hooked resolution matrix: process-map aliases and direct jsr/npm spec
     const output = await command.output();
     const stdout = new TextDecoder().decode(output.stdout);
     const labels = [
+      "static local Actor",
+      "dynamic local Actor",
+      "dynamic local Actor codec",
       "static alias bytes@1.0",
       "static alias path@^1",
       "dynamic alias bytes@1.0",

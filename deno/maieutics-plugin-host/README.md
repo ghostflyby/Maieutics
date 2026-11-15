@@ -8,10 +8,11 @@ point calls over the spawned worker-actor surfaces.
 The plugin SDK lives in `../maieutics-plugin-sdk`; the SDK and host are embedded in the kernel and
 materialized per process, so versions are lockstep.
 
-The host process runs with a materialized root `deno.json` whose `imports` entry maps
-`@ghostflyby/worker-actor` to the pinned JSR package and whose `links` entry maps
-`jsr:@maieutics/plugin-sdk` to the local materialized SDK package. Plugins therefore import the SDK
-with a stable specifier (`import "@maieutics/plugin-sdk"` or
+The host process runs with a materialized root `deno.json`. Its eight reserved Actor aliases
+(`@maieutics/plugin-sdk/actor` and legacy `@ghostflyby/worker-actor`, each with the base, `/codec`,
+`/codecs`, and `/browser` entry) map to the local SDK's `actor-runtime/` sources (ADR 0052). Its
+`links` entry maps `jsr:@maieutics/plugin-sdk` to that same materialized SDK package. Plugins
+therefore import the SDK with a stable specifier (`import "@maieutics/plugin-sdk"` or
 `import "jsr:@maieutics/plugin-sdk@^0.3"`) and Deno resolves it to the kernel-provided local copy;
 this keeps JSR-distributed plugins working without a registry round trip.
 

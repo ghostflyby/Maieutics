@@ -148,6 +148,33 @@ export async function runBrowserConformance(
       await workerActor.dispose();
     }
     passed.push("native browser Worker actors");
+    for (const mode of ["send", "callback result", "worker result"]) {
+      const source = new Worker(workerUrl, { type: "module" });
+      const actor = await spawn<typeof WorkerModule.rpc>(source);
+      try {
+        const started = Promise.withResolvers<void>();
+        const pending = actor.pending(() => {
+          started.resolve();
+        });
+        const settled = pending.then(() => false, () => true);
+        await started.promise;
+        const failing = mode === "send"
+          ? actor.clone(Symbol("not cloneable"))
+          : mode === "callback result"
+          ? actor.invoke(() => Symbol("not cloneable"))
+          : actor.uncloneableResult();
+        assert(await failing.then(() => false, () => true), `${mode} must reject`);
+        assert(await settled, `${mode} must reject other pending calls`);
+        assert(
+          await actor.clone("future").then(() => false, () => true),
+          `${mode} must reject future calls`,
+        );
+        passed.push(`native Worker ${mode} failure settles its owner`);
+      } finally {
+        await actor.dispose();
+      }
+    }
+
     return passed;
   } finally {
     first.connection.close();

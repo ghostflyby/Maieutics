@@ -118,6 +118,26 @@ export interface FormRenderer {
   dispose(): void;
 }
 
+/** Host-injected message delivery; the Actor scope starts only when a live form mounts. */
+export interface ActorFormRendererOptions {
+  postMessage(message: unknown): void | PromiseLike<unknown>;
+  log?(message: string): void;
+}
+
+/** Shared Vue forms connected to the embedding host through a generation-bound Actor capability. */
+export interface ActorFormRenderer {
+  render(id: string, value: unknown, element: HTMLElement): void;
+  receive(message: unknown): void;
+  disposeOutput(id?: string): void;
+  /** Unmount all forms, cancel calls and join owned transport work; terminal and idempotent. */
+  dispose(): Promise<void>;
+}
+
+/** Create a browser form scope; importing or constructing it starts no I/O. */
+export declare function createActorFormRenderer(
+  options: ActorFormRendererOptions,
+): ActorFormRenderer;
+
 /** Native HTTP semantics with paths resolved within the host-authorized plugin root. */
 export type PluginFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -145,5 +165,9 @@ export interface FormMessage {
 
 /** Create the built-in Vue form renderer; the caller owns transport subscriptions. */
 export function createFormRenderer(
-  options: { sendMessage(message: FormMessage): void },
+  options: {
+    sendMessage(message: FormMessage): void;
+    /** Optional host admission guard; retired attachments cannot share or acquire live state. */
+    activeView?(viewId: string): boolean;
+  },
 ): FormRenderer;

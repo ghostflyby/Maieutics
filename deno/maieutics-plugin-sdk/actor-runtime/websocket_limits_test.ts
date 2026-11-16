@@ -6,6 +6,7 @@ class Socket extends EventTarget {
   readyState = 1;
   bufferedAmount = 0;
   closes = 0;
+  sent: unknown[] = [];
   listeners = new Map<string, EventListenerOrEventListenerObject>();
   override addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
     this.listeners.set(type, listener);
@@ -20,11 +21,32 @@ class Socket extends EventTarget {
     this.listeners.delete(type);
     super.removeEventListener(type, listener);
   }
-  send(_message: unknown): void {}
+  send(message: unknown): void {
+    this.sent.push(message);
+  }
   close(): void {
     this.readyState = 3;
     this.closes++;
   }
+}
+
+for (const shared of [false, true]) {
+  Deno.test(`WebSocket encodes ${shared ? "shared" : "ordinary"} buffer views as native binary`, async () => {
+    const socket = new Socket();
+    const buffer = shared ? new SharedArrayBuffer(8) : new ArrayBuffer(8);
+    const bytes = new Uint8Array(buffer, 2, 3);
+    bytes.set([0, 128, 255]);
+    const transport = webSocketTransport(socket as unknown as WebSocket, {
+      codec: { encode: () => bytes, decode: (value) => value },
+    });
+    transport.send({});
+    assertInstanceOf(socket.sent[0], Uint8Array);
+    assertEquals([...socket.sent[0]], [0, 128, 255]);
+    assertInstanceOf(socket.sent[0].buffer, ArrayBuffer);
+    if (!shared) assertEquals(socket.sent[0].buffer, buffer, "Ordinary binary views need no copy");
+    transport.close();
+    await transport.completion;
+  });
 }
 
 for (const mode of ["receive", "send", "buffered", "decode", "malformed"] as const) {

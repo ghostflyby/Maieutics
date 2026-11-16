@@ -270,6 +270,7 @@ transcript.
 - [ADR 0051](decisions/0051-plugin-scoped-http-fetch.md): Plugin-scoped HTTP and Vue Fetch
 - [ADR 0052](decisions/0052-product-owned-actor-runtime.md): Product-owned TypeScript Actor runtime
 - [ADR 0053](decisions/0053-browser-actor-connections.md): Browser-capable Actor connections
+- [ADR 0054](decisions/0054-notebook-form-actor-attachments.md): Notebook form Actor attachments
 
 ## Explicitly deferred
 

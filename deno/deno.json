@@ -14,12 +14,14 @@
     "exclude": [
       "maieutics-output-renderer/styles.css",
       "maieutics-output-renderer/vendor/vitepress/styles/",
-      "maieutics-vscode/media/outputClient.js"
+      "maieutics-vscode/media/outputClient.js",
+      "maieutics-vscode/runtime/formActorHost.js"
     ]
   },
   "lint": {
     "exclude": [
-      "maieutics-vscode/media/outputClient.js"
+      "maieutics-vscode/media/outputClient.js",
+      "maieutics-vscode/runtime/formActorHost.js"
     ]
   },
   "imports": {

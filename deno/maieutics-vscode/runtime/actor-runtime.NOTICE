@@ -1,0 +1,12 @@
+Maieutics Actor Runtime
+
+Derived from @ghostflyby/worker-actor 0.7.0 by ghostflyby.
+Source: https://github.com/ghostflyby/worker-actor
+Imported commit: bbc0d235ae54455147af6ad399edf5d64dc0be95
+License: Apache License, Version 2.0 (see LICENSE).
+
+This copy is maintained as part of Maieutics. Package imports and test fixture
+locations have been adapted to the Maieutics SDK package and build pipeline.
+Subsequent Maieutics changes add browser connections, separate host-only adapters,
+observable transport lifetimes and admission budgets, and credit-driven streams
+(internal Actor protocol version 2). See ADR 0053.

@@ -118,7 +118,7 @@ jobs:
         working-directory: deno/maieutics-output-client
         run: |
           deno task build:vscode
-          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js
+          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js ../maieutics-vscode/runtime/
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk

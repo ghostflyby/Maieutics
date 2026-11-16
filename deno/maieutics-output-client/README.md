@@ -95,8 +95,8 @@ environment permission dependency.
 
 ## Declarative Vue forms
 
-`createFormRenderer({sendMessage})` is the shared normal-Vue form implementation used by the
-notebook's `formRenderer.js`. Call `render(outputId, {version:1,modelId,state}, element)`, pass host
+`createFormRenderer({sendMessage})` is the shared normal-Vue form implementation for standalone
+message adapters. Call `render(outputId, {version:1,modelId,state}, element)`, pass host
 state/closed messages to `receive` and release views with `disposeOutput(id)` or terminal
 `dispose()`. The host owns transport subscriptions. `receive` awaits Vue DOM updates; use the
 existing `vueUpdatesComplete` barrier for local user edits.
@@ -109,6 +109,55 @@ only an attachment-unmount notification; it does not destroy the shared model. M
 closure makes retained content readonly. Up to 128 views and 128 fields/options per form are
 accepted. The VS Code host translates the form contract to the existing authenticated session comm
 endpoint; generic action-result RPC is not supplied by this API.
+
+## Notebook form Actors
+
+The notebook uses `createActorFormRenderer`, backed by the same Vue components and the product-owned
+Actor runtime (ADR 0054). A standalone embedding host can use it too:
+
+```js
+import { createActorFormRenderer } from "/assets/outputClient.js";
+const client = createActorFormRenderer({ postMessage: (message) => channel.post(message) });
+const subscription = channel.subscribe((message) => client.receive(message));
+client.render("view-1", { version: 1, modelId: "form-1", state }, element);
+// On final view disposal:
+client.disposeOutput("view-1");
+// On containing scope disposal:
+subscription.dispose();
+await client.dispose();
+```
+
+The host runs `FormActorHost` from `dist/formActorHost.js` (build with `deno task build:host`), with
+the accompanying declarations. It supplies editor identity, pinned-session lookup, visibility,
+message delivery and the existing form adapter's handle/release operations. Route renderer messages
+to `host.receive(editor, message)` and adapter state to `host.post(editor,
+message)`. Report
+visibility changes through `updateVisible`, revoke changed/closed pins through `releaseWhere`, and
+await `dispose`. This ESM contains no Vue, VS Code, process creation or Node adapter dependencies.
+`build:vscode` copies its exact bytes/declarations into the extension's `runtime/`, alongside the
+separately copied browser ESM in `media/`.
+
+Only live mounts request a host-issued connection. The advertised surfaces are form
+mount/unmount/events and browser state delivery. Correlated calls use the stock payload codecs over
+native host messages; no browser transport credential or generic Actor acquire surface is provided.
+Hidden editors release their Actor and comm owners, and same-session visibility restores mounts on a
+fresh generation. Actions are never replayed. Session changes invalidate old mounts even while
+hidden. Overlapping model IDs cannot revive retired views or saved snapshots. Browser construction
+and snapshot-only rendering start no I/O.
+
+Async post promises are owned; a rejection or false delivery result fails the attachment. Disposal
+joins current/retired connection work and reports cleanup errors. Each message is bounded to one MiB
+of conservatively measured native content, 16,384 nodes and depth 64, with a four-MiB/512-post owner
+budget. Editor, view, RPC and logical-channel budgets are also bounded. Binary is measured natively,
+not converted to text. The current form API carries data-only field/state values; raw comm binary
+buffers do not cross this attachment.
+
+The build reads the existing local Actor runtime sources and writes local `dist/`; copying also
+writes the host artifact pair in `../maieutics-vscode/runtime/`. Runtime messaging is injected by
+the owner, requiring no new Deno filesystem, environment, network or process permission.
+
+The build copies the original Actor runtime LICENSE/NOTICE into `dist/` and the extension's
+`runtime/`; distribute them with these bundled artifacts.
 
 ## Plugin HTTP and Vue Fetch
 

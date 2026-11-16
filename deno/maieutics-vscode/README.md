@@ -4,6 +4,15 @@ Notebook-native frontend for the [Maieutics](../../) agent. The extension speaks
 protocol (`docs/web-frontend-protocol.md`) over HTTP + WebSocket to the `maieutics` executable — no
 Jupyter kernel involved (ADR 0023).
 
+Requires VS Code 1.101 or later. Its extension host provides Node 22, required by the bundled Actor
+runtime's `Promise.withResolvers` use; see the
+[VS Code 1.101 runtime update](https://code.visualstudio.com/updates/v1_101#_electron-35-update).
+
+Live notebook forms use generation-bound Actor RPC between the shared browser renderer and extension
+host (ADR 0054). The host selects the editor's pinned session and adapts operations to the existing
+comm endpoint. Hidden editors release connections; same-session visibility restores mounts without
+replaying actions. Repinning invalidates old views, and saved forms stay readonly.
+
 ## Features
 
 - `.maieuticsnb` notebooks: one ordinary cell is one submitted Agent turn.

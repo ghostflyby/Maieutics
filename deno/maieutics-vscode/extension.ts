@@ -42,6 +42,8 @@ import {
   parseAttachmentMarkers,
 } from "./attachments.ts";
 import { UiBridgeViews } from "./uiBridge.ts";
+// @deno-types="./runtime/formActorHost.d.ts"
+import { FormActorHost } from "./runtime/formActorHost.js";
 import { OutputRenderingBridge } from "./outputRendering.ts";
 import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
@@ -62,6 +64,7 @@ let connection: Connection | undefined;
 let connecting: Promise<Connection> | undefined;
 let connectionStartup: AbortController | undefined;
 let controller: MaieuticsNotebookController | undefined;
+let disposeForms: (() => Promise<void>) | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
 const sessionTitles = new SessionTitles();
@@ -253,10 +256,21 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   const formChannel = vscode.notebooks.createRendererMessaging("maieutics-form-renderer");
+  const formSession = (editor: vscode.NotebookEditor) =>
+    editor.notebook.isClosed ? undefined : readStoredSessionId(editor.notebook.metadata);
+  const formVisible = (editor: vscode.NotebookEditor) =>
+    vscode.window.visibleNotebookEditors.includes(editor);
+  const formActors = new FormActorHost<vscode.NotebookEditor>({
+    session: formSession,
+    visible: formVisible,
+    handle: (editor, message) => uiBridge.handleRendererMessage(editor, message),
+    release: (owner) => uiBridge.releaseWhere((editor) => editor === owner),
+    post: (editor, message) => formChannel.postMessage(message, editor),
+    log: (message) => output?.appendLine(message),
+  });
   const uiBridge = new UiBridgeViews<vscode.NotebookEditor>({
-    session: (editor) =>
-      editor.notebook.isClosed ? undefined : readStoredSessionId(editor.notebook.metadata),
-    visible: (editor) => vscode.window.visibleNotebookEditors.includes(editor),
+    session: formSession,
+    visible: formVisible,
     connect: async (sessionId, signal) => {
       signal.throwIfAborted();
       const client = await waitForStartup(clientOf(), signal);
@@ -274,13 +288,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
       return client.commSocket(sessionId, { signal });
     },
-    post: (editor, message) => {
-      void Promise.resolve(formChannel.postMessage(message, editor)).catch(
-        (error: unknown) => output?.appendLine(`form post failed: ${error}`),
-      );
-    },
+    post: (editor, message) => formActors.post(editor, message),
     log: (message) => output?.appendLine(message),
   });
+  disposeForms = async () => {
+    const results = await Promise.allSettled([formActors.dispose(), uiBridge.dispose()]);
+    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Form Actor shutdown failed");
+  };
   context.subscriptions.push(
     // The turn timeline's retry anchor (requiresMessaging: always).
     turnChannel.onDidReceiveMessage(
@@ -312,27 +327,27 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     formChannel.onDidReceiveMessage(({ editor, message }) => {
       if (editor.notebook.isClosed) return;
-      void uiBridge.handleRendererMessage(editor, message).catch((error: unknown) =>
-        output?.appendLine(`form bridge failed: ${error}`)
-      );
+      formActors.receive(editor, message);
     }),
     vscode.workspace.onDidCloseNotebookDocument((document) => {
-      void uiBridge.releaseWhere((editor) => editor.notebook === document).catch(() =>
+      void formActors.releaseWhere((editor) => editor.notebook === document).catch(() =>
         output?.appendLine("Form notebook cleanup failed.")
       );
     }),
     vscode.window.onDidChangeVisibleNotebookEditors((editors) => {
-      void uiBridge.updateVisible(editors).catch(() =>
-        output?.appendLine("Form visibility update failed.")
-      );
+      formActors.updateVisible(editors);
     }),
     vscode.workspace.onDidChangeNotebookDocument(({ notebook, metadata }) => {
       if (metadata === undefined) return;
       const sessionId = readStoredSessionId(notebook.metadata);
-      void uiBridge.releaseWhere((editor, boundSessionId) =>
+      void formActors.releaseWhere((editor, boundSessionId) =>
         editor.notebook === notebook && boundSessionId !== sessionId
       ).catch(() => output?.appendLine("Form session cleanup failed."));
     }),
+    {
+      dispose: () =>
+        void formActors.dispose().catch(() => output?.appendLine("Form Actor cleanup failed.")),
+    },
     {
       dispose: () =>
         void uiBridge.dispose().catch(() => output?.appendLine("Form bridge cleanup failed.")),
@@ -833,8 +848,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export async function deactivate(): Promise<void> {
   connectionStartup?.abort();
-  await controller?.dispose();
-  await stopConnection();
+  const results = await Promise.allSettled([
+    disposeForms?.(),
+    controller?.dispose(),
+    stopConnection(),
+  ]);
+  const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  if (errors.length) throw new AggregateError(errors, "Extension shutdown failed");
 }
 
 /** What session-scoped commands accept: an explicit id string (tree item

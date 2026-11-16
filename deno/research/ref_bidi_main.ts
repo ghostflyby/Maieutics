@@ -1,7 +1,7 @@
 // Research main: bidirectional capability sharing between a "REPL" process and
 // a "host" process via remoteRef (worker-actor 0.4.0, JSR).
 import type * as ReplModule from "./ref_bidi_ref.ts";
-import { spawnProcess } from "@ghostflyby/worker-actor";
+import { spawnProcess } from "@maieutics/plugin-sdk/actor";
 import { remoteRef, remoteRefCodec } from "./ref_codec.ts";
 
 // The "host" process's own surface.

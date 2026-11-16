@@ -104,7 +104,7 @@ internal static class PermissionBaseline
         }
 
         // The materialized module graph imports JSR packages over the network (the import map
-        // resolves @ghostflyby/worker-actor and aves from jsr.io). The child's import and net
+        // resolves aves from jsr.io; the actor runtime is materialized locally). The child's import and net
         // requests both carry the registry host:port, so the baseline grants import and net access
         // to jsr.io:443.
         var import = new List<string> { "jsr.io:443" };

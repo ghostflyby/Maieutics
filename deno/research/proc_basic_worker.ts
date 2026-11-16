@@ -1,6 +1,6 @@
 // Research: process-actor worker (serveProcess). The host spawns this process
 // and calls the rpc surface over fork IPC. stdout/stderr are out-of-band.
-import { serveProcess } from "@ghostflyby/worker-actor";
+import { serveProcess } from "@maieutics/plugin-sdk/actor";
 
 export const rpc = {
   add(a: number, b: number): number {

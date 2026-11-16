@@ -48,9 +48,9 @@ import {
   registerRelease,
   setMainAcquire,
   triggerAcquire,
-} from "@ghostflyby/worker-actor/codec";
-import { makeRpcHandler } from "@ghostflyby/worker-actor/codec";
-import { RemoteError } from "@ghostflyby/worker-actor";
+} from "./actor-runtime/codec.ts";
+import { makeRpcHandler } from "./actor-runtime/codec.ts";
+import { RemoteError } from "./actor-runtime/mod.ts";
 
 export const ACTOR_CODEC_TAG = "maieutics/actor";
 export const ACTOR_BRAND = Symbol.for("maieutics/actor/v1/surface");

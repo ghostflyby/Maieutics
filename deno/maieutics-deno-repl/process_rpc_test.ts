@@ -19,7 +19,7 @@
 //   - disposeRepl ends the channels and the process exits itself.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { spawnProcess } from "@ghostflyby/worker-actor";
+import { spawnProcess } from "@maieutics/plugin-sdk/actor";
 import type { ReplEvalEnvelope } from "./protocol.ts";
 import {
   decodeReplEvalEnvelope,

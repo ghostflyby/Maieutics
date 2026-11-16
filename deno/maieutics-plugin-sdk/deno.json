@@ -10,14 +10,34 @@
     "./reactive": "./reactive.ts",
     "./ui": "./ui/index.ts",
     "./lint": "./lint-plugin.ts",
-    "./plugin-ui": "./plugin-ui.ts"
+    "./plugin-ui": "./plugin-ui.ts",
+    "./actor": "./actor-runtime/mod.ts",
+    "./actor/codec": "./actor-runtime/codec.ts",
+    "./actor/codecs": "./actor-runtime/codecs.ts",
+    "./actor/browser": "./actor-runtime/browser.ts"
   },
   "imports": {
-    "@ghostflyby/worker-actor": "jsr:@ghostflyby/worker-actor@0.6.0",
-    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js"
+    "@vue/reactivity": "npm:@vue/reactivity@3.5.13/dist/reactivity.esm-browser.prod.js",
+    "@maieutics/plugin-sdk/actor": "./actor-runtime/mod.ts",
+    "@maieutics/plugin-sdk/actor/codec": "./actor-runtime/codec.ts",
+    "@maieutics/plugin-sdk/actor/codecs": "./actor-runtime/codecs.ts",
+    "@ghostflyby/worker-actor": "./actor-runtime/mod.ts",
+    "@ghostflyby/worker-actor/codec": "./actor-runtime/codec.ts",
+    "@ghostflyby/worker-actor/codecs": "./actor-runtime/codecs.ts",
+    "@maieutics/plugin-sdk/actor/browser": "./actor-runtime/browser.ts",
+    "@ghostflyby/worker-actor/browser": "./actor-runtime/browser.ts"
   },
   "tasks": {
     "check": "deno check .",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --unstable-worker-options"
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --unstable-worker-options",
+    "test:actor": "deno test --allow-read --allow-run --allow-env --allow-net actor-runtime/",
+    "test:actor:browser": "deno run --allow-run --allow-read --allow-write --allow-net=127.0.0.1 --allow-env actor-runtime/test_fixtures/browser_runner.ts",
+    "check:publish": "deno run --allow-run actor-runtime/test_fixtures/publish_check.ts"
+  },
+  "publish": {
+    "exclude": [
+      "**/*_test.ts",
+      "actor-runtime/test_fixtures/**"
+    ]
   }
 }

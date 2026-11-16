@@ -61,8 +61,8 @@ import {
   registerRelease,
   serializeError,
   triggerAcquire,
-} from "@ghostflyby/worker-actor/codec";
-import { RemoteError } from "@ghostflyby/worker-actor";
+} from "@maieutics/plugin-sdk/actor/codec";
+import { RemoteError } from "@maieutics/plugin-sdk/actor";
 
 // Deno types `self` as Window; in a worker it is a DedicatedWorkerGlobalScope.
 // Only postMessage is used here (the liveness death notice goes to main).
@@ -755,6 +755,11 @@ function materializeChannel(
 /** The default (messageport-shaped) transport used by main-side decodes without a real transport. */
 function defaultTransport(): DecodeContext["transport"] {
   return {
+    closed: false,
+    reason: undefined,
+    onClose() {
+      return () => {};
+    },
     kind: "messageport",
     send() {},
     onMessage() {},

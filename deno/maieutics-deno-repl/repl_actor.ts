@@ -1,4 +1,4 @@
-import { type ActorHandle, type Remote, spawn } from "@ghostflyby/worker-actor";
+import { type ActorHandle, type Remote, spawn } from "@maieutics/plugin-sdk/actor";
 import { failInputMailbox, mailboxFor } from "./input_mailbox.ts";
 import { spawnBootstrapWorker } from "../maieutics-runtime/worker_factory.ts";
 import type * as ReplWorker from "./repl_worker.ts";

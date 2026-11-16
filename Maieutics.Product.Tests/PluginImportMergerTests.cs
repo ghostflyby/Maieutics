@@ -5,6 +5,37 @@ namespace Maieutics.Product.Tests;
 
 public sealed class PluginImportMergerTests
 {
+    [Theory]
+    [InlineData("@maieutics/plugin-sdk/actor", "mod.ts")]
+    [InlineData("@maieutics/plugin-sdk/actor/codec", "codec.ts")]
+    [InlineData("@maieutics/plugin-sdk/actor/codecs", "codecs.ts")]
+    [InlineData("@maieutics/plugin-sdk/actor/browser", "browser.ts")]
+    [InlineData("@ghostflyby/worker-actor", "mod.ts")]
+    [InlineData("@ghostflyby/worker-actor/codec", "codec.ts")]
+    [InlineData("@ghostflyby/worker-actor/codecs", "codecs.ts")]
+    [InlineData("@ghostflyby/worker-actor/browser", "browser.ts")]
+    public void ActorRuntimeImportsResolveToEmbeddedSourcesAndCannotBeReplaced(string key, string file)
+    {
+        var merged = PluginImportMerger.Merge(
+            [Plugin("a", imports: [Entry(key, "https://example.invalid/actor.ts")])],
+            PluginHostModule.ReservedImportKeys);
+        var module = new PluginHostModule();
+        try
+        {
+            module.WriteRootConfig(merged.Imports);
+            using var config = JsonDocument.Parse(File.ReadAllText(module.ConfigFile));
+            var mapping = config.RootElement.GetProperty("imports").GetProperty(key).GetString();
+            Assert.Equal($"./maieutics-plugin-sdk/actor-runtime/{file}", mapping);
+            Assert.True(File.Exists(Path.Combine(module.ModuleDirectory, "maieutics-plugin-sdk", "actor-runtime", file)));
+            Assert.Contains("reserved", Assert.Single(merged.Warnings));
+            Assert.Empty(merged.Imports);
+        }
+        finally
+        {
+            Directory.Delete(module.ModuleDirectory, recursive: true);
+        }
+    }
+
     [Fact]
     public void MaterializedVueRuntimeIsPinnedAndCannotBeReplacedByPluginImports()
     {

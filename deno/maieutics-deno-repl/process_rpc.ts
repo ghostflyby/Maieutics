@@ -46,7 +46,7 @@
  *   kernel handed the host under MAIEUTICS_PERMISSION_BROKER).
  */
 
-import { serveProcess } from "@ghostflyby/worker-actor";
+import { serveProcess } from "@maieutics/plugin-sdk/actor";
 import type { ReplActorResult } from "./repl_actor.ts";
 import { ReplClient } from "./repl_client.ts";
 import { readReplProcessEnvironment } from "./repl_process_env.ts";

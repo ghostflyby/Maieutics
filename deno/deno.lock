@@ -2,7 +2,6 @@
   "version": "5",
   "specifiers": {
     "jsr:@ghostflyby/aves@0.6.0": "0.6.0",
-    "jsr:@ghostflyby/worker-actor@0.6.0": "0.6.0",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.13",
     "npm:@mdit-vue/plugin-headers@2.1.3": "2.1.3",
@@ -45,9 +44,6 @@
         "npm:astring",
         "npm:esbuild-wasm"
       ]
-    },
-    "@ghostflyby/worker-actor@0.6.0": {
-      "integrity": "90947d1dd805d5a578fe232ad58212e66079d4b4ef3b0501fb45e92f3d58d598"
     },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
@@ -1140,7 +1136,6 @@
   "workspace": {
     "dependencies": [
       "jsr:@ghostflyby/aves@0.6.0",
-      "jsr:@ghostflyby/worker-actor@0.6.0",
       "jsr:@std/assert@^1.0.19",
       "npm:@vue/reactivity@3.5.13"
     ],
@@ -1148,7 +1143,6 @@
       "maieutics-deno-repl": {
         "dependencies": [
           "jsr:@ghostflyby/aves@0.6.0",
-          "jsr:@ghostflyby/worker-actor@0.6.0",
           "npm:@vue/reactivity@3.5.13"
         ]
       },
@@ -1188,7 +1182,6 @@
       },
       "maieutics-plugin-sdk": {
         "dependencies": [
-          "jsr:@ghostflyby/worker-actor@0.6.0",
           "npm:@vue/reactivity@3.5.13"
         ]
       },

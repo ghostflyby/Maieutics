@@ -114,10 +114,12 @@ Deno.test("the standalone manifest declares the production actor dependencies", 
     true,
   );
   assertEquals(
-    config.imports["@ghostflyby/worker-actor"].startsWith(
-      "jsr:@ghostflyby/worker-actor@",
-    ),
-    true,
+    config.imports["@maieutics/plugin-sdk/actor"],
+    "../maieutics-plugin-sdk/actor-runtime/mod.ts",
+  );
+  assertEquals(
+    config.imports["@ghostflyby/worker-actor"],
+    config.imports["@maieutics/plugin-sdk/actor"],
   );
 });
 

@@ -9,7 +9,7 @@
 //   - HOST hands its ref to REPL (REPL acquires it and calls it);
 //   - REPL hands its ref to HOST (HOST acquires it and calls it).
 // Both directions use the same remoteRef codec on both sides.
-import { serveProcess } from "@ghostflyby/worker-actor";
+import { serveProcess } from "@maieutics/plugin-sdk/actor";
 import { type RemoteRef, remoteRef, remoteRefCodec } from "./ref_codec.ts";
 
 const replSurface = {

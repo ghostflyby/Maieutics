@@ -1,5 +1,5 @@
 import { createReplKernel, type ReplExecution, type ReplKernel } from "@ghostflyby/aves/repl";
-import { type LinkHandle, serveWorker } from "@ghostflyby/worker-actor";
+import { type LinkHandle, serveWorker } from "@maieutics/plugin-sdk/actor";
 import { installWorkerPatch } from "../maieutics-runtime/worker_patch.ts";
 import { installBootstrapMarker } from "../maieutics-runtime/bootstrap_contract.ts";
 import { type Deferred, replEvalDeferred, ReplEvalQueue } from "./repl_eval_queue.ts";

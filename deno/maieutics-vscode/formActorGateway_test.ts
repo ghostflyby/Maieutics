@@ -5,6 +5,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { FormActorGateway } from "./formActorGateway.ts";
 import { FormActorHost } from "../maieutics-output-client/formActorHost.ts";
 import { FormActorClient } from "../maieutics-output-client/formActorClient.ts";
+import { Server } from "node:http";
 
 async function budget<T>(task: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -281,6 +282,59 @@ Deno.test("failed endpoint publication closes the listening socket before report
     assert(error === failed, "Startup must preserve its original failure");
     await assertRejects(() => fetch(address), TypeError);
   } finally {
+    lifetime.abort();
+    await gateway.dispose();
+  }
+});
+
+Deno.test("gateway server errors are owned between listening and the startup continuation", async () => {
+  const failure = new Error("listener handoff sentinel");
+  const injected = Promise.withResolvers<unknown>();
+  const original = Server.prototype.listen;
+  Server.prototype.listen = function (this: Server, ...args: unknown[]) {
+    this.once("listening", () => {
+      queueMicrotask(() => {
+        try {
+          this.emit("error", failure);
+          injected.resolve(undefined);
+        } catch (error) {
+          injected.resolve(error);
+        }
+      });
+    });
+    return Reflect.apply(original, this, args);
+  } as typeof original;
+  const lifetime = new AbortController();
+  const gateway = new FormActorGateway({ log: () => {} });
+  const offered = gateway.listen(lifetime.signal, () => {});
+  void offered.catch(() => {});
+  try {
+    assertEquals(await budget(injected.promise), undefined, "The error event must retain an owner");
+    await assertRejects(() => budget(offered));
+    const cleanup = await assertRejects(() => gateway.dispose(), AggregateError);
+    assertEquals(cleanup.errors, [failure]);
+  } finally {
+    Server.prototype.listen = original;
+    lifetime.abort();
+    await offered.catch(() => {});
+    await gateway.dispose().catch(() => {});
+  }
+});
+
+Deno.test("gateway bind errors preserve the startup cause and finish cleanup before rejecting", async () => {
+  const failure = new Error("bind failure sentinel");
+  const original = Server.prototype.listen;
+  Server.prototype.listen = function (this: Server) {
+    queueMicrotask(() => this.emit("error", failure));
+    return this;
+  } as typeof original;
+  const lifetime = new AbortController();
+  const gateway = new FormActorGateway({ log: () => {} });
+  try {
+    assertEquals(await assertRejects(() => gateway.listen(lifetime.signal, () => {})), failure);
+    await gateway.dispose();
+  } finally {
+    Server.prototype.listen = original;
     lifetime.abort();
     await gateway.dispose();
   }

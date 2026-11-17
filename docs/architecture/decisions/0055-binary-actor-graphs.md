@@ -114,6 +114,8 @@ port-forwarding resolver or logged. Hidden/closed/repinned editors abort their l
 their binary peer. New generations do not wait for old comm teardown. Gateway disposal joins
 startup, revokes leases, destroys remaining sockets and joins both listeners. Failed endpoint
 publication closes the partially started listener before returning the startup error.
+The permanent server-error observer is installed before binding; the listening callback switches
+to runtime failure handling before removing the startup observer, leaving no microtask gap.
 
 Browser startup has owned open/error/close/abort listeners and a timeout; retirement rejects mount
 waits before joining dispatch. A blocked or failed socket leaves forms readonly with diagnostics.

@@ -91,20 +91,21 @@ surface. Pool factories are evaluated synchronously: construction failures reach
 cancel already-starting members. If members have already started, the thrown
 `ActorPoolConstructionError` exposes the original error as `cause` and a `completion` promise; await
 that promise to observe the construction failure together with any cleanup failures. A replacement
-factory failure is reported through `onMemberDead` and remains the rejection reason for calls when
-no member is available. Replacements run on owned, cancellable tasks so repeated handshake failures
-cannot recurse synchronously. Disposal cancels scheduled replacements and joins startup and
-retired-member cleanup. `dispose()` terminates the owner and returns the shared `completion`
-promise; codec cleanup failures are reported there after other teardown stages finish. `failAll()`
-is terminal and idempotent: it requests all cleanup without throwing, rejects later codec admission,
-and `join()` reports recorded cleanup errors. Actor-side `serveWorker`/`serveProcess`/`serveNode`
-return a runtime handle with the same observable completion. Channel/transport `close()` makes the
-terminal transition synchronously without throwing observer errors; `completion` joins owned channel
-cleanup and reports bounded, flat aggregates deduplicated by error identity. Distinct errors with
-the same message remain distinct. Close observers are synchronous and protected even when registered
-late. Reading that channel/transport's `completion` again includes late failures; a previously
-returned, settled promise remains a snapshot. `messageerror` establishes a decode cause before
-cleanup.
+factory failure is reported through `onMemberDead`. Routed/pinned calls retain their selected
+member's own failure, including death during selection; another slot's failure cannot replace it.
+Calls with no selected member use a pool-wide factory failure only when no member is live.
+Replacements run on owned, cancellable tasks so repeated handshake failures cannot recurse
+synchronously. Disposal cancels scheduled replacements and joins startup and retired-member cleanup.
+`dispose()` terminates the owner and returns the shared `completion` promise; codec cleanup failures
+are reported there after other teardown stages finish. `failAll()` is terminal and idempotent: it
+requests all cleanup without throwing, rejects later codec admission, and `join()` reports recorded
+cleanup errors. Actor-side `serveWorker`/`serveProcess`/`serveNode` return a runtime handle with the
+same observable completion. Channel/transport `close()` makes the terminal transition synchronously
+without throwing observer errors; `completion` joins owned channel cleanup and reports bounded, flat
+aggregates deduplicated by error identity. Distinct errors with the same message remain distinct.
+Close observers are synchronous and protected even when registered late. Reading that
+channel/transport's `completion` again includes late failures; a previously returned, settled
+promise remains a snapshot. `messageerror` establishes a decode cause before cleanup.
 
 AbortSignal codecs release both endpoints after terminal status. A signal retained for later use is
 a live capability and consumes a channel until abort, explicit release, or owner closure; RPC return

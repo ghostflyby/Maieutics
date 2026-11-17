@@ -87,10 +87,6 @@ export class FormActorHost<Owner extends object> {
         return;
       }
       clearTimeout(scope.timer);
-      if (this.options.listen) {
-        this.#retire(scope, "protocol");
-        return;
-      }
       const transport = messageTransport({
         maxChannels: 8,
         maxPendingMessages: FORM_ACTOR_LIMIT * 4,

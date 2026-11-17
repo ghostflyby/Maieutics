@@ -156,10 +156,25 @@ export class FormActorGateway {
         socket.destroy();
       }
     });
+    let binding = true;
+    server.on("error", (error) => {
+      // The startup listener owns bind failures; keep this listener installed
+      // across the listening callback and its asynchronous continuation.
+      if (binding) return;
+      this.#record(error, "Form Actor binary listener failed.");
+      this.#closed = true;
+      this.#lifetime.abort(new Error("Actor gateway listener failed"));
+      // Keep cleanup failure observable through the retained stopping task and dispose().
+      void this.#stopResources().catch(() => {});
+    });
     const address = await new Promise<string>((resolve, reject) => {
-      const failed = (error: Error) => reject(error);
+      const failed = (error: Error) => {
+        binding = false;
+        reject(error);
+      };
       server.once("error", failed);
       server.listen(0, "127.0.0.1", () => {
+        binding = false;
         server.removeListener("error", failed);
         const address = server.address();
         if (!address || typeof address === "string") {
@@ -167,13 +182,7 @@ export class FormActorGateway {
         } else resolve(`http://127.0.0.1:${address.port}/`);
       });
     });
-    server.on("error", (error) => {
-      this.#record(error, "Form Actor binary listener failed.");
-      this.#closed = true;
-      this.#lifetime.abort(new Error("Actor gateway listener failed"));
-      // Keep cleanup failure observable through the retained stopping task and dispose().
-      void this.#stopResources().catch(() => {});
-    });
+    this.#lifetime.signal.throwIfAborted();
     const external = this.options.externalUri
       ? this.options.externalUri(address)
       : Promise.resolve(address);

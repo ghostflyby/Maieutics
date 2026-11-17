@@ -1050,6 +1050,11 @@ before reporting failure. Remote forwarding uses asExternalUri; a host CSP must 
 ws/wss connection. Policy is not loosened and binary traffic never falls back to JSON. The gateway
 uses pinned ws 8.23.0 with its license in the VSIX; the shared codec has no new dependency.
 
+The gateway installs its permanent server-error observer before binding. Bind failures reject
+startup, and the listening callback activates runtime failure handling before removing the startup
+observer; the intervening microtask therefore retains an owner. The host rejects bootstrap data
+frames once, before hello decoding, whenever the binary endpoint is configured.
+
 The encoding contract, exact tags and budgets are in ADR 0055. SDK publish-plan and executable
 embedding sentinels include the codec source. Rendering/SSR, form MIME, kernel comm data/buffer
 framing and notebook persistence keep their contracts. Generic binary transport does not expand

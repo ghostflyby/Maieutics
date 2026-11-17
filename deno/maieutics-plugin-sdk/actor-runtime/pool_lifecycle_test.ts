@@ -254,3 +254,70 @@ Deno.test("disposing a repeated replacement loop cancels the next spawn and join
     await pool.dispose();
   }
 });
+
+for (const target of ["routing", "invokeOn"] as const) {
+  Deno.test(`pool ${target} reports the selected slot's factory failure instead of another slot's`, async () => {
+    const stale = new Error("slot zero replacement failure");
+    const selected = new Error("slot one replacement failure");
+    const reported = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const transports = [source(false), source(), source()];
+    let initial = 0, replacements = 0;
+    const pool = createActorPool<{ add(a: number, b: number): number }>({
+      size: 3,
+      spawnWorker: () => transports[initial++],
+      replace() {
+        throw replacements++ === 0 ? stale : selected;
+      },
+      routing: () => 1,
+      onMemberDead(index, reason) {
+        if ((index === 0 && reason === stale) || (index === 1 && reason === selected)) {
+          reported[index].resolve();
+        }
+      },
+    });
+    try {
+      await waitWithSignal(reported[0].promise, AbortSignal.timeout(5000));
+      await pool.invokeOn(1, "add", [1, 2]);
+      await pool.invokeOn(2, "add", [1, 2]);
+      transports[1].close(new Error("selected actor stopped"));
+      await waitWithSignal(reported[1].promise, AbortSignal.timeout(5000));
+      assertEquals(pool.size, 1);
+      const result = target === "routing" ? pool.add(1, 2) : pool.invokeOn(1, "add", [1, 2]);
+      assertEquals(await result.catch((error) => error), selected);
+      assertEquals(await pool.invokeOn(2, "add", [20, 22]), 42);
+    } finally {
+      await pool.dispose();
+    }
+  });
+}
+
+Deno.test("pool preserves a selected member's death during routing instead of a stale factory error", async () => {
+  const stale = new Error("unrelated replacement failure");
+  const selected = new Error("selected actor stopped during routing");
+  const reported = Promise.withResolvers<void>();
+  const transports = [source(false), source(), source()];
+  let initial = 0, retireOnPick = false;
+  const pool = createActorPool<{ add(a: number, b: number): number }>({
+    size: 3,
+    spawnWorker: () => transports[initial++],
+    replace() {
+      throw stale;
+    },
+    routing() {
+      if (retireOnPick) transports[1].close(selected);
+      return 1;
+    },
+    onMemberDead(index, reason) {
+      if (index === 0 && reason === stale) reported.resolve();
+    },
+  });
+  try {
+    await waitWithSignal(reported.promise, AbortSignal.timeout(5000));
+    await pool.invokeOn(1, "add", [1, 2]);
+    await pool.invokeOn(2, "add", [1, 2]);
+    retireOnPick = true;
+    assertEquals(await pool.add(1, 2).catch((error) => error), selected);
+  } finally {
+    await pool.dispose();
+  }
+});

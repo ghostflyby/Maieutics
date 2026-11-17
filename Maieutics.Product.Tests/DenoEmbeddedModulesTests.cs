@@ -42,7 +42,7 @@ public sealed partial class DenoEmbeddedModulesTests
         Assert.Contains("Deno/maieutics-deno-repl/deno.json", names);
         Assert.Contains("Deno/maieutics-deno-repl/deno.lock", names);
         Assert.Contains("Deno/maieutics-plugin-sdk/deno.json", names);
-        foreach (var module in new[] { "mod.ts", "codec.ts", "codecs.ts", "browser.ts", "core/transport.ts", "core/transport_v8.ts", "core/connection.ts", "LICENSE", "NOTICE" })
+        foreach (var module in new[] { "mod.ts", "codec.ts", "codecs.ts", "browser.ts", "core/transport.ts", "core/transport_v8.ts", "core/connection.ts", "core/binary_graph.ts", "LICENSE", "NOTICE" })
         {
             Assert.Contains($"Deno/maieutics-plugin-sdk/actor-runtime/{module}", names);
         }

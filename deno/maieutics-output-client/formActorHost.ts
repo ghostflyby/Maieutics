@@ -2,15 +2,19 @@ import type { ActorConnection, MessageTransport } from "@maieutics/plugin-sdk/ac
 import {
   ActorTransportError,
   attachment,
+  BINARY_GRAPH_CODEC,
+  binaryFrame,
+  binaryFrameSize,
   createActorConnection,
   envelope,
   FORM_ACTOR_LIMIT,
   type FormActions,
-  formFrameSize,
+  formBinaryCodec,
   FormPosts,
   type FormUpdates,
   frame,
   record,
+  webSocketTransport,
 } from "./formActorProtocol.ts";
 import { messageTransport } from "./formActorProtocol.ts";
 import type { FormActorHostOptions } from "./formActorHost.d.ts";
@@ -25,6 +29,7 @@ interface Scope<Owner> {
   readonly posts: FormPosts;
   readonly pending: Set<Promise<void>>;
   readonly finished: PromiseWithResolvers<void>;
+  readonly lifetime: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   transport?: MessageTransport;
   connection?: ActorConnection<{ view: FormUpdates }>;
@@ -65,78 +70,112 @@ export class FormActorHost<Owner extends object> {
       return;
     }
     if (message.type !== "frame") return;
+    if (this.options.listen) {
+      this.#retire(scope, "protocol");
+      return;
+    }
     if (!scope.connection) {
-      if (!record(message.value) || message.value.type !== "actor:hello") {
+      let hello: unknown;
+      try {
+        hello = formBinaryCodec.decode(binaryFrame(message.value));
+      } catch {
+        this.#retire(scope, "decode");
+        return;
+      }
+      if (!record(hello) || hello.type !== "actor:hello") {
         this.#retire(scope, "protocol");
         return;
       }
       clearTimeout(scope.timer);
-      const actions: FormActions = {
-        mount: async (modelId, viewId) => {
-          this.#check(scope, modelId, viewId);
-          if (!scope.views.has(viewId) && scope.views.size >= FORM_ACTOR_LIMIT) {
-            throw new ActorTransportError("capacity", "Form Actor attachment budget exceeded");
-          }
-          scope.views.set(viewId, modelId);
-          await this.options.handle(owner, {
-            source: "maieutics-form",
-            type: "mount",
-            modelId,
-            viewId,
-          });
-        },
-        unmount: async (modelId, viewId) => {
-          this.#check(scope, modelId, viewId);
-          if (scope.views.get(viewId) !== modelId) return;
-          scope.views.delete(viewId);
-          await this.options.handle(owner, {
-            source: "maieutics-form",
-            type: "unmount",
-            modelId,
-            viewId,
-          });
-        },
-        event: async (modelId, viewId, name, payload) => {
-          this.#check(scope, modelId, viewId);
-          if (scope.views.get(viewId) !== modelId || !["submit", "cancel"].includes(name)) {
-            throw new ActorTransportError("protocol", "Form action has no mounted attachment");
-          }
-          await this.options.handle(owner, {
-            source: "maieutics-form",
-            type: "event",
-            modelId,
-            viewId,
-            name,
-            payload,
-          });
-        },
-      };
-      scope.transport = messageTransport({
+      if (this.options.listen) {
+        this.#retire(scope, "protocol");
+        return;
+      }
+      const transport = messageTransport({
         maxChannels: 8,
-        messageSize: formFrameSize,
-        send: (value) => this.#post(scope, frame("frame", { ...this.#identity(scope), value })),
+        maxPendingMessages: FORM_ACTOR_LIMIT * 4,
+        messageSize: binaryFrameSize,
+        decode: (value, signal) => formBinaryCodec.decode(binaryFrame(value), signal),
+        send: (value) =>
+          this.#post(
+            scope,
+            frame("frame", {
+              ...this.#identity(scope),
+              value: formBinaryCodec.encode(value),
+            }),
+          ),
       });
-      scope.connection = createActorConnection(scope.transport, {
-        actors: { forms: actions },
-        maxPendingCalls: FORM_ACTOR_LIMIT,
-      });
-      const connection = scope.connection;
-      if (scope.retiring) connection.close();
-      this.#observe(
-        scope,
-        connection.closed.then(() => {
-          this.#retire(scope, "closed");
-        }),
-      );
-      this.#observe(
-        scope,
-        connection.ready.catch((error) => {
-          this.#log(`Form Actor handshake failed: ${error}`);
-          this.#retire(scope, "protocol");
-        }),
-      );
+      this.#start(scope, transport);
     }
-    scope.transport?.deliver(message.value);
+    try {
+      scope.transport?.deliver(binaryFrame(message.value));
+    } catch {
+      this.#retire(scope, "decode");
+    }
+  }
+
+  #start(scope: Scope<Owner>, transport: MessageTransport): void {
+    const owner = scope.owner;
+    const actions: FormActions = {
+      mount: async (modelId, viewId) => {
+        this.#check(scope, modelId, viewId);
+        if (!scope.views.has(viewId) && scope.views.size >= FORM_ACTOR_LIMIT) {
+          throw new ActorTransportError("capacity", "Form Actor attachment budget exceeded");
+        }
+        scope.views.set(viewId, modelId);
+        await this.options.handle(owner, {
+          source: "maieutics-form",
+          type: "mount",
+          modelId,
+          viewId,
+        });
+      },
+      unmount: async (modelId, viewId) => {
+        this.#check(scope, modelId, viewId);
+        if (scope.views.get(viewId) !== modelId) return;
+        scope.views.delete(viewId);
+        await this.options.handle(owner, {
+          source: "maieutics-form",
+          type: "unmount",
+          modelId,
+          viewId,
+        });
+      },
+      event: async (modelId, viewId, name, payload) => {
+        this.#check(scope, modelId, viewId);
+        if (scope.views.get(viewId) !== modelId || !["submit", "cancel"].includes(name)) {
+          throw new ActorTransportError("protocol", "Form action has no mounted attachment");
+        }
+        await this.options.handle(owner, {
+          source: "maieutics-form",
+          type: "event",
+          modelId,
+          viewId,
+          name,
+          payload,
+        });
+      },
+    };
+    scope.transport = transport;
+    scope.connection = createActorConnection(transport, {
+      actors: { forms: actions },
+      maxPendingCalls: FORM_ACTOR_LIMIT,
+    });
+    const connection = scope.connection;
+    if (scope.retiring) connection.close();
+    this.#observe(
+      scope,
+      connection.closed.then(() => {
+        this.#retire(scope, "closed");
+      }),
+    );
+    this.#observe(
+      scope,
+      connection.ready.catch((error) => {
+        this.#log(`Form Actor handshake failed: ${error}`);
+        this.#retire(scope, "protocol");
+      }),
+    );
   }
 
   /** Send a complete model projection only to this editor's current browser generation. */
@@ -242,10 +281,55 @@ export class FormActorHost<Owner extends object> {
       posts: new FormPosts(),
       pending: new Set(),
       finished: Promise.withResolvers<void>(),
+      lifetime: new AbortController(),
     };
     this.#scopes.set(owner, scope);
     scope.timer = setTimeout(() => this.#retire(scope, "timeout"), 10_000);
-    this.#post(scope, frame("offer", this.#identity(scope)));
+    if (this.options.listen) {
+      this.#observe(
+        scope,
+        this.options.listen(owner, scope.lifetime.signal, (socket) => {
+          if (!this.#authorized(scope) || scope.connection) {
+            socket.close();
+            return;
+          }
+          clearTimeout(scope.timer);
+          try {
+            this.#start(
+              scope,
+              webSocketTransport(socket, {
+                codec: formBinaryCodec,
+                maxChannels: 8,
+                maxPendingMessages: FORM_ACTOR_LIMIT * 4,
+              }),
+            );
+          } catch (error) {
+            socket.close();
+            this.#log(`Form Actor binary admission failed: ${error}`);
+            this.#retire(scope, "protocol");
+          }
+        }).then((endpoint) => {
+          if (this.#authorized(scope)) {
+            this.#post(
+              scope,
+              frame("offer", {
+                ...this.#identity(scope),
+                endpoint,
+                encoding: BINARY_GRAPH_CODEC,
+              }),
+            );
+          }
+        }).catch((error) => {
+          if (!scope.retiring) {
+            this.#log(`Form Actor binary endpoint failed: ${error}`);
+            this.#retire(scope, "connect");
+          }
+        }),
+      );
+    } else {this.#post(
+        scope,
+        frame("offer", { ...this.#identity(scope), encoding: BINARY_GRAPH_CODEC }),
+      );}
   }
   #authorized(scope: Scope<Owner>): boolean {
     if (scope.retiring || this.#scopes.get(scope.owner) !== scope) return false;
@@ -305,6 +389,8 @@ export class FormActorHost<Owner extends object> {
     clearTimeout(scope.timer);
     this.#post(scope, frame("closed", { ...this.#identity(scope), code }));
     scope.connection?.close();
+    scope.transport?.close();
+    scope.lifetime.abort();
     // Release cancels pending mount/connect work before connection.completion joins its dispatches.
     let release: Promise<void>;
     try {

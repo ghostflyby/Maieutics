@@ -44,6 +44,7 @@ import {
 import { UiBridgeViews } from "./uiBridge.ts";
 // @deno-types="./runtime/formActorHost.d.ts"
 import { FormActorHost } from "./runtime/formActorHost.js";
+import { FormActorGateway } from "./formActorGateway.ts";
 import { OutputRenderingBridge } from "./outputRendering.ts";
 import { connectedNotebookSerializer } from "./connectedNotebookSerializer.ts";
 import { emptyNotebook } from "./notebookFormat.ts";
@@ -260,12 +261,17 @@ export function activate(context: vscode.ExtensionContext): void {
     editor.notebook.isClosed ? undefined : readStoredSessionId(editor.notebook.metadata);
   const formVisible = (editor: vscode.NotebookEditor) =>
     vscode.window.visibleNotebookEditors.includes(editor);
+  const formGateway = new FormActorGateway({
+    externalUri: async (url) => (await vscode.env.asExternalUri(vscode.Uri.parse(url))).toString(),
+    log: (message) => output?.appendLine(message),
+  });
   const formActors = new FormActorHost<vscode.NotebookEditor>({
     session: formSession,
     visible: formVisible,
     handle: (editor, message) => uiBridge.handleRendererMessage(editor, message),
     release: (owner) => uiBridge.releaseWhere((editor) => editor === owner),
     post: (editor, message) => formChannel.postMessage(message, editor),
+    listen: (_editor, signal, accept) => formGateway.listen(signal, accept),
     log: (message) => output?.appendLine(message),
   });
   const uiBridge = new UiBridgeViews<vscode.NotebookEditor>({
@@ -292,7 +298,11 @@ export function activate(context: vscode.ExtensionContext): void {
     log: (message) => output?.appendLine(message),
   });
   disposeForms = async () => {
-    const results = await Promise.allSettled([formActors.dispose(), uiBridge.dispose()]);
+    const results = await Promise.allSettled([
+      formActors.dispose(),
+      uiBridge.dispose(),
+      formGateway.dispose(),
+    ]);
     const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, "Form Actor shutdown failed");
   };
@@ -347,6 +357,12 @@ export function activate(context: vscode.ExtensionContext): void {
     {
       dispose: () =>
         void formActors.dispose().catch(() => output?.appendLine("Form Actor cleanup failed.")),
+    },
+    {
+      dispose: () =>
+        void formGateway.dispose().catch(() =>
+          output?.appendLine("Form Actor gateway cleanup failed.")
+        ),
     },
     {
       dispose: () =>

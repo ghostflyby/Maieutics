@@ -50,14 +50,20 @@ The host selects a `WireCodec` with synchronous `encode(value)` and optionally a
 by both peers. Successful RPC replies may omit `value`; omission means `undefined`, so plain JSON
 codecs support `void` RPC and callback results without an undefined marker. Explicit `null` remains
 `null`. Other payload values still follow the chosen codec's documented value contract. No browser
-wire encoding is chosen implicitly. Binary remains binary; the conformance fixture uses native
-binary attachments and is not a production encoding standard. Hosts establish and authorize an OPEN
-WebSocket before handing ownership to `webSocketTransport`.
+wire encoding is chosen implicitly. `createBinaryGraphCodec()` supplies the portable production
+encoding in ADR 0055: cyclic/shared graphs, native binary spans and bounded object tables. The real
+browser conformance suite uses that same codec. Hosts establish and authorize an OPEN WebSocket
+before handing ownership to `webSocketTransport`.
 
 ```ts
-import { createActorConnection, webSocketTransport } from "@maieutics/plugin-sdk/actor/browser";
+import {
+  createActorConnection,
+  createBinaryGraphCodec,
+  webSocketTransport,
+} from "@maieutics/plugin-sdk/actor/browser";
 
-// socket is OPEN and host-authorized; wireCodec is the encoding agreed by both endpoints.
+// socket is OPEN and host-authorized; both peers explicitly select this encoding.
+const wireCodec = createBinaryGraphCodec();
 const connection = createActorConnection<{ counter: { increment(): number } }>(
   webSocketTransport(socket, { codec: wireCodec }),
   { actors: { ui: { describe: () => "Notebook view" } }, signal: viewLifetime },
@@ -128,5 +134,16 @@ installs a pinned Chrome for Testing archive and checks its version. Runner clea
 total budget, escalating SIGTERM to SIGKILL after 2s. `deno task check:publish` asserts the actual
 SDK publish plan excludes tests and fixtures.
 
-This is a runtime foundation. The product's `actor_ref.ts` acquire routing, authenticated notebook
-session/view/generation admission, and renderer integration still require a separate design.
+The codec preserves object identity, Map/Set cycles, undefined, sparse arrays, number edge cases,
+BigInt, the eleven supported typed-array constructors, ArrayBuffer/DataView, Date/RegExp and native
+errors. Binary view offsets and shared backing are retained. Implicit backing buffers expose only
+the transmitted view spans; other bytes reconstruct as zeros, preventing pooled-slab disclosure.
+Passing a backing buffer explicitly includes its full contents. Defaults bound each frame and
+reconstructed buffer storage to one MiB, 16,384 objects, 65,536 items/array slots and depth 64. Use
+the existing iterable codec with bounded independent chunks for larger transfers. Custom
+prototypes/stateful values still require payload codecs; SharedArrayBuffer requires a snapshot. See
+ADR 0055 for the exact value contract and versioned binary layout.
+
+The runtime itself grants no product authority. ADR 0054/0055 implement notebook editor/session/
+generation admission and a separate binary data channel. The specifier-based acquire router and
+reverse REPL execution remain unavailable to that browser attachment.

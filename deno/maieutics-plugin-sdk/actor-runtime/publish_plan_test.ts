@@ -4,6 +4,7 @@ import { assertPublishPlan } from "./test_fixtures/publish_plan.ts";
 const root = new URL("file:///workspace/with%20spaces/sdk/");
 const required = [
   "actor-runtime/browser.ts",
+  "actor-runtime/core/binary_graph.ts",
   "actor-runtime/spawn_process.ts",
   "actor-runtime/LICENSE",
   "actor-runtime/NOTICE",

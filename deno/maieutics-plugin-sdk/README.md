@@ -8,6 +8,10 @@ origin commit, boundaries, and test command are documented in
 bidirectional Actor connections with host-selected encoding (ADR 0053). It grants no notebook
 session or kernel authority by itself.
 
+`createBinaryGraphCodec` offers the bounded, versioned native-binary graph format in ADR 0055.
+Cycles/shared references, typed views, native errors and raw bytes cross browser, Node and Deno
+peers without textual binary encoding. Existing host V8 adapters retain their encoding.
+
 SDK for writing Maieutics script plugins. A plugin is a standard Deno package:
 
 - `deno.json` with `name`, `version`, `exports` (one subpath per extension carrier module), the

@@ -1027,6 +1027,34 @@ the retired-view admission guard reproduces the browser authorization failure; b
 remount regressions fail before the attachment-identity fix and pass after it. One intermediate
 full Deno run hit the existing cross-worker service assertion; focused and final full reruns pass.
 
+## Native binary Actor graphs (implemented 2026-11-17)
+
+[ADR 0055](architecture/decisions/0055-binary-actor-graphs.md) supplies the portable production
+`createBinaryGraphCodec`. It retains cyclic/shared graphs, native byte spans, typed views with
+shared backing, native errors and data-property semantics through bounded, per-frame object
+tables. Binary is never encoded as JSON/text/base64. Implicit backing buffers include only the
+union of exposed view spans; other bytes are zeroed to prevent pooled-buffer disclosure.
+
+The form attachment bootstrap becomes version 2. VS Code renderer messaging carries controls
+only. The extension issues a one-use, editor/session/generation-bound WebSocket endpoint from an
+owned lazy loopback listener; all Actor/Mux/codec-channel frames then use binary graphs. Native
+gateway tests force bootstrap through JSON and still verify cyclic/binary values in both directions.
+The browser Actor suite uses the production encoding, including native errors, callbacks, streams,
+cancel and disconnect. Payload registry cloning preserves null prototypes and defines own data
+properties so __proto__ keys cannot invoke prototype setters or corrupt graph identity.
+
+Each endpoint has an independent 256-bit credential, constant-time admission and single-use
+upgrade. Aborting its editor scope revokes the endpoint and terminates its peer. Startup/open
+waits and asynchronous cleanup are owned. Failed endpoint publication closes its partial listener
+before reporting failure. Remote forwarding uses asExternalUri; a host CSP must permit the chosen
+ws/wss connection. Policy is not loosened and binary traffic never falls back to JSON. The gateway
+uses pinned ws 8.23.0 with its license in the VSIX; the shared codec has no new dependency.
+
+The encoding contract, exact tags and budgets are in ADR 0055. SDK publish-plan and executable
+embedding sentinels include the codec source. Rendering/SSR, form MIME, kernel comm data/buffer
+framing and notebook persistence keep their contracts. Generic binary transport does not expand
+the form business schema or grant a browser generic Actor acquire/REPL execution authority.
+
 ## Plugin HTTP transport foundation (implemented 2026-11-12)
 
 [ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) selects HTTP as the primary

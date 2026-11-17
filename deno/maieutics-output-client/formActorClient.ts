@@ -2,23 +2,30 @@ import type { ActorConnection, MessageTransport } from "@maieutics/plugin-sdk/ac
 import {
   ActorTransportError,
   attachment,
+  BINARY_GRAPH_CODEC,
+  binaryFrame,
+  binaryFrameSize,
   createActorConnection,
   envelope,
   FORM_ACTOR_LIMIT,
   type FormActions,
   type FormAttachment,
-  formFrameSize,
+  formBinaryCodec,
   FormPosts,
   frame,
   identity,
   messageTransport,
+  webSocketTransport,
 } from "./formActorProtocol.ts";
 import type { FormMessage } from "./forms.ts";
 
 interface BrowserScope {
   readonly epoch: number;
   readonly connectionId: string;
-  readonly transport: MessageTransport;
+  transport?: MessageTransport;
+  readonly readiness: PromiseWithResolvers<void>;
+  readonly lifetime: AbortController;
+  readonly network: boolean;
   readonly posts: FormPosts;
   connection?: ActorConnection<{ forms: FormActions }>;
   readonly mounted: Map<string, FormAttachment>;
@@ -81,7 +88,7 @@ export class FormActorClient {
       this.#observe(
         scope,
         (async () => {
-          await scope.connection?.ready;
+          await scope.readiness.promise;
           if (scope.retiring || !scope.connection) return;
           if (scope.mounted.get(viewId) === view) scope.mounted.delete(viewId);
           await scope.connection.actor("forms").unmount(modelId, viewId);
@@ -125,46 +132,43 @@ export class FormActorClient {
       this.#connectionId = connectionId;
       const epoch = this.#epoch;
       const posts = new FormPosts();
-      const transport = messageTransport({
-        maxChannels: 8,
-        messageSize: formFrameSize,
-        send: (value) =>
-          posts.send(
-            frame("frame", { epoch, connectionId, value }),
-            this.options.postMessage,
-            (error) => {
-              this.#log(`Form Actor delivery failed: ${error}`);
-              transport.close(error);
-            },
-          ),
-      });
       const scope: BrowserScope = {
         epoch,
         connectionId,
-        transport,
         posts,
         mounted: new Map(),
         pending: new Set(),
+        readiness: Promise.withResolvers<void>(),
+        lifetime: new AbortController(),
+        network: typeof message.endpoint === "string",
       };
+      void scope.readiness.promise.catch(() => {});
       this.#scope = scope;
-      scope.connection = createActorConnection(transport, {
-        actors: {
-          view: {
-            receive: async (value: unknown) => {
-              if (this.#scope === scope && !scope.retiring) await this.options.receive(value);
-            },
-          },
-        },
-        maxPendingCalls: FORM_ACTOR_LIMIT,
-      });
-      const connection = scope.connection;
-      if (scope.retiring) connection.close();
-      this.#observe(
-        scope,
-        connection.closed.then(() => {
-          this.#retire(scope, true);
-        }),
-      );
+      if (message.encoding !== BINARY_GRAPH_CODEC) {
+        this.#log("Form Actor wire encoding mismatch.");
+        this.#retire(scope, true);
+        return;
+      }
+      if (typeof message.endpoint === "string") {
+        this.#observe(scope, this.#openSocket(scope, message.endpoint));
+      } else {
+        const transport = messageTransport({
+          maxChannels: 8,
+          maxPendingMessages: FORM_ACTOR_LIMIT * 4,
+          messageSize: binaryFrameSize,
+          decode: (value, signal) => formBinaryCodec.decode(binaryFrame(value), signal),
+          send: (value) =>
+            posts.send(
+              frame("frame", { epoch, connectionId, value: formBinaryCodec.encode(value) }),
+              this.options.postMessage,
+              (error) => {
+                this.#log(`Form Actor delivery failed: ${error}`);
+                transport.close(error);
+              },
+            ),
+        });
+        this.#start(scope, transport);
+      }
       for (const { modelId, viewId } of this.#views.values()) this.#mount(scope, modelId, viewId);
       if (!this.#views.size) this.#retire(scope, true);
       return;
@@ -174,7 +178,17 @@ export class FormActorClient {
     if (message.type === "closed") {
       if (scope) this.#retire(scope, false);
       if (message.code !== "hidden") this.#views.clear();
-    } else if (message.type === "frame") scope?.transport.deliver(message.value);
+    } else if (message.type === "frame") {
+      if (scope?.network) {
+        this.#retire(scope, true);
+        return;
+      }
+      try {
+        scope?.transport?.deliver(binaryFrame(message.value));
+      } catch {
+        if (scope) this.#retire(scope, true);
+      }
+    }
   }
 
   /** Terminal disposal joins in-flight calls, old generations and postMessage promises. */
@@ -195,6 +209,91 @@ export class FormActorClient {
     return this.#closing;
   }
 
+  #start(scope: BrowserScope, transport: MessageTransport): void {
+    scope.transport = transport;
+    scope.connection = createActorConnection(transport, {
+      actors: {
+        view: {
+          receive: async (value: unknown) => {
+            if (this.#scope === scope && !scope.retiring) await this.options.receive(value);
+          },
+        },
+      },
+      maxPendingCalls: FORM_ACTOR_LIMIT,
+    });
+    const connection = scope.connection;
+    if (scope.retiring) connection.close();
+    this.#observe(
+      scope,
+      connection.closed.then(() => {
+        this.#retire(scope, true);
+      }),
+    );
+    this.#observe(scope, connection.ready.then(scope.readiness.resolve, scope.readiness.reject));
+  }
+
+  #openSocket(scope: BrowserScope, endpoint: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const url = new URL(endpoint);
+      if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.hash) {
+        throw new ActorTransportError("protocol", "Invalid binary Actor endpoint");
+      }
+      const socket = new WebSocket(url);
+      socket.binaryType = "arraybuffer";
+      const signal = scope.lifetime.signal;
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.removeEventListener("open", opened);
+        socket.removeEventListener("error", failed);
+        socket.removeEventListener("close", failed);
+        signal.removeEventListener("abort", aborted);
+      };
+      const fail = (reason: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        try {
+          socket.close();
+        } catch (error) {
+          this.#log(`Form Actor startup close failed: ${error}`);
+        }
+        reject(reason);
+      };
+      const failed = () =>
+        fail(new ActorTransportError("closed", "Form Actor binary connection failed"));
+      const aborted = () => fail(signal.reason);
+      const opened = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        try {
+          this.#start(
+            scope,
+            webSocketTransport(socket, {
+              codec: formBinaryCodec,
+              maxChannels: 8,
+              maxPendingMessages: FORM_ACTOR_LIMIT * 4,
+            }),
+          );
+          resolve();
+        } catch (error) {
+          socket.close();
+          reject(error);
+        }
+      };
+      const timer = setTimeout(
+        () => fail(new ActorTransportError("closed", "Form Actor binary connection timed out")),
+        10000,
+      );
+      socket.addEventListener("open", opened);
+      socket.addEventListener("error", failed);
+      socket.addEventListener("close", failed);
+      signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
+    });
+  }
+
   #mount(scope: BrowserScope, modelId: string, viewId: string): void {
     const view = this.#views.get(viewId);
     if (!view || scope.mounted.get(viewId) === view) return;
@@ -202,7 +301,7 @@ export class FormActorClient {
     this.#observe(
       scope,
       (async () => {
-        await scope.connection?.ready;
+        await scope.readiness.promise;
         if (
           !scope.retiring && this.#scope === scope && this.#views.get(viewId) === view
         ) await scope.connection?.actor("forms").mount(modelId, viewId);
@@ -263,6 +362,9 @@ export class FormActorClient {
       );
     }
     scope.connection?.close();
+    scope.transport?.close();
+    scope.readiness.reject(new ActorTransportError("closed", "Form Actor scope closed"));
+    scope.lifetime.abort();
     const cleanup = (async () => {
       const results = await Promise.allSettled([scope.connection?.completion]);
       while (scope.pending.size) await Promise.all([...scope.pending]);

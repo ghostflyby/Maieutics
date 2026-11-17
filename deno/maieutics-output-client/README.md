@@ -139,25 +139,46 @@ separately copied browser ESM in `media/`.
 
 Only live mounts request a host-issued connection. The advertised surfaces are form
 mount/unmount/events and browser state delivery. Correlated calls use the stock payload codecs over
-native host messages; no browser transport credential or generic Actor acquire surface is provided.
-Hidden editors release their Actor and comm owners, and same-session visibility restores mounts on a
-fresh generation. Actions are never replayed. Session changes invalidate old mounts even while
-hidden. Overlapping model IDs cannot revive retired views or saved snapshots. Browser construction
-and snapshot-only rendering start no I/O.
+binary graph frames. The host provides a one-use scoped endpoint; no generic Actor acquire surface
+or kernel-wide credential is provided. Hidden editors release their Actor and comm owners, and
+same-session visibility restores mounts on a fresh generation. Actions are never replayed. Session
+changes invalidate old mounts even while hidden. Overlapping model IDs cannot revive retired views
+or saved snapshots. Browser construction and snapshot-only rendering start no I/O.
 
 Async post promises are owned; a rejection or false delivery result fails the attachment. Disposal
-joins current/retired connection work and reports cleanup errors. Each message is bounded to one MiB
-of conservatively measured native content, 16,384 nodes and depth 64, with a four-MiB/512-post owner
-budget. Editor, view, RPC and logical-channel budgets are also bounded. Binary is measured natively,
-not converted to text. The current form API carries data-only field/state values; raw comm binary
-buffers do not cross this attachment.
+joins current/retired connection work and reports cleanup errors. Each binary frame and
+reconstructed backing storage is bounded to one MiB, with 16,384 objects, 65,536 items/array slots
+and depth 64. Transport decoding admits four MiB/512 frames; bootstrap/native-message posts are
+bounded too. Editor, view, RPC and logical-channel budgets are also bounded. Binary stays native.
+The current form API carries data-only field/state values; raw comm binary buffers do not cross this
+attachment.
 
 The build reads the existing local Actor runtime sources and writes local `dist/`; copying also
-writes the host artifact pair in `../maieutics-vscode/runtime/`. Runtime messaging is injected by
-the owner, requiring no new Deno filesystem, environment, network or process permission.
+writes the host artifact pair in `../maieutics-vscode/runtime/`. Browser networking obeys the
+host-issued endpoint and host CSP. Kernel Deno permission flags remain unchanged.
 
 The build copies the original Actor runtime LICENSE/NOTICE into `dist/` and the extension's
 `runtime/`; distribute them with these bundled artifacts.
+
+The notebook data channel uses `maieutics-binary-graph/1` over a one-use authenticated WebSocket
+(ADR 0055). The JSON renderer bridge carries request/offer/release/closed controls only. An
+embedding host supplies `FormActorHost`'s `listen(owner, signal, accept)` hook: return the
+host-authorized endpoint and pass an OPEN standard WebSocket to `accept`. Abort revokes that
+endpoint and closes the peer. Without `listen`, a standalone adapter must preserve native byte
+arrays in `postMessage`; a JSON message adapter is insufficient.
+
+The VS Code extension owns a lazy loopback listener and uses `asExternalUri` for remote forwarding.
+Its narrow capability is independently authenticated and invalidated on visibility/session changes.
+Hosts must allow the chosen ws/wss connection in CSP. A failed/blocked data channel stays readonly
+with diagnostics; there is no JSON data fallback or automatic relaxation of host policy. This
+introduces a host-owned network listener, not a new kernel permission grant. The gateway's pinned ws
+dependency and MIT license are confined to the extension; the browser/runtime encoding adds no
+package dependency.
+
+Cyclic/shared graphs, undefined, Map/Set and native bytes survive this Actor hop. Typed views retain
+offsets and shared backing. Unexposed implicit backing spans reconstruct as zeros; explicitly
+passing a buffer includes its whole contents. Existing form field/comm schemas retain their data
+contract; this transport does not expose arbitrary REPL execution or expand form business types.
 
 ## Plugin HTTP and Vue Fetch
 

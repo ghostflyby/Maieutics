@@ -10,3 +10,5 @@ locations have been adapted to the Maieutics SDK package and build pipeline.
 Subsequent Maieutics changes add browser connections, separate host-only adapters,
 observable transport lifetimes and admission budgets, and credit-driven streams
 (internal Actor protocol version 2). See ADR 0053.
+Maieutics also adds a portable, versioned native-binary graph encoding with
+bounded object tables, cyclic references and protected backing-buffer spans (ADR 0055).

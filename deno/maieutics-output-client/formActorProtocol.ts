@@ -1,12 +1,31 @@
 import {
   ActorTransportError,
+  BINARY_GRAPH_CODEC,
   createActorConnection,
+  createBinaryGraphCodec,
   messageTransport,
+  webSocketTransport,
 } from "@maieutics/plugin-sdk/actor/browser";
 
-export { ActorTransportError, createActorConnection, messageTransport };
+export {
+  ActorTransportError,
+  BINARY_GRAPH_CODEC,
+  createActorConnection,
+  messageTransport,
+  webSocketTransport,
+};
+export const formBinaryCodec = createBinaryGraphCodec();
 export const FORM_ACTOR_SOURCE = "maieutics-form-actor";
-export const FORM_ACTOR_VERSION = 1;
+export const FORM_ACTOR_VERSION = 2;
+
+/** Native byte-bearing transports only. JSON objects masquerading as byte arrays are invalid. */
+export function binaryFrame(value: unknown): Uint8Array | ArrayBuffer {
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return value;
+  throw new ActorTransportError("decode", "Form Actor data requires native binary frames");
+}
+export function binaryFrameSize(value: unknown): number {
+  return binaryFrame(value).byteLength;
+}
 export const FORM_ACTOR_LIMIT = 128;
 export const FORM_ACTOR_FRAME_BYTES = 1024 * 1024;
 

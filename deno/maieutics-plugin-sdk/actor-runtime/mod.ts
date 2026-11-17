@@ -55,3 +55,5 @@ export { createActorConnection } from "./core/connection.ts";
 export type { ActorConnection, ActorConnectionOptions } from "./core/connection.ts";
 export { webSocketTransport } from "./core/websocket.ts";
 export type { WebSocketTransportOptions, WireCodec } from "./core/websocket.ts";
+export { BINARY_GRAPH_CODEC, createBinaryGraphCodec } from "./core/binary_graph.ts";
+export type { BinaryGraphCodec, BinaryGraphOptions } from "./core/binary_graph.ts";

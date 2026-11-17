@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 // @deno-types="../../runtime/formActorHost.d.ts"
 import { FormActorHost } from "../../runtime/formActorHost.js";
+import { FormActorGateway } from "../../formActorGateway.ts";
 
 /** Exercise the shared Vue components and the actual notebook adapter in a real browser. */
 export async function testVueFormsAsync(): Promise<void> {
@@ -14,9 +15,11 @@ export async function testVueFormsAsync(): Promise<void> {
   let subscription: vscode.Disposable | undefined;
   const actorOwner = {};
   let actorSession = "browser-form-session";
+  const gateway = new FormActorGateway({ log: (message) => console.log(message) });
   const actors = new FormActorHost({
     session: () => actorSession,
     visible: () => true,
+    listen: (_owner, signal, accept) => gateway.listen(signal, accept),
     handle: async (owner, message) => {
       const action = message as { type: string; modelId: string; name?: string };
       if (action.type === "mount") {
@@ -54,7 +57,7 @@ export async function testVueFormsAsync(): Promise<void> {
       panel.webview.asWebviewUri(vscode.Uri.joinPath(extension.extensionUri, "media", name))
         .toString();
     panel.webview.html =
-      `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline';"></head><body><script type="module">
+      `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:*;"></head><body><script type="module">
       const vscode = acquireVsCodeApi();
       const assert = (value, message) => { if (!value) throw new Error(message); };
       try {
@@ -154,6 +157,7 @@ export async function testVueFormsAsync(): Promise<void> {
     if (timer !== undefined) clearTimeout(timer);
     subscription?.dispose();
     await actors.dispose();
+    await gateway.dispose();
     panel.dispose();
   }
 }

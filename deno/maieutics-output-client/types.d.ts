@@ -118,7 +118,7 @@ export interface FormRenderer {
   dispose(): void;
 }
 
-/** Host-injected message delivery; the Actor scope starts only when a live form mounts. */
+/** Host bootstrap delivery; data uses the offered binary endpoint. Live mounts start the scope. */
 export interface ActorFormRendererOptions {
   postMessage(message: unknown): void | PromiseLike<unknown>;
   log?(message: string): void;

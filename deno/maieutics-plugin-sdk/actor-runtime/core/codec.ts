@@ -244,8 +244,18 @@ export class PayloadCodecRegistry {
     if (Array.isArray(v)) {
       const out = new Array<unknown>(v.length);
       seen.set(v, out);
-      for (let i = 0; i < v.length; i++) {
-        out[i] = this.#encodeWalk(v[i], transfer, transport, seen);
+      for (const key of Object.keys(v)) {
+        Object.defineProperty(out, key, {
+          value: this.#encodeWalk(
+            (v as unknown as Record<string, unknown>)[key],
+            transfer,
+            transport,
+            seen,
+          ),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return out;
     }
@@ -269,15 +279,17 @@ export class PayloadCodecRegistry {
       return out;
     }
     if (isPlainObject(v)) {
-      const out: Record<string, unknown> = {};
+      const out: Record<string, unknown> = Object.create(
+        Object.getPrototypeOf(v) === null ? null : Object.prototype,
+      );
       seen.set(v, out);
       for (const key of Object.keys(v)) {
-        out[key] = this.#encodeWalk(
-          (v as Record<string, unknown>)[key],
-          transfer,
-          transport,
-          seen,
-        );
+        Object.defineProperty(out, key, {
+          value: this.#encodeWalk((v as Record<string, unknown>)[key], transfer, transport, seen),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return out;
     }
@@ -323,8 +335,13 @@ export class PayloadCodecRegistry {
     if (Array.isArray(v)) {
       const out = new Array<unknown>(v.length);
       seen.set(v, out);
-      for (let i = 0; i < v.length; i++) {
-        out[i] = this.#decodeWalk(v[i], transport, seen);
+      for (const key of Object.keys(v)) {
+        Object.defineProperty(out, key, {
+          value: this.#decodeWalk((v as unknown as Record<string, unknown>)[key], transport, seen),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return out;
     }
@@ -346,14 +363,17 @@ export class PayloadCodecRegistry {
       return out;
     }
     if (isPlainObject(v)) {
-      const out: Record<string, unknown> = {};
+      const out: Record<string, unknown> = Object.create(
+        Object.getPrototypeOf(v) === null ? null : Object.prototype,
+      );
       seen.set(v, out);
       for (const key of Object.keys(v)) {
-        out[key] = this.#decodeWalk(
-          (v as Record<string, unknown>)[key],
-          transport,
-          seen,
-        );
+        Object.defineProperty(out, key, {
+          value: this.#decodeWalk((v as Record<string, unknown>)[key], transport, seen),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return out;
     }

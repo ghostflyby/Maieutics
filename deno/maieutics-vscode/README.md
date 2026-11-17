@@ -13,6 +13,19 @@ host (ADR 0054). The host selects the editor's pinned session and adapts operati
 comm endpoint. Hidden editors release connections; same-session visibility restores mounts without
 replaying actions. Repinning invalidates old views, and saved forms stay readonly.
 
+The renderer bridge is JSON bootstrap only. Each live editor receives a one-use binary WebSocket
+capability from an extension-owned listener bound to 127.0.0.1 on an ephemeral port. Actor data uses
+the versioned binary graph codec: cycles/shared references and binary remain native. The listener
+starts lazily; snapshots and unpinned files acquire no endpoint. Hiding, closing, repinning or
+deactivation revokes capabilities and joins owned resources. Remote extension hosts resolve the base
+through `vscode.env.asExternalUri`; routing/query information is preserved. The gateway uses pinned
+ws 8.23.0 (MIT, license shipped in runtime/), not a second kernel API.
+
+Browser hosts must permit the chosen ws/wss endpoint in CSP. Blocked or failed connections leave
+forms readonly with diagnostics; the extension does not weaken CSP or send binary through JSON. No
+kernel/Deno permission grants change. Gateway tests require loopback network authority and use
+dynamically assigned ports, native binary frames and explicit completion signals.
+
 ## Features
 
 - `.maieuticsnb` notebooks: one ordinary cell is one submitted Agent turn.

@@ -5,6 +5,8 @@ export interface FormActorHostOptions<Owner extends object> {
   handle(owner: Owner, message: unknown): Promise<void>;
   release(owner: Owner): Promise<void>;
   post(owner: Owner, message: unknown): void | PromiseLike<unknown>;
+  /** Host-owned one-use binary endpoint. Without it, post must preserve native byte arrays. */
+  listen?(owner: Owner, signal: AbortSignal, accept: (socket: WebSocket) => void): Promise<string>;
   log(message: string): void;
 }
 

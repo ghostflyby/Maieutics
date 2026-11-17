@@ -18,7 +18,8 @@ A standalone host can use the same browser and host bundles without VS Code APIs
 ```mermaid
 flowchart LR
     Vue[Shared Vue form] <--> Browser[Browser Actor owner]
-    Browser <-->|Renderer messaging| Host[Editor Actor owner]
+    Browser <-->|JSON bootstrap| Host[Editor Actor owner]
+    Browser <-->|Native binary graph WebSocket| Host
     Host <-->|Form operations and projections| Bridge[Existing session comm adapter]
     Bridge <-->|Authenticated comm WebSocket| Kernel[Kernel form model]
 ```
@@ -29,13 +30,13 @@ remains readonly. The existing `createFormRenderer` API remains usable by explic
 message adapters. The notebook adapter uses the Actor API; old raw mount/event envelopes are no
 longer admitted by the extension's form renderer channel.
 
-The browser asks for an attachment using a version-one `maieutics-form-actor` envelope. The host
+The browser asks for an attachment using a version-two `maieutics-form-actor` bootstrap envelope. The host
 offers an opaque connection ID and increasing editor-local epoch only when that editor is
 visible and has an explicit pinned session. Neither model/view IDs nor renderer fields select
-a session. The first frame must be an Actor hello. Both peers then use protocol 2 over
-`messageTransport`, with stock payload codecs and correlated request/reply channels. Native
-values are delegated to the embedding host; no JSON/base64 encoding is introduced. The current
-form surface carries data-only form values, not comm binary buffers.
+a session. The offer selects the production binary graph codec and a one-use authorized
+WebSocket endpoint (ADR 0055). Both peers use Actor protocol 2 with stock payload codecs and
+correlated request/reply channels. Renderer messaging carries bootstrap controls only; Actor
+frames use native binary. The existing form/comm business schema is unchanged.
 
 The host advertises only `forms.mount`, `forms.unmount` and `forms.event`; the browser advertises
 only `view.receive`. The host checks its editor, pinned session, visibility and generation again
@@ -60,15 +61,17 @@ and is reported through cleanup and diagnostics.
 
 Admission is bounded: 128 active/retiring editor offers, 128 views per connection, eight logical
 channels, 128 pending RPCs, and ten seconds for an unanswered offer. Each native message is
-bounded to one MiB of conservatively measured content, 16,384 graph nodes and depth 64. Each post
-owner admits 512 outstanding deliveries and four MiB combined content. Overflow fails the
+bounded to one MiB of binary graph encoding and reconstructed buffer storage, 16,384 graph
+nodes, 65,536 items/array slots and depth 64. Transport decoding admits 512 queued frames and four
+MiB combined bytes. Bootstrap/native-message post owners also have bounded count/byte budgets. Overflow fails the
 attachment explicitly; models and unrelated editors retain their owners.
 
 The output-client build produces a browser ESM and separate self-contained host ESM with
 declarations. `build:vscode` copies these into the extension's `media/` and `runtime/`. Extension
 host sources import only that local artifact, preserving standalone packaging. CI rebuilds and
 checks both committed artifacts. Neither artifact includes process creation or Node adapters;
-no dependency is added. Original Actor runtime LICENSE/NOTICE files accompany both distributions.
+the extension-only WebSocket gateway uses pinned ws 8.23.0. Original Actor runtime LICENSE/NOTICE
+and the ws MIT license accompany the distributions.
 
 ## Compatibility and verification
 

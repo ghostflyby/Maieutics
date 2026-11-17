@@ -3,6 +3,7 @@ import { FormActorClient } from "./formActorClient.ts";
 import { FormActorHost } from "./formActorHost.ts";
 import {
   FORM_ACTOR_FRAME_BYTES,
+  formBinaryCodec,
   formFrameSize,
   FormPosts,
   frame,
@@ -164,11 +165,14 @@ Deno.test("form Actors use correlated RPC and isolate overlapping identities by 
     assertEquals(action.owner, a.owner);
     assertEquals(action.message.payload, { values: { text: "draft", count: 2.5 } });
     assert(f.wire.every(({ value }) => record(value) && value.source === "maieutics-form-actor"));
-    assert(
-      f.wire.some(({ value }) =>
-        record(value) && record(value.value) && value.value.type === "actor:hello"
-      ),
+    const frames = f.wire.flatMap(({ value }) =>
+      record(value) && value.type === "frame" ? [value.value] : []
     );
+    assert(frames.every((value) => value instanceof Uint8Array));
+    const decoded = await Promise.all(
+      frames.map((value) => formBinaryCodec.decode(value as Uint8Array)),
+    );
+    assert(decoded.some((value) => record(value) && value.type === "actor:hello"));
   } finally {
     await f.dispose();
   }
@@ -637,7 +641,7 @@ Deno.test("a malformed initial Actor frame releases its offered editor scope", a
     frame("frame", {
       epoch: messages[0].epoch,
       connectionId: messages[0].connectionId,
-      value: null,
+      value: formBinaryCodec.encode(null),
     }),
   );
   await host.dispose();

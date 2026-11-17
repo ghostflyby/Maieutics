@@ -784,10 +784,13 @@ public sealed class FrontendApiIntegrationTests
         using var client = harness.CreateClient();
 
         var sourceId = await harness.GetSessionIdAsync(TestContext.Current.CancellationToken);
-        await harness.SubmitTurnAsync(sourceId, "first question", TestContext.Current.CancellationToken);
-        // The single-run gate rejects concurrent turns; wait for the first to commit.
+        var firstAcceptedRun = await harness.SubmitTurnAsync(sourceId, "first question", TestContext.Current.CancellationToken);
+        // Transcript commit precedes presentation-scope release. A follow-up turn
+        // must await settlement, including when the transcript read already sees it.
+        await harness.WaitForTurnCommittedAsync(sourceId, TestContext.Current.CancellationToken, firstAcceptedRun);
         await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 1, TestContext.Current.CancellationToken);
-        await harness.SubmitTurnAsync(sourceId, "second question", TestContext.Current.CancellationToken);
+        var secondAcceptedRun = await harness.SubmitTurnAsync(sourceId, "second question", TestContext.Current.CancellationToken);
+        await harness.WaitForTurnCommittedAsync(sourceId, TestContext.Current.CancellationToken, secondAcceptedRun);
         var source = await WaitForTranscriptTurnsAsync(harness, sourceId, minimumTurns: 2, TestContext.Current.CancellationToken);
         var firstRunId = source.GetProperty("turns")[0].GetProperty("runId").GetString()!;
 

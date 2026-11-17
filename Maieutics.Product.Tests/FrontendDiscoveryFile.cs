@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace Maieutics.Product.Tests;
 
@@ -6,30 +7,25 @@ namespace Maieutics.Product.Tests;
 ///
 /// The producer publishes atomically (owner-only temp file, then rename), so the file's
 /// appearance is a completion signal: a <c>FileSystemWatcher</c> on the parent directory
-/// awaits it, and the existence wait has no timer behind it. Publication is not a
-/// guarantee that this process can open the file yet — on Windows a freshly renamed file
-/// can be briefly held by a scanner, and the failure surfaces as <see cref="IOException"/>
-/// at open time. That lock is a condition outside the process with no completion signal
-/// to await, so the open retries with an asynchronous backoff under its own budget — the
-/// one irreducible retry; a file that never becomes readable still surfaces, naming the
-/// last observed cause instead of a bare cancellation. Caller cancellation still
-/// propagates untouched.</summary>
+/// awaits it, and the existence wait has no timer behind it. An overflow means the
+/// publication event may be lost, so it triggers a fresh probe; a permanently failed
+/// watcher fails the wait with its original cause. Transient open/parse failures await
+/// another notification under the same budget; the reader never polls for lock release.
+/// A file that never becomes readable surfaces its last observed cause instead of bare
+/// cancellation. Caller cancellation still propagates untouched.</summary>
 internal static class FrontendDiscoveryFile
 {
-    /// <summary>The backoff between open attempts while an external lock holds the
-    /// published file. The lock's release has no waitable signal, so this is the one
-    /// irreducible retry in the suite.</summary>
-    private static readonly TimeSpan LockRetryDelay = TimeSpan.FromMilliseconds(25);
-
     /// <summary>Awaits a readable, parseable discovery document within
     /// <paramref name="budget"/>. <paramref name="fault"/>, when supplied, is consulted on
     /// each open attempt and its non-null result is thrown instead of waiting out the
-    /// budget (the smoke harness uses it to report a dead child immediately).</summary>
+    /// budget. The reader owns <paramref name="publicationWatcher"/> when supplied;
+    /// tests use it to control notification loss without relying on filesystem timing.</summary>
     internal static async Task<JsonElement> ReadAsync(
         string path,
         TimeSpan budget,
         CancellationToken cancellationToken,
-        Func<string?>? fault = null)
+        Func<string?>? fault = null,
+        FileSystemWatcher? publicationWatcher = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(budget);
@@ -37,23 +33,33 @@ internal static class FrontendDiscoveryFile
         try
         {
             var directory = Path.GetDirectoryName(path) ?? ".";
-            using var watcher = new FileSystemWatcher(directory, Path.GetFileName(path));
-            watcher.EnableRaisingEvents = true;
+            using var watcher = publicationWatcher ?? new FileSystemWatcher(directory, Path.GetFileName(path));
             watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
-            // Pre-armed before the first open attempt, so a publication landing between a
-            // failed open and the wait below is folded in instead of lost. The handlers read
-            // the live slot on purpose: the loop re-arms it after each observed publication.
-            var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            // ReSharper disable AccessToModifiedClosure
-            watcher.Created += (_, _) => published.TrySetResult();
-            watcher.Renamed += (_, _) => published.TrySetResult();
-            watcher.Changed += (_, _) => published.TrySetResult();
-            // ReSharper restore AccessToModifiedClosure
-            var awaitingPublication = !File.Exists(path);
+            // Notifications request a probe of one authoritative file; repeated requests
+            // coalesce. Overflow means a publication may have been lost, so probe again.
+            var published = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+            {
+                SingleReader = true,
+                FullMode = BoundedChannelFullMode.DropWrite,
+                AllowSynchronousContinuations = false
+            });
+            Exception? watcherFailure = null;
+            watcher.Created += (_, _) => published.Writer.TryWrite(true);
+            watcher.Renamed += (_, _) => published.Writer.TryWrite(true);
+            watcher.Changed += (_, _) => published.Writer.TryWrite(true);
+            watcher.Error += (_, args) =>
+            {
+                if (args.GetException() is not InternalBufferOverflowException)
+                    Interlocked.CompareExchange(ref watcherFailure, args.GetException(), null);
+                published.Writer.TryWrite(true);
+            };
+            watcher.EnableRaisingEvents = true;
 
             while (true)
             {
                 deadline.Token.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref watcherFailure) is { } failure)
+                    throw new IOException($"Watching frontend discovery file '{path}' failed.", failure);
                 if (fault?.Invoke() is { } reported) throw new InvalidOperationException(reported);
 
                 try
@@ -77,21 +83,7 @@ internal static class FrontendDiscoveryFile
                     lastFailure = exception;
                 }
 
-                if (awaitingPublication)
-                {
-                    // The producer has not published yet: the appearance is the event, and
-                    // the pre-armed source above carries any signal that raced the open.
-                    await published.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
-                    published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                    awaitingPublication = false;
-                }
-                else
-                {
-                    // Published but not openable: an external lock (a Windows scanner)
-                    // holds it. Its release has no waitable signal, so the open retries
-                    // with an asynchronous backoff — the one irreducible retry.
-                    await Task.Delay(LockRetryDelay, deadline.Token).ConfigureAwait(false);
-                }
+                await published.Reader.ReadAsync(deadline.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested &&

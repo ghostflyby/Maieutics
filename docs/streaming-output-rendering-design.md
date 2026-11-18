@@ -989,6 +989,77 @@ build, pinned/frozen install, format/lint/types, SDK publish dry-run, offline SS
 freshness checks pass. Linux/Windows validation is delegated to the new PR's CI.
 
 
+## Notebook form Actor attachment (implemented 2026-11-16)
+
+[ADR 0054](architecture/decisions/0054-notebook-form-actor-attachments.md) connects the shared
+browser form renderer to the extension host through the product-owned Actor runtime. The
+notebook adapter uses the additive `createActorFormRenderer`; ordinary Vue components and the
+kernel/session comm adapter remain shared. A host-issued connection identity and editor epoch
+bind the narrow forms/view Actor surfaces to the host-selected pinned session. Each call and
+state projection is correlated by the Actor protocol rather than sent as a raw form message.
+
+Startup is lazy and snapshot forms acquire no capability. Hidden/closed editors release Actor
+and comm owners. Same-session visibility restoration opens a fresh generation and restores
+mounts, never actions. Repinning, including while hidden, invalidates old views. Per-view state
+admission prevents a new form with an overlapping model ID from reactivating a retired form.
+Stale frames cannot cross generations or editor scopes. The last unmount releases the connection
+without closing the shared model. Startup cancellation precedes joining dispatch; asynchronous
+posts and cleanup remain observed and joined on extension deactivation.
+
+The browser ESM includes the shared Actor implementation. A separate host ESM/declaration pair
+is copied into the extension's `runtime/`, preserving self-contained extension-host packaging.
+CI rebuilds both artifacts. Native message count/byte/graph limits complement existing view,
+channel, RPC and comm-state budgets. No frontend REST, comm, MIME, persisted snapshot, rendering
+capability or SSR service format changes. Existing standalone message-based form hosts remain
+supported. Browser-to-plugin Actor routing remains outside this attachment.
+
+Focused tests exercise generation/session isolation, hidden recovery, pending-mount cancellation,
+delivery/cleanup failure and all 128 admitted views. Actual VS Code coverage drives the browser
+and extension Actor peers, retains Vue draft/focus behavior, denies saved snapshots and proves a
+replacement session cannot make old views live. Real notebook socket tests retain their
+two-session and shared-document/two-group release assertions.
+
+The extension requires VS Code 1.101 or later to match the bundled runtime's Node 22 baseline.
+Local acceptance passes 974 Deno cases, 20 Node scenarios, 27 actual VS Code cases, 12 real
+browser Actor scenarios, and 1,687 .NET cases (1,679 passed; eight existing platform/external-service skips).
+Warning-free build, osx-arm64 NativeAOT publish and 13 published-process smokes pass. Removing
+the retired-view admission guard reproduces the browser authorization failure; both same-output
+remount regressions fail before the attachment-identity fix and pass after it. One intermediate
+full Deno run hit the existing cross-worker service assertion; focused and final full reruns pass.
+
+## Native binary Actor graphs (implemented 2026-11-17)
+
+[ADR 0055](architecture/decisions/0055-binary-actor-graphs.md) supplies the portable production
+`createBinaryGraphCodec`. It retains cyclic/shared graphs, native byte spans, typed views with
+shared backing, native errors and data-property semantics through bounded, per-frame object
+tables. Binary is never encoded as JSON/text/base64. Implicit backing buffers include only the
+union of exposed view spans; other bytes are zeroed to prevent pooled-buffer disclosure.
+
+The form attachment bootstrap becomes version 2. VS Code renderer messaging carries controls
+only. The extension issues a one-use, editor/session/generation-bound WebSocket endpoint from an
+owned lazy loopback listener; all Actor/Mux/codec-channel frames then use binary graphs. Native
+gateway tests force bootstrap through JSON and still verify cyclic/binary values in both directions.
+The browser Actor suite uses the production encoding, including native errors, callbacks, streams,
+cancel and disconnect. Payload registry cloning preserves null prototypes and defines own data
+properties so __proto__ keys cannot invoke prototype setters or corrupt graph identity.
+
+Each endpoint has an independent 256-bit credential, constant-time admission and single-use
+upgrade. Aborting its editor scope revokes the endpoint and terminates its peer. Startup/open
+waits and asynchronous cleanup are owned. Failed endpoint publication closes its partial listener
+before reporting failure. Remote forwarding uses asExternalUri; a host CSP must permit the chosen
+ws/wss connection. Policy is not loosened and binary traffic never falls back to JSON. The gateway
+uses pinned ws 8.23.0 with its license in the VSIX; the shared codec has no new dependency.
+
+The gateway installs its permanent server-error observer before binding. Bind failures reject
+startup, and the listening callback activates runtime failure handling before removing the startup
+observer; the intervening microtask therefore retains an owner. The host rejects bootstrap data
+frames once, before hello decoding, whenever the binary endpoint is configured.
+
+The encoding contract, exact tags and budgets are in ADR 0055. SDK publish-plan and executable
+embedding sentinels include the codec source. Rendering/SSR, form MIME, kernel comm data/buffer
+framing and notebook persistence keep their contracts. Generic binary transport does not expand
+the form business schema or grant a browser generic Actor acquire/REPL execution authority.
+
 ## Plugin HTTP transport foundation (implemented 2026-11-12)
 
 [ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) selects HTTP as the primary

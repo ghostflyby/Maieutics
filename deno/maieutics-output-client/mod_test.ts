@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { createOutputRenderer, renderTurn } from "./mod.ts";
+import { createActorFormRenderer, createOutputRenderer, renderTurn } from "./mod.ts";
 
 Deno.test("standalone imports and scope disposal require no DOM, VS Code or transport globals", async () => {
   const sent: unknown[] = [];
@@ -14,6 +14,21 @@ Deno.test("standalone imports and scope disposal require no DOM, VS Code or tran
     DOMException,
   );
   assertEquals(sent, []);
+});
+
+Deno.test("the browser Actor form export constructs and disposes without DOM or transport authority", async () => {
+  const messages: unknown[] = [];
+  const client = createActorFormRenderer({
+    postMessage(message) {
+      messages.push(message);
+    },
+  });
+  client.receive({ source: "unknown" });
+  client.disposeOutput();
+  const completion = client.dispose();
+  assertEquals(client.dispose(), completion);
+  await completion;
+  assertEquals(messages, []);
 });
 
 Deno.test("standalone timeline helpers keep untrusted content inert without a host Markdown service", () => {

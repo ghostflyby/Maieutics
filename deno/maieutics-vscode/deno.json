@@ -1,5 +1,7 @@
 {
   "imports": {
+    "ws": "npm:ws@8.23.0",
+    "@types/ws": "npm:@types/ws@8.18.1",
     "acorn": "npm:acorn@8.18.0",
     "markdown-it": "npm:markdown-it@14.3.1",
     "@vscode/test-electron": "npm:@vscode/test-electron@3.1.0",

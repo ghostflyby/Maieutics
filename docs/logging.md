@@ -65,6 +65,20 @@ raise `Logging__LogLevel__Maieutics` to `Debug`, and keep `Microsoft`/`System` a
 failure (and on scheduled runs) the directory is uploaded as a workflow artifact with a 14-day
 retention; `if-no-files-found: ignore` keeps passing runs clean.
 
+The smoke harness enables Host/Kestrel startup diagnostics for its owned executable children.
+On a discovery timeout it includes the final file-existence state and captured output. A manual
+CI run with `hang_dump` enabled also captures the child after a 25-second startup wait and writes
+`startup-{pid}.dmp` plus managed/async stack reports. Capture has its own 25-second budget, is
+cancelled and joined when the readiness wait settles, and leaves the 60-second readiness budget
+unchanged. Diagnostic runs retain `test-logs/` even when a slow startup eventually succeeds.
+
+The discovery reader treats filesystem notifications as requests to re-open the authoritative file.
+It coalesces them in a bounded channel, rechecks after a notification-buffer overflow, and reports
+permanent watcher errors with their original cause. Transient open/parse failures await the next
+notification under the same deadline; there is no timer-based retry or lock-release polling.
+An overflow before publication keeps waiting for a real notification if the file is still absent. See the platform's
+[FileSystemWatcher error contract](https://learn.microsoft.com/en-us/dotnet/api/system.io.filesystemwatcher.error?view=net-10.0).
+
 ## Maieutics.Agent
 
 `Maieutics.Agent` deliberately emits no log records: its typed event stream is the observable

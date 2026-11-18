@@ -20,7 +20,7 @@ on:
         required: false
         default: "Maieutics.slnx"
       hang_dump:
-        description: "Collect a test-host dump and stack report when a watched reload parks 25s"
+        description: "Collect dumps and stack reports for reload or executable startup waits exceeding 25s"
         required: false
         default: false
         type: boolean
@@ -118,7 +118,7 @@ jobs:
         working-directory: deno/maieutics-output-client
         run: |
           deno task build:vscode
-          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js
+          git diff --exit-code --stat -- ../maieutics-vscode/media/outputClient.js ../maieutics-vscode/runtime/
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
@@ -224,9 +224,8 @@ jobs:
           TEST_REPEATS: ${{ github.event_name == 'schedule' && 3 || github.event.inputs.test_repeat || 1 }}
           TEST_FILTER: ${{ github.event.inputs.test_filter }}
           TEST_PROJECTS: ${{ github.event.inputs.test_projects || 'Maieutics.slnx' }}
-          # Opt-in flake hunting: a hung watched reload dumps the test host and renders
-          # its managed stacks on the runner. Off for normal runs — the dump is large
-          # and collection plus analysis takes minutes.
+          # Opt-in flake hunting: stalled reloads dump the test host; stalled smoke
+          # startups dump the executable child. Both render managed stack reports.
           MAIEUTICS_HANG_DUMP: ${{ inputs.hang_dump && '1' || '' }}
         run: |
           # The default solution scope reuses the build step via --no-build; a scoped
@@ -263,7 +262,7 @@ jobs:
           retention-days: 14
 
       - name: Upload test logs
-        if: failure() || github.event_name == 'schedule'
+        if: failure() || github.event_name == 'schedule' || inputs.hang_dump
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.os }}

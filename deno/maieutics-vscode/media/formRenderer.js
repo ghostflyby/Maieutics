@@ -1,11 +1,13 @@
-import { createFormRenderer } from "./outputClient.js";
+import { createActorFormRenderer } from "./outputClient.js";
 
 /** Notebook adapter: all component and state handling lives in the shared Vue client. */
 export function activate(context) {
-  const client = createFormRenderer({ sendMessage: (message) => context.postMessage?.(message) });
-  context.onDidReceiveMessage?.(async (message) => {
+  const client = createActorFormRenderer({
+    postMessage: (message) => context.postMessage?.(message),
+  });
+  context.onDidReceiveMessage?.((message) => {
     try {
-      await client.receive(message);
+      client.receive(message);
     } catch {
       console.warn("Maieutics rejected invalid form state.");
     }

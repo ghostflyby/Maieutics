@@ -9,6 +9,7 @@ export function assertPublishPlan(diagnostics: string, root: URL): string[] {
   for (
     const required of [
       "actor-runtime/browser.ts",
+      "actor-runtime/core/binary_graph.ts",
       "actor-runtime/spawn_process.ts",
       "actor-runtime/LICENSE",
       "actor-runtime/NOTICE",

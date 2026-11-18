@@ -9,6 +9,7 @@ export interface BrowserServices {
     invokeEmpty(callback: () => Promise<void>): Promise<void>;
     nothing(): null;
     echo(bytes: Uint8Array): Uint8Array;
+    graph(value: unknown): unknown;
     increment(): number;
     numbers(): AsyncIterable<number>;
     produced(): number;
@@ -74,6 +75,30 @@ export async function runBrowserConformance(
       "WebSocket binary view must retain exact bytes and type",
     );
     passed.push("binary WebSocket RPC");
+    const graph: {
+      self?: unknown;
+      bytes: Uint8Array;
+      alias?: Uint8Array;
+      map?: Map<unknown, unknown>;
+    } = { bytes };
+    graph.self = graph;
+    Object.defineProperty(graph, "__proto__", { value: { safe: true }, enumerable: true });
+    graph.alias = bytes;
+    graph.map = new Map([[graph, bytes]]);
+    const copy = await actor.graph(graph) as typeof graph;
+    assert(
+      Object.getPrototypeOf(copy) === Object.prototype && Object.hasOwn(copy, "__proto__"),
+      "Actor payload and wire codecs must retain prototype-named data without invoking setters",
+    );
+    assert(
+      copy.self === copy && copy.alias === copy.bytes && copy.map?.get(copy) === copy.bytes,
+      "Production graph codec must retain cycles and shared identities over binary WebSocket RPC",
+    );
+    assert(
+      copy.bytes instanceof Uint8Array && String(copy.bytes) === "0,255,1",
+      "Graph bytes remain native binary",
+    );
+    passed.push("cyclic binary graph RPC");
     const reversed = await actor.apply((value) => value.slice().reverse(), bytes);
     assert(
       reversed instanceof Uint8Array && String(reversed) === "1,255,0",

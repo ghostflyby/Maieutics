@@ -35,7 +35,9 @@
   No VS Code APIs or transport credentials; hosts supply message delivery, optional Markdown and
   action handling. Build emits dist/outputClient.js plus declarations; build:vscode copies the
   identical JS artifact into the extension. Commit the copied artifact and enforce rebuild freshness
-  in CI.
+  in CI. Form Actor attachments also produce a self-contained host ESM/declaration pair copied into
+  the extension's runtime/; extension-host code imports that local artifact, never the output-client
+  workspace sources. Rebuild and check both artifacts together (ADR 0054).
 - `maieutics-output-renderer/` — executable-owned passive Markdown, explicit data-template and Vue
   SSR primitives for `docs/streaming-output-rendering-design.md`. Owns offline content rendering and
   highlighter lifetime. The executable embeds its committed `bundle/service.js`; regenerate that

@@ -10,6 +10,8 @@
  *   executable is launched outside the extension. The process is not owned.
  */
 
+import { waitForStartup } from "./startupWait.ts";
+export { waitForStartup } from "./startupWait.ts";
 import { randomUUID } from "node:crypto";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
@@ -50,21 +52,6 @@ export async function renderingConnection(
   signal.throwIfAborted();
   if (current !== undefined || starting === undefined) return current;
   return await waitForStartup(starting, signal);
-}
-
-/** Cancel this wait while the connection owner continues to observe shared startup. */
-export async function waitForStartup<T>(starting: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  let abort = () => {};
-  const cancelled = new Promise<never>((_, reject) => {
-    abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-  });
-  try {
-    return await Promise.race([starting, cancelled]);
-  } finally {
-    signal.removeEventListener("abort", abort);
-  }
 }
 
 export async function connect(options: ConnectionOptions): Promise<Connection> {

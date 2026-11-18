@@ -142,6 +142,7 @@ try {
           invokeEmpty: (callback: () => Promise<void>) => callback(),
           nothing: () => null,
           echo: (bytes: Uint8Array) => bytes,
+          graph: (value: unknown) => value,
           increment: () => ++count,
           async *numbers() {
             try {

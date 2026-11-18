@@ -1,4 +1,7 @@
 import * as vscode from "vscode";
+// @deno-types="../../runtime/formActorHost.d.ts"
+import { FormActorHost } from "../../runtime/formActorHost.js";
+import { FormActorGateway } from "../../formActorGateway.ts";
 
 /** Exercise the shared Vue components and the actual notebook adapter in a real browser. */
 export async function testVueFormsAsync(): Promise<void> {
@@ -10,18 +13,51 @@ export async function testVueFormsAsync(): Promise<void> {
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri] });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let subscription: vscode.Disposable | undefined;
+  const actorOwner = {};
+  let actorSession = "browser-form-session";
+  const gateway = new FormActorGateway({ log: (message) => console.log(message) });
+  const actors = new FormActorHost({
+    session: () => actorSession,
+    visible: () => true,
+    listen: (_owner, signal, accept) => gateway.listen(signal, accept),
+    handle: async (owner, message) => {
+      const action = message as { type: string; modelId: string; name?: string };
+      if (action.type === "mount") {
+        actors.post(owner, {
+          source: "maieutics-form",
+          type: "state",
+          modelId: action.modelId,
+          state: { fields: [], values: {}, title: "Actor connected" },
+        });
+      } else if (action.type === "event") {
+        await panel.webview.postMessage({ testAction: action.name });
+      }
+    },
+    release: () => Promise.resolve(),
+    post: (_owner, message) => panel.webview.postMessage(message),
+    log: (message) => console.log(message),
+  });
   try {
     const verdict = new Promise<void>((resolve, reject) => {
       timer = setTimeout(() => reject(new Error("Vue form browser test did not complete")), 30_000);
-      subscription = panel.webview.onDidReceiveMessage((message) =>
-        message.ok ? resolve() : reject(new Error(message.error))
-      );
+      subscription = panel.webview.onDidReceiveMessage((message) => {
+        if (message.source === "maieutics-form-actor") actors.receive(actorOwner, message);
+        else if (message.testRevoke === true) {
+          actorSession = "next-browser-form-session";
+          void actors.releaseWhere(() => true).then(
+            () => panel.webview.postMessage({ testRevoked: true }),
+            reject,
+          ).catch(reject);
+        } else if (typeof message.ok === "boolean") {
+          message.ok ? resolve() : reject(new Error(message.error));
+        }
+      });
     });
     const asset = (name: string) =>
       panel.webview.asWebviewUri(vscode.Uri.joinPath(extension.extensionUri, "media", name))
         .toString();
     panel.webview.html =
-      `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline';"></head><body><script type="module">
+      `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:*;"></head><body><script type="module">
       const vscode = acquireVsCodeApi();
       const assert = (value, message) => { if (!value) throw new Error(message); };
       try {
@@ -78,12 +114,40 @@ export async function testVueFormsAsync(): Promise<void> {
         try { cleanup.dispose(); } catch {}
         assert(!cleanupA.shadowRoot.querySelector('form') && !cleanupB.shadowRoot.querySelector('form'), 'host delivery failure cannot prevent other Vue scopes from being unmounted');
         const posted = []; let receive;
-        const notebook = adapter.activate({postMessage:(message)=>posted.push(message),onDidReceiveMessage:(handler)=>{receive=handler;}});
+        window.addEventListener('message', event => receive?.(event.data));
+        const notebook = adapter.activate({postMessage:(message)=>{posted.push(message); vscode.postMessage(message);},onDidReceiveMessage:(handler)=>{receive=handler;}});
+        const savedActor = element(); notebook.renderOutputItem({id:'actor-snapshot',json:()=>({...output,snapshot:true})},savedActor);
+        assert(!posted.some(message=>message.source==='maieutics-form-actor'), 'snapshot forms do not initialize an Actor connection');
         const adapted = element(); notebook.renderOutputItem({id:'notebook',json:()=>output}, adapted);
-        assert(posted[0]?.type === 'mount', 'the notebook adapter uses its owning renderer context');
-        await receive({source:'maieutics-form',type:'state',modelId:'model',state});
+        assert(posted.find(message=>message.source==='maieutics-form-actor')?.type === 'request', 'the notebook adapter requests an Actor capability from its owning editor');
+        await new Promise(resolve => {
+          const fieldset = adapted.shadowRoot.querySelector('fieldset');
+          if (!fieldset.disabled) return resolve();
+          const observer = new MutationObserver(() => {if(!fieldset.disabled){observer.disconnect();resolve();}});
+          observer.observe(fieldset,{attributes:true,attributeFilter:['disabled']});
+        });
+        assert(adapted.shadowRoot.querySelector('.title').textContent === 'Actor connected', 'state crosses the browser/extension Actor connection');
+        const acted = new Promise(resolve => {
+          const handler = event => {if(event.data.testAction==='cancel'){window.removeEventListener('message',handler);resolve();}};
+          window.addEventListener('message',handler);
+        });
         adapted.shadowRoot.querySelector('.cancel').click();
-        assert(posted.at(-1).name === 'cancel', 'notebook actions use the same Vue implementation');
+        await acted;
+        assert(posted.filter(message=>message.source==='maieutics-form-actor').every(message=>message.type!=='event'), 'notebook actions are correlated Actor calls');
+        const revoked = new Promise(resolve => {
+          const handler = event => {if(event.data.testRevoked){window.removeEventListener('message',handler);resolve();}};
+          window.addEventListener('message',handler);
+        });
+        vscode.postMessage({testRevoke:true}); await revoked;
+        assert(adapted.shadowRoot.querySelector('fieldset').disabled, 'revoking a pinned session freezes its retained form');
+        const nextActor = element(); notebook.renderOutputItem({id:'next-notebook',json:()=>output},nextActor);
+        await new Promise(resolve => {
+          const fieldset = nextActor.shadowRoot.querySelector('fieldset');
+          if(!fieldset.disabled)return resolve();
+          const observer = new MutationObserver(()=>{if(!fieldset.disabled){observer.disconnect();resolve();}});
+          observer.observe(fieldset,{attributes:true,attributeFilter:['disabled']});
+        });
+        assert(adapted.shadowRoot.querySelector('fieldset').disabled && savedActor.shadowRoot.querySelector('fieldset').disabled, 'a new live form with the same model identity cannot reauthorize a retired attachment or saved snapshot');
         notebook.disposeOutputItem();
         vscode.postMessage({ok:true});
       } catch(error) { vscode.postMessage({ok:false,error:error.stack??String(error)}); }
@@ -92,6 +156,8 @@ export async function testVueFormsAsync(): Promise<void> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     subscription?.dispose();
+    await actors.dispose();
+    await gateway.dispose();
     panel.dispose();
   }
 }

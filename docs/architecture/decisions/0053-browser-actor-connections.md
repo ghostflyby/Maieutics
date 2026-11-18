@@ -106,3 +106,7 @@ This does not grant browser code kernel authority. The frontend host must authen
 bind capabilities to session/view/connection generations, enforce approval revocation, and design
 product reference routing before notebook renderers attach. ADR 0051's plugin HTTP surface remains
 in effect; this change adds no product network endpoint and no reverse REPL execution capability.
+
+ADR 0054 implements the first product attachment over notebook renderer messaging: the form
+browser connects to its pinned editor's narrow Actor surface. The adapter owns generation
+admission, visibility suspension and session revocation; it adds no network endpoint.

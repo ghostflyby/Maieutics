@@ -275,7 +275,7 @@ export function createActorPool<
         );
       }
       const m = members[idx];
-      return m !== EMPTY && isLive(m) ? m : undefined;
+      return m !== EMPTY ? m : undefined;
     }
     if (strategy === "least-busy") {
       return live.reduce((a, b) => (a.inFlight <= b.inFlight ? a : b));
@@ -314,7 +314,13 @@ export function createActorPool<
     }
   };
 
-  const unavailable = (): unknown => {
+  const unavailable = (member?: Member<T>): unknown => {
+    if (member) {
+      if (member.factoryFailure) return member.factoryFailure.reason;
+      if (member.deathReason) return member.deathReason.reason;
+      return new ActorDiedError();
+    }
+    if (liveMembers().length) return new ActorDiedError();
     const failed = members.find((member) =>
       member !== EMPTY && member.factoryFailure !== undefined
     );
@@ -334,7 +340,7 @@ export function createActorPool<
     });
     const out = ready.then(() => {
       if (disposed) throw new ActorDiedError();
-      if (!member) throw unavailable();
+      if (!member || !isLive(member)) throw unavailable(member);
       member.inFlight++;
       const p = (member.actor![method as keyof Remote<T>] as unknown as (
         ...a: unknown[]
@@ -358,7 +364,9 @@ export function createActorPool<
     });
     const out = ready.then(() => {
       if (disposed) throw new ActorDiedError();
-      if (member === EMPTY || !isLive(member)) throw unavailable();
+      if (member === EMPTY || !isLive(member)) {
+        throw unavailable(member === EMPTY ? undefined : member);
+      }
       const m = member;
       m.inFlight++;
       const p = (m.actor![method as keyof Remote<T>] as unknown as (

@@ -180,7 +180,7 @@ button{padding:4px 12px;cursor:pointer}.submit{background:var(--vscode-button-ba
 
 /** Vue form renderer shared by notebook and standalone hosts. The host owns transport subscriptions. */
 export function createFormRenderer(
-  options: { sendMessage(message: FormMessage): void },
+  options: { sendMessage(message: FormMessage): void; activeView?(viewId: string): boolean },
 ): FormRenderer {
   const views = new Map<string, View>();
   let closed = false;
@@ -237,7 +237,9 @@ export function createFormRenderer(
       if (views.size >= 128) throw new Error("form_view_limit");
       const shared = snapshot
         ? undefined
-        : [...views.values()].find((view) => !view.snapshot && view.modelId === modelId);
+        : [...views].find(([id, view]) =>
+          !view.snapshot && view.modelId === modelId && options.activeView?.(id) !== false
+        )?.[1];
       const slot = shared?.slot ??
         shallowRef<Model>({ state: readFormState(value.state), live: false });
       const root = element.shadowRoot ?? element.attachShadow({ mode: "open" });
@@ -273,8 +275,9 @@ export function createFormRenderer(
         !["state", "closed"].includes(String(message.type))
       ) return;
       const slots = new Set(
-        [...views.values()].filter((view) => !view.snapshot && view.modelId === message.modelId)
-          .map((view) => view.slot),
+        [...views].filter(([id, view]) =>
+          !view.snapshot && view.modelId === message.modelId && options.activeView?.(id) !== false
+        ).map(([, view]) => view.slot),
       );
       for (const slot of slots) {
         slot.value = message.type === "closed"

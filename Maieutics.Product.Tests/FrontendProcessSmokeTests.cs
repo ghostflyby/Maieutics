@@ -675,6 +675,8 @@ public sealed class FrontendProcessSmokeTests
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add("test-model");
         startInfo.Environment["OPENAI_API_KEY"] = "test-key";
+        startInfo.Environment["Logging__LogLevel__Microsoft.Extensions.Hosting.Internal.Host"] = "Debug";
+        startInfo.Environment["Logging__LogLevel__Microsoft.AspNetCore.Server.Kestrel"] = "Debug";
         // Env config uses the double-underscore section separator.
         startInfo.Environment["Maieutics__Providers__OpenAI__Endpoint"] = endpoint.ToString();
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
@@ -716,14 +718,18 @@ public sealed class FrontendProcessSmokeTests
     private static Func<string> TailStream(Process process, bool redirectError)
     {
         var chunks = new List<string>();
+        var gate = new Lock();
         if (redirectError)
         {
             process.ErrorDataReceived += static (_, _) => { };
             process.ErrorDataReceived += (_, eventArgs) =>
             {
                 if (eventArgs.Data is null) return;
-                lock (chunks) chunks.Add(eventArgs.Data);
-                while (chunks.Count > 40) chunks.RemoveAt(0);
+                lock (gate)
+                {
+                    chunks.Add(eventArgs.Data);
+                    while (chunks.Count > 40) chunks.RemoveAt(0);
+                }
             };
             process.BeginErrorReadLine();
         }
@@ -733,13 +739,19 @@ public sealed class FrontendProcessSmokeTests
             process.OutputDataReceived += (_, eventArgs) =>
             {
                 if (eventArgs.Data is null) return;
-                lock (chunks) chunks.Add(eventArgs.Data);
-                while (chunks.Count > 40) chunks.RemoveAt(0);
+                lock (gate)
+                {
+                    chunks.Add(eventArgs.Data);
+                    while (chunks.Count > 40) chunks.RemoveAt(0);
+                }
             };
             process.BeginOutputReadLine();
         }
 
-        return () => string.Join("\n", chunks);
+        return () =>
+        {
+            lock (gate) return string.Join("\n", chunks);
+        };
     }
 
     private sealed class SmokeHostProcess(
@@ -755,18 +767,73 @@ public sealed class FrontendProcessSmokeTests
         private string DiscoveryPath { get; } = discoveryPath;
 
         /// <summary>Waits for the discovery file's appearance within the remaining test
-        /// budget. A dead child is reported immediately; otherwise the shared reader retries
-        /// the transient open/parse failures (atomic rename, Windows scanner lock).</summary>
+        /// budget. Each discovery notification rechecks child failure and retries the
+        /// open/parse operation; no timer polls the file or external lock state.</summary>
         public async Task<JsonElement> WaitForDiscoveryAsync(CancellationToken cancellationToken)
         {
-            return await FrontendDiscoveryFile.ReadAsync(
-                DiscoveryPath,
-                TimeSpan.FromSeconds(60),
-                cancellationToken,
-                fault: () => process.HasExited
-                    ? $"The Maieutics process exited with code {process.ExitCode} before publishing discovery."
-                      + (outputTail() is { Length: > 0 } tail ? $"\noutput:\n{tail}" : string.Empty)
-                    : null).ConfigureAwait(false);
+            using var diagnostics = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var capture = CaptureStartupHangAsync(process.Id, diagnostics.Token);
+            try
+            {
+                return await FrontendDiscoveryFile.ReadAsync(
+                    DiscoveryPath,
+                    TimeSpan.FromSeconds(60),
+                    cancellationToken,
+                    fault: () => process.HasExited
+                        ? $"The Maieutics process exited with code {process.ExitCode} before publishing discovery."
+                          + (outputTail() is { Length: > 0 } tail ? $"\noutput:\n{tail}" : string.Empty)
+                        : null).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new InvalidOperationException(
+                    $"Host {process.Id} discovery failed; file exists: {File.Exists(DiscoveryPath)}.\n{outputTail()}",
+                    exception);
+            }
+            finally
+            {
+                await diagnostics.CancelAsync().ConfigureAwait(false);
+                await capture.ConfigureAwait(false);
+            }
+        }
+
+        private static async Task CaptureStartupHangAsync(int processId, CancellationToken cancellationToken)
+        {
+            if (Environment.GetEnvironmentVariable("MAIEUTICS_HANG_DUMP") is not "1" ||
+                Environment.GetEnvironmentVariable("MAIEUTICS_LOG_DIR") is not { Length: > 0 } directory)
+                return;
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(25), cancellationToken).ConfigureAwait(false);
+                budget.CancelAfter(TimeSpan.FromSeconds(25));
+                var dump = Path.Combine(directory, $"startup-{processId}.dmp");
+                var tool = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".dotnet", "tools", OperatingSystem.IsWindows() ? "dotnet-dump.exe" : "dotnet-dump");
+                var collect = new ProcessStartInfo(tool);
+                foreach (var argument in new[] { "collect", "-p", processId.ToString(), "-o", dump })
+                    collect.ArgumentList.Add(argument);
+                await TestChildProcess.RunCapturedAsync(collect, budget.Token).ConfigureAwait(false);
+                if (!File.Exists(dump))
+                    throw new IOException("Startup dump collector produced no dump file.");
+                var report = new ProcessStartInfo(tool);
+                foreach (var argument in new[] { "analyze", dump, "-c", "clrstack -all", "-c", "dumpasync -stacks", "-c", "exit" })
+                    report.ArgumentList.Add(argument);
+                var stacks = await TestChildProcess.RunCapturedAsync(report, budget.Token).ConfigureAwait(false);
+                await File.WriteAllTextAsync(Path.Combine(directory, $"startup-{processId}.stacks.txt"),
+                    stacks, budget.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (OperationCanceledException) when (budget.IsCancellationRequested)
+            {
+                TestContext.Current.SendDiagnosticMessage("Startup diagnostics stopped: the 25-second budget elapsed.");
+            }
+            catch (Exception exception)
+            {
+                TestContext.Current.SendDiagnosticMessage($"Startup diagnostics failed: {exception.GetType().Name}");
+            }
         }
 
         public async ValueTask DisposeAsync()

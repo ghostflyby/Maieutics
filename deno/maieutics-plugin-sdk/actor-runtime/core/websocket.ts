@@ -49,7 +49,12 @@ export function webSocketTransport(
         if (size > maxMessage || socket.bufferedAmount + size > maxBuffered) {
           throw new ActorTransportError("capacity", "Actor WebSocket send budget exceeded");
         }
-        socket.send(encoded);
+        const body = encoded instanceof Uint8Array
+          ? encoded.buffer instanceof ArrayBuffer
+            ? new Uint8Array(encoded.buffer, encoded.byteOffset, encoded.byteLength)
+            : new Uint8Array(encoded)
+          : encoded;
+        socket.send(body);
       } catch (error) {
         throw error instanceof ActorTransportError
           ? error

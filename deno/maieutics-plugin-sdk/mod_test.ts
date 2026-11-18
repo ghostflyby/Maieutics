@@ -82,6 +82,7 @@ Deno.test("the sdk module imports only its local runtime, Vue reactivity and its
       specifier === "./actor_ref.ts" ||
         specifier === "./collection_stream.ts" ||
         specifier === "./reactive.ts" ||
+        specifier === "./reactive_ref.ts" ||
         specifier === "./http.ts" ||
         specifier === "./admission.ts" ||
         specifier === "./http_codec.ts" ||

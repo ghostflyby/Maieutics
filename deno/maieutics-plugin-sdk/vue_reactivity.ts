@@ -3,6 +3,7 @@
 export {
   computed,
   type ComputedRef,
+  type DeepReadonly,
   type EffectScope,
   effectScope,
   getCurrentScope,

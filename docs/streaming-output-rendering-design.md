@@ -1438,3 +1438,14 @@ Sources consulted on 2026-11-04. Recheck the selected versions during the packag
 - [Idiomorph](https://github.com/bigskysoftware/idiomorph): DOM matching, update hooks, and focus handling.
 
 Frontmatter reference consulted 2026-11-10: [VitePress frontmatter](https://vitepress.dev/guide/frontmatter).
+
+
+## Backend Actor state capabilities (2026-11-18)
+
+[ADR 0056](architecture/decisions/0056-actor-reactive-refs.md) introduces SDK `shareRef` capabilities:
+readonly local Vue mirrors of bounded detached snapshots, delivered through Actor channels with
+latest-state coalescing, explicit revisions and owned release. Ordinary plugin services can use this
+without hand-writing value streams. It does not change assistant streaming, SSR, hydration, saved
+notebook outputs or the current form protocol. Renderer integration would require an explicit
+model/view adapter and initial snapshot/version handoff; no live Ref is persisted or implicitly
+made callable by model output. The HTTP-first component transport decision remains in force.

@@ -34,3 +34,6 @@ export { collectionStreamCodec, markCollectionStream } from "./collection_stream
 // —— Dependency stubs (low-level acquire surfaces) ——
 
 export { createDependencyStub } from "./mod.ts";
+
+// Readonly Vue state transport for custom Actor connections.
+export { REACTIVE_REF_TAG, reactiveRefCodec } from "./reactive_ref.ts";

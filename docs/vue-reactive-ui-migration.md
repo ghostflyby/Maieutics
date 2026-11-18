@@ -1,6 +1,6 @@
 # Vue reactive backend and UI migration
 
-Updated: 2026-11-12.
+Updated: 2026-11-18.
 
 ## Implemented
 
@@ -29,6 +29,20 @@ This removes the old abstractions rather than reimplementing their APIs with Vue
 Current form behavior and migration examples live in the
 [UI design](custom-ui-framework-design.md).
 
+## Actor state capabilities
+
+[ADR 0056](architecture/decisions/0056-actor-reactive-refs.md) adds explicit `shareRef` capabilities
+for ordinary plugin Actor services. Each receiving isolate reconstructs a readonly Vue ref from an
+initial detached snapshot and credit-driven latest-state updates. Computed/watch compose locally;
+identity, status, relay ownership and deterministic release belong to the capability. This is not
+shared Vue dependency tracking or remote assignment. Extension-point ordered streams retain their
+existing semantics. Forms and HTTP do not automatically switch to this state protocol.
+
+[ADRs 0054](architecture/decisions/0054-notebook-form-actor-attachments.md) and
+[0055](architecture/decisions/0055-binary-actor-graphs.md) already attach notebook forms to
+editor-scoped Actor connections with native binary graphs. The kernel-facing form comm protocol and
+per-view editing drafts remain separate from general shared-ref capabilities.
+
 ## Remaining architecture
 
 Transport decision: [ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) uses HTTP
@@ -52,8 +66,9 @@ flowchart LR
     K --> W
 ```
 
-Each isolate has its own reactive graph. Proxies, refs, closures and computed functions never cross
-IPC. Explicit projections contain bounded plain values; functions and actors are excluded, and
+Each isolate has its own reactive graph. Vue implementation objects, closures and computed functions
+remain local. Explicit shared Ref capabilities carry detached projections; functions and actors are
+excluded, and
 binary remains binary/resource references. Ready undefined, missing fields, deletion and pending
 must be distinct protocol states.
 

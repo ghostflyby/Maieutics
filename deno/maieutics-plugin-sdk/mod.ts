@@ -47,6 +47,7 @@ import {
 import { attachLazyIterator, type LinkHandle, serveWorker } from "./actor-runtime/mod.ts";
 import { collectionStreamCodec, markCollectionStream } from "./collection_stream.ts";
 import { admissionMailboxFor, type AdmissionRequestFrame, answerAdmission } from "./admission.ts";
+import { reactiveRefCodec } from "./reactive_ref.ts";
 import { httpCodec } from "./http_codec.ts";
 import {
   bindDefiningWorker,
@@ -899,7 +900,7 @@ export async function initPluginWorker(): Promise<void> {
   installDependencyLoadHook(config.actorEntries);
 
   serveWorker(servingApi, {
-    codecs: [actorRefCodec, collectionStreamCodec, httpCodec],
+    codecs: [actorRefCodec, collectionStreamCodec, httpCodec, reactiveRefCodec],
     onLink(link: LinkHandle): void {
       // A peer linked directly (host or another worker). Expose the flattened
       // plugin namespace over the link; the peer calls through link.rpc.

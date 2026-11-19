@@ -74,8 +74,68 @@ unprovide releases it even while a remote read is pending.
 
 The SDK loads the upstream headless production ESM, avoiding the Node entry's NODE_ENV read. No new
 worker environment, network or filesystem grant is needed. Vue import identity is pinned by the
-host; plugins cannot override the reserved `@vue/reactivity` mapping. Backend refs do not cross IPC
-as live reactive objects: existing data/service codecs and actor boundaries remain in effect.
+host; plugins cannot override the reserved `@vue/reactivity` mapping. Ordinary backend refs remain
+local. Explicit state capabilities bridge detached snapshots through Actor channels as described
+below.
+
+## Shared state across Actors
+
+`shareRef(refOrComputed)` publishes a readonly Vue state capability. Plugin Actor services can
+return it or accept it as an argument; the plugin runtime registers the codec automatically:
+
+```ts
+import { computed, defineActor, ref, shareRef } from "@maieutics/plugin-sdk";
+
+const count = ref(0);
+const state = shareRef(computed(() => ({ count: count.value, doubled: count.value * 2 })));
+export const counter = defineActor({
+  state: () => state,
+  increase: () => ++count.value,
+});
+```
+
+A consumer acquires `counter` with the existing `depActor` API, then uses the returned ref normally:
+
+```ts
+const state = await counter.state();
+const label = computed(() => `Count: ${state.value.count}`);
+await counter.increase(); // Action acknowledgement; state delivery may follow asynchronously.
+// Watch state.status.value for { kind: "live", revision } or { kind: "closed", revision, error }.
+state[Symbol.dispose](); // Release this mirror when its consumer stops.
+```
+
+For raw Actor connections import `reactiveRefCodec` from `@maieutics/plugin-sdk/reactive-ref` and
+register it on both peers with exactly the same ordered codec list. The codec list is a wire
+compatibility contract even though the base Actor protocol is still version 2: adding a codec to one
+peer breaks the handshake for older consumers, including calls that do not carry refs. Update both
+peers together; in-tree plugin deployments already pin host/worker SDK imports in lockstep. That
+subpath also exports `shareRef`, `ReactiveRef`, `ReactiveRefStatus` and `ReactiveRefError`, without
+starting the plugin runtime. A shared source created in an `effectScope` closes when that scope
+stops; otherwise dispose it explicitly. Async acquisitions need an explicit owner even when
+initiated from a Vue setup function.
+
+A native MessagePort cannot report that its peer isolate disappeared. Ref endpoints propagate
+observed parent-transport closure, but raw connection users must connect worker/process supervision
+to connection close/abort. `spawn(Worker)` handles Worker error events and its own teardown; silent
+worker exit or an independent `worker.terminate()` is not automatically detectable. In the plugin
+host, declared dependency cascades cover their consumers; dynamically acquired providers outside
+that closure do not yet supply a per-provider death signal to Ref ports. Without one, a mirror may
+retain its last value with live status until explicitly invalidated/disposed.
+
+Sharing captures bounded, detached data snapshots, including nested reactive objects, Map/Set,
+undefined, cycles and binary. Own enumerable symbol-keyed properties are rejected with a typed
+snapshot failure; non-enumerable properties are outside the data projection. Project functions,
+services, nested refs and class instances into data. The receiver has its own Vue graph: local
+computed/watch work, but assignments cannot mutate the owner. Vue readonly wrappers ignore ordinary
+object assignments and Map/Set mutations. Native values such as TypedArray remain locally mutable:
+an edit changes that mirror's local bytes, not the owner or another mirror, and the next
+authoritative snapshot replaces it. Intermediate revisions may coalesce under load. Keep event
+streams for every-transition semantics, and project related fields together for coherent snapshots.
+Repeated acquisitions reuse a live mirror within a receiving registry and share its lifetime;
+coordinate multiple consumers under one owner. Reacquiring after disposal creates a fresh mirror.
+Forwarding creates an owned relay whose loss closes downstream subscribers when its parent failure
+is observed or a terminal Ref frame arrives. No reconnect/action replay is implicit. See
+[ADR 0056](../../docs/architecture/decisions/0056-actor-reactive-refs.md).
 
 ## System instructions
 

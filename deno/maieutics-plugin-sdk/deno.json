@@ -8,6 +8,7 @@
     "./runtime": "./runtime.ts",
     "./interop": "./interop.ts",
     "./reactive": "./reactive.ts",
+    "./reactive-ref": "./reactive_ref.ts",
     "./ui": "./ui/index.ts",
     "./lint": "./lint-plugin.ts",
     "./plugin-ui": "./plugin-ui.ts",

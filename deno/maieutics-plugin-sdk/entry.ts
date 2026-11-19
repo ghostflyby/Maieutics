@@ -182,3 +182,7 @@ export type {
 export type { ComputedRef, EffectScope, Ref, ShallowRef, WatchHandle } from "./vue_reactivity.ts";
 
 export { MaximumReactiveQueueLength, ReactiveSubscriptionError } from "./reactive.ts";
+
+// Explicit state capabilities; the Actor codec is registered by the plugin runtime.
+export { ReactiveRefError, shareRef } from "./reactive_ref.ts";
+export type { ReactiveRef, ReactiveRefStatus } from "./reactive_ref.ts";

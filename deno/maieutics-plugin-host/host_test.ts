@@ -1505,3 +1505,61 @@ Deno.test("isValidReplPid rejects the host's own pid", () => {
   // test runner itself is pid 1 (essentially impossible on a normal host).
   assertEquals(isValidReplPid(1), Deno.pid !== 1);
 });
+
+Deno.test("plugin dependency Actors carry shared Vue refs without manually registering codecs", async () => {
+  const providerDir = Deno.makeTempDirSync(), consumerDir = Deno.makeTempDirSync();
+  const provider = createPluginConfig(
+    providerDir,
+    "ref-provider",
+    `
+    import { defineActor, ref, computed, shareRef } from ${JSON.stringify(SDK_URL)};
+    const count = ref(0);
+    const state = shareRef(computed(() => count.value * 2));
+    export const counter = defineActor({
+      state: () => state,
+      increase: () => ++count.value,
+      close: () => state[Symbol.dispose](),
+    });
+  `,
+  );
+  const consumer = {
+    ...createPluginConfig(
+      consumerDir,
+      "ref-consumer",
+      `
+      import { depActor, defineExtensionPoint, computed, watch } from ${JSON.stringify(SDK_URL)};
+      const counter = depActor("@maieutics/ref-provider/main", "counter");
+      export default defineExtensionPoint("ToolPreInvoke", async () => {
+        const state = await counter.state();
+        const repeated = await counter.state();
+        if (state !== repeated) throw new Error("shared Ref identity changed");
+        const label = computed(() => "count=" + state.value);
+        const changed = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => { stop(); reject(new Error("state update missing")); }, 5000);
+          const stop = watch(() => label.value, value => {
+            if (value === "count=2") { stop(); clearTimeout(timer); resolve(value); }
+          });
+        });
+        await counter.increase();
+        const result = await changed;
+        state[Symbol.dispose]();
+        await counter.close();
+        return { action: "continue", reason: result };
+      });
+    `,
+    ),
+    dependencies: ["ref-provider"],
+  };
+  const host = makeMultiHost([provider, consumer]);
+  try {
+    await host.startAll();
+    assertEquals(await host.invoke("ref-consumer", "./main", "ToolPreInvoke", {}), {
+      action: "continue",
+      reason: "count=2",
+    });
+  } finally {
+    await host.shutdown();
+    Deno.removeSync(providerDir, { recursive: true });
+    Deno.removeSync(consumerDir, { recursive: true });
+  }
+});

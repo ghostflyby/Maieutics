@@ -15,6 +15,7 @@
 
 import { type ActorHandle, type Remote, spawn } from "@maieutics/plugin-sdk/actor";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
+import { reactiveRefCodec } from "../maieutics-plugin-sdk/reactive_ref.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
 import type { AdmissionRequestFrame } from "../maieutics-plugin-sdk/admission.ts";
@@ -1227,7 +1228,7 @@ export class PluginHost {
         },
       });
       const actor = await spawn<WorkerRpc>(worker, {
-        codecs: [actorRefCodec, collectionStreamCodec, httpCodec],
+        codecs: [actorRefCodec, collectionStreamCodec, httpCodec, reactiveRefCodec],
         signal: AbortSignal.timeout(this.#options.invokeTimeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS),
         onDeath: (reason: unknown) => this.#handleDeath(key, reason),
       });

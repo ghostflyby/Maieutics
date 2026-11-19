@@ -33,6 +33,7 @@ import {
 } from "../maieutics-plugin-sdk/admission.ts";
 import { evaluateAdmissionHook, setAdmissionHook } from "../maieutics-plugin-sdk/reactive.ts";
 import { http, HTTP_AGGREGATOR_SPECIFIER } from "../maieutics-plugin-sdk/http.ts";
+import { reactiveRefCodec } from "../maieutics-plugin-sdk/reactive_ref.ts";
 import { httpCodec } from "../maieutics-plugin-sdk/http_codec.ts";
 import { actorRefCodec, collectionStreamCodec } from "../maieutics-plugin-sdk/interop.ts";
 import {
@@ -226,7 +227,7 @@ export class HttpGateway {
     };
     this.#providers.add(lease);
     const registry = new PayloadCodecRegistry();
-    for (const codec of [actorRefCodec, collectionStreamCodec, httpCodec]) {
+    for (const codec of [actorRefCodec, collectionStreamCodec, httpCodec, reactiveRefCodec]) {
       registry.register(codec);
     }
     for (const codec of [iterableCodec, errorCodec, abortSignalCodec, callbackCodec]) {

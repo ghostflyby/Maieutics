@@ -13,10 +13,11 @@ advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-14
+Last updated: 2026-11-19
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),
+[standalone conversation UI](standalone-conversation-ui-design.md),
 [ADR 0023](architecture/decisions/0023-custom-web-frontend-protocol-and-vscode-notebook.md),
 [ADR 0026](architecture/decisions/0026-virtual-resource-urls.md), and
 [ADR 0038](architecture/decisions/0038-universal-custom-ui-framework.md).
@@ -913,6 +914,65 @@ and SSR, progressive ClientOnly state, terminal/idempotent disposal, aborted pre
 commit, and the existing actual VS Code notebook/history paths. Registry publication, a custom element
 wrapper and a browser HTTP/clipboard transport adapter are not introduced by this extraction.
 
+## Standalone conversation host (prototype 2026-11-19)
+
+The [standalone Vue conversation design](standalone-conversation-ui-design.md) defines a new host
+for the shared output client. Its first passive prototype now lives in `deno/maieutics-ui`: one
+embeddable conversation component contains a paged input/output history, one main virtual scroll
+viewport, and a current input composer. A deterministic source and browser conformance exercise
+bounded history/content loading, exact-revision copy, updates, and view disposal. Output is inert
+text at this stage. Shared Markdown/SSR integration, the new kernel conversation projection API,
+and iframe/native surfaces remain proposed; the existing output ESM and VS Code adapters are
+unchanged.
+
+History and current input are implemented as separate exported components and ESM mount adapters:
+`ConversationHistory` and `ConversationComposer`. They share a caller-owned view state and can live
+in different containers. Unmounting one releases its local work while preserving the sibling and
+draft; neither owns the runtime or closes the supplied view. `ConversationView` is an optional
+composition wrapper that owns one view attachment. Closing a view stops history subscriptions and
+disables input, including when the runtime continues receiving events.
+
+The prototype admits history pages from actual viewport intersection, including scrollbar jumps.
+Page completion never forces row navigation. A bounded geometry snapshot keeps extent and offsets
+fixed while the scrollbar is held; lazy body measurement and page eviction cannot move the thumb.
+Release remeasures around the final logical entry and offset, with newer navigation and disposal
+fencing queued corrections. This policy belongs to the conversation viewport rather than an output
+surface.
+
+Semantic output blocks, document presentation units, and rendering surfaces have separate
+identities and responsibilities. Initial message blocks keep the current whole-document rendering
+boundary. Later passive document units can virtualize long messages where source reconciliation
+preserves document-wide definitions and dependencies. Vue scope and component subtrees remain
+intact unless a semantic split is demonstrated; arbitrary paragraph splitting is unsupported.
+
+The host can place a unit inline, in an iframe, or through a native adapter with a matching semantic
+data/action contract. Admitted custom execution uses an iframe. The default browser host uses the
+passive rendering lane until explicit activation; automatic authored hydration requires a host
+whose protected control execution and independent renderer termination have passed conformance.
+Iframe origin isolation alone does not provide that execution guarantee. Existing VS Code
+execution selection is unchanged. An arbitrary Vue component still requires a browser runtime.
+
+Embedded/preview attachments own their render requests, acknowledgements, layout reports,
+subscriptions, and disposal. An external native window instead has a shell-registry-owned scope
+and independent view/backend leases, so preview eviction or originating view closure does not
+destroy it. Visibility and eviction never implicitly destroy a shared producer. Non-exportable
+component state uses bounded retention and explicit interactive resume after eviction. Form draft
+checkpoints bind the server baseline and dirty fields and reconcile against confirmed current
+state; equal values without intervening change evidence do not prove absence of a conflict.
+Cross-block selection uses revisioned logical text ranges and ordinary copy resolves that text
+independently of mounted DOM, within explicit resource limits.
+
+The proposed session-level conversation projection supplies paged block/source recovery and an
+atomic snapshot/subscription boundary. Its epoch and revision order conversation display changes;
+they do not replace run-local Agent sequences, source revisions, or document presentation revisions.
+Run events reach this projection through the existing owned dispatcher. Cross-run display updates
+need a separately registered session/document publisher; they never extend an ended run's event
+stream. Pending-input owners publish both creation and unique terminal transitions into the same
+revisioned projection. View detachment does not detach a request's actual owning presentation scope.
+SSR responses remain separately correlated and cannot commit into a retired view. The broader
+revisioned document transport and late-binding producer protocol below remain proposed. No frontend
+v1 rendering endpoint, notebook format, or current execution-provenance rule changes here.
+
 ## Vue UI migration (implemented 2026-11-12)
 
 [ADR 0050](architecture/decisions/0050-retire-custom-component-families.md) removes the former
@@ -1394,7 +1454,9 @@ fix. Full subtree diffing and stable streaming document nodes remain separate wo
   can those additions retain offline packaging and independent ownership?
 - How should authorized producer/component registration extend the shipped data-expression subset
   with automatic late binding, cancellation settlement and stable document scope?
-- Which revisioned presentation transport provides independent lifetime and recovery beyond the shipped stateless API?
+- Which revisioned document presentation transport provides independent lifetime and recovery beyond
+  the shipped stateless API? The standalone host's proposed session-level block projection is
+  separate from document rendering revisions and late producer settlement.
 - What are the document-runtime limits, overflow behavior, reconstruction policy, and authorized producer permission scope beyond the implemented passive rendering limits?
 - Which styles, resources, and interactive components can ship inside notebook host constraints?
 - What optional presentation snapshot format supports portability and older clients?

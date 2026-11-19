@@ -107,6 +107,10 @@ jobs:
         working-directory: deno/maieutics-plugin-sdk
         run: deno task test:actor:browser
 
+      - name: Standalone conversation UI in a real browser
+        working-directory: deno/maieutics-ui
+        run: deno task test:browser
+
       - name: Verify committed offline SSR assets
         working-directory: deno/maieutics-output-renderer
         run: |

@@ -45,6 +45,12 @@
   `git diff --exit-code --stat -- bundle/` to be clean before offline smoke. Worker permissions
   constrain I/O but do not prevent a self-signal from terminating the shared renderer; the kernel
   owns generation recovery (see the design). Update the design document as integration lands.
+- `maieutics-ui/` — standalone Vue conversation frontend prototype. Owns its framework-neutral
+  projection/cache/request core, bounded virtual viewport, per-view drafts/selection, passive text
+  surfaces, and fixture browser host. The shell supplies addressed source/host capabilities; this
+  module contains no VS Code API or kernel credentials. Its browser assets are built separately, not
+  embedded as REPL/plugin modules. Keep design status explicit until the proposed backend
+  conversation projection, rich renderer integration, and iframe/native adapters are implemented.
 - `shared/` — Control channel wire contract used by `maieutics-repl-client` and
   `maieutics-plugin-host` only. `protocol.ts` carries the versioned envelope and version constant;
   `bus.ts` opens the `/ws` connection, sends the hello handshake, and dispatches envelopes. The

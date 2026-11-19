@@ -75,6 +75,13 @@ function snapshotOf(input: unknown): Uint8Array {
     if (value === null || typeof value !== "object") return value;
     if (isRef(value)) throw new TypeError("Nested refs require an explicit data projection");
     const raw = toRaw(value);
+    if (
+      Object.getOwnPropertySymbols(raw).some((key) =>
+        Object.getOwnPropertyDescriptor(raw, key)?.enumerable
+      )
+    ) {
+      throw new TypeError("Reactive Ref snapshots reject enumerable symbol keys");
+    }
     const previous = seen.get(raw);
     if (previous) return previous;
     if (seen.size >= 16384) {
@@ -280,9 +287,11 @@ function encode(handle: ReactiveRef<unknown>, ctx: EncodeContext): RefHandle {
   ctx.registry.registerChannel(channel, ctx.transport);
   let requested: number | undefined;
   let stopped = false;
+  let stopObservingTransport = () => {};
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    stopObservingTransport();
     model.listeners.delete(notify);
     state.exports.delete(stop);
     channel.close();
@@ -309,6 +318,18 @@ function encode(handle: ReactiveRef<unknown>, ctx: EncodeContext): RefHandle {
   state.exports.add(stop);
   model.listeners.add(notify);
   channel.onClose(stop);
+  stopObservingTransport = ctx.transport.onClose((cause) => {
+    // A native MessagePort cannot report peer loss. Its supervised parent must retire this export.
+    const error = closeError(cause);
+    try {
+      channel.send({ type: "closed", code: error.code, message: error.message });
+    } catch (failure) {
+      ctx.registry.trackTask(Promise.reject(failure));
+    } finally {
+      stop();
+    }
+  });
+  if (stopped) stopObservingTransport();
   channel.onMessage((raw) => {
     const frame = frameOf(raw);
     if (frame.type === "release") return stop();
@@ -367,9 +388,11 @@ function decode(raw: unknown, ctx: DecodeContext): ReactiveRef<unknown> {
   }
   state.imports.set(handle.id, model);
   let stopped = false;
+  let stopObservingTransport = () => {};
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    stopObservingTransport();
     state.imports.delete(model.id);
     channel.send({ type: "release" });
     channel.close();
@@ -378,6 +401,8 @@ function decode(raw: unknown, ctx: DecodeContext): ReactiveRef<unknown> {
     if (model.closed) stop();
   });
   channel.onClose((reason) => model.close(closeError(reason)));
+  stopObservingTransport = ctx.transport.onClose((cause) => model.close(closeError(cause)));
+  if (stopped) stopObservingTransport();
   channel.onMessage((raw) => {
     const frame = frameOf(raw);
     if (frame.type === "closed") {

@@ -1449,3 +1449,10 @@ without hand-writing value streams. It does not change assistant streaming, SSR,
 notebook outputs or the current form protocol. Renderer integration would require an explicit
 model/view adapter and initial snapshot/version handoff; no live Ref is persisted or implicitly
 made callable by model output. The HTTP-first component transport decision remains in force.
+
+
+The native Ref MessagePort lifecycle follows an observed parent transport, but a bare MessagePort
+cannot detect silent peer death. ADR 0056 records the required external supervision and the current
+unsupervised dynamic-acquire limitation; renderer adapters must establish that lifetime before
+relying on terminal mirror status. The ordered Actor codec list is a wire compatibility contract,
+and enumerable symbol keys in shared state are rejected explicitly.

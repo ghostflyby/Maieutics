@@ -102,8 +102,11 @@ const root = document.getElementById("app");
 if (!root) throw new Error("Missing application root");
 const app = createApp(App);
 app.mount(root);
-globalThis.addEventListener("pagehide", () => {
+const pageHidden = (event: PageTransitionEvent) => {
+  if (event.persisted) return;
+  globalThis.removeEventListener("pagehide", pageHidden);
   app.unmount();
   stop();
   runtime.dispose().catch((error) => console.error("Conversation shutdown failed", error));
-}, { once: true });
+};
+globalThis.addEventListener("pagehide", pageHidden);

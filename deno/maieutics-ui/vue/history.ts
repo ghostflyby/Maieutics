@@ -18,12 +18,7 @@ import {
 } from "@tanstack/vue-virtual";
 import { ConversationRuntime, ConversationViewState, isActivity } from "../core/runtime.ts";
 import { FrozenScrollLayout } from "../core/scroll_layout.ts";
-import {
-  type ConversationEntry,
-  ConversationError,
-  type ConversationRow,
-  type TextPoint,
-} from "../core/types.ts";
+import { type ConversationEntry, type ConversationRow, type TextPoint } from "../core/types.ts";
 
 import type { ConversationHost } from "./contracts.ts";
 
@@ -38,8 +33,14 @@ const labels: Record<ConversationEntry["kind"], string> = {
   unavailable: "不可用",
 };
 function message(error: unknown): string {
-  if (error instanceof ConversationError && error.code === "selection_capacity") {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? error.code
+    : undefined;
+  if (code === "selection_capacity") {
     return "选区过大，请缩小选区或导出内容。";
+  }
+  if (code === "index_capacity" || code === "range_capacity") {
+    return "历史缓存已被其他视图或选区占用，请释放后重试。";
   }
   return "暂时无法读取这部分内容，请重试。";
 }
@@ -220,35 +221,38 @@ const HistorySession = defineComponent({
         },
       )
     );
-    const virtual = useVirtualizer<HTMLElement, HTMLElement>(computed(() => ({
-      count: rows.value.length,
-      getScrollElement: () => viewport.value ?? null,
-      getItemKey: (index: number) => rows.value[index]?.key ?? `absent-${index}`,
-      estimateSize: (index: number) => {
-        const row = rows.value[index];
-        if (row && frozenLayout.value) return frozenLayout.value.height(row);
-        return row?.type === "range" ? row.count * estimatedHeight : estimatedHeight;
-      },
-      measureElement: (node, entry, instance) => {
-        const row = rows.value[instance.indexFromElement(node)];
-        return row && frozenLayout.value
-          ? frozenLayout.value.height(row)
-          : measureElement(node, entry, instance);
-      },
-      scrollToFn: (offset, options, instance) => {
-        if (!frozenLayout.value) {
-          elementScroll(offset, options, instance);
-          programmaticOffset = instance.scrollElement?.scrollTop;
-        }
-      },
-      overscan: 4,
-      useAnimationFrameWithResizeObserver: true,
-      rangeExtractor: (range: Parameters<typeof defaultRangeExtractor>[0]) =>
-        [...new Set([...defaultRangeExtractor(range).slice(0, 64), ...pinIndexes.value])].sort((
-          a,
-          b,
-        ) => a - b),
-    })));
+    const virtual = useVirtualizer<HTMLElement, HTMLElement>(computed(() => {
+      const pinned = pinIndexes.value;
+      return {
+        count: rows.value.length,
+        getScrollElement: () => viewport.value ?? null,
+        getItemKey: (index: number) => rows.value[index]?.key ?? `absent-${index}`,
+        estimateSize: (index: number) => {
+          const row = rows.value[index];
+          if (row && frozenLayout.value) return frozenLayout.value.height(row);
+          return row?.type === "range" ? row.count * estimatedHeight : estimatedHeight;
+        },
+        measureElement: (node, entry, instance) => {
+          const row = rows.value[instance.indexFromElement(node)];
+          return row && frozenLayout.value
+            ? frozenLayout.value.height(row)
+            : measureElement(node, entry, instance);
+        },
+        scrollToFn: (offset, options, instance) => {
+          if (!frozenLayout.value) {
+            elementScroll(offset, options, instance);
+            programmaticOffset = instance.scrollElement?.scrollTop;
+          }
+        },
+        overscan: 4,
+        useAnimationFrameWithResizeObserver: true,
+        rangeExtractor: (range: Parameters<typeof defaultRangeExtractor>[0]) =>
+          [...new Set([...defaultRangeExtractor(range).slice(0, 64), ...pinned])].sort((
+            a,
+            b,
+          ) => a - b),
+      };
+    }));
     const items = computed(() => virtual.value.getVirtualItems());
     const size = computed(() => frozenLayout.value?.extent ?? virtual.value.getTotalSize());
     const beginScrollGesture = () => {

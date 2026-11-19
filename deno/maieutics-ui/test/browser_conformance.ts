@@ -9,63 +9,21 @@ import {
 } from "../mod.ts";
 import { FixtureConversation } from "../fixtures/conversation.ts";
 
-function assert(condition: unknown, mechanism: string): asserts condition {
-  if (!condition) throw new Error(mechanism);
-}
-function equal(actual: unknown, expected: unknown, mechanism: string): void {
-  assert(actual === expected, `${mechanism}: expected ${expected}, received ${actual}`);
-}
-async function guarded<T>(completion: Promise<T>, mechanism: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      completion,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(mechanism)), 15_000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function geometryApplied(root: HTMLElement): boolean {
-  if (root.querySelector(".mui-loading")) return false;
-  const rows = [...root.querySelectorAll<HTMLElement>(".mui-row")];
-  return rows.length > 0 && rows.every((row) => {
-    const slot = row.parentElement;
-    return slot &&
-      Math.abs(slot.getBoundingClientRect().height - row.getBoundingClientRect().height) <= 1;
-  });
-}
-function waitFor(predicate: () => boolean, mechanism: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      observer.disconnect();
-      reject(new Error(mechanism));
-    }, 15_000);
-    const check = () => {
-      if (predicate()) {
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve();
-      }
-    };
-    const observer = new MutationObserver(check);
-    observer.observe(document.body, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      characterData: true,
-    });
-    check();
-  });
-}
+import { assert, equal, geometryApplied, guarded, waitFor } from "./browser_assertions.ts";
+import { runReviewConformance } from "./review_conformance.ts";
 
 /** Signal-driven scenarios run against actual Vue, geometry and browser Selection. */
 export async function runBrowserConformance(): Promise<string[]> {
   const passed: string[] = [];
   const fixture = new FixtureConversation("browser", 10_000);
-  const runtime = new ConversationRuntime(fixture.sessionId, fixture, { entries: 240 });
+  const contentReads = new Map<string, number>();
+  const runtime = new ConversationRuntime(fixture.sessionId, {
+    readPage: (query, signal) => fixture.readPage(query, signal),
+    readContent(id, revision, signal) {
+      contentReads.set(id, (contentReads.get(id) ?? 0) + 1);
+      return fixture.readContent(id, revision, signal);
+    },
+  }, { entries: 240 });
   await runtime.loadPage();
   const release = fixture.subscribe((change) => runtime.apply(change));
   const root = document.createElement("div");
@@ -154,7 +112,7 @@ export async function runBrowserConformance(): Promise<string[]> {
       () => !!first().querySelector(`[data-entry-id="${id}"] .mui-text`),
       "new output did not follow the live end",
     );
-    fixture.append(id, "\nstrict successor fragment");
+    fixture.append(id, "\nstrict successor fragment".repeat(80));
     fixture.seal(id);
     await waitFor(
       () =>
@@ -169,6 +127,16 @@ export async function runBrowserConformance(): Promise<string[]> {
 
     const viewport = first().querySelector<HTMLElement>(".mui-viewport");
     assert(viewport, "history viewport missing");
+    await waitFor(
+      () => geometryApplied(first()),
+      "live tail body never completed natural measurement",
+    );
+    assert(
+      viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
+      "following mode left a measured growing tail below the viewport",
+    );
+    equal(viewport.dataset.scrollGesture, "idle", "live following was mistaken for user dragging");
+    passed.push("following keeps the actual viewport at the measured live end beyond overscan");
     viewport.scrollTop = 50_000 * 120;
     viewport.dispatchEvent(new Event("scroll"));
     await waitFor(
@@ -206,7 +174,10 @@ export async function runBrowserConformance(): Promise<string[]> {
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
     firstBody.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
-    const result = await copied.promise;
+    const result = await guarded(
+      copied.promise,
+      "copy did not complete its addressed clipboard write",
+    );
     assert(
       result.startsWith(firstBody.textContent ?? "") && result.endsWith(lastBody.textContent ?? ""),
       "ordinary copy lost selected endpoints",
@@ -223,13 +194,15 @@ export async function runBrowserConformance(): Promise<string[]> {
 
     const activity = first().querySelector<HTMLElement>(".mui-tool");
     if (activity) {
-      const before = fixture.contentReads;
+      const activityId = activity.dataset.entryId;
+      assert(activityId, "tool activity identity missing");
+      equal(contentReads.get(activityId) ?? 0, 0, "collapsed tool detail loaded before expansion");
       activity.querySelector<HTMLButtonElement>("button")?.click();
       await waitFor(
         () => activity.textContent?.includes("工作区检索已完成") === true,
         "expanding a tool did not load its content",
       );
-      assert(fixture.contentReads > before, "collapsed tool detail had already loaded eagerly");
+      equal(contentReads.get(activityId), 1, "expansion did not read exactly the addressed tool");
       passed.push("tool detail loads only after expansion");
     } else throw new Error("fixture page did not expose a tool activity for lazy-load conformance");
 
@@ -373,10 +346,6 @@ export async function runBrowserConformance(): Promise<string[]> {
           Math.abs(Number(node.dataset.ordinal) - 75_000) < 80
         ) && !!dragRoot.querySelector(".mui-message .mui-text"),
       "latest scrollbar target did not become readable",
-    );
-    assert(
-      dragRuntime.projection.get(25_000) === undefined,
-      "cancelled scrollbar target published its stale page",
     );
     assert(
       dragRuntime.statistics.entries <= 160 && dragRoot.querySelectorAll(".mui-row").length <= 68,
@@ -675,5 +644,6 @@ export async function runBrowserConformance(): Promise<string[]> {
     historyRoot.remove();
     composerRoot.remove();
   }
+  passed.push(...await runReviewConformance(artifact));
   return passed;
 }

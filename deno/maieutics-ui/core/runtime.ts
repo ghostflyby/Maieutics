@@ -7,6 +7,7 @@ import {
   type ConversationEntry,
   ConversationError,
   type ConversationLimits,
+  type ConversationPage,
   type ConversationProjectionView,
   type ConversationSelection,
   type ConversationSource,
@@ -32,6 +33,7 @@ export class ConversationRuntime {
   readonly #entryListeners = new Map<string, Set<Listener>>();
   readonly #views = new Map<string, ConversationViewState>();
   readonly #pages = new Set<PendingPage>();
+  readonly #pageWaiters = new Set<Listener>();
   #anchor = 0;
   #disposal: Promise<void> | undefined;
   constructor(
@@ -101,26 +103,73 @@ export class ConversationRuntime {
     }
     return keys;
   }
+  #remember(key: string, text: string): void {
+    try {
+      this.#cache.put(key, text, this.#contentPins());
+    } catch (error) {
+      // Admission is optional; mounted readers still receive exact text when pins fill the cache.
+      if (!(error instanceof ConversationError && error.code === "content_capacity")) throw error;
+    }
+  }
+  async #awaitPage(
+    page: ConversationPage,
+    pending: PendingPage,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (
+      this.projection.epoch === undefined ||
+      compareRevision(page.revision, this.projection.revision) <= 0
+    ) return;
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        this.#pageWaiters.delete(check);
+        signal.removeEventListener("abort", check);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const check = () => {
+        if (signal.aborted) finish(signal.reason);
+        else if (pending.overflow) finish(new ConversationError("snapshot_gap"));
+        else if (compareRevision(page.revision, this.projection.revision) <= 0) finish();
+      };
+      this.#pageWaiters.add(check);
+      signal.addEventListener("abort", check, { once: true });
+      check();
+    });
+  }
   loadPage(offset?: number, caller?: AbortSignal): Promise<void> {
     if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) {
       return Promise.reject(new ConversationError("invalid_ordinal"));
     }
     return this.#tasks.run(async (signal) => {
-      const pending: PendingPage = { changes: [], bytes: 0, overflow: false };
-      const minimumRevision = this.projection.revision;
-      this.#pages.add(pending);
-      try {
-        const page = await this.#source.readPage({ offset, limit: this.limits.pageSize }, signal);
-        signal.throwIfAborted();
-        if (pending.overflow) throw new ConversationError("snapshot_gap");
-        if (compareRevision(page.revision, minimumRevision) < 0) {
-          throw new ConversationError("snapshot_gap");
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const pending: PendingPage = { changes: [], bytes: 0, overflow: false };
+        const minimumRevision = this.projection.revision;
+        this.#pages.add(pending);
+        try {
+          const page = await this.#source.readPage({ offset, limit: this.limits.pageSize }, signal);
+          signal.throwIfAborted();
+          if (pending.overflow) throw new ConversationError("snapshot_gap");
+          if (compareRevision(page.revision, minimumRevision) < 0) {
+            throw new ConversationError("snapshot_gap");
+          }
+          this.#projection.validatePage(page);
+          await this.#awaitPage(page, pending, signal);
+          signal.throwIfAborted();
+          if (pending.overflow) throw new ConversationError("snapshot_gap");
+          const anchor = offset ?? Math.max(0, page.total - this.limits.pageSize);
+          this.#projection.merge(page, pending.changes, this.#pins(), anchor);
+          this.#anchor = anchor;
+          this.#notify();
+          return;
+        } catch (error) {
+          if (
+            signal.aborted || attempt > 0 ||
+            !(error instanceof ConversationError && error.code === "snapshot_gap")
+          ) throw error;
+        } finally {
+          this.#pages.delete(pending);
         }
-        this.#anchor = offset ?? Math.max(0, page.total - this.limits.pageSize);
-        this.#projection.merge(page, pending.changes, this.#pins(), this.#anchor);
-        this.#notify();
-      } finally {
-        this.#pages.delete(pending);
       }
     }, caller);
   }
@@ -139,6 +188,7 @@ export class ConversationRuntime {
         pending.changes.length = 0;
       } else if (!pending.overflow) pending.changes.push(change);
     }
+    for (const waiter of this.#pageWaiters) waiter();
     for (const operation of change.operations) {
       const id = operation.type === "upsert" ? operation.entry.id : operation.id;
       if (operation.type === "append") {
@@ -147,17 +197,7 @@ export class ConversationRuntime {
           cached !== undefined &&
           cached.length + operation.text.length <= this.limits.contentCharacters
         ) {
-          try {
-            this.#cache.put(
-              contentKey(id, operation.revision),
-              cached + operation.text,
-              this.#contentPins(),
-            );
-          } catch (error) {
-            if (!(error instanceof ConversationError && error.code === "content_capacity")) {
-              throw error;
-            }
-          }
+          this.#remember(contentKey(id, operation.revision), cached + operation.text);
         }
       }
       this.#notify(id);
@@ -172,6 +212,7 @@ export class ConversationRuntime {
   cachedText(id: string, revision: string): string | undefined {
     return this.#cache.get(contentKey(id, revision));
   }
+  /** Deliver exact text even when pinned cache entries leave no retention capacity. */
   readText(id: string, revision: string, caller?: AbortSignal): Promise<string> {
     this.signal.throwIfAborted();
     caller?.throwIfAborted();
@@ -187,7 +228,7 @@ export class ConversationRuntime {
       if (content.text.length > this.limits.contentCharacters) {
         throw new ConversationError("content_limit");
       }
-      this.#cache.put(key, content.text, this.#contentPins());
+      this.#remember(key, content.text);
       return content.text;
     }, caller);
   }
@@ -213,6 +254,9 @@ export class ConversationRuntime {
     if (selection.epoch !== this.projection.epoch) throw new ConversationError("epoch_changed");
     compareRevision(selection.projectionRevision, "0");
     let start = selection.anchor, end = selection.focus;
+    if (!Number.isSafeInteger(start.ordinal) || !Number.isSafeInteger(end.ordinal)) {
+      throw new ConversationError("invalid_selection");
+    }
     if (
       start.ordinal > end.ordinal || (start.ordinal === end.ordinal && start.offset > end.offset)
     ) [start, end] = [end, start];

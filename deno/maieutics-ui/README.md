@@ -22,7 +22,9 @@ coordinate system and defers height corrections; page/body loads and eviction ca
 thumb. Releasing the thumb restores measured heights around the same logical entry and offset. Tools
 remain summaries until expanded. “并排查看” opens a second view with its own composer and scroll
 position. Sending input creates a fixture reply; the footer controls append a fragment or seal that
-output. No Agent run is submitted.
+output. No Agent run is submitted. Persisted `pagehide`/`pageshow` transitions preserve the demo and
+its runtime for back/forward-cache restoration. A final non-persisted `pagehide` unmounts the
+application and disposes owned work.
 
 ## Host integration
 
@@ -93,7 +95,13 @@ ordinals are stable navigation coordinates inside one epoch, not identities or a
 schema. A backend adapter must map its cursor/range contract explicitly. `readPage` returns a
 consistent current snapshot, or the requested retained revision for copy. Disappeared historical
 content fails explicitly. `runtime.apply()` consumes atomic semantic changes in epoch/revision
-order; raw frontend frames need an adapter. Each batch has at most one operation per entry.
+order; raw frontend frames need an adapter. Each batch has at most one operation per entry. An
+additional page ahead of the reducer waits for the independently delivered stream watermark; it
+never advances the global revision or total. Waiting remains request-owned and cancellable,
+including when stream updates change only an entry body. A stale snapshot or reconciliation overflow
+gets one fresh-snapshot retry; persistent inconsistency fails explicitly after that bounded retry.
+Page admission fails atomically with a capacity result if eviction would retain none of the
+requested records, preventing automatic zero-progress range loops.
 
 The core exposes readonly projection access and narrow per-entry subscriptions. Index and body
 caches have independent budgets; unloaded ranges aggregate geometry without creating one browser
@@ -101,6 +109,13 @@ record per historical entry. Source requests have bounded concurrency/queues, ca
 and joined runtime disposal. Source implementations must honor their supplied AbortSignal. The
 runtime fences late replies even when a source ignores cancellation, and waits for its owned work to
 finish before completing disposal.
+
+The shared text cache retains its hard byte limit even with multiple pinned views. Cache admission
+is optional for a successful exact text read: when active pins leave no room, the mounted caller
+receives the full bounded source text without adding it to the cache. Visible blocks therefore stay
+readable at the 200,000-character limit, including CJK text; callers own those responses within
+their bounded mounted windows. Copy also receives exact text independently of cache retention and
+keeps its own selection byte limit.
 
 Logical cross-block selection uses stable text points and exact revisions. Ordinary copy reads the
 text projection independently of mounted DOM; missing snapshots and the 8 MiB selection limit
@@ -128,6 +143,12 @@ separate history/input roots, independent unmount/remount and shared-view closur
 separately bundled ESM. Set `MAIEUTICS_UI_BROWSER` to select a Chromium executable; CI reuses the
 pinned `MAIEUTICS_ACTOR_BROWSER` browser. Browser results establish behavior and capacity bounds,
 not a device-independent timing benchmark.
+
+Review regressions separately control HTTP/stream ordering, zero-progress capacity, a non-frozen
+history anchor across measured predecessor eviction, actual live-end viewport geometry, cross-bundle
+error codes, and persisted demo page transitions. Removing either structural anchor correction or
+live-follow scrolling makes its dedicated geometry assertion fail. Clipboard waits have individual
+deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic.
 
 ## Permissions and packaging
 

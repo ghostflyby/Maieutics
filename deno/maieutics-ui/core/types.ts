@@ -87,6 +87,7 @@ export interface ConversationLimits {
   readonly entries: number;
   readonly ranges: number;
   readonly pageSize: number;
+  /** Hard shared-cache bound; callers may hold exact responses that were not retained. */
   readonly contentBytes: number;
   readonly contentCharacters: number;
   readonly concurrentRequests: number;

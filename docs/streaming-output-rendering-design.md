@@ -939,6 +939,15 @@ Release remeasures around the final logical entry and offset, with newer navigat
 fencing queued corrections. This policy belongs to the conversation viewport rather than an output
 surface.
 
+Additional HTTP pages ahead of the reducer wait for the independently delivered stream watermark;
+they do not advance the global cursor or total. Stale/overflowed snapshots get one fresh-read retry,
+and page admission that would retain no requested records fails atomically. The shared text cache
+keeps its hard limit: a successful exact read can return uncached text to a bounded mounted caller
+when all retention capacity is pinned. Cross-bundle capacity diagnostics use stable error codes.
+Browser regressions assert actual live-end geometry and non-frozen history anchor preservation,
+with each assertion verified to fail when its correction is removed. Persisted demo page transitions
+retain the application for restoration and leave final non-persisted cleanup registered.
+
 Semantic output blocks, document presentation units, and rendering surfaces have separate
 identities and responsibilities. Initial message blocks keep the current whole-document rendering
 boundary. Later passive document units can virtualize long messages where source reconciliation

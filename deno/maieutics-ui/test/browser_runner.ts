@@ -110,6 +110,21 @@ try {
   }).output();
   if (!artifact.success) throw new Error(new TextDecoder().decode(artifact.stderr));
   const conversationCode = await Deno.readFile(`${directory}/conversation.js`);
+  const demo = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "bundle",
+      "--platform=browser",
+      "--format=esm",
+      "--minify",
+      "-o",
+      `${directory}/demo.js`,
+      new URL("../demo/main.ts", import.meta.url).pathname,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!demo.success) throw new Error(new TextDecoder().decode(demo.stderr));
+  const demoCode = await Deno.readFile(`${directory}/demo.js`);
   const style = await Deno.readFile(new URL("../demo/styles.css", import.meta.url));
   const resultPath = `/result/${crypto.randomUUID()}`;
   server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
@@ -119,6 +134,17 @@ try {
     }
     if (path === "/conversation.js") {
       return new Response(conversationCode, { headers: { "content-type": "text/javascript" } });
+    }
+    if (path === "/demo.js") {
+      return new Response(demoCode, { headers: { "content-type": "text/javascript" } });
+    }
+    if (path === "/demo") {
+      return new Response(
+        '<!doctype html><html><head><link rel="stylesheet" href="/styles.css"></head><body><div id="app"></div><script type="module" src="/demo.js"></script></body></html>',
+        {
+          headers: { "content-type": "text/html" },
+        },
+      );
     }
     if (path === "/styles.css") {
       return new Response(style, { headers: { "content-type": "text/css" } });
@@ -149,7 +175,7 @@ try {
         headers: {
           "content-type": "text/html",
           "content-security-policy":
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-src 'none'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-src 'self'",
         },
       },
     );

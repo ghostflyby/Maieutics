@@ -267,10 +267,168 @@ Deno.test("page capacity refuses eviction of a view's active entries", async () 
   await runtime.loadPage(0);
   const view = runtime.attachView("one");
   view.setVisible(Array.from({ length: 10 }, (_, i) => i));
-  await runtime.loadPage(90);
+  const rows = runtime.projection.rows;
+  await assertRejects(() => runtime.loadPage(90), ConversationError, "index_capacity");
+  assertEquals(runtime.projection.rows, rows);
   for (let i = 0; i < 10; i++) assertEquals(runtime.projection.get(i)?.id, `e${i}`);
   view.dispose();
   await runtime.dispose();
+});
+
+Deno.test("an HTTP page ahead of the stream waits for an append-only reducer watermark", async () => {
+  const base = source();
+  const delivery = Promise.withResolvers<ConversationPage>();
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage: (query, signal) =>
+      query.offset === 0 ? delivery.promise : base.readPage(query, signal),
+  }, { entries: 20, pageSize: 10 });
+  try {
+    await runtime.loadPage();
+    const loading = runtime.loadPage(0);
+    const completion = loading.then(() => undefined, (error) => error);
+    const page = await base.readPage({ offset: 0, limit: 10 }, new AbortController().signal);
+    delivery.resolve({ ...page, revision: "1" });
+    await delivery.promise;
+    assertEquals(runtime.projection.revision, "0", "HTTP must not advance the stream cursor");
+    assertEquals(runtime.projection.get(0), undefined, "future rows published before the stream");
+    runtime.apply({
+      epoch: "epoch",
+      baseRevision: "0",
+      revision: "1",
+      total: 100,
+      operations: [{ type: "append", id: "e99", baseRevision: "0", revision: "1", text: "next" }],
+    });
+    assertEquals(await completion, undefined, "a caught-up page must not fail with projection_gap");
+    assertEquals(runtime.projection.get(0)?.id, "e0");
+    assertEquals(runtime.projection.get(99)?.contentRevision, "1");
+    assertEquals(runtime.projection.revision, "1");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("one stale HTTP snapshot retries a fresh page instead of poisoning its range", async () => {
+  const base = source();
+  let headReads = 0;
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    async readPage(query, signal) {
+      const page = await base.readPage(query, signal);
+      if (query.offset !== 0 || headReads++ === 0) return page;
+      return {
+        ...page,
+        revision: "1",
+        entries: page.entries.map((record) =>
+          record.ordinal === 0
+            ? {
+              ...record,
+              kind: "unavailable" as const,
+              contentRevision: "1",
+              state: "sealed" as const,
+            }
+            : record
+        ),
+      };
+    },
+  }, { entries: 20, pageSize: 10 });
+  try {
+    await runtime.loadPage();
+    runtime.apply({
+      epoch: "epoch",
+      baseRevision: "0",
+      revision: "1",
+      total: 100,
+      operations: [{ type: "remove", id: "e0", ordinal: 0 }],
+    });
+    await runtime.loadPage(0);
+    assertEquals(headReads, 2);
+    assertEquals(runtime.projection.get(0)?.kind, "unavailable");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("cancellation and disposal release a page waiting for a future stream revision", async () => {
+  for (const dispose of [false, true]) {
+    const base = source();
+    const delivery = Promise.withResolvers<ConversationPage>();
+    const runtime = new ConversationRuntime("s", {
+      ...base,
+      readPage: (query, signal) =>
+        query.offset === 0 ? delivery.promise : base.readPage(query, signal),
+    }, { entries: 20, pageSize: 10 });
+    await runtime.loadPage();
+    const caller = new AbortController();
+    const loading = runtime.loadPage(0, caller.signal);
+    const rejected = assertRejects(() => loading, DOMException);
+    delivery.resolve({
+      ...await base.readPage({ offset: 0, limit: 10 }, caller.signal),
+      revision: "2",
+    });
+    await delivery.promise;
+    if (dispose) await runtime.dispose();
+    else caller.abort();
+    assertEquals((await rejected).name, "AbortError");
+    await runtime.dispose();
+    assertEquals(runtime.statistics.activeRequests + runtime.statistics.queuedRequests, 0);
+  }
+});
+
+Deno.test("two pinned Chinese view windows render exact text beyond the shared cache budget", async () => {
+  const base = source(68);
+  const text = "中".repeat(200_000);
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readContent: (id, revision) => Promise.resolve({ entryId: id, revision, text }),
+  });
+  try {
+    await runtime.loadPage();
+    const first = runtime.attachView("first"), second = runtime.attachView("second");
+    first.setVisible(Array.from({ length: 34 }, (_, i) => i));
+    second.setVisible(Array.from({ length: 34 }, (_, i) => i + 34));
+    for (let i = 0; i < 68; i++) assertEquals(await runtime.readText(`e${i}`, "0"), text);
+    assert(runtime.statistics.contentBytes <= runtime.limits.contentBytes);
+    assertEquals(runtime.cachedText("e67", "0"), undefined, "over-budget reads bypass retention");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("invalid selection ordinals fail before any historical page read", async () => {
+  const base = source();
+  let reads = 0;
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage(query, signal) {
+      reads++;
+      return base.readPage(query, signal);
+    },
+  });
+  await runtime.loadPage();
+  const before = reads;
+  try {
+    for (const invalid of [NaN, Infinity, -Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      for (const endpoint of ["anchor", "focus"] as const) {
+        const point = { id: "e0", ordinal: 0, revision: "0", offset: 0 };
+        await assertRejects(
+          () =>
+            runtime.copySelection({
+              epoch: "epoch",
+              projectionRevision: "0",
+              anchor: point,
+              focus: point,
+              [endpoint]: { ...point, ordinal: invalid },
+            }, new Set()),
+          ConversationError,
+          "invalid_selection",
+        );
+      }
+    }
+    assertEquals(reads, before);
+  } finally {
+    await runtime.dispose();
+  }
 });
 
 Deno.test("two views keep independent drafts and late acceptance preserves newer edits", async () => {

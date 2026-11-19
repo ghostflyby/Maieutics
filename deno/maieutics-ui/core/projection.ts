@@ -57,12 +57,7 @@ export class ConversationProjection {
   find(id: string): ConversationEntry | undefined {
     for (const { entry } of this.#slots.values()) if (entry.id === id) return entry;
   }
-  merge(
-    page: ConversationPage,
-    changes: readonly ConversationChange[],
-    pins: ReadonlySet<number>,
-    anchor: number,
-  ): void {
+  validatePage(page: ConversationPage): void {
     natural(page.total);
     compareRevision(page.revision, "0");
     if (
@@ -71,6 +66,15 @@ export class ConversationProjection {
     if (this.#epoch !== undefined && page.epoch !== this.#epoch) {
       throw new ConversationError("epoch_changed");
     }
+  }
+  merge(
+    page: ConversationPage,
+    changes: readonly ConversationChange[],
+    pins: ReadonlySet<number>,
+    anchor: number,
+  ): void {
+    this.validatePage(page);
+    const initial = this.#epoch === undefined;
     if (
       this.#epoch !== undefined &&
       (compareRevision(page.revision, this.#revision) > 0 || page.total > this.#total)
@@ -95,9 +99,10 @@ export class ConversationProjection {
       if (change.epoch !== page.epoch) throw new ConversationError("epoch_changed");
       if (compareRevision(change.revision, page.revision) > 0) this.#operate(slots, change, false);
     }
-    this.#commit(slots, pins, anchor, total, page.epoch);
+    if (!ordinals.size && anchor < total) throw new ConversationError("page_unavailable");
+    this.#commit(slots, pins, anchor, total, page.epoch, ordinals);
     this.#epoch = page.epoch;
-    if (this.#revision === "0") this.#revision = page.revision;
+    if (initial) this.#revision = page.revision;
   }
   apply(change: ConversationChange, pins: ReadonlySet<number>, anchor: number): boolean {
     natural(change.total);
@@ -169,6 +174,7 @@ export class ConversationProjection {
     anchor: number,
     total: number,
     epoch: string,
+    requested?: ReadonlySet<number>,
   ): void {
     const identities = new Set<string>();
     for (const { entry } of slots.values()) {
@@ -215,6 +221,9 @@ export class ConversationProjection {
       if (candidate === undefined) throw new ConversationError("range_capacity");
       slots.delete(candidate);
       rows = rowList();
+    }
+    if (requested?.size && ![...requested].some((ordinal) => slots.has(ordinal))) {
+      throw new ConversationError("index_capacity");
     }
     const old = new Map(this.#rows.map((row) => [row.key, row]));
     this.#rows = Object.freeze(rows.map((row) => old.get(row.key) ?? Object.freeze(row)));

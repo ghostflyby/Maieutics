@@ -39,8 +39,19 @@ supports range-based history loading, dynamic row measurement, following/history
 text updates, logical copying across evicted rows, session replacement, and joined request disposal.
 TanStack Vue Virtual 3.13.52/Virtual Core 3.19.11 use the existing Vue 3.5.13 runtime. The local
 source port is deliberately separate from a future wire schema; its stable ordinals describe
-navigation within an epoch. Pages predating request admission fail explicitly, and pending snapshots
-reconcile bounded successor changes before entering the resident window.
+navigation within an epoch. Pages ahead of the reducer wait for its stream watermark without
+advancing global revision/total; cancellation and disposal release that wait. A snapshot predating
+request admission or overflowing reconciliation gets one fresh-snapshot retry, with persistent
+inconsistency then failing explicitly. Pending snapshots reconcile bounded successor changes before
+entering the resident window. Admission fails atomically if it would retain no requested records.
+
+The shared text cache remains bounded even when active views pin more exact text than it can hold.
+A valid read still returns its full bounded text to the mounted caller when cache admission fails;
+retaining that response is optional. Caller-owned mounted windows and the per-content character
+limit bound those live responses separately from the shared cache. Cache pressure never becomes
+a visible body-read failure. Logical copy retains its separate byte bound and rejects non-integer,
+non-finite or unsafe ordinals before reading historical pages. Cross-bundle diagnostics use stable
+error codes. Persisted demo page transitions preserve its runtime until a final non-persisted close.
 
 Actual viewport intersection drives unloaded-range admission, including scrollbar-only jumps and
 movement inside a range that is already mounted. A changed target cancels the old page request;
@@ -57,6 +68,9 @@ variable-height virtualization, lazy details, streaming text, native Selection/c
 replacement, sibling/runtime closure, and the independently bundled ESM. Resize measurements are
 scheduled on animation frames instead of suppressing ResizeObserver feedback warnings. This is
 behavioral conformance, not a measured performance claim.
+The non-frozen anchor test deliberately evicts previously measured predecessors and compares the
+same visible block's screen offset. The following test checks the actual measured viewport bottom,
+including growth beyond overscan. Independently removing either correction makes its assertion fail.
 
 There is no live kernel adapter, pending-input UI/registry, session-owned producer publisher,
 presentation journal, Markdown/SSR integration, form checkpoint implementation, executable iframe,

@@ -85,11 +85,15 @@ including growth beyond overscan. Independently removing either correction makes
 The anchor case first awaits the explicit `anchorRestored` acknowledgement emitted after the queued
 scroll write, then checks measured geometry. Both projection and gesture-release corrections emit
 that event with a reason, logical ordinal and pixel offset; unloaded anchors have no entry ID yet.
-Measured worktree input hashes, mutation replacements, exit codes and normalized failure assertions are recorded in
+Measured worktree input hashes, mutation replacements, outcomes and normalized failure assertions are recorded in
 [`scroll-mutations.json`](../deno/maieutics-ui/test/evidence/scroll-mutations.json); the anchor mutation
 keeps the acknowledgement intact while removing only the scroll write. The record makes no Git
-revision claim and excludes local environment/stack details. CI recomputes the complete input
-inventory and hashes before running browser conformance, rejecting stale evidence. The range-capacity
+revision claim and excludes local environment/stack details. CI recomputes the input inventory and
+hashes, executes all mutations with temporary import-map overlays, and requires their actual
+intended browser-verdict failures. It then executes the original suite and compares scenario names
+and count with the record; JSON/hashes alone cannot satisfy the gate. The inventory includes every
+regular file without an extension whitelist, with explicit generated-output exclusions and symlinks
+rejected. A recording command performs the same runs before updating the JSON. The range-capacity
 case creates actual pinned fragments and exercises pruning and error propagation, without injecting
 the error at the source. Held-page fixtures settle
 on request abort, with an injected early-failure scenario proving disposal does not wait for the

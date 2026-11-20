@@ -22,12 +22,64 @@ export const scrollMutations = [
     },
     assertion: "non-frozen page replacement moved the history anchor",
   },
+  {
+    name: "unloaded-gesture-offset-zeroed",
+    mutation: {
+      file: "vue/history.ts",
+      before: "offset: anchor.inside,",
+      after: "offset: 0,",
+      expected_matches: 1,
+    },
+    assertion: "unloaded gesture acknowledgement lost its pixel offset",
+  },
+  {
+    name: "loaded-gesture-offset-zeroed",
+    mutation: {
+      file: "vue/history.ts",
+      before: "offset: anchor.inside,",
+      after: 'offset: target.type === "entry" ? 0 : anchor.inside,',
+      expected_matches: 1,
+    },
+    assertion: "loaded gesture acknowledgement lost its pixel offset",
+  },
+  {
+    name: "projection-ordinal-zeroed",
+    mutation: {
+      file: "vue/history.ts",
+      before: "ordinal: target.ordinal,",
+      after: "ordinal: 0,",
+      expected_matches: 1,
+    },
+    assertion: "projection acknowledgement lost its logical ordinal",
+  },
+  {
+    name: "projection-offset-zeroed",
+    mutation: {
+      file: "vue/history.ts",
+      before: "offset: inside",
+      after: "offset: 0",
+      expected_matches: 1,
+    },
+    assertion: "projection acknowledgement lost its pixel offset",
+  },
 ] as const;
 
+export interface ScrollMutation {
+  readonly file: "vue/history.ts";
+  readonly before: string;
+  readonly after: string;
+  readonly expected_matches: number;
+}
+
+/** Only a verdict received from the owned browser can be an expected negative scenario. */
+export class BrowserScenarioFailure extends Error {
+  override name = "BrowserScenarioFailure";
+}
+
 export interface ScrollEvidence {
-  readonly schema_version: 2;
+  readonly schema_version: 3;
   readonly source: { readonly kind: "worktree-snapshot"; readonly files_sha256: SourceHashes };
-  readonly command: "deno task test:browser";
+  readonly command: "deno task check:evidence";
   readonly cases: readonly {
     readonly name: string;
     readonly mutation: {
@@ -36,10 +88,14 @@ export interface ScrollEvidence {
       readonly after: string;
       readonly expected_matches: number;
     };
-    readonly exit_code: 1;
+    readonly outcome: "failed";
     readonly assertion: string;
   }[];
-  readonly restored: { readonly exit_code: 0; readonly scenario_count: number };
+  readonly restored: {
+    readonly outcome: "passed";
+    readonly scenario_count: number;
+    readonly scenarios: readonly string[];
+  };
 }
 
 function require(condition: unknown, explanation: string): asserts condition {
@@ -59,7 +115,7 @@ function object(value: unknown, keys: readonly string[]): Record<string, unknown
 export function verifyEvidence(value: unknown, current: SourceHashes): void {
   const record = object(value, ["schema_version", "source", "command", "cases", "restored"]);
   require(
-    record.schema_version === 2 && record.command === "deno task test:browser",
+    record.schema_version === 3 && record.command === "deno task check:evidence",
     "unsupported schema or command",
   );
   const source = object(record.source, ["kind", "files_sha256"]);
@@ -74,7 +130,7 @@ export function verifyEvidence(value: unknown, current: SourceHashes): void {
   require(
     names.length > 0 && names.length === Object.keys(hashes).length &&
       names.every((name) => Object.hasOwn(hashes, name)),
-    "source inventory changed; rerun both mutations and the restored suite",
+    "source inventory changed; rerun all mutations and the restored suite",
   );
   for (const name of names) {
     require(
@@ -83,7 +139,7 @@ export function verifyEvidence(value: unknown, current: SourceHashes): void {
     );
     require(
       hashes[name] === current[name],
-      `stale source ${name}; rerun both mutations and the restored suite`,
+      `stale source ${name}; rerun all mutations and the restored suite`,
     );
   }
   require(
@@ -91,9 +147,9 @@ export function verifyEvidence(value: unknown, current: SourceHashes): void {
     "missing mutation results",
   );
   for (const [index, expected] of scrollMutations.entries()) {
-    const result = object(record.cases[index], ["name", "mutation", "exit_code", "assertion"]);
+    const result = object(record.cases[index], ["name", "mutation", "outcome", "assertion"]);
     require(
-      result.name === expected.name && result.exit_code === 1 &&
+      result.name === expected.name && result.outcome === "failed" &&
         result.assertion === expected.assertion,
       "mutation must fail at its intended assertion, without environment-dependent logs",
     );
@@ -105,33 +161,43 @@ export function verifyEvidence(value: unknown, current: SourceHashes): void {
       );
     }
   }
-  const restored = object(record.restored, ["exit_code", "scenario_count"]);
+  const restored = object(record.restored, ["outcome", "scenario_count", "scenarios"]);
   require(
-    restored.exit_code === 0 && typeof restored.scenario_count === "number" &&
-      Number.isSafeInteger(restored.scenario_count) && restored.scenario_count > 0,
+    restored.outcome === "passed" && typeof restored.scenario_count === "number" &&
+      Number.isSafeInteger(restored.scenario_count) && restored.scenario_count > 0 &&
+      Array.isArray(restored.scenarios) && restored.scenarios.length === restored.scenario_count &&
+      restored.scenarios.every((name) => typeof name === "string" && name.length > 0) &&
+      new Set(restored.scenarios).size === restored.scenarios.length,
     "restored suite did not pass",
   );
 }
 
 /** Enumerate source/test inputs so additions and deletions also invalidate recorded evidence. */
 export async function sourceHashes(root: URL): Promise<SourceHashes> {
-  const names: string[] = [];
+  const files: { name: string; url: URL }[] = [];
   const walk = async (directory: URL, prefix: string): Promise<void> => {
     for await (const entry of Deno.readDir(directory)) {
       const name = prefix + entry.name;
       if (
-        entry.name.startsWith(".") || name === "dist" || name === "node_modules" ||
-        name === "test/evidence"
+        name === ".git" || name === "dist" || name === "node_modules" ||
+        name === "test/evidence" || entry.name === ".DS_Store"
       ) continue;
-      if (entry.isDirectory) await walk(new URL(`${entry.name}/`, directory), `${name}/`);
-      else if (entry.isFile && /\.(ts|json|css|html)$/.test(name)) names.push(name);
+      require(!entry.isSymlink, `symbolic inputs are unsupported: ${name}`);
+      const url = new URL(
+        encodeURIComponent(entry.name) + (entry.isDirectory ? "/" : ""),
+        directory,
+      );
+      if (entry.isDirectory) await walk(url, `${name}/`);
+      else if (entry.isFile) files.push({ name, url });
     }
   };
   await walk(root, "");
-  names.push("../deno.json", "../deno.lock");
+  for (const name of ["../deno.json", "../deno.lock"]) {
+    files.push({ name, url: new URL(name, root) });
+  }
   const hashes = await Promise.all(
-    names.sort().map(async (name) => {
-      const bytes = await Deno.readFile(new URL(name, root));
+    files.sort((a, b) => a.name.localeCompare(b.name, "en")).map(async ({ name, url }) => {
+      const bytes = await Deno.readFile(url);
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
       return [
         name,
@@ -140,4 +206,64 @@ export async function sourceHashes(root: URL): Promise<SourceHashes> {
     }),
   );
   return Object.fromEntries(hashes);
+}
+
+/** Apply exactly the intended single mutation; missing/duplicate matches cannot count as evidence. */
+export function applyMutation(source: string, mutation: ScrollMutation): string {
+  require(
+    mutation.before.length > 0 && mutation.expected_matches === 1 &&
+      source.split(mutation.before).length - 1 === mutation.expected_matches,
+    "mutation no longer matches once",
+  );
+  return source.replace(mutation.before, mutation.after);
+}
+
+/** Execute each negative case and a restored suite; static JSON claims cannot satisfy this gate. */
+export async function observeEvidence(
+  files: SourceHashes,
+  run: (mutation?: ScrollMutation) => Promise<string[]>,
+): Promise<ScrollEvidence> {
+  const cases: ScrollEvidence["cases"][number][] = [];
+  for (const expected of scrollMutations) {
+    let failure: unknown;
+    try {
+      await run(expected.mutation);
+    } catch (error) {
+      failure = error;
+    }
+    require(failure !== undefined, `mutant survived: ${expected.name}`);
+    if (
+      !(failure instanceof BrowserScenarioFailure && failure.message.includes(expected.assertion))
+    ) {
+      throw new Error(
+        `UI regression evidence: mutant failed at an unexpected assertion: ${expected.name}`,
+        { cause: failure },
+      );
+    }
+    cases.push({ ...expected, outcome: "failed" });
+  }
+  const scenarios = await run();
+  const result: ScrollEvidence = {
+    schema_version: 3,
+    source: { kind: "worktree-snapshot", files_sha256: files },
+    command: "deno task check:evidence",
+    cases,
+    restored: { outcome: "passed", scenario_count: scenarios.length, scenarios },
+  };
+  verifyEvidence(result, files);
+  return result;
+}
+
+/** Compare the recorded successful scenarios with today's executed browser result, including names. */
+export function verifyObservedEvidence(record: unknown, observed: ScrollEvidence): void {
+  verifyEvidence(record, observed.source.files_sha256);
+  const restored = object(
+    object(record, ["schema_version", "source", "command", "cases", "restored"]).restored,
+    ["outcome", "scenario_count", "scenarios"],
+  );
+  require(
+    restored.scenario_count === observed.restored.scenario_count &&
+      JSON.stringify(restored.scenarios) === JSON.stringify(observed.restored.scenarios),
+    "recorded scenarios differ from the executed restored suite",
+  );
 }

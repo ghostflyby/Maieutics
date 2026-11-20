@@ -169,22 +169,30 @@ live-follow scrolling makes its dedicated geometry assertion fail. Clipboard wai
 deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic. The
 anchor case awaits its explicit correction acknowledgement before checking geometry. Controlled
 held-page fixtures observe cancellation, including an injected early-failure cleanup scenario.
-Recorded mutation commands, measured input hashes, exit codes and normalized failure assertions live
+Recorded mutation commands, measured input hashes, outcomes and normalized failure assertions live
 in [`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
 
-The version 2 record explicitly describes a content-addressed **worktree snapshot**, not a Git
+The version 3 record explicitly describes a content-addressed **worktree snapshot**, not a Git
 revision. Reproduce against files matching `source.files_sha256`; no parent commit is claimed to
 contain those bytes. Absolute paths, ephemeral ports, stack traces and local toolchain/platform
 metadata are excluded. Assertions identify the violated mechanism rather than a machine-specific
 pixel delta.
 
-`deno task check:evidence` reads the record, recomputes every source/test input hash (including the
-workspace config/lock), checks the complete file inventory and validates mutation definitions and
-outcomes. CI runs it before browser conformance. Changed, added or removed inputs fail the gate;
-documentation and generated `dist/` assets are outside the input set. Refreshing evidence requires
-capturing the input hashes, rerunning both exact mutations, restoring those same bytes and passing
-the unmodified browser suite. Record only the normalized intended assertion for each failed mutant,
-then run the evidence check. Updating hashes alone is not a valid refresh.
+`deno task check:evidence` recomputes the input inventory/hashes, then executes all declared
+mutations and the unmodified browser suite. The negative runs must fail at their intended
+assertions; a surviving mutant or an unrelated startup failure rejects the gate. The restored
+scenario names and count must equal the actual executed output. Matching JSON/hashes alone cannot
+satisfy this check. CI runs this complete gate without a redundant standalone browser run. The
+declared mutations also zero the gesture offsets and projection ordinal/offset, proving that the
+acknowledgement assertions check the coordinates of loaded and unloaded anchors.
+
+All regular files under this module are hashed, without an extension whitelist, including hidden
+fixtures, documentation and binary inputs. The only exclusions are root `.git/`, `dist/`,
+`node_modules/`, generated `test/evidence/` records and `.DS_Store` files. Symlink inputs fail
+closed. The workspace config/lock are also inputs. Changed, added or removed inputs reject stale
+records. `deno task record:evidence` executes the same browser runs and writes a new record only
+after they pass and the input hashes still match. Temporary import-map overlays apply mutations
+without editing workspace files. Updating hashes alone is no longer a sufficient refresh.
 
 ## Permissions and packaging
 
@@ -194,11 +202,12 @@ the prototype never selects executable output or needs `unsafe-eval`/remote asse
 
 Build reads local sources and cached dependencies and writes `dist/`. The fixture host permits only
 loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener.
-Evidence verification only reads repository inputs and the recorded JSON; it opens no network or
-process and writes no files. Browser conformance reads source/browser paths, writes a temporary
-bundle/profile, binds an ephemeral loopback port, and starts owned Deno/browser children. Browser
-environment inheritance is allowlisted, logs are bounded, and teardown joins the process, socket
-server, streams, and profile cleanup under one total shutdown budget.
+Evidence checking starts the same owned loopback browser runner for each case and writes temporary
+bundles/profile/import maps. Recording additionally writes the generated evidence JSON. Inventory
+unit tests own isolated temporary fixtures. Browser conformance reads source/browser paths, writes a
+temporary bundle/profile, binds an ephemeral loopback port, and starts owned Deno/browser children.
+Browser environment inheritance is allowlisted, logs are bounded, and teardown joins the process,
+socket server, streams, and profile cleanup under one total shutdown budget.
 
 This UI workspace member is not a REPL/plugin child and is not embedded by `DenoRuntimeModule`. Its
 assets are built separately; the existing executable resource globs and VS Code output-client

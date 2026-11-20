@@ -333,18 +333,24 @@ export async function runBrowserConformance(): Promise<string[]> {
     );
     const viewport = dragRoot.querySelector<HTMLElement>(".mui-viewport");
     assert(viewport, "drag viewport missing");
-    viewport.scrollTop = 25_000 * 120;
+    viewport.scrollTop = 25_000 * 120 + 73;
     viewport.dispatchEvent(new Event("scroll"));
     await guarded(
       entered.promise,
       "first scrollbar target did not start its controlled page request",
     );
+    const expectedGapOffset = viewport.scrollTop - 25_000 * 120;
+    assert(expectedGapOffset > 2, "gap acknowledgement fixture must use a nonzero offset");
     viewport.dispatchEvent(new Event("scrollend"));
     const gapAnchor = await guarded(
       gapRestored.promise,
       "unloaded gesture anchor did not acknowledge its correction",
     );
     equal(gapAnchor.ordinal, 25_000, "unloaded gesture acknowledgement lost its logical ordinal");
+    assert(
+      Math.abs(gapAnchor.offset - expectedGapOffset) <= 1,
+      "unloaded gesture acknowledgement lost its pixel offset",
+    );
     passed.push(
       "gesture release acknowledges an unloaded ordinal without inventing an entry identity",
     );
@@ -482,12 +488,18 @@ export async function runBrowserConformance(): Promise<string[]> {
     equal(viewport.scrollHeight, extent, "cache eviction changed the held scrollbar extent");
     equal(writes, 0, "page replacement wrote a scroll correction during the same drag");
     equal(viewport.dataset.scrollGesture, "active", "native scrollend ended a still-held gesture");
+    const expectedEntryOffset = viewport.scrollTop - 75_000 * 120;
+    assert(expectedEntryOffset > 2, "entry acknowledgement fixture must use a nonzero offset");
     globalThis.dispatchEvent(new PointerEvent("pointerup", { pointerId: 17 }));
     const entryAnchor = await guarded(
       entryRestored.promise,
       "loaded gesture anchor did not acknowledge its correction",
     );
     equal(entryAnchor.ordinal, 75_000, "loaded gesture acknowledgement lost its final ordinal");
+    assert(
+      Math.abs(entryAnchor.offset - expectedEntryOffset) <= 1,
+      "loaded gesture acknowledgement lost its pixel offset",
+    );
     equal(
       entryAnchor.entryId,
       "entry-75000",

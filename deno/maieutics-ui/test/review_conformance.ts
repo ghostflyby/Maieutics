@@ -334,10 +334,16 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       return rect.top <= bounds.top && rect.bottom > bounds.top;
     });
     const block = slot?.querySelector<HTMLElement>("[data-entry-id]");
-    assert(block, "reading-history anchor was not an actual visible block");
+    assert(slot && block, "reading-history anchor was not an actual visible block");
     const anchorId = block.dataset.entryId;
     assert(anchorId, "visible block identity missing");
     expectedAnchor = anchorId;
+    const expectedOrdinal = Number(block.dataset.ordinal);
+    const expectedOffset = bounds.top - slot.getBoundingClientRect().top;
+    assert(
+      expectedOrdinal > 0 && expectedOffset > 2,
+      "projection acknowledgement fixture must use nonzero coordinates",
+    );
     const before = block.getBoundingClientRect().top - bounds.top;
     assert(
       anchorRuntime.projection.get(0),
@@ -349,6 +355,15 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       "non-frozen history correction did not acknowledge its scroll write",
     );
     equal(correction.entryId, anchorId, "anchor acknowledgement addressed a different block");
+    equal(
+      correction.ordinal,
+      expectedOrdinal,
+      "projection acknowledgement lost its logical ordinal",
+    );
+    assert(
+      Math.abs(correction.offset - expectedOffset) <= 1,
+      "projection acknowledgement lost its pixel offset",
+    );
     await waitFor(
       () => !anchorRuntime.projection.get(0) && geometryApplied(anchorRoot),
       "controlled page replacement did not evict measured predecessors",

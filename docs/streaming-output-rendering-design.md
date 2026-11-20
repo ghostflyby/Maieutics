@@ -955,7 +955,10 @@ successful. History acknowledges projection and gesture-release anchor writes wi
 including reason, ordinal and offset and an optional loaded-entry ID; conformance awaits that event
 before comparing geometry. Reproducible mutation inputs, measured worktree hashes and normalized
 failure assertions are committed with the UI tests, without a Git revision claim or local environment
-details. CI verifies freshness against the complete current input inventory. Mutation coverage includes
+details. CI verifies input hashes, executes all declared mutations and requires their intended browser
+verdicts, then compares the restored scenario names/count with actual execution. Temporary import-map
+overlays avoid editing workspace files. The inventory has no extension whitelist and only explicit
+generated/cache exclusions; symlinks are rejected. Mutation coverage includes
 an omitted anchor write with its acknowledgement still enabled. Real fragment pruning exercises
 `range_capacity` propagation; fragmentation and pinned-index pressure use distinct diagnostics.
 

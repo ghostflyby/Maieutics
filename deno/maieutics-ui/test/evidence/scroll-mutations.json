@@ -1,10 +1,11 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "source": {
     "kind": "worktree-snapshot",
     "files_sha256": {
       "../deno.json": "1575b889183ae5711df321a43d4a1dba2825de731fae966831ae6c6de5831e15",
       "../deno.lock": "5c00c7055aba386b2a7b5f95b72e36bd6337b4b47ea924662289762aadddfe04",
+      ".gitignore": "ed19d3c9c8a5e34d0179e0b1a9c2907d2e657738733e4a432a8cf81c76ce56f1",
       "build.ts": "2ac631b360f52160b7c5f001a16552e15fbc1e9108cce56a373b890990a93fa2",
       "core/cache.ts": "476975375983d6a1948932fa259249282dc97c9594e0250310d3e745ef94bfee",
       "core/core_test.ts": "90d7ac19b554211e5b982aa0da40e686cdd4e7b2ed6837ddefede0668ed26995",
@@ -16,17 +17,18 @@
       "demo/index.html": "d144effd4a8da4b7e0db0e8f8bf2c08bc99d6c4e189800d36ec1bd282d258c9a",
       "demo/main.ts": "82457dc19a3f36c388c0d85fe346ffd9d1f256f37db97f603dc2e2d9c018d5bf",
       "demo/styles.css": "f7273ccd8004ea7f8d6a3a613ecf6d92078439657fa7199d3d4af3cb30c32d00",
-      "deno.json": "4e06353269b0565330683c9638958b43bd188822c3ecee21d91d49d93333d954",
+      "deno.json": "c0c62cff3e7ce07a8bc0d61646058ba8fab4898c5a6202a44f823399acc0a54b",
       "fixtures/conversation.ts": "a6121363a4d65c075acde0bb74aed043473470297c3abfdd4030c6e20f7ec31f",
       "mod.ts": "d161dc0b4c1fa8757076af3377e3eb2cab5e0c489ae103d71eef5c325d8f8273",
+      "README.md": "3ffd7580253428bcc07702993c91588f61ec23a70e88881d2e2d2f721e5f1288",
       "serve.ts": "02d2eab25500c55ebcac457f0cd0825cd957f9a73b042041191a0fd1968e0120",
       "test/browser_assertions.ts": "843e229b9a463da3078195aede711aed4e79749503d9af0e4c1d6fa80f2bedad",
-      "test/browser_conformance.ts": "f475779fa69c491ca6d34a757c5029fc204258a19018a2b3ff16a8f9b7aba460",
-      "test/browser_runner.ts": "e5a1eef9fddc58243bc5e9a394add269224bbb898434e02490a81f35b072a776",
-      "test/check_evidence.ts": "e3dfcbfb2c31cdd3f46c76e9862dcb707eee1447eb7fbeaef0fc42a7b46e1f9b",
-      "test/evidence.ts": "745363e9b517041da0253437c300ffdb45f29b15a56e1e862c9b5e34332595d0",
-      "test/evidence_test.ts": "8d911eea2f53c2a69294c15a37cec2ed4216dccb693b743c1816d32b9a18ec8a",
-      "test/review_conformance.ts": "b768fb5d5d9f62b13264ea5d3d0d604224ac5a9b9c0d58f3517ef126243b69bc",
+      "test/browser_conformance.ts": "380f567b34717b8fb8fb20568568659a26244e7c3a5244ebb13ace43ad773039",
+      "test/browser_runner.ts": "e0a47da6bc957120f25401545dba2418eba8232b751c2762684c011d0ed6f239",
+      "test/check_evidence.ts": "50315f0d58dedc5d1ef7f51cad57687895093f082d0431a47a831f2bfe849d46",
+      "test/evidence_test.ts": "bb7287c5ed51a1cf28b88c0cf9a89285e2987761b6a65efa119751c14b42ed45",
+      "test/evidence.ts": "38f6e3bf04b5a99ffd132feee6c2204a2e05ce89549b7a67511ccf98f415bac4",
+      "test/review_conformance.ts": "4416427d853d8de43066585c07e4ecc4374697642efeb901bbd494c07f901a21",
       "vue/composer.ts": "d2fb50031c9d171f543bd68e9c5ca93249a8108c32ed5952dd9ab5193c7c8185",
       "vue/contracts.ts": "6ad256ef1bb5816a2ae1d71c8d76bf08beae355f3122376c5b0d9a0901e988a9",
       "vue/conversation.ts": "9f5b689d506dd132e786bb8c62814753e096fafb2cac8118876eb208df644263",
@@ -34,7 +36,7 @@
       "vue/mount.ts": "18b5b4a13d62cc501385cdaea59babcc08ef8247c36c4bd0ceb877f98840dbd4"
     }
   },
-  "command": "deno task test:browser",
+  "command": "deno task check:evidence",
   "cases": [
     {
       "name": "following-scroll-disabled",
@@ -45,7 +47,7 @@
         "expected_matches": 1
       },
       "assertion": "following mode left a measured growing tail below the viewport",
-      "exit_code": 1
+      "outcome": "failed"
     },
     {
       "name": "anchor-write-omitted-acknowledgement-retained",
@@ -56,11 +58,85 @@
         "expected_matches": 1
       },
       "assertion": "non-frozen page replacement moved the history anchor",
-      "exit_code": 1
+      "outcome": "failed"
+    },
+    {
+      "name": "unloaded-gesture-offset-zeroed",
+      "mutation": {
+        "file": "vue/history.ts",
+        "before": "offset: anchor.inside,",
+        "after": "offset: 0,",
+        "expected_matches": 1
+      },
+      "assertion": "unloaded gesture acknowledgement lost its pixel offset",
+      "outcome": "failed"
+    },
+    {
+      "name": "loaded-gesture-offset-zeroed",
+      "mutation": {
+        "file": "vue/history.ts",
+        "before": "offset: anchor.inside,",
+        "after": "offset: target.type === \"entry\" ? 0 : anchor.inside,",
+        "expected_matches": 1
+      },
+      "assertion": "loaded gesture acknowledgement lost its pixel offset",
+      "outcome": "failed"
+    },
+    {
+      "name": "projection-ordinal-zeroed",
+      "mutation": {
+        "file": "vue/history.ts",
+        "before": "ordinal: target.ordinal,",
+        "after": "ordinal: 0,",
+        "expected_matches": 1
+      },
+      "assertion": "projection acknowledgement lost its logical ordinal",
+      "outcome": "failed"
+    },
+    {
+      "name": "projection-offset-zeroed",
+      "mutation": {
+        "file": "vue/history.ts",
+        "before": "offset: inside",
+        "after": "offset: 0",
+        "expected_matches": 1
+      },
+      "assertion": "projection acknowledgement lost its pixel offset",
+      "outcome": "failed"
     }
   ],
   "restored": {
-    "exit_code": 0,
-    "scenario_count": 28
+    "outcome": "passed",
+    "scenario_count": 28,
+    "scenarios": [
+      "100,000 entries mount a bounded tail and load bodies lazily",
+      "measured slots contain variable-height output without overlapping adjacent blocks",
+      "shared conversation runtime keeps independent view drafts",
+      "accepted input and streaming updates retain block identity and draft ownership",
+      "following keeps the actual viewport at the measured live end beyond overscan",
+      "scrollbar-only navigation loads history without a wheel or keyboard event",
+      "ordinary cross-block copy uses revisioned text and excludes presentation controls",
+      "tool detail loads only after expansion",
+      "closing one view preserves its sibling attachment and draft",
+      "session replacement retires old view state before attaching the new runtime",
+      "terminal disposal releases source requests, cached content and view attachments",
+      "self-contained ESM mounts without sharing Vue implementation objects",
+      "runtime closure disables a still-mounted view without leaving live effects",
+      "gesture release acknowledges an unloaded ordinal without inventing an entry identity",
+      "rapid scrollbar jumps within one unloaded region cancel the obsolete target",
+      "gesture release acknowledges the final loaded block before geometry checks",
+      "held scrollbar keeps position/extent through live output, lazy loads and page eviction",
+      "history and input mount in separate DOM roots under one caller-owned view",
+      "independent unmount cancels history work while preserving the sibling and draft",
+      "separate components rebind and close together without owning either runtime",
+      "waiting ranges expose progress and cancel/restart without waiting for stream arrival",
+      "future HTTP pages become readable after independently delivered stream catch-up",
+      "early conformance failure cancels its held source and joins disposal within the scenario budget",
+      "zero-progress page admission stops automatic range requests with a capacity result",
+      "real fragment pruning propagates range_capacity to its distinct UI diagnostic",
+      "non-frozen history keeps its visible block offset when measured predecessors are evicted",
+      "cross-bundle copy capacity failures preserve their diagnostic and never write partial text",
+      "demo survives repeated persisted page transitions and disposes on the final pagehide"
+    ]
   }
 }

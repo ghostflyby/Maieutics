@@ -17,6 +17,22 @@ export async function guarded<T>(completion: Promise<T>, mechanism: string): Pro
     clearTimeout(timer);
   }
 }
+
+/** A controlled fixture response must settle its owned read when its request is cancelled. */
+export function abortable<T>(completion: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    completion.then((value) => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, (error) => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+  });
+}
 export function geometryApplied(root: HTMLElement): boolean {
   if (root.querySelector(".mui-loading")) return false;
   const rows = [...root.querySelectorAll<HTMLElement>(".mui-row")];

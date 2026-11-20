@@ -8,3 +8,9 @@ export interface ConversationSubmission {
   readonly text: string;
   readonly revision: number;
 }
+
+/** A queued history-anchor correction has applied its scroll write for this block. */
+export interface ConversationAnchorRestoration {
+  readonly entryId: string;
+  readonly offset: number;
+}

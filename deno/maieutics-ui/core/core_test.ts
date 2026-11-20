@@ -349,6 +349,125 @@ Deno.test("one stale HTTP snapshot retries a fresh page instead of poisoning its
   }
 });
 
+Deno.test("concurrent first pages choose one baseline before waiting for a newer page", async () => {
+  const base = source();
+  const first = Promise.withResolvers<ConversationPage>(),
+    second = Promise.withResolvers<ConversationPage>();
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage: (query) => query.offset === 0 ? first.promise : second.promise,
+  }, { entries: 20, pageSize: 10 });
+  const headPage = await base.readPage({ offset: 0, limit: 10 }, runtime.signal);
+  const tailPage = await base.readPage({ offset: 90, limit: 10 }, runtime.signal);
+  const head = runtime.loadPage(0), tail = runtime.loadPage(90);
+  const observed = tail.then(() => undefined, (error) => error);
+  try {
+    first.resolve(headPage);
+    second.resolve({ ...tailPage, revision: "1" });
+    await head;
+    runtime.apply({ epoch: "epoch", baseRevision: "0", revision: "1", total: 100, operations: [] });
+    assertEquals(await observed, undefined, "concurrent initialization rejected its newer page");
+    assertEquals(runtime.projection.get(0)?.id, "e0");
+    assertEquals(runtime.projection.get(99)?.id, "e99");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("a concurrent initial page older than the chosen baseline must fetch fresh records", async () => {
+  const base = source();
+  const first = Promise.withResolvers<ConversationPage>(),
+    second = Promise.withResolvers<ConversationPage>();
+  let tailReads = 0;
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage(query, signal) {
+      if (query.offset === 0) return first.promise;
+      if (tailReads++ === 0) return second.promise;
+      return base.readPage(query, signal).then((page) => ({ ...page, revision: "1" }));
+    },
+  }, { entries: 20, pageSize: 10 });
+  const head = runtime.loadPage(0), tail = runtime.loadPage(90);
+  const observed = tail.then(() => undefined, (error) => error);
+  try {
+    first.resolve({
+      ...await base.readPage({ offset: 0, limit: 10 }, runtime.signal),
+      revision: "1",
+    });
+    second.resolve(await base.readPage({ offset: 90, limit: 10 }, runtime.signal));
+    await head;
+    assertEquals(await observed, undefined);
+    assertEquals(
+      tailReads,
+      2,
+      "pre-baseline page was admitted without its missing change evidence",
+    );
+    assertEquals(runtime.projection.revision, "1");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("aborted pages never publish even when the source returns after ignoring cancellation", async () => {
+  const base = source();
+  const delivery = Promise.withResolvers<ConversationPage>();
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage: (query, signal) =>
+      query.offset === 0 ? delivery.promise : base.readPage(query, signal),
+  });
+  await runtime.loadPage();
+  const before = runtime.projection.rows;
+  const caller = new AbortController();
+  let publications = 0;
+  runtime.subscribe(() => publications++);
+  const loading = runtime.loadPage(0, caller.signal);
+  const rejected = assertRejects(() => loading, DOMException);
+  caller.abort();
+  delivery.resolve(await base.readPage({ offset: 0, limit: 10 }, runtime.signal));
+  await rejected;
+  assertEquals(publications, 0, "cancelled page emitted a projection publication");
+  assertEquals(runtime.projection.rows, before);
+  assertEquals(runtime.projection.get(0), undefined);
+  await runtime.dispose();
+});
+
+Deno.test("abort after HTTP delivery but before commit leaves projection unpublished", async () => {
+  const base = source(), delivery = Promise.withResolvers<ConversationPage>();
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readPage: (query, signal) =>
+      query.offset === 0 ? delivery.promise : base.readPage(query, signal),
+  });
+  await runtime.loadPage();
+  const caller = new AbortController();
+  let publications = 0;
+  runtime.subscribe(() => publications++);
+  const loading = runtime.loadPage(0, caller.signal);
+  const rejected = assertRejects(() => loading, DOMException);
+  delivery.resolve(await base.readPage({ offset: 0, limit: 10 }, runtime.signal));
+  await delivery.promise;
+  caller.abort();
+  await rejected;
+  assertEquals(publications, 0);
+  assertEquals(runtime.projection.get(0), undefined);
+  await runtime.dispose();
+});
+
+Deno.test("cancellation from publication observes a committed page as successful", async () => {
+  const runtime = new ConversationRuntime("s", source());
+  await runtime.loadPage();
+  const caller = new AbortController();
+  runtime.subscribe(() => caller.abort());
+  try {
+    await runtime.loadPage(0, caller.signal);
+    assert(caller.signal.aborted, "test never cancelled from the page publication");
+    assertEquals(runtime.projection.get(0)?.id, "e0");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 Deno.test("cancellation and disposal release a page waiting for a future stream revision", async () => {
   for (const dispose of [false, true]) {
     const base = source();
@@ -372,6 +491,64 @@ Deno.test("cancellation and disposal release a page waiting for a future stream 
     assertEquals((await rejected).name, "AbortError");
     await runtime.dispose();
     assertEquals(runtime.statistics.activeRequests + runtime.statistics.queuedRequests, 0);
+  }
+});
+
+Deno.test("stream waits expose progress, expire without publication, and allow a new request", async () => {
+  const base = source();
+  let reads = 0;
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    async readPage(query, signal) {
+      const page = await base.readPage(query, signal);
+      if (query.offset !== 0) return page;
+      reads++;
+      return { ...page, revision: "1" };
+    },
+  }, { pageWaitMilliseconds: 1 });
+  const phases: string[] = [];
+  try {
+    await runtime.loadPage();
+    await assertRejects(
+      () => runtime.loadPage(0, undefined, (state) => phases.push(state.phase)),
+      ConversationError,
+      "stream_wait_timeout",
+    );
+    assertEquals(phases, ["reading", "waiting-for-stream"]);
+    assertEquals(
+      runtime.statistics.waitingPages,
+      0,
+      "expired waiter retained its progress listener",
+    );
+    assertEquals(runtime.projection.get(0), undefined, "expired waiter published its snapshot");
+    runtime.apply({ epoch: "epoch", baseRevision: "0", revision: "1", total: 100, operations: [] });
+    await runtime.loadPage(0);
+    assertEquals(reads, 2);
+    assertEquals(runtime.projection.get(0)?.id, "e0");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+Deno.test("cancellation from waiting progress clears its deadline and prevents page publication", async () => {
+  const base = source(), caller = new AbortController();
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    async readPage(query, signal) {
+      const page = await base.readPage(query, signal);
+      return query.offset === 0 ? { ...page, revision: "1" } : page;
+    },
+  });
+  try {
+    await runtime.loadPage();
+    await assertRejects(() =>
+      runtime.loadPage(0, caller.signal, (state) => {
+        if (state.phase === "waiting-for-stream") caller.abort();
+      }), DOMException);
+    assertEquals(runtime.statistics.waitingPages, 0);
+    assertEquals(runtime.projection.get(0), undefined);
+  } finally {
+    await runtime.dispose();
   }
 });
 

@@ -1,7 +1,20 @@
 import { nextTick } from "vue";
-import { type ConversationChange, type ConversationPage, ConversationRuntime } from "../mod.ts";
+import {
+  type ConversationAnchorRestoration,
+  type ConversationChange,
+  ConversationError,
+  type ConversationPage,
+  ConversationRuntime,
+} from "../mod.ts";
 import { FixtureConversation } from "../fixtures/conversation.ts";
-import { assert, equal, geometryApplied, guarded, waitFor } from "./browser_assertions.ts";
+import {
+  abortable,
+  assert,
+  equal,
+  geometryApplied,
+  guarded,
+  waitFor,
+} from "./browser_assertions.ts";
 
 type Artifact = Pick<
   typeof import("../mod.ts"),
@@ -28,13 +41,18 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
   const fixture = new FixtureConversation("future", 10_000);
   const requested = Promise.withResolvers<number>();
   const response = Promise.withResolvers<ConversationPage>();
+  const restarted = Promise.withResolvers<void>();
+  let targetReads = 0;
   let waiting = false;
   const runtime = new ConversationRuntime("future", {
     readPage(query, signal) {
+      if (query.offset !== undefined && query.offset < 90_000) {
+        if (++targetReads === 2) restarted.resolve();
+      }
       if (!waiting && query.offset !== undefined && query.offset < 90_000) {
         waiting = true;
         requested.resolve(query.offset);
-        return response.promise;
+        return abortable(response.promise, signal);
       }
       return fixture.readPage(query, signal);
     },
@@ -65,6 +83,27 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     );
     await response.promise;
     equal(runtime.projection.revision, "0", "HTTP advanced the global stream revision");
+    await waitFor(
+      () => !!futureRoot.querySelector('[data-range-state="waiting-for-stream"]'),
+      "waiting page did not expose its stream synchronization state",
+    );
+    const retry = futureRoot.querySelector<HTMLButtonElement>(
+      '[data-range-state="waiting-for-stream"] button',
+    );
+    assert(retry, "waiting range has no recovery control");
+    equal(retry.textContent, "取消并重试", "active page did not offer cancellation and retry");
+    retry.click();
+    await guarded(restarted.promise, "retry was blocked by the previous active range request");
+    await waitFor(
+      () =>
+        runtime.statistics.waitingPages === 1 &&
+        !!futureRoot.querySelector('[data-range-state="waiting-for-stream"]'),
+      "replacement page did not take over the cancelled waiter",
+    );
+    equal(targetReads, 2, "explicit recovery triggered unbounded page retries");
+    passed.push(
+      "waiting ranges expose progress and cancel/restart without waiting for stream arrival",
+    );
     for (const change of changes) runtime.apply(change);
     await waitFor(
       () =>
@@ -84,6 +123,49 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     await runtime.dispose();
     futureRoot.remove();
   }
+
+  const failedSource = new FixtureConversation("failed-scenario", 2);
+  const never = Promise.withResolvers<ConversationPage>(), entered = Promise.withResolvers<void>();
+  const failedRuntime = new ConversationRuntime("failed-scenario", {
+    readPage(query, signal) {
+      if (query.offset === 0) {
+        entered.resolve();
+        return abortable(never.promise, signal);
+      }
+      return failedSource.readPage(query, signal);
+    },
+    readContent: (id, revision, signal) => failedSource.readContent(id, revision, signal),
+  });
+  await failedRuntime.loadPage();
+  const owner = new AbortController();
+  const failedPage = failedRuntime.loadPage(0, owner.signal).then(
+    () => undefined,
+    (error) => error,
+  );
+  const injected = new Error("controlled early scenario failure");
+  const failEarly = async () => {
+    try {
+      await guarded(entered.promise, "failure fixture never entered its held page read");
+      throw injected;
+    } finally {
+      owner.abort();
+      await guarded(failedRuntime.dispose(), "early scenario failure stranded its owned page read");
+    }
+  };
+  try {
+    await failEarly();
+  } catch (error) {
+    equal(error, injected, "page cleanup replaced or delayed the original scenario failure");
+  }
+  equal(
+    (await guarded(failedPage, "cancelled failure fixture never settled"))?.name,
+    "AbortError",
+    "held fixture ignored request cancellation",
+  );
+  equal(failedRuntime.statistics.activeRequests, 0, "failed scenario retained source work");
+  passed.push(
+    "early conformance failure cancels its held source and joins disposal within the scenario budget",
+  );
 
   const capacitySource = new FixtureConversation("capacity", 100);
   let capacityReads = 0;
@@ -129,6 +211,49 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     capacityRoot.remove();
   }
 
+  const fragmentedSource = new FixtureConversation("fragmented", 100);
+  const fragmentedRuntime = new ConversationRuntime("fragmented", {
+    readPage(query, signal) {
+      if (query.offset !== undefined && query.offset < 900) {
+        return Promise.reject(new ConversationError("range_capacity"));
+      }
+      return fragmentedSource.readPage(query, signal);
+    },
+    readContent: (id, revision, signal) => fragmentedSource.readContent(id, revision, signal),
+  });
+  await fragmentedRuntime.loadPage();
+  const fragmentedRoot = historyTarget();
+  const fragmentedHandle = artifact.mountConversation(fragmentedRoot, {
+    runtime: fragmentedRuntime,
+    viewId: "fragmented-reader",
+    host: { writeText: () => Promise.resolve() },
+  });
+  try {
+    await waitFor(
+      () => !!fragmentedRoot.querySelector('[data-entry-id="entry-999"] .mui-text'),
+      "fragmented history fixture did not initialize",
+    );
+    const viewport = fragmentedRoot.querySelector<HTMLElement>(".mui-viewport");
+    assert(viewport, "fragmented viewport missing");
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event("scroll"));
+    await waitFor(
+      () => !!fragmentedRoot.querySelector('[data-range-state="failed"]'),
+      "range capacity failure never completed",
+    );
+    const label = fragmentedRoot.querySelector(".mui-range-label")?.textContent ?? "";
+    assert(
+      label.includes("历史分段过多"),
+      "range capacity lost its distinct fragmentation diagnostic",
+    );
+    assert(!label.includes("其他视图或选区"), "range capacity incorrectly blamed view pins");
+    passed.push("range capacity reports fragmentation independently of index pin pressure");
+  } finally {
+    fragmentedHandle.unmount();
+    await fragmentedRuntime.dispose();
+    fragmentedRoot.remove();
+  }
+
   const anchorSource = new FixtureConversation("anchor", 200);
   const anchorRuntime = new ConversationRuntime("anchor", {
     async readPage(query, signal) {
@@ -144,9 +269,14 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
   await anchorRuntime.loadPage(0);
   const anchorView = anchorRuntime.attachView("anchor-reader");
   const anchorRoot = historyTarget();
+  const anchorAck = Promise.withResolvers<ConversationAnchorRestoration>();
+  let expectedAnchor: string | undefined;
   const anchorHandle = artifact.mountConversationHistory(anchorRoot, {
     view: anchorView,
     host: { writeText: () => Promise.resolve() },
+    onAnchorRestored(anchor) {
+      if (anchor.entryId === expectedAnchor) anchorAck.resolve(anchor);
+    },
   });
   try {
     await waitFor(
@@ -200,12 +330,19 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     const block = slot?.querySelector<HTMLElement>("[data-entry-id]");
     assert(block, "reading-history anchor was not an actual visible block");
     const anchorId = block.dataset.entryId;
+    assert(anchorId, "visible block identity missing");
+    expectedAnchor = anchorId;
     const before = block.getBoundingClientRect().top - bounds.top;
     assert(
       anchorRuntime.projection.get(0),
       "measured predecessor was evicted before the controlled transition",
     );
     await anchorRuntime.loadPage(1600);
+    const correction = await guarded(
+      anchorAck.promise,
+      "non-frozen history correction did not acknowledge its scroll write",
+    );
+    equal(correction.entryId, anchorId, "anchor acknowledgement addressed a different block");
     await waitFor(
       () => !anchorRuntime.projection.get(0) && geometryApplied(anchorRoot),
       "controlled page replacement did not evict measured predecessors",

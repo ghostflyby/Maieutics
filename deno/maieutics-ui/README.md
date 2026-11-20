@@ -80,6 +80,11 @@ state without disposing that caller-owned attachment. `view.dispose()` closes bo
 components; runtime disposal also closes all its views. The optional history `onReady` callback
 means viewport initialization, not completion of every lazy content read.
 
+History emits `anchorRestored` (mount binding `onAnchorRestored`) after its queued structural anchor
+scroll write. Its entry ID and pixel offset identify the restored position; subsequent body
+measurements remain separate. Hosts/tests can observe that acknowledgement without guessing the
+ordering of Vue update queues.
+
 `ConversationView` is an optional composition component used by `mountConversation()`. It creates
 one view attachment, places the two independent components together, forwards events and disposes
 its own attachment on unmount/session replacement. The shell still owns the runtime. All mount
@@ -100,8 +105,18 @@ additional page ahead of the reducer waits for the independently delivered strea
 never advances the global revision or total. Waiting remains request-owned and cancellable,
 including when stream updates change only an entry body. A stale snapshot or reconciliation overflow
 gets one fresh-snapshot retry; persistent inconsistency fails explicitly after that bounded retry.
-Page admission fails atomically with a capacity result if eviction would retain none of the
-requested records, preventing automatic zero-progress range loops.
+Concurrent first pages atomically choose the first successful snapshot as their baseline. A second
+page older than that baseline fetches fresh state; a newer one waits for the stream. Hosts need not
+serialize initial `loadPage` calls. Waits expose request-local `PageLoadProgress` and
+`statistics.waitingPages`, and fail with `stream_wait_timeout` after the configurable
+`pageWaitMilliseconds` budget (15 seconds by default). The UI shows synchronization state and can
+cancel/retry an active range immediately, as well as retry after timeout. Page admission fails
+atomically with a capacity result if eviction would retain none of the requested records, preventing
+automatic zero-progress range loops. Page publication is the success boundary: cancellation before
+that synchronous commit prevents all projection publication, even if the source ignores
+cancellation. Cancellation from a publication listener happens after commit and the request remains
+successful. Notification follows the commit without an asynchronous gap; a final task cancellation
+check cannot reverse that completed result.
 
 The core exposes readonly projection access and narrow per-entry subscriptions. Index and body
 caches have independent budgets; unloaded ranges aggregate geometry without creating one browser
@@ -148,7 +163,11 @@ Review regressions separately control HTTP/stream ordering, zero-progress capaci
 history anchor across measured predecessor eviction, actual live-end viewport geometry, cross-bundle
 error codes, and persisted demo page transitions. Removing either structural anchor correction or
 live-follow scrolling makes its dedicated geometry assertion fail. Clipboard waits have individual
-deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic.
+deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic. The
+anchor case awaits its explicit correction acknowledgement before checking geometry. Controlled
+held-page fixtures observe cancellation, including an injected early-failure cleanup scenario.
+Recorded mutation commands, candidate source hashes, exit codes and failure excerpts live in
+[`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
 
 ## Permissions and packaging
 

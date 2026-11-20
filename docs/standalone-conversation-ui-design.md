@@ -44,6 +44,17 @@ advancing global revision/total; cancellation and disposal release that wait. A 
 request admission or overflowing reconciliation gets one fresh-snapshot retry, with persistent
 inconsistency then failing explicitly. Pending snapshots reconcile bounded successor changes before
 entering the resident window. Admission fails atomically if it would retain no requested records.
+Concurrent initialization chooses one baseline in a synchronous publication, without an intervening
+await. Later initial replies cannot publish state older than that chosen baseline. Stream catch-up
+has a configurable failure deadline (15 seconds by default), observable request progress, and a
+cancel/retry control that replaces the current range request. Expiry reports `stream_wait_timeout`,
+never successful completion. Fragment/range capacity has its own diagnostic, independent of view pins.
+
+A page commit is the cancellation linearization point. Cancellation before it prevents publication;
+cancellation raised by a notification listener after commit leaves the completed request successful.
+The owned task records that synchronous commit before notifications, so its final cancellation check
+cannot report an already published page as cancelled. Tests cover ignored source cancellation, the
+delivery-to-commit boundary, and cancellation from the publication listener itself.
 
 The shared text cache remains bounded even when active views pin more exact text than it can hold.
 A valid read still returns its full bounded text to the mounted caller when cache admission fails;
@@ -71,6 +82,13 @@ behavioral conformance, not a measured performance claim.
 The non-frozen anchor test deliberately evicts previously measured predecessors and compares the
 same visible block's screen offset. The following test checks the actual measured viewport bottom,
 including growth beyond overscan. Independently removing either correction makes its assertion fail.
+The anchor case first awaits the explicit `anchorRestored` acknowledgement emitted after the queued
+scroll write, then checks measured geometry. Committed source hashes, mutation replacements, exit
+codes and failure excerpts are recorded in
+[`scroll-mutations.json`](../deno/maieutics-ui/test/evidence/scroll-mutations.json); the anchor mutation
+keeps the acknowledgement intact while removing only the scroll write. Held-page fixtures settle
+on request abort, with an injected early-failure scenario proving disposal does not wait for the
+runner's outer timeout.
 
 There is no live kernel adapter, pending-input UI/registry, session-owned producer publisher,
 presentation journal, Markdown/SSR integration, form checkpoint implementation, executable iframe,

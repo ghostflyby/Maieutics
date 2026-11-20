@@ -12,6 +12,7 @@ import {
   type ConversationSelection,
   type ConversationSource,
   defaultLimits,
+  type PageLoadProgress,
   textBytes,
 } from "./types.ts";
 
@@ -34,6 +35,7 @@ export class ConversationRuntime {
   readonly #views = new Map<string, ConversationViewState>();
   readonly #pages = new Set<PendingPage>();
   readonly #pageWaiters = new Set<Listener>();
+  #baselineRevision: string | undefined;
   #anchor = 0;
   #disposal: Promise<void> | undefined;
   constructor(
@@ -65,6 +67,7 @@ export class ConversationRuntime {
     contentBytes: number;
     activeRequests: number;
     queuedRequests: number;
+    waitingPages: number;
     views: number;
   } {
     return {
@@ -73,6 +76,7 @@ export class ConversationRuntime {
       contentBytes: this.#cache.bytes,
       activeRequests: this.#tasks.active,
       queuedRequests: this.#tasks.queued,
+      waitingPages: this.#pageWaiters.size,
       views: this.#views.size,
     };
   }
@@ -115,13 +119,15 @@ export class ConversationRuntime {
     page: ConversationPage,
     pending: PendingPage,
     signal: AbortSignal,
+    onProgress?: (progress: PageLoadProgress) => void,
   ): Promise<void> {
-    if (
-      this.projection.epoch === undefined ||
-      compareRevision(page.revision, this.projection.revision) <= 0
-    ) return;
+    if (compareRevision(page.revision, this.projection.revision) <= 0) return;
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
       const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this.#pageWaiters.delete(check);
         signal.removeEventListener("abort", check);
         if (error !== undefined) reject(error);
@@ -134,19 +140,34 @@ export class ConversationRuntime {
       };
       this.#pageWaiters.add(check);
       signal.addEventListener("abort", check, { once: true });
-      check();
+      const timer = setTimeout(
+        () => finish(new ConversationError("stream_wait_timeout")),
+        this.limits.pageWaitMilliseconds,
+      );
+      try {
+        onProgress?.({ phase: "waiting-for-stream", revision: page.revision });
+        check();
+      } catch (error) {
+        finish(error);
+      }
     });
   }
-  loadPage(offset?: number, caller?: AbortSignal): Promise<void> {
+  loadPage(
+    offset?: number,
+    caller?: AbortSignal,
+    onProgress?: (progress: PageLoadProgress) => void,
+  ): Promise<void> {
     if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) {
       return Promise.reject(new ConversationError("invalid_ordinal"));
     }
-    return this.#tasks.run(async (signal) => {
+    return this.#tasks.run(async (signal, commit) => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const pending: PendingPage = { changes: [], bytes: 0, overflow: false };
         const minimumRevision = this.projection.revision;
         this.#pages.add(pending);
         try {
+          onProgress?.({ phase: "reading" });
+          signal.throwIfAborted();
           const page = await this.#source.readPage({ offset, limit: this.limits.pageSize }, signal);
           signal.throwIfAborted();
           if (pending.overflow) throw new ConversationError("snapshot_gap");
@@ -154,12 +175,24 @@ export class ConversationRuntime {
             throw new ConversationError("snapshot_gap");
           }
           this.#projection.validatePage(page);
-          await this.#awaitPage(page, pending, signal);
+          // No await before the first publication: concurrent initial pages must observe its baseline.
+          if (this.projection.epoch !== undefined) {
+            await this.#awaitPage(page, pending, signal, onProgress);
+          }
           signal.throwIfAborted();
           if (pending.overflow) throw new ConversationError("snapshot_gap");
+          if (
+            this.#baselineRevision !== undefined &&
+            compareRevision(page.revision, this.#baselineRevision) < 0
+          ) {
+            throw new ConversationError("snapshot_gap");
+          }
           const anchor = offset ?? Math.max(0, page.total - this.limits.pageSize);
-          this.#projection.merge(page, pending.changes, this.#pins(), anchor);
-          this.#anchor = anchor;
+          commit(() => {
+            this.#projection.merge(page, pending.changes, this.#pins(), anchor);
+            this.#baselineRevision ??= page.revision;
+            this.#anchor = anchor;
+          });
           this.#notify();
           return;
         } catch (error) {

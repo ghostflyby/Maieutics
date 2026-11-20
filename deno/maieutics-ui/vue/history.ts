@@ -18,9 +18,14 @@ import {
 } from "@tanstack/vue-virtual";
 import { ConversationRuntime, ConversationViewState, isActivity } from "../core/runtime.ts";
 import { FrozenScrollLayout } from "../core/scroll_layout.ts";
-import { type ConversationEntry, type ConversationRow, type TextPoint } from "../core/types.ts";
+import {
+  type ConversationEntry,
+  type ConversationRow,
+  type PageLoadProgress,
+  type TextPoint,
+} from "../core/types.ts";
 
-import type { ConversationHost } from "./contracts.ts";
+import type { ConversationAnchorRestoration, ConversationHost } from "./contracts.ts";
 
 const labels: Record<ConversationEntry["kind"], string> = {
   input: "你",
@@ -39,9 +44,11 @@ function message(error: unknown): string {
   if (code === "selection_capacity") {
     return "选区过大，请缩小选区或导出内容。";
   }
-  if (code === "index_capacity" || code === "range_capacity") {
+  if (code === "index_capacity") {
     return "历史缓存已被其他视图或选区占用，请释放后重试。";
   }
+  if (code === "range_capacity") return "历史分段过多，暂时无法载入这部分内容，请重试。";
+  if (code === "stream_wait_timeout") return "这部分历史尚未同步，请重试。";
   return "暂时无法读取这部分内容，请重试。";
 }
 
@@ -138,7 +145,7 @@ const historyProps = {
 const HistorySession = defineComponent({
   name: "ConversationHistorySession",
   props: historyProps,
-  emits: { ready: () => true },
+  emits: { ready: () => true, anchorRestored: (_anchor: ConversationAnchorRestoration) => true },
   setup(props, { emit }) {
     const view = props.view;
     const runtime = view.runtime;
@@ -163,7 +170,12 @@ const HistorySession = defineComponent({
     let scanFrame: number | undefined;
     let lastScrollTop = 0;
     let programmaticOffset: number | undefined;
-    let rangeRequest: { key: string; offset: number; controller: AbortController } | undefined;
+    let rangeRequest: {
+      key: string;
+      offset: number;
+      controller: AbortController;
+      progress: PageLoadProgress;
+    } | undefined;
     const close = () => {
       rows.value = [];
       status.value = "会话已关闭";
@@ -191,7 +203,10 @@ const HistorySession = defineComponent({
           ) return;
           const index = rows.value.findIndex((row) => row.key === key);
           const position = index >= 0 ? virtual.value.getOffsetForIndex(index, "start") : undefined;
-          if (position) virtual.value.scrollToOffset(position[0] + inside);
+          if (position) {
+            virtual.value.scrollToOffset(position[0] + inside);
+            emit("anchorRestored", { entryId: key, offset: inside });
+          }
         }).catch((error) => {
           if (!signal.aborted) status.value = message(error);
         });
@@ -377,12 +392,23 @@ const HistorySession = defineComponent({
       if (rangeRequest?.key === row.key && rangeRequest.offset === offset) return;
       if (loadErrors.get(row.key)?.offset === offset) return;
       rangeRequest?.controller.abort();
-      const request = { key: row.key, offset, controller: new AbortController() };
+      const request = {
+        key: row.key,
+        offset,
+        controller: new AbortController(),
+        progress: { phase: "reading" } as PageLoadProgress,
+      };
       rangeRequest = request;
       const requestSignal = AbortSignal.any([signal, request.controller.signal]);
       loadErrors.delete(row.key);
+      loadVersion.value++;
       try {
-        await runtime.loadPage(offset, requestSignal);
+        await runtime.loadPage(offset, requestSignal, (progress) => {
+          if (rangeRequest === request && !requestSignal.aborted) {
+            request.progress = progress;
+            loadVersion.value++;
+          }
+        });
       } catch (error) {
         if (!requestSignal.aborted) {
           loadErrors.set(row.key, { offset, message: message(error) });
@@ -393,7 +419,10 @@ const HistorySession = defineComponent({
           loadVersion.value++;
         }
       } finally {
-        if (rangeRequest === request) rangeRequest = undefined;
+        if (rangeRequest === request) {
+          rangeRequest = undefined;
+          loadVersion.value++;
+        }
         requestRangeScan();
       }
     };
@@ -609,11 +638,15 @@ const HistorySession = defineComponent({
               if (!row) return null;
               if (row.type === "range") {
                 void loadVersion.value;
+                const request = rangeRequest?.key === row.key ? rangeRequest : undefined;
+                const phase = request?.progress.phase;
                 return h("div", {
                   key: row.key,
                   class: "mui-range",
                   "data-range-key": row.key,
                   "data-range-start": item.start,
+                  "data-range-state": phase ?? (loadErrors.has(row.key) ? "failed" : "idle"),
+                  "aria-busy": !!request,
                   style: {
                     position: "absolute",
                     top: 0,
@@ -625,14 +658,22 @@ const HistorySession = defineComponent({
                   onVnodeUpdated: requestRangeScan,
                 }, [
                   h("div", { class: "mui-range-label" }, [
-                    loadErrors.get(row.key)?.message ?? "更早的记录会在阅读时载入。",
+                    loadErrors.get(row.key)?.message ?? (phase === "waiting-for-stream"
+                      ? "正在同步这部分历史…"
+                      : request
+                      ? "正在载入这部分历史…"
+                      : "更早的记录会在阅读时载入。"),
                     h("button", {
                       onClick: () => {
+                        if (rangeRequest?.key === row.key) {
+                          rangeRequest.controller.abort();
+                          rangeRequest = undefined;
+                        }
                         loadErrors.delete(row.key);
                         following.value = false;
                         void loadRange(row, item.start);
                       },
-                    }, "载入这部分"),
+                    }, request ? "取消并重试" : "载入这部分"),
                   ]),
                 ]);
               }
@@ -670,7 +711,7 @@ const HistorySession = defineComponent({
 export const ConversationHistory = defineComponent({
   name: "ConversationHistory",
   props: historyProps,
-  emits: { ready: () => true },
+  emits: { ready: () => true, anchorRestored: (_anchor: ConversationAnchorRestoration) => true },
   setup(props, { emit }) {
     const generation = shallowRef(Symbol("conversation-history"));
     watch(() => props.view, () => {
@@ -681,6 +722,7 @@ export const ConversationHistory = defineComponent({
         ...props,
         key: generation.value,
         onReady: () => emit("ready"),
+        onAnchorRestored: (anchor: ConversationAnchorRestoration) => emit("anchorRestored", anchor),
       });
   },
 });

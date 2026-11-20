@@ -4,7 +4,11 @@ import type { ConversationRuntime, ConversationViewState } from "../core/runtime
 import { ConversationView } from "./conversation.ts";
 import { ConversationHistory } from "./history.ts";
 import { ConversationComposer } from "./composer.ts";
-import type { ConversationHost, ConversationSubmission } from "./contracts.ts";
+import type {
+  ConversationAnchorRestoration,
+  ConversationHost,
+  ConversationSubmission,
+} from "./contracts.ts";
 
 /** Plain host binding for the self-contained ESM; no Vue objects cross the boundary. */
 export interface ConversationBinding {
@@ -14,6 +18,7 @@ export interface ConversationBinding {
   readonly title?: string;
   readonly onSubmit?: (submission: ConversationSubmission) => void;
   readonly onReady?: () => void;
+  readonly onAnchorRestored?: (anchor: ConversationAnchorRestoration) => void;
 }
 
 /** History accepts an existing view attachment owned by the caller. */
@@ -22,6 +27,7 @@ export interface ConversationHistoryBinding {
   readonly host: ConversationHost;
   readonly title?: string;
   readonly onReady?: () => void;
+  readonly onAnchorRestored?: (anchor: ConversationAnchorRestoration) => void;
 }
 
 /** Input needs only draft/submission state, independently of history or clipboard capabilities. */

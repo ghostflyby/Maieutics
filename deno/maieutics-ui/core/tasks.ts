@@ -22,7 +22,10 @@ export class OwnedTasks {
   get queued(): number {
     return this.#queue.length;
   }
-  run<T>(work: (signal: AbortSignal) => Promise<T>, caller?: AbortSignal): Promise<T> {
+  run<T>(
+    work: (signal: AbortSignal, commit: (publish: () => void) => void) => Promise<T>,
+    caller?: AbortSignal,
+  ): Promise<T> {
     if (this.signal.aborted) return Promise.reject(this.signal.reason);
     if (this.#queue.length >= this.capacity) {
       return Promise.reject(new ConversationError("request_capacity"));
@@ -42,10 +45,18 @@ export class OwnedTasks {
       start: () => {
         signal.removeEventListener("abort", job.cancel);
         const completion = (async () => {
+          let committed = false;
+          const commit = (publish: () => void) => {
+            signal.throwIfAborted();
+            if (committed) throw new ConversationError("already_committed");
+            publish();
+            committed = true;
+          };
           try {
             signal.throwIfAborted();
-            const value = await work(signal);
-            signal.throwIfAborted();
+            const value = await work(signal, commit);
+            // A publication is the operation's success boundary; later cancellation cannot undo it.
+            if (!committed) signal.throwIfAborted();
             result.resolve(value);
           } catch (error) {
             result.reject(error);

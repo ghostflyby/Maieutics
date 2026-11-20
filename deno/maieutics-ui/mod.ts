@@ -2,7 +2,11 @@
 export { ConversationView } from "./vue/conversation.ts";
 export { ConversationHistory } from "./vue/history.ts";
 export { ConversationComposer } from "./vue/composer.ts";
-export type { ConversationHost, ConversationSubmission } from "./vue/contracts.ts";
+export type {
+  ConversationAnchorRestoration,
+  ConversationHost,
+  ConversationSubmission,
+} from "./vue/contracts.ts";
 export {
   mountConversation,
   mountConversationComposer,
@@ -25,6 +29,7 @@ export type {
   ConversationRow,
   ConversationSelection,
   ConversationSource,
+  PageLoadProgress,
   TextContent,
   TextPoint,
 } from "./core/types.ts";

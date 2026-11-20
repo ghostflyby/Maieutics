@@ -2,7 +2,11 @@ import { defineComponent, h, onBeforeUnmount, type PropType, shallowRef, watch }
 import type { ConversationRuntime } from "../core/runtime.ts";
 import { ConversationHistory } from "./history.ts";
 import { ConversationComposer } from "./composer.ts";
-import type { ConversationHost, ConversationSubmission } from "./contracts.ts";
+import type {
+  ConversationAnchorRestoration,
+  ConversationHost,
+  ConversationSubmission,
+} from "./contracts.ts";
 
 const conversationProps = {
   runtime: { type: Object as PropType<ConversationRuntime>, required: true },
@@ -14,7 +18,11 @@ const conversationProps = {
 const ConversationSession = defineComponent({
   name: "ConversationSession",
   props: conversationProps,
-  emits: { submit: (_submission: ConversationSubmission) => true, ready: () => true },
+  emits: {
+    submit: (_submission: ConversationSubmission) => true,
+    ready: () => true,
+    anchorRestored: (_anchor: ConversationAnchorRestoration) => true,
+  },
   setup(props, { emit }) {
     const view = props.runtime.attachView(props.viewId);
     onBeforeUnmount(() => view.dispose());
@@ -25,6 +33,8 @@ const ConversationSession = defineComponent({
           host: props.host,
           title: props.title,
           onReady: () => emit("ready"),
+          onAnchorRestored: (anchor: ConversationAnchorRestoration) =>
+            emit("anchorRestored", anchor),
         }),
         h(ConversationComposer, {
           view,
@@ -38,7 +48,11 @@ const ConversationSession = defineComponent({
 export const ConversationView = defineComponent({
   name: "ConversationView",
   props: conversationProps,
-  emits: { submit: (_submission: ConversationSubmission) => true, ready: () => true },
+  emits: {
+    submit: (_submission: ConversationSubmission) => true,
+    ready: () => true,
+    anchorRestored: (_anchor: ConversationAnchorRestoration) => true,
+  },
   setup(props, { emit }) {
     const generation = shallowRef(Symbol("conversation-view"));
     watch([() => props.runtime, () => props.viewId], () => {
@@ -50,6 +64,7 @@ export const ConversationView = defineComponent({
         key: generation.value,
         onSubmit: (submission: ConversationSubmission) => emit("submit", submission),
         onReady: () => emit("ready"),
+        onAnchorRestored: (anchor: ConversationAnchorRestoration) => emit("anchorRestored", anchor),
       });
   },
 });

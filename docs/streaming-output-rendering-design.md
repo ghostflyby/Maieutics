@@ -947,6 +947,14 @@ when all retention capacity is pinned. Cross-bundle capacity diagnostics use sta
 Browser regressions assert actual live-end geometry and non-frozen history anchor preservation,
 with each assertion verified to fail when its correction is removed. Persisted demo page transitions
 retain the application for restoration and leave final non-persisted cleanup registered.
+Concurrent first page requests choose an atomic snapshot baseline; older initial replies must
+refresh. Catch-up waits expose progress, have a configurable failure budget, and support explicit
+cancel/retry while waiting. Page cancellation is linearized at synchronous publication: pre-commit
+abort publishes nothing, while cancellation from post-commit notification leaves the request
+successful. History acknowledges queued structural anchor writes with `anchorRestored`; conformance
+awaits that event before comparing geometry. Reproducible mutation inputs, candidate hashes and
+failure results are committed with the UI tests, including an omitted anchor write with its
+acknowledgement still enabled. Range fragmentation and pinned-index pressure use distinct diagnostics.
 
 Semantic output blocks, document presentation units, and rendering surfaces have separate
 identities and responsibilities. Initial message blocks keep the current whole-document rendering

@@ -29,6 +29,11 @@ export interface ConversationPage {
   readonly entries: readonly ConversationEntry[];
 }
 
+/** Request-local progress, independent of index notifications and the global stream cursor. */
+export type PageLoadProgress =
+  | { readonly phase: "reading" }
+  | { readonly phase: "waiting-for-stream"; readonly revision: string };
+
 /** Exact content reads must reject unavailable revisions rather than substituting newer text. */
 export interface TextContent {
   readonly entryId: string;
@@ -93,6 +98,8 @@ export interface ConversationLimits {
   readonly concurrentRequests: number;
   readonly queuedRequests: number;
   readonly reconciliationBytes: number;
+  /** Failure budget for waiting on stream catch-up, never evidence of successful completion. */
+  readonly pageWaitMilliseconds: number;
   readonly selectionBytes: number;
 }
 
@@ -106,6 +113,7 @@ export const defaultLimits: ConversationLimits = Object.freeze({
   concurrentRequests: 4,
   queuedRequests: 128,
   reconciliationBytes: 4 * 1024 * 1024,
+  pageWaitMilliseconds: 15_000,
   selectionBytes: 8 * 1024 * 1024,
 });
 

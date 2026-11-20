@@ -215,7 +215,7 @@ export function applyMutation(source: string, mutation: ScrollMutation): string 
       source.split(mutation.before).length - 1 === mutation.expected_matches,
     "mutation no longer matches once",
   );
-  return source.replace(mutation.before, mutation.after);
+  return source.replace(mutation.before, () => mutation.after);
 }
 
 /** Execute each negative case and a restored suite; static JSON claims cannot satisfy this gate. */

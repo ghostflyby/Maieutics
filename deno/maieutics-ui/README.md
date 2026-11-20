@@ -167,10 +167,14 @@ history anchor across measured predecessor eviction, actual live-end viewport ge
 error codes, and persisted demo page transitions. Removing either structural anchor correction or
 live-follow scrolling makes its dedicated geometry assertion fail. Clipboard waits have individual
 deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic. The
-anchor case awaits its explicit correction acknowledgement before checking geometry. Controlled
-held-page fixtures observe cancellation, including an injected early-failure cleanup scenario.
-Recorded mutation commands, measured input hashes, outcomes and normalized failure assertions live
-in [`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
+anchor case awaits its explicit correction acknowledgement before checking geometry. Its scoped
+fixture uses distinct fixed row heights, all multiples of the virtualizer's estimate, so the chosen
+37px nonzero remainder does not depend on font metrics. Other cases exercise natural variable-height
+output. Verifier tests cover command and mutation-definition drift, symbolic inputs and literal
+dollar sequences in replacement text. Controlled held-page fixtures observe cancellation, including
+an injected early-failure cleanup scenario. Recorded mutation commands, measured input hashes,
+outcomes and normalized failure assertions live in
+[`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
 
 The version 3 record explicitly describes a content-addressed **worktree snapshot**, not a Git
 revision. Reproduce against files matching `source.files_sha256`; no parent commit is claimed to

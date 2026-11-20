@@ -83,7 +83,10 @@ The non-frozen anchor test deliberately evicts previously measured predecessors 
 same visible block's screen offset. The following test checks the actual measured viewport bottom,
 including growth beyond overscan. Independently removing either correction makes its assertion fail.
 The anchor case first awaits the explicit `anchorRestored` acknowledgement emitted after the queued
-scroll write, then checks measured geometry. Both projection and gesture-release corrections emit
+scroll write, then checks measured geometry. Its scoped fixture gives rows distinct fixed heights
+that are multiples of the virtualizer estimate, preserving a deliberate nonzero interior offset
+independently of font metrics; separate cases retain natural variable-height coverage.
+Both projection and gesture-release corrections emit
 that event with a reason, logical ordinal and pixel offset; unloaded anchors have no entry ID yet.
 Measured worktree input hashes, mutation replacements, outcomes and normalized failure assertions are recorded in
 [`scroll-mutations.json`](../deno/maieutics-ui/test/evidence/scroll-mutations.json); the anchor mutation

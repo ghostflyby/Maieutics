@@ -953,9 +953,11 @@ cancel/retry while waiting. Page cancellation is linearized at synchronous publi
 abort publishes nothing, while cancellation from post-commit notification leaves the request
 successful. History acknowledges projection and gesture-release anchor writes with `anchorRestored`,
 including reason, ordinal and offset and an optional loaded-entry ID; conformance awaits that event
-before comparing geometry. Reproducible mutation inputs, measured worktree hashes and normalized
-failure assertions are committed with the UI tests, without a Git revision claim or local environment
-details. CI verifies input hashes, executes all declared mutations and requires their intended browser
+before comparing geometry. The anchor fixture uses distinct fixed row heights that are multiples
+of the virtualizer estimate, keeping its chosen interior offset independent of font metrics;
+separate cases exercise natural variable-height output. Reproducible mutation inputs, measured
+worktree hashes and normalized failure assertions are committed with the UI tests, without a Git
+revision claim or local environment details. CI verifies input hashes, executes all declared mutations and requires their intended browser
 verdicts, then compares the restored scenario names/count with actual execution. Temporary import-map
 overlays avoid editing workspace files. The inventory has no extension whitelist and only explicit
 generated/cache exclusions; symlinks are rejected. Mutation coverage includes

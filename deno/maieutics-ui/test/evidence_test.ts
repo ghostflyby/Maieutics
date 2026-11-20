@@ -66,6 +66,36 @@ Deno.test("evidence rejects a failure at a different assertion", () => {
   assertThrows(() => verifyEvidence({ ...sample, cases }, current), Error, "intended assertion");
 });
 
+Deno.test("evidence rejects a different reproduction command with an otherwise valid schema", () => {
+  assertThrows(
+    () => verifyEvidence({ ...evidence(), command: "deno task test:browser" }, current),
+    Error,
+    "unsupported schema or command",
+  );
+});
+
+Deno.test("evidence rejects drift in each recorded mutation field", () => {
+  for (const field of ["file", "before", "after", "expected_matches"] as const) {
+    const sample = evidence();
+    const cases = sample.cases.map((entry, index) =>
+      index === 0
+        ? {
+          ...entry,
+          mutation: {
+            ...entry.mutation,
+            [field]: field === "expected_matches" ? 2 : `changed ${entry.mutation[field]}`,
+          },
+        }
+        : entry
+    );
+    assertThrows(
+      () => verifyEvidence({ ...sample, cases }, current),
+      Error,
+      "mutation definition changed",
+    );
+  }
+});
+
 Deno.test("evidence rejects malformed hashes, schema, cases and restored outcomes", () => {
   const invalid: unknown[] = [
     { ...evidence(), schema_version: 99 },
@@ -121,6 +151,18 @@ Deno.test("mutation matching rejects zero, duplicate and empty occurrences", () 
   );
 });
 
+Deno.test("mutation replacements preserve literal dollar sequences", () => {
+  const after = ["$$", "$&", "$`", "$'", "$1", "${template}", "/\\$\\d+/"].join(" ");
+  assertEquals(
+    applyMutation("prefix TOKEN suffix", {
+      ...scrollMutations[0].mutation,
+      before: "TOKEN",
+      after,
+    }),
+    "prefix " + after + " suffix",
+  );
+});
+
 Deno.test("hash inventory includes every file format and hidden fixtures with explicit output exclusions", async () => {
   const directory = await Deno.makeTempDir({ prefix: "maieutics-evidence-inputs-" });
   const base = new URL("file:///");
@@ -159,6 +201,30 @@ Deno.test("hash inventory includes every file format and hidden fixtures with ex
     assert(
       (await sourceHashes(root))["fixture.bin"] !== before,
       "binary fixture drift was not hashed",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("hash inventory rejects symbolic directory inputs instead of silently omitting them", async () => {
+  const directory = await Deno.makeTempDir({ prefix: "maieutics-evidence-symlink-" });
+  const base = new URL("file:///");
+  base.pathname = `${directory.replaceAll("\\", "/")}/`;
+  const root = new URL("ui/", base);
+  try {
+    await Deno.mkdir(root);
+    await Deno.mkdir(new URL("target/", base));
+    await Deno.writeTextFile(new URL("deno.json", base), "{}");
+    await Deno.writeTextFile(new URL("deno.lock", base), "{}");
+    // Windows directory junctions avoid requiring symlink-creation privileges.
+    await Deno.symlink(new URL("target/", base), new URL("linked-input", root), {
+      type: Deno.build.os === "windows" ? "junction" : "dir",
+    });
+    await assertRejects(
+      () => sourceHashes(root),
+      Error,
+      "symbolic inputs are unsupported: linked-input",
     );
   } finally {
     await Deno.remove(directory, { recursive: true });

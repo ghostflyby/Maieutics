@@ -272,6 +272,15 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
   await anchorRuntime.loadPage(0);
   const anchorView = anchorRuntime.attachView("anchor-reader");
   const anchorRoot = historyTarget();
+  anchorRoot.classList.add("mui-anchor-fixture");
+  const anchorStyle = document.createElement("style");
+  // Multiples of the 120px estimate preserve a nonzero 37px remainder across fonts.
+  anchorStyle.textContent = `
+    .mui-anchor-fixture .mui-row { height: 360px; }
+    .mui-anchor-fixture .mui-row:has([data-ordinal="0"]) { height: 480px; }
+    .mui-anchor-fixture .mui-row:has([data-ordinal="1"]) { height: 600px; }
+  `;
+  document.head.append(anchorStyle);
   const anchorAck = Promise.withResolvers<ConversationAnchorRestoration>();
   let expectedAnchor: string | undefined;
   const anchorHandle = artifact.mountConversationHistory(anchorRoot, {
@@ -341,8 +350,8 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     const expectedOrdinal = Number(block.dataset.ordinal);
     const expectedOffset = bounds.top - slot.getBoundingClientRect().top;
     assert(
-      expectedOrdinal > 0 && expectedOffset > 2,
-      "projection acknowledgement fixture must use nonzero coordinates",
+      expectedOrdinal > 0 && expectedOffset > 2 && Math.abs(expectedOffset % 120 - 37) <= 1,
+      `projection acknowledgement fixture lost its chosen 37px remainder: ${expectedOffset}`,
     );
     const before = block.getBoundingClientRect().top - bounds.top;
     assert(
@@ -383,6 +392,7 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     anchorHandle.unmount();
     await anchorRuntime.dispose();
     anchorRoot.remove();
+    anchorStyle.remove();
   }
 
   const copySource = new FixtureConversation("foreign-copy", 2);

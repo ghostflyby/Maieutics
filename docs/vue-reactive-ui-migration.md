@@ -1,6 +1,6 @@
 # Vue reactive backend and UI migration
 
-Updated: 2026-11-18.
+Updated: 2026-11-19.
 
 ## Implemented
 
@@ -44,6 +44,18 @@ editor-scoped Actor connections with native binary graphs. The kernel-facing for
 per-view editing drafts remain separate from general shared-ref capabilities.
 
 ## Remaining architecture
+
+The [standalone conversation UI design](standalone-conversation-ui-design.md) records the implemented
+passive Vue host prototype in `deno/maieutics-ui` and the proposed kernel projection, richer output
+units, and iframe/native surface attachments. The prototype uses fixture data and has no live
+business-model attachment. Its view checkpoints and surface lifetimes remain separate from the business models
+and action contracts below. Form draft checkpoints preserve server baselines and dirty-field
+information and reconcile against confirmed current state; a checkpoint is never a replayed action
+or an authoritative business snapshot. External native windows have shell-owned scopes independent
+of virtualized preview rows. Native presentation requires a matching semantic renderer; moving
+arbitrary Vue source between surfaces does not make it a native control. The standalone browser
+defaults authored output to passive previews, with explicit activation; automatic execution needs
+a host with verified protected control and independent termination capabilities.
 
 Transport decision: [ADR 0051](architecture/decisions/0051-plugin-scoped-http-fetch.md) uses HTTP
 as the primary channel for new plugin components. The implemented foundation provides scoped

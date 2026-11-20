@@ -107,6 +107,10 @@ jobs:
         working-directory: deno/maieutics-plugin-sdk
         run: deno task test:actor:browser
 
+      - name: Verify standalone UI mutations and restored browser suite
+        working-directory: deno/maieutics-ui
+        run: deno task check:evidence
+
       - name: Verify committed offline SSR assets
         working-directory: deno/maieutics-output-renderer
         run: |

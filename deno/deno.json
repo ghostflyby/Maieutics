@@ -6,6 +6,7 @@
     "./maieutics-plugin-host",
     "./maieutics-output-renderer",
     "./maieutics-output-client",
+    "./maieutics-ui",
     "./maieutics-vscode"
   ],
   "fmt": {

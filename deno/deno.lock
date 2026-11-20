@@ -36,7 +36,8 @@
     "npm:mathjax-full@3.2.2": "3.2.2",
     "npm:@vue/reactivity@3.5.13": "3.5.13",
     "npm:ws@8.23.0": "8.23.0",
-    "npm:@types/ws@8.18.1": "8.18.1"
+    "npm:@types/ws@8.18.1": "8.18.1",
+    "npm:@tanstack/vue-virtual@3.13.52": "3.13.52_vue@3.5.13"
   },
   "jsr": {
     "@ghostflyby/aves@0.6.0": {
@@ -1142,6 +1143,16 @@
       "dependencies": [
         "@types/node"
       ]
+    },
+    "@tanstack/virtual-core@3.19.11": {
+      "integrity": "sha512-/5iHb0RHBvj8Di59FDs4ESNm45jls33aZAi4zccVXZjc/6ZvwQP6nzEYeT6weXjTf9E6/vrp2JhYWRyO+ZP13A=="
+    },
+    "@tanstack/vue-virtual@3.13.52_vue@3.5.13": {
+      "integrity": "sha512-qTwG7HNr5o+FPd/u+T05N73A8howtkB9FgQI71VcBzx6J2KsYzlVugRz/0ji17kl26D8SAdKux1Wmk3yhTI1Kw==",
+      "dependencies": [
+        "@tanstack/virtual-core",
+        "vue"
+      ]
     }
   },
   "workspace": {
@@ -1205,6 +1216,12 @@
           "npm:acorn@8.18.0",
           "npm:markdown-it@14.3.1",
           "npm:ws@8.23.0"
+        ]
+      },
+      "maieutics-ui": {
+        "dependencies": [
+          "npm:@tanstack/vue-virtual@3.13.52",
+          "npm:vue@3.5.13"
         ]
       }
     }

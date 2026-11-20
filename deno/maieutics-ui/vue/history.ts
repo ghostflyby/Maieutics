@@ -203,9 +203,15 @@ const HistorySession = defineComponent({
           ) return;
           const index = rows.value.findIndex((row) => row.key === key);
           const position = index >= 0 ? virtual.value.getOffsetForIndex(index, "start") : undefined;
-          if (position) {
+          const target = rows.value[index];
+          if (position && target?.type === "entry") {
             virtual.value.scrollToOffset(position[0] + inside);
-            emit("anchorRestored", { entryId: key, offset: inside });
+            emit("anchorRestored", {
+              reason: "projection",
+              entryId: key,
+              ordinal: target.ordinal,
+              offset: inside,
+            });
           }
         }).catch((error) => {
           if (!signal.aborted) status.value = message(error);
@@ -322,6 +328,12 @@ const HistorySession = defineComponent({
                 (target.type === "range" ? (anchor.ordinal - target.from) * estimatedHeight : 0) +
                 anchor.inside,
             );
+            emit("anchorRestored", {
+              reason: "gesture",
+              ordinal: anchor.ordinal,
+              offset: anchor.inside,
+              ...(target.type === "entry" ? { entryId: target.key } : {}),
+            });
           }
         }).catch((error) => {
           if (!signal.aborted) status.value = message(error);

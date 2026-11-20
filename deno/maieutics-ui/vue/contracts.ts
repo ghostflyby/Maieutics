@@ -9,8 +9,10 @@ export interface ConversationSubmission {
   readonly revision: number;
 }
 
-/** A queued history-anchor correction has applied its scroll write for this block. */
+/** A projection or gesture correction applied its scroll write; unloaded anchors have no entry ID yet. */
 export interface ConversationAnchorRestoration {
-  readonly entryId: string;
+  readonly reason: "projection" | "gesture";
+  readonly ordinal: number;
+  readonly entryId?: string;
   readonly offset: number;
 }

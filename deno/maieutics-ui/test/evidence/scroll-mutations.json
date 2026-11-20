@@ -1,36 +1,40 @@
 {
-  "schema_version": 1,
-  "date": "2026-11-20",
-  "base_commit": "ff89f74bfabbd176660a7656e93d5798a358febc",
-  "working_directory": "deno/maieutics-ui",
-  "command": "deno task test:browser",
-  "source_sha256": {
-    "build.ts": "2ac631b360f52160b7c5f001a16552e15fbc1e9108cce56a373b890990a93fa2",
-    "core/cache.ts": "476975375983d6a1948932fa259249282dc97c9594e0250310d3e745ef94bfee",
-    "core/core_test.ts": "dc8ef957043452fa2ff02e7fa9d54ec882918f879281041c0c5a635cdd9fad9f",
-    "core/projection.ts": "e6396950be6cfd9905d6e295e55be0581ecfca8d99c6aa47657e7a5c4e4c9880",
-    "core/runtime.ts": "c79019b4f0df2ce2972c9933bb436282c4ec4d5e7128a360c13e8af96526838c",
-    "core/scroll_layout.ts": "58b66e2f817bc1f7f10c4b7115e5ea3c301c99bb4ed6d3ddb8de4e10fe525668",
-    "core/tasks.ts": "dff0f60b2e8b35c968206f64fce7909dc4fabc6967c2b9ebeabc8dcbf86b1592",
-    "core/types.ts": "9a6c82ab698c36cf2ce324977695a5d88e8a61ff003945f2a2f4b55c089831ff",
-    "demo/index.html": "d144effd4a8da4b7e0db0e8f8bf2c08bc99d6c4e189800d36ec1bd282d258c9a",
-    "demo/main.ts": "82457dc19a3f36c388c0d85fe346ffd9d1f256f37db97f603dc2e2d9c018d5bf",
-    "demo/styles.css": "f7273ccd8004ea7f8d6a3a613ecf6d92078439657fa7199d3d4af3cb30c32d00",
-    "deno.json": "cc8e0faa795b4f6526d3e793d904cbb2c36da9a2c551fcb9e5d1a54badb7c9d2",
-    "fixtures/conversation.ts": "a6121363a4d65c075acde0bb74aed043473470297c3abfdd4030c6e20f7ec31f",
-    "mod.ts": "d161dc0b4c1fa8757076af3377e3eb2cab5e0c489ae103d71eef5c325d8f8273",
-    "serve.ts": "02d2eab25500c55ebcac457f0cd0825cd957f9a73b042041191a0fd1968e0120",
-    "test/browser_assertions.ts": "843e229b9a463da3078195aede711aed4e79749503d9af0e4c1d6fa80f2bedad",
-    "test/browser_conformance.ts": "075e443f7665672b00a5beac6661e6b50739abdd58a6a628e35682b9526b1216",
-    "test/browser_runner.ts": "e5a1eef9fddc58243bc5e9a394add269224bbb898434e02490a81f35b072a776",
-    "test/review_conformance.ts": "2067d2395d797cc74afb7bdf45c31e9c00fd60bc9f6aa582a40e6c7740e364df",
-    "vue/composer.ts": "d2fb50031c9d171f543bd68e9c5ca93249a8108c32ed5952dd9ab5193c7c8185",
-    "vue/contracts.ts": "ce6166cc5c7994bb118e896da4f320867f5ba5f743306859423d7ec874373916",
-    "vue/conversation.ts": "9f5b689d506dd132e786bb8c62814753e096fafb2cac8118876eb208df644263",
-    "vue/history.ts": "53730e332e55a021d1d3626262a7afdfe84517e6ec4440e8df6bc49180825fc8",
-    "vue/mount.ts": "18b5b4a13d62cc501385cdaea59babcc08ef8247c36c4bd0ceb877f98840dbd4",
-    "../deno.lock": "5c00c7055aba386b2a7b5f95b72e36bd6337b4b47ea924662289762aadddfe04"
+  "schema_version": 2,
+  "source": {
+    "kind": "worktree-snapshot",
+    "files_sha256": {
+      "../deno.json": "1575b889183ae5711df321a43d4a1dba2825de731fae966831ae6c6de5831e15",
+      "../deno.lock": "5c00c7055aba386b2a7b5f95b72e36bd6337b4b47ea924662289762aadddfe04",
+      "build.ts": "2ac631b360f52160b7c5f001a16552e15fbc1e9108cce56a373b890990a93fa2",
+      "core/cache.ts": "476975375983d6a1948932fa259249282dc97c9594e0250310d3e745ef94bfee",
+      "core/core_test.ts": "90d7ac19b554211e5b982aa0da40e686cdd4e7b2ed6837ddefede0668ed26995",
+      "core/projection.ts": "e6396950be6cfd9905d6e295e55be0581ecfca8d99c6aa47657e7a5c4e4c9880",
+      "core/runtime.ts": "c79019b4f0df2ce2972c9933bb436282c4ec4d5e7128a360c13e8af96526838c",
+      "core/scroll_layout.ts": "58b66e2f817bc1f7f10c4b7115e5ea3c301c99bb4ed6d3ddb8de4e10fe525668",
+      "core/tasks.ts": "dff0f60b2e8b35c968206f64fce7909dc4fabc6967c2b9ebeabc8dcbf86b1592",
+      "core/types.ts": "9a6c82ab698c36cf2ce324977695a5d88e8a61ff003945f2a2f4b55c089831ff",
+      "demo/index.html": "d144effd4a8da4b7e0db0e8f8bf2c08bc99d6c4e189800d36ec1bd282d258c9a",
+      "demo/main.ts": "82457dc19a3f36c388c0d85fe346ffd9d1f256f37db97f603dc2e2d9c018d5bf",
+      "demo/styles.css": "f7273ccd8004ea7f8d6a3a613ecf6d92078439657fa7199d3d4af3cb30c32d00",
+      "deno.json": "4e06353269b0565330683c9638958b43bd188822c3ecee21d91d49d93333d954",
+      "fixtures/conversation.ts": "a6121363a4d65c075acde0bb74aed043473470297c3abfdd4030c6e20f7ec31f",
+      "mod.ts": "d161dc0b4c1fa8757076af3377e3eb2cab5e0c489ae103d71eef5c325d8f8273",
+      "serve.ts": "02d2eab25500c55ebcac457f0cd0825cd957f9a73b042041191a0fd1968e0120",
+      "test/browser_assertions.ts": "843e229b9a463da3078195aede711aed4e79749503d9af0e4c1d6fa80f2bedad",
+      "test/browser_conformance.ts": "f475779fa69c491ca6d34a757c5029fc204258a19018a2b3ff16a8f9b7aba460",
+      "test/browser_runner.ts": "e5a1eef9fddc58243bc5e9a394add269224bbb898434e02490a81f35b072a776",
+      "test/check_evidence.ts": "e3dfcbfb2c31cdd3f46c76e9862dcb707eee1447eb7fbeaef0fc42a7b46e1f9b",
+      "test/evidence.ts": "745363e9b517041da0253437c300ffdb45f29b15a56e1e862c9b5e34332595d0",
+      "test/evidence_test.ts": "8d911eea2f53c2a69294c15a37cec2ed4216dccb693b743c1816d32b9a18ec8a",
+      "test/review_conformance.ts": "b768fb5d5d9f62b13264ea5d3d0d604224ac5a9b9c0d58f3517ef126243b69bc",
+      "vue/composer.ts": "d2fb50031c9d171f543bd68e9c5ca93249a8108c32ed5952dd9ab5193c7c8185",
+      "vue/contracts.ts": "6ad256ef1bb5816a2ae1d71c8d76bf08beae355f3122376c5b0d9a0901e988a9",
+      "vue/conversation.ts": "9f5b689d506dd132e786bb8c62814753e096fafb2cac8118876eb208df644263",
+      "vue/history.ts": "875c2442c0e923f3e240bad251ee2619d39125eb7d91521c1306546278f32ecc",
+      "vue/mount.ts": "18b5b4a13d62cc501385cdaea59babcc08ef8247c36c4bd0ceb877f98840dbd4"
+    }
   },
+  "command": "deno task test:browser",
   "cases": [
     {
       "name": "following-scroll-disabled",
@@ -40,15 +44,8 @@
         "after": "if (false && following.value && viewport.value && !frozenLayout.value)",
         "expected_matches": 1
       },
-      "exit_code": 1,
-      "failure_excerpt": [
-        "Task test:browser deno run --allow-env --allow-read --allow-write --allow-run --allow-net=127.0.0.1 test/browser_runner.ts",
-        "error: Uncaught (in promise) Error: Error: Error: following mode left a measured growing tail below the viewport",
-        "    at $ (http://127.0.0.1:65523/test.js:12:3242)",
-        "    at fd (http://127.0.0.1:65523/test.js:14:612)",
-        "    at async http://127.0.0.1:65523/:5:100",
-        "    at file:///Users/ghostflyby/repos/tests/Maieutics/deno/maieutics-ui/test/browser_runner.ts:160:27"
-      ]
+      "assertion": "following mode left a measured growing tail below the viewport",
+      "exit_code": 1
     },
     {
       "name": "anchor-write-omitted-acknowledgement-retained",
@@ -58,61 +55,12 @@
         "after": "void position; // Mutation: retain acknowledgement but omit the anchor scroll write.",
         "expected_matches": 1
       },
-      "exit_code": 1,
-      "failure_excerpt": [
-        "Task test:browser deno run --allow-env --allow-read --allow-write --allow-run --allow-net=127.0.0.1 test/browser_runner.ts",
-        "error: Uncaught (in promise) Error: Error: Error: non-frozen page replacement moved the history anchor by -478 pixels",
-        "    at $ (http://127.0.0.1:49738/test.js:12:3242)",
-        "    at yr (http://127.0.0.1:49738/test.js:13:2449)",
-        "    at async fd (http://127.0.0.1:49738/test.js:16:6736)",
-        "    at async http://127.0.0.1:49738/:5:100"
-      ]
+      "assertion": "non-frozen page replacement moved the history anchor",
+      "exit_code": 1
     }
   ],
-  "reproduction": [
-    "Use a copy of the source tree with the recorded source_sha256 values.",
-    "For each mutation separately, replace exactly one matching before string in vue/history.ts with after.",
-    "Run the recorded command from working_directory and retain its non-zero exit and failure excerpt.",
-    "Restore vue/history.ts byte-for-byte before applying another mutation.",
-    "Run the same command on the restored source and require exit 0."
-  ],
-  "toolchain": {
-    "deno": "deno 2.9.8 (stable, release, aarch64-apple-darwin)\nv8 15.0.245.2-rusty\ntypescript 6.0.3",
-    "platform": "Darwin arm64"
-  },
   "restored": {
-    "source_matches_recorded_hashes": true,
     "exit_code": 0,
-    "scenario_count": 26,
-    "output": [
-      "Task test:browser deno run --allow-env --allow-read --allow-write --allow-run --allow-net=127.0.0.1 test/browser_runner.ts",
-      "ok - 100,000 entries mount a bounded tail and load bodies lazily",
-      "ok - measured slots contain variable-height output without overlapping adjacent blocks",
-      "ok - shared conversation runtime keeps independent view drafts",
-      "ok - accepted input and streaming updates retain block identity and draft ownership",
-      "ok - following keeps the actual viewport at the measured live end beyond overscan",
-      "ok - scrollbar-only navigation loads history without a wheel or keyboard event",
-      "ok - ordinary cross-block copy uses revisioned text and excludes presentation controls",
-      "ok - tool detail loads only after expansion",
-      "ok - closing one view preserves its sibling attachment and draft",
-      "ok - session replacement retires old view state before attaching the new runtime",
-      "ok - terminal disposal releases source requests, cached content and view attachments",
-      "ok - self-contained ESM mounts without sharing Vue implementation objects",
-      "ok - runtime closure disables a still-mounted view without leaving live effects",
-      "ok - rapid scrollbar jumps within one unloaded region cancel the obsolete target",
-      "ok - held scrollbar keeps position/extent through live output, lazy loads and page eviction",
-      "ok - history and input mount in separate DOM roots under one caller-owned view",
-      "ok - independent unmount cancels history work while preserving the sibling and draft",
-      "ok - separate components rebind and close together without owning either runtime",
-      "ok - waiting ranges expose progress and cancel/restart without waiting for stream arrival",
-      "ok - future HTTP pages become readable after independently delivered stream catch-up",
-      "ok - early conformance failure cancels its held source and joins disposal within the scenario budget",
-      "ok - zero-progress page admission stops automatic range requests with a capacity result",
-      "ok - range capacity reports fragmentation independently of index pin pressure",
-      "ok - non-frozen history keeps its visible block offset when measured predecessors are evicted",
-      "ok - cross-bundle copy capacity failures preserve their diagnostic and never write partial text",
-      "ok - demo survives repeated persisted page transitions and disposes on the final pagehide",
-      "26 real browser conversation scenarios passed."
-    ]
+    "scenario_count": 28
   }
 }

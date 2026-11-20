@@ -107,6 +107,10 @@ jobs:
         working-directory: deno/maieutics-plugin-sdk
         run: deno task test:actor:browser
 
+      - name: Verify standalone conversation UI evidence freshness
+        working-directory: deno/maieutics-ui
+        run: deno task check:evidence
+
       - name: Standalone conversation UI in a real browser
         working-directory: deno/maieutics-ui
         run: deno task test:browser

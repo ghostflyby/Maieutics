@@ -80,10 +80,12 @@ state without disposing that caller-owned attachment. `view.dispose()` closes bo
 components; runtime disposal also closes all its views. The optional history `onReady` callback
 means viewport initialization, not completion of every lazy content read.
 
-History emits `anchorRestored` (mount binding `onAnchorRestored`) after its queued structural anchor
-scroll write. Its entry ID and pixel offset identify the restored position; subsequent body
-measurements remain separate. Hosts/tests can observe that acknowledgement without guessing the
-ordering of Vue update queues.
+History emits `anchorRestored` (mount binding `onAnchorRestored`) after a queued correction from
+either a projection update or gesture release. `reason` distinguishes those paths. Every event has
+the logical ordinal and pixel offset; `entryId` is present for a loaded entry and absent for an
+unloaded range. No event is emitted when a correction is cancelled, superseded, or unnecessary at
+the live end. Subsequent body measurements remain separate. Hosts/tests can observe that
+acknowledgement without guessing the ordering of Vue update queues.
 
 `ConversationView` is an optional composition component used by `mountConversation()`. It creates
 one view attachment, places the two independent components together, forwards events and disposes
@@ -146,6 +148,7 @@ deno lint
 deno fmt --check
 deno task test
 deno task build
+deno task check:evidence
 deno task test:browser
 ```
 
@@ -166,8 +169,22 @@ live-follow scrolling makes its dedicated geometry assertion fail. Clipboard wai
 deadlines; lazy detail assertions count the addressed entry's reads rather than global traffic. The
 anchor case awaits its explicit correction acknowledgement before checking geometry. Controlled
 held-page fixtures observe cancellation, including an injected early-failure cleanup scenario.
-Recorded mutation commands, candidate source hashes, exit codes and failure excerpts live in
-[`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
+Recorded mutation commands, measured input hashes, exit codes and normalized failure assertions live
+in [`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
+
+The version 2 record explicitly describes a content-addressed **worktree snapshot**, not a Git
+revision. Reproduce against files matching `source.files_sha256`; no parent commit is claimed to
+contain those bytes. Absolute paths, ephemeral ports, stack traces and local toolchain/platform
+metadata are excluded. Assertions identify the violated mechanism rather than a machine-specific
+pixel delta.
+
+`deno task check:evidence` reads the record, recomputes every source/test input hash (including the
+workspace config/lock), checks the complete file inventory and validates mutation definitions and
+outcomes. CI runs it before browser conformance. Changed, added or removed inputs fail the gate;
+documentation and generated `dist/` assets are outside the input set. Refreshing evidence requires
+capturing the input hashes, rerunning both exact mutations, restoring those same bytes and passing
+the unmodified browser suite. Record only the normalized intended assertion for each failed mutant,
+then run the evidence check. Updating hashes alone is not a valid refresh.
 
 ## Permissions and packaging
 
@@ -177,10 +194,11 @@ the prototype never selects executable output or needs `unsafe-eval`/remote asse
 
 Build reads local sources and cached dependencies and writes `dist/`. The fixture host permits only
 loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener.
-Browser conformance reads source/browser paths, writes a temporary bundle/profile, binds an
-ephemeral loopback port, and starts owned Deno/browser children. Browser environment inheritance is
-allowlisted, logs are bounded, and teardown joins the process, socket server, streams, and profile
-cleanup under one total shutdown budget.
+Evidence verification only reads repository inputs and the recorded JSON; it opens no network or
+process and writes no files. Browser conformance reads source/browser paths, writes a temporary
+bundle/profile, binds an ephemeral loopback port, and starts owned Deno/browser children. Browser
+environment inheritance is allowlisted, logs are bounded, and teardown joins the process, socket
+server, streams, and profile cleanup under one total shutdown budget.
 
 This UI workspace member is not a REPL/plugin child and is not embedded by `DenoRuntimeModule`. Its
 assets are built separately; the existing executable resource globs and VS Code output-client

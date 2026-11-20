@@ -275,6 +275,24 @@ Deno.test("page capacity refuses eviction of a view's active entries", async () 
   await runtime.dispose();
 });
 
+Deno.test("fragment pruning reports range_capacity atomically through loadPage", async () => {
+  const runtime = new ConversationRuntime("s", source(), { entries: 40, pageSize: 10, ranges: 1 });
+  try {
+    await runtime.loadPage(0);
+    await runtime.loadPage(90);
+    const view = runtime.attachView("isolated-records");
+    view.setVisible([5, 95]);
+    const before = runtime.projection.rows;
+    await assertRejects(() => runtime.loadPage(40), ConversationError, "range_capacity");
+    assert(runtime.projection.rows === before, "fragment pruning published its failed candidate");
+    assertEquals(runtime.projection.get(40), undefined);
+    assertEquals(runtime.projection.get(5)?.id, "e5");
+    assertEquals(runtime.projection.get(95)?.id, "e95");
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 Deno.test("an HTTP page ahead of the stream waits for an append-only reducer watermark", async () => {
   const base = source();
   const delivery = Promise.withResolvers<ConversationPage>();

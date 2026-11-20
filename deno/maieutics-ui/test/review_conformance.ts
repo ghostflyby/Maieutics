@@ -2,7 +2,6 @@ import { nextTick } from "vue";
 import {
   type ConversationAnchorRestoration,
   type ConversationChange,
-  ConversationError,
   type ConversationPage,
   ConversationRuntime,
 } from "../mod.ts";
@@ -212,16 +211,16 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
   }
 
   const fragmentedSource = new FixtureConversation("fragmented", 100);
-  const fragmentedRuntime = new ConversationRuntime("fragmented", {
-    readPage(query, signal) {
-      if (query.offset !== undefined && query.offset < 900) {
-        return Promise.reject(new ConversationError("range_capacity"));
-      }
-      return fragmentedSource.readPage(query, signal);
-    },
-    readContent: (id, revision, signal) => fragmentedSource.readContent(id, revision, signal),
+  const fragmentedRuntime = new ConversationRuntime("fragmented", fragmentedSource, {
+    entries: 40,
+    pageSize: 10,
+    ranges: 1,
   });
   await fragmentedRuntime.loadPage();
+  await fragmentedRuntime.loadPage(0);
+  const fragmentPins = fragmentedRuntime.attachView("fragment-pins");
+  fragmentPins.setVisible([5, 995]);
+  const beforeFragmentRows = fragmentedRuntime.projection.rows;
   const fragmentedRoot = historyTarget();
   const fragmentedHandle = artifact.mountConversation(fragmentedRoot, {
     runtime: fragmentedRuntime,
@@ -235,7 +234,7 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     );
     const viewport = fragmentedRoot.querySelector<HTMLElement>(".mui-viewport");
     assert(viewport, "fragmented viewport missing");
-    viewport.scrollTop = 0;
+    viewport.scrollTop = 500 * 120;
     viewport.dispatchEvent(new Event("scroll"));
     await waitFor(
       () => !!fragmentedRoot.querySelector('[data-range-state="failed"]'),
@@ -247,7 +246,11 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       "range capacity lost its distinct fragmentation diagnostic",
     );
     assert(!label.includes("其他视图或选区"), "range capacity incorrectly blamed view pins");
-    passed.push("range capacity reports fragmentation independently of index pin pressure");
+    assert(
+      fragmentedRuntime.projection.rows === beforeFragmentRows,
+      "failed fragment pruning mutated the published index",
+    );
+    passed.push("real fragment pruning propagates range_capacity to its distinct UI diagnostic");
   } finally {
     fragmentedHandle.unmount();
     await fragmentedRuntime.dispose();
@@ -275,7 +278,10 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     view: anchorView,
     host: { writeText: () => Promise.resolve() },
     onAnchorRestored(anchor) {
-      if (anchor.entryId === expectedAnchor) anchorAck.resolve(anchor);
+      if (
+        anchor.reason === "projection" && expectedAnchor !== undefined &&
+        anchor.entryId === expectedAnchor
+      ) anchorAck.resolve(anchor);
     },
   });
   try {

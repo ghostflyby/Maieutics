@@ -11,7 +11,8 @@
   },
   "tasks": {
     "check": "deno check .",
-    "test": "deno test --allow-env=NODE_ENV core/",
+    "test": "deno test --allow-env=NODE_ENV core/ test/evidence_test.ts",
+    "check:evidence": "deno run --allow-read test/check_evidence.ts",
     "build": "deno bundle --platform=browser --format esm --minify -o dist/conversation.js mod.ts && deno bundle --platform=browser --format esm --minify -o dist/demo.js demo/main.ts && deno run --allow-read=demo --allow-write=dist build.ts",
     "demo": "deno task build && deno run --allow-net=127.0.0.1 --allow-read=dist serve.ts",
     "test:browser": "deno run --allow-env --allow-read --allow-write --allow-run --allow-net=127.0.0.1 test/browser_runner.ts"

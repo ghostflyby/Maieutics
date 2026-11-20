@@ -1,5 +1,6 @@
 import { createApp, defineComponent, h, nextTick, ref, shallowRef } from "vue";
 import {
+  type ConversationAnchorRestoration,
   ConversationRuntime,
   type ConversationSubmission,
   ConversationView,
@@ -316,10 +317,14 @@ export async function runBrowserConformance(): Promise<string[]> {
   const dragRoot = document.createElement("div");
   dragRoot.style.height = "600px";
   document.body.append(dragRoot);
+  const gapRestored = Promise.withResolvers<ConversationAnchorRestoration>();
   const dragView = artifact.mountConversation(dragRoot, {
     runtime: dragRuntime,
     viewId: "drag",
     host: { writeText: () => Promise.resolve() },
+    onAnchorRestored(anchor) {
+      if (anchor.reason === "gesture" && anchor.entryId === undefined) gapRestored.resolve(anchor);
+    },
   });
   try {
     await waitFor(
@@ -333,6 +338,15 @@ export async function runBrowserConformance(): Promise<string[]> {
     await guarded(
       entered.promise,
       "first scrollbar target did not start its controlled page request",
+    );
+    viewport.dispatchEvent(new Event("scrollend"));
+    const gapAnchor = await guarded(
+      gapRestored.promise,
+      "unloaded gesture anchor did not acknowledge its correction",
+    );
+    equal(gapAnchor.ordinal, 25_000, "unloaded gesture acknowledgement lost its logical ordinal");
+    passed.push(
+      "gesture release acknowledges an unloaded ordinal without inventing an entry identity",
     );
     viewport.scrollTop = 75_000 * 120;
     viewport.dispatchEvent(new Event("scroll"));
@@ -377,10 +391,16 @@ export async function runBrowserConformance(): Promise<string[]> {
   const heldRoot = document.createElement("div");
   heldRoot.style.height = "600px";
   document.body.append(heldRoot);
+  const entryRestored = Promise.withResolvers<ConversationAnchorRestoration>();
   const heldView = artifact.mountConversation(heldRoot, {
     runtime: heldRuntime,
     viewId: "held",
     host: { writeText: () => Promise.resolve() },
+    onAnchorRestored(anchor) {
+      if (anchor.reason === "gesture" && anchor.entryId !== undefined) {
+        entryRestored.resolve(anchor);
+      }
+    },
   });
   try {
     await waitFor(
@@ -463,6 +483,17 @@ export async function runBrowserConformance(): Promise<string[]> {
     equal(writes, 0, "page replacement wrote a scroll correction during the same drag");
     equal(viewport.dataset.scrollGesture, "active", "native scrollend ended a still-held gesture");
     globalThis.dispatchEvent(new PointerEvent("pointerup", { pointerId: 17 }));
+    const entryAnchor = await guarded(
+      entryRestored.promise,
+      "loaded gesture anchor did not acknowledge its correction",
+    );
+    equal(entryAnchor.ordinal, 75_000, "loaded gesture acknowledgement lost its final ordinal");
+    equal(
+      entryAnchor.entryId,
+      "entry-75000",
+      "loaded gesture acknowledgement lost its final identity",
+    );
+    passed.push("gesture release acknowledges the final loaded block before geometry checks");
     await waitFor(
       () => viewport.dataset.scrollGesture === "idle" && geometryApplied(heldRoot),
       "releasing the scrollbar did not restore measured row heights",

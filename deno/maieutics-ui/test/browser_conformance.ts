@@ -12,6 +12,7 @@ import { FixtureConversation } from "../fixtures/conversation.ts";
 
 import { assert, equal, geometryApplied, guarded, waitFor } from "./browser_assertions.ts";
 import { runReviewConformance } from "./review_conformance.ts";
+import { runComponentConformance } from "./component_conformance.ts";
 
 /** Signal-driven scenarios run against actual Vue, geometry and browser Selection. */
 export async function runBrowserConformance(): Promise<string[]> {
@@ -688,5 +689,6 @@ export async function runBrowserConformance(): Promise<string[]> {
     composerRoot.remove();
   }
   passed.push(...await runReviewConformance(artifact));
+  passed.push(...await runComponentConformance(artifact));
   return passed;
 }

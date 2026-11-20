@@ -97,6 +97,83 @@ Include `dist/styles.css` or equivalent component styles and give the mount targ
 for history (or the combined view). Input has its own natural height; scrolling stays inside the
 history viewport.
 
+## DOM and external themes
+
+Load the component stylesheet once for the document. It contains the required virtual-list layout
+and the default theme, with no page/body/button reset for unrelated host content:
+
+```html
+<link rel="stylesheet" href="/conversation/styles.css">
+```
+
+Put history and input mount containers under a common themed ancestor, even when they are separate
+Vue applications. One host stylesheet can then theme every descendant view and editor:
+
+```css
+.workspace[data-theme="night"] {
+  --mui-color-scheme: dark;
+  --mui-text: #e3e9e3;
+  --mui-surface: #202923;
+  --mui-border: #3c4a40;
+  --mui-muted: #adb9af;
+  --mui-accent: #a8c6a2;
+  --mui-accent-text: #1b2a1e;
+  --mui-hover: #35433a;
+  --mui-focus: #b9d6a8;
+  --mui-input-surface: #2b382d;
+  --mui-activity-surface: #28332c;
+  --mui-activity-border: #435147;
+  --mui-code-surface: #18201b;
+  --mui-error: #efb69d;
+  --mui-editor-surface: #18201b;
+  --mui-editor-border: #53664e;
+  --mui-shadow: #0005;
+  --mui-font-family: system-ui, sans-serif;
+  --mui-body-font-size: 14px;
+  --mui-block-inset: 20px;
+  --mui-control-radius: 4px;
+}
+
+.workspace .mui-submit {
+  border-radius: 0;
+}
+```
+
+Changing the ancestor's theme attribute updates existing views without remounting or losing drafts,
+focus or editor selections. Typography/spacing changes are measured by the virtualizer. The demo
+supplies a complete dark palette and one theme toggle shared by its side-by-side views.
+
+The stylesheet is in `@layer maieutics`; ordinary unlayered host CSS overrides it without
+`!important`, regardless of stylesheet load order. No component inserts a style tag or hardcodes
+colors/fonts in its render function. The primary theme hooks are:
+
+| Group         | Custom properties                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Text          | `--mui-text`, `--mui-muted`, `--mui-error`                                                                                        |
+| Surfaces      | `--mui-surface`, `--mui-input-surface`, `--mui-activity-surface`, `--mui-code-surface`, `--mui-editor-surface`                    |
+| Controls      | `--mui-accent`, `--mui-accent-text`, `--mui-border`, `--mui-activity-border`, `--mui-editor-border`, `--mui-hover`, `--mui-focus` |
+| Typography    | `--mui-font-family`, `--mui-font-family-mono`, `--mui-font-size`, `--mui-body-font-size`, `--mui-body-line-height`                |
+| Shape/spacing | `--mui-radius`, `--mui-control-radius`, `--mui-block-inset`, `--mui-shadow`, `--mui-color-scheme`                                 |
+
+Stable `.mui-*` classes also support direct host styling. History uses a named, keyboard-focusable
+scroll region and an ordered list. Each loaded `li.mui-slot` contains one measured
+`article.mui-row.mui-block`, with a `header`/`h3`, body and logical position/count metadata. Gap
+items describe their unloaded ordinal range and contain an explicit load/retry button. Historical
+replay is not a live announcement; status messages use their own polite region. The input is a named
+form with a directly contained `.mui-editor`, `.mui-composer-hint` and `.mui-submit`.
+
+The old `.mui-row > .mui-block` and `.mui-composer-actions` wrappers are removed; selectors should
+target the article itself and the direct editor/hint/submit hooks. The optional composition is
+`ConversationView → ConversationHistory → OutputBlockHost`, with `ConversationComposer` as a
+sibling. Binding-owned effect scopes replace the internal Session component layers. Rebinding cleans
+up the previous scope before creating the next, after a complete runtime/viewId prop update.
+
+Only measured geometry remains inline as `--mui-virtual-extent`, `--mui-virtual-size` and
+`--mui-virtual-offset`. These are runtime layout data, distinct from theme properties. A replacement
+stylesheet must still use them for spacer height, item height and item position. Component CSS is
+shipped as `dist/styles.css`; the optional demo page additionally loads `dist/demo.css`, which is
+not required by an embedding host.
+
 The `ConversationSource` port exposes paged metadata and exact-revision text. Its safe integer
 ordinals are stable navigation coordinates inside one epoch, not identities or a finalized wire
 schema. A backend adapter must map its cursor/range contract explicitly. `readPage` returns a
@@ -205,8 +282,11 @@ Mounting uses the injected source and explicit clipboard capability. Text is ren
 the prototype never selects executable output or needs `unsafe-eval`/remote assets.
 
 Build reads local sources and cached dependencies and writes `dist/`. The fixture host permits only
-loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener.
-Evidence checking starts the same owned loopback browser runner for each case and writes temporary
+loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener. The
+passive asset step reads `styles.css` and `demo/`, copying the component sheet and separate demo
+sheet to `dist/styles.css` and `dist/demo.css`. Theme installation belongs to the host's normal CSS
+loading; component imports/mounts perform no stylesheet I/O or automatic style injection. Evidence
+checking starts the same owned loopback browser runner for each case and writes temporary
 bundles/profile/import maps. Recording additionally writes the generated evidence JSON. Inventory
 unit tests own isolated temporary fixtures. Browser conformance reads source/browser paths, writes a
 temporary bundle/profile, binds an ephemeral loopback port, and starts owned Deno/browser children.

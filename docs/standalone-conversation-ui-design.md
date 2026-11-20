@@ -34,6 +34,24 @@ unmount preserves the shared draft. Neither disposes the supplied view or runtim
 forwards their events. Rebinding either component changes its local lifetime without destroying
 the old caller-owned view.
 
+The component tree has no additional per-binding Session components. Binding-owned Vue effect
+scopes handle subscriptions, cancellation and virtualizer disposal; a complete runtime/viewId prop
+update is applied before creating a replacement attachment. The history DOM is a named scroll
+region containing an ordered list, with one measured message article directly inside each virtual
+list item. Article headings, logical positions/counts, unloaded-range actions and a separate polite
+status region provide semantics without announcing replayed history. The input form directly
+contains its editor, hint and submit control.
+
+`styles.css` is the independently shipped component layout/theme sheet; `demo/styles.css` styles
+only the fixture shell. Component rules live in a low-priority `maieutics` CSS layer with prefixed
+hooks and inherited theme variables. A host loads one sheet and can apply colors, typography,
+spacing and control shape to all independently mounted views through a common ancestor. Ordinary
+host CSS can also override the rules without `!important`. Theme changes retain DOM/editor
+identity and trigger natural row remeasurement. Inline styles contain only runtime-owned virtual
+extent, offset and item-size custom properties; static layout and visual properties are external.
+Real browser checks cover semantic/shallow DOM, unrelated host-control isolation, a single injected
+theme across separate view/editor roots, focus/selection preservation and atomic binding replacement.
+
 The prototype renders inert text, lazily expanded activity details, and an independent composer. It
 supports range-based history loading, dynamic row measurement, following/history modes, revisioned
 text updates, logical copying across evicted rows, session replacement, and joined request disposal.

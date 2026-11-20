@@ -932,6 +932,18 @@ draft; neither owns the runtime or closes the supplied view. `ConversationView` 
 composition wrapper that owns one view attachment. Closing a view stops history subscriptions and
 disables input, including when the runtime continues receiving events.
 
+The standalone components now use binding-owned effect scopes instead of nested Session components.
+The virtual history is an ordered list with directly measured message articles and explicit logical
+position/count metadata; input is a separate form with direct editor/hint/submit children. The named
+scroll region leaves replay announcements off and has an independent polite status region. Static
+layout and visual styling ship in a separate `styles.css` under `@layer maieutics`; the demo shell
+has its own sheet. One host theme on a common ancestor styles independently mounted history and
+editors through inherited variables or ordinary CSS overrides, preserving their DOM identity,
+drafts, focus and selections. Only virtual extent/offset/size data remain inline. Browser coverage
+checks these semantics, external style overrides, host-control isolation, theme remeasurement and
+complete runtime/viewId replacement without transient attachments. Public mount/events and the
+kernel/frontend wire contracts are unchanged.
+
 The prototype admits history pages from actual viewport intersection, including scrollbar jumps.
 Page completion never forces row navigation. A bounded geometry snapshot keeps extent and offsets
 fixed while the scrollbar is held; lazy body measurement and page eviction cannot move the thumb.

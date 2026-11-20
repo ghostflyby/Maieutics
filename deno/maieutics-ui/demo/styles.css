@@ -7,6 +7,11 @@
   --mui-border: #e6e5dc;
   --mui-muted: #7d8279;
   --mui-accent: #42634d;
+  --demo-background: #f5f4ee;
+  --demo-sidebar: #efeee7;
+  --demo-brand: #334d3a;
+  --demo-selected: #e3e7dd;
+  --demo-selected-text: #3a5842;
 }
 * {
   box-sizing: border-box;
@@ -14,11 +19,8 @@
 body {
   margin: 0;
 }
-button,
-textarea {
+.demo-button {
   font: inherit;
-}
-button {
   cursor: pointer;
   border: 1px solid var(--mui-border);
   background: transparent;
@@ -26,16 +28,14 @@ button {
   border-radius: 7px;
   padding: 7px 12px;
 }
-button:hover {
-  background: #eeeee5;
+.demo-button:hover {
+  background: var(--mui-hover);
 }
-button:focus-visible,
-textarea:focus-visible,
-[tabindex]:focus-visible {
-  outline: 2px solid #6a8d72;
+.demo-button:focus-visible {
+  outline: 2px solid var(--mui-focus);
   outline-offset: 3px;
 }
-button:disabled {
+.demo-button:disabled {
   opacity: .4;
   cursor: default;
 }
@@ -43,18 +43,44 @@ button:disabled {
   display: flex;
   height: 100dvh;
   min-height: 580px;
+  color: var(--mui-text);
+  background: var(--demo-background);
+}
+.demo-shell[data-theme="dark"] {
+  --mui-color-scheme: dark;
+  --mui-text: #e3e9e3;
+  --mui-surface: #202923;
+  --mui-border: #3c4a40;
+  --mui-muted: #adb9af;
+  --mui-accent: #a8c6a2;
+  --mui-accent-text: #1b2a1e;
+  --mui-hover: #35433a;
+  --mui-focus: #b9d6a8;
+  --mui-input-surface: #2b382d;
+  --mui-activity-surface: #28332c;
+  --mui-activity-border: #435147;
+  --mui-code-surface: #18201b;
+  --mui-error: #efb69d;
+  --mui-editor-surface: #18201b;
+  --mui-editor-border: #53664e;
+  --mui-shadow: #0005;
+  --demo-background: #151d18;
+  --demo-sidebar: #1b241e;
+  --demo-brand: #c2d8b9;
+  --demo-selected: #344332;
+  --demo-selected-text: #d8e6d0;
 }
 .demo-sidebar {
   width: 210px;
   flex: 0 0 210px;
   padding: 32px 24px;
-  background: #efeee7;
+  background: var(--demo-sidebar);
   border-right: 1px solid var(--mui-border);
   display: flex;
   flex-direction: column;
 }
 .demo-brand {
-  color: #334d3a;
+  color: var(--demo-brand);
   font-family: Georgia, serif;
   font-size: 26px;
   letter-spacing: -1px;
@@ -87,8 +113,8 @@ button:disabled {
   padding: 12px;
 }
 .demo-nav-active {
-  background: #e3e7dd;
-  color: #3a5842;
+  background: var(--demo-selected);
+  color: var(--demo-selected-text);
   border-radius: 7px;
 }
 .demo-sidebar-bottom {
@@ -124,6 +150,12 @@ button:disabled {
 .demo-topbar button {
   font-size: 12px;
 }
+.demo-topbar > span {
+  margin-inline-end: auto;
+}
+.demo-topbar {
+  gap: 12px;
+}
 .demo-intro {
   padding: 31px 40px 24px;
   width: min(100%, 980px);
@@ -154,194 +186,6 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   width: calc(100% - 48px);
 }
-.mui-conversation {
-  display: flex;
-  height: 100%;
-  flex-direction: column;
-  position: relative;
-  min-height: 0;
-  min-width: 0;
-  background: var(--mui-surface);
-  border: 1px solid var(--mui-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 20px #253e3005;
-  overflow: hidden;
-}
-.mui-conversation-heading {
-  border-bottom: 1px solid var(--mui-border);
-  padding: 17px 26px;
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-}
-.mui-history {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  height: 100%;
-  position: relative;
-  overflow: hidden;
-}
-.mui-conversation-heading h2 {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 0;
-}
-.mui-conversation-heading > span {
-  font-size: 11px;
-  color: var(--mui-muted);
-}
-.mui-viewport {
-  flex: 1;
-  min-height: 100px;
-  overflow: auto;
-  overflow-anchor: none;
-  scrollbar-gutter: stable;
-}
-.mui-row {
-  padding: 10px 26px;
-}
-.mui-block {
-  padding: 9px 0 12px;
-  min-height: 68px;
-}
-.mui-block-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.mui-role {
-  font-size: 10px;
-  font-weight: 600;
-  color: #74816f;
-  letter-spacing: .5px;
-}
-.mui-input {
-  background: #f0f2eb;
-  border-radius: 9px;
-  padding: 15px 18px;
-}
-.mui-input .mui-role {
-  color: #888c80;
-}
-.mui-text {
-  font-size: 13px;
-  line-height: 1.9;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.mui-tool,
-.mui-reasoning-summary,
-.mui-child-run {
-  padding: 13px 16px;
-  border: 1px solid #eaeae2;
-  background: #f8f8f3;
-  border-radius: 8px;
-}
-.mui-display .mui-text {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f6f6ef;
-}
-.mui-diagnostic {
-  color: var(--mui-muted);
-  font-size: 12px;
-}
-.mui-expand {
-  font-size: 10px;
-  padding: 2px 7px;
-  margin-left: auto;
-  border: 0;
-  color: var(--mui-muted);
-}
-.mui-writing {
-  font-size: 10px;
-  color: var(--mui-muted);
-}
-.mui-loading,
-.mui-missing {
-  font-size: 12px;
-  color: var(--mui-muted);
-  padding: 10px 0;
-}
-.mui-range-label {
-  position: sticky;
-  top: 20px;
-  margin: 24px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--mui-muted);
-  padding: 20px;
-}
-.mui-range-label button {
-  display: block;
-  margin: 14px auto;
-}
-.mui-error {
-  color: #98634b;
-  font-size: 12px;
-}
-.mui-error button {
-  margin-left: 10px;
-  font-size: 11px;
-}
-.mui-latest {
-  position: absolute;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--mui-surface);
-  box-shadow: 0 2px 10px #253e3010;
-  font-size: 11px;
-  z-index: 2;
-  white-space: nowrap;
-}
-.mui-composer {
-  margin: 12px 20px 5px;
-  border: 1px solid #d8dece;
-  background: #fff;
-  border-radius: 10px;
-  flex-shrink: 0;
-}
-.mui-composer textarea {
-  display: block;
-  border: 0;
-  background: transparent;
-  resize: vertical;
-  min-height: 65px;
-  max-height: 180px;
-  width: 100%;
-  padding: 15px;
-  font-size: 13px;
-  color: inherit;
-}
-.mui-composer-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 7px 11px;
-}
-.mui-composer-actions span {
-  font-size: 10px;
-  color: #a0a599;
-}
-.mui-composer-actions button {
-  background: #44624c;
-  color: #fff;
-  border-color: transparent;
-  font-size: 12px;
-}
-.mui-status {
-  min-height: 18px;
-  padding: 0 24px 4px;
-  font-size: 10px;
-  color: var(--mui-muted);
-}
 .demo-footer {
   min-height: 43px;
   padding: 10px 34px;
@@ -371,7 +215,7 @@ button:disabled {
   .mui-conversation-heading > span {
     display: none;
   }
-  .mui-row {
-    padding-inline: 16px;
+  .demo-shell {
+    --mui-block-inset: 16px;
   }
 }

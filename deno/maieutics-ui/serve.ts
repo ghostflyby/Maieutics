@@ -6,6 +6,7 @@ const assets: Record<string, [string, string]> = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/demo.js": ["demo.js", "text/javascript; charset=utf-8"],
   "/styles.css": ["styles.css", "text/css; charset=utf-8"],
+  "/demo.css": ["demo.css", "text/css; charset=utf-8"],
 };
 const server = Deno.serve({
   hostname: "127.0.0.1",

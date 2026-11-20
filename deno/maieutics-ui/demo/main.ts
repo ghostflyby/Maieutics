@@ -11,6 +11,7 @@ let lastReply: string | undefined;
 const App = defineComponent({
   setup() {
     const split = ref(false);
+    const dark = ref(false);
     const submitted = ref(false);
     const submit = (submission: ConversationSubmission) => {
       lastReply = fixture.submit(submission.text);
@@ -18,7 +19,7 @@ const App = defineComponent({
       submitted.value = true;
     };
     return () =>
-      h("div", { class: "demo-shell" }, [
+      h("div", { class: "demo-shell", "data-theme": dark.value ? "dark" : "light" }, [
         h("aside", { class: "demo-sidebar" }, [
           h("a", { class: "demo-brand", href: "#" }, "maieutics"),
           h("div", { class: "demo-workspace" }, [
@@ -38,6 +39,14 @@ const App = defineComponent({
           h("header", { class: "demo-topbar" }, [
             h("span", "工作区 / 研究笔记"),
             h("button", {
+              class: "demo-button",
+              type: "button",
+              "aria-pressed": dark.value,
+              onClick: () => dark.value = !dark.value,
+            }, "深色主题"),
+            h("button", {
+              class: "demo-button",
+              type: "button",
               onClick: () => {
                 split.value = !split.value;
               },
@@ -73,6 +82,8 @@ const App = defineComponent({
             submitted.value
               ? h("div", [
                 h("button", {
+                  class: "demo-button",
+                  type: "button",
                   onClick: () => {
                     if (lastReply) {
                       fixture.append(
@@ -83,6 +94,8 @@ const App = defineComponent({
                   },
                 }, "追加输出片段"),
                 h("button", {
+                  class: "demo-button",
+                  type: "button",
                   onClick: () => {
                     if (lastReply) {
                       fixture.seal(lastReply);

@@ -1,8 +1,14 @@
 /** Copy only shipped passive assets beside the bundled browser modules. */
 await Deno.mkdir(new URL("dist/", import.meta.url), { recursive: true });
-for (const name of ["index.html", "styles.css"]) {
+for (
+  const [source, target] of [
+    ["demo/index.html", "index.html"],
+    ["styles.css", "styles.css"],
+    ["demo/styles.css", "demo.css"],
+  ]
+) {
   await Deno.copyFile(
-    new URL(`demo/${name}`, import.meta.url),
-    new URL(`dist/${name}`, import.meta.url),
+    new URL(source, import.meta.url),
+    new URL(`dist/${target}`, import.meta.url),
   );
 }

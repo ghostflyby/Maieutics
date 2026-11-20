@@ -134,7 +134,7 @@ export async function runBrowserSuite(
         ...importArgs,
         "-o",
         `${directory}/test.js`,
-        new URL("browser_conformance.ts", import.meta.url).pathname,
+        new URL("browser_conformance.ts", import.meta.url).href,
       ],
       stdout: "piped",
       stderr: "piped",
@@ -152,7 +152,7 @@ export async function runBrowserSuite(
         ...importArgs,
         "-o",
         `${directory}/conversation.js`,
-        new URL("../mod.ts", import.meta.url).pathname,
+        new URL("../mod.ts", import.meta.url).href,
       ],
       stdout: "piped",
       stderr: "piped",
@@ -170,7 +170,7 @@ export async function runBrowserSuite(
         ...importArgs,
         "-o",
         `${directory}/demo.js`,
-        new URL("../demo/main.ts", import.meta.url).pathname,
+        new URL("../demo/main.ts", import.meta.url).href,
       ],
       stdout: "piped",
       stderr: "piped",
@@ -178,7 +178,8 @@ export async function runBrowserSuite(
     }).output();
     if (!demo.success) throw new Error(new TextDecoder().decode(demo.stderr));
     const demoCode = await Deno.readFile(`${directory}/demo.js`);
-    const style = await Deno.readFile(new URL("../demo/styles.css", import.meta.url));
+    const style = await Deno.readFile(new URL("../styles.css", import.meta.url));
+    const demoStyle = await Deno.readFile(new URL("../demo/styles.css", import.meta.url));
     const resultPath = `/result/${crypto.randomUUID()}`;
     server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen() {} }, async (request) => {
       const path = new URL(request.url).pathname;
@@ -193,7 +194,7 @@ export async function runBrowserSuite(
       }
       if (path === "/demo") {
         return new Response(
-          '<!doctype html><html><head><link rel="stylesheet" href="/styles.css"></head><body><div id="app"></div><script type="module" src="/demo.js"></script></body></html>',
+          '<!doctype html><html><head><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/demo.css"></head><body><div id="app"></div><script type="module" src="/demo.js"></script></body></html>',
           {
             headers: { "content-type": "text/html" },
           },
@@ -201,6 +202,9 @@ export async function runBrowserSuite(
       }
       if (path === "/styles.css") {
         return new Response(style, { headers: { "content-type": "text/css" } });
+      }
+      if (path === "/demo.css") {
+        return new Response(demoStyle, { headers: { "content-type": "text/css" } });
       }
       if (path === resultPath && request.method === "POST") {
         const body = await request.text();

@@ -395,6 +395,75 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     anchorStyle.remove();
   }
 
+  const overlapSource = new FixtureConversation("overlapping-copy", 1);
+  const overlapReads = new Map<string, number>();
+  const overlapRuntime = new ConversationRuntime(overlapSource.sessionId, {
+    readPage: (query, signal) => overlapSource.readPage(query, signal),
+    readContent(id, revision, signal) {
+      overlapReads.set(id, (overlapReads.get(id) ?? 0) + 1);
+      return overlapSource.readContent(id, revision, signal);
+    },
+  }, { concurrentRequests: 1, contentBytes: 1 });
+  await overlapRuntime.loadPage();
+  const overlapView = overlapRuntime.attachView("overlapping-reader");
+  const overlapRoot = historyTarget();
+  const copiesDone = Promise.withResolvers<void>();
+  const copies: string[] = [];
+  const overlapHandle = artifact.mountConversationHistory(overlapRoot, {
+    view: overlapView,
+    host: {
+      writeText(text) {
+        copies.push(text);
+        if (copies.length === 4) copiesDone.resolve();
+        return Promise.resolve();
+      },
+    },
+  });
+  const overlapSelection = document.getSelection();
+  try {
+    await waitFor(
+      () =>
+        !!overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text') &&
+        geometryApplied(overlapRoot),
+      "uncached copy fixture did not finish loading visible text",
+    );
+    const body = overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text');
+    const text = body?.firstChild;
+    assert(
+      body && text instanceof Text && overlapSelection,
+      "uncached copy fixture has no selectable text",
+    );
+    const expected = text.data;
+    const before = overlapReads.get("entry-9") ?? 0;
+    equal(overlapRuntime.statistics.contentBytes, 0, "uncached copy fixture retained its body");
+    overlapSelection.setBaseAndExtent(text, 0, text, expected.length);
+    document.dispatchEvent(new Event("selectionchange"));
+    for (let i = 0; i < 4; i++) {
+      body.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
+    }
+    await guarded(
+      copiesDone.promise,
+      "overlapping copy events stalled the single-slot source pool",
+    );
+    assert(
+      copies.every((value) => value === expected),
+      "overlapping copy wrote partial or different text",
+    );
+    equal(
+      (overlapReads.get("entry-9") ?? 0) - before,
+      4,
+      "overlapping copy did not exercise four addressed uncached content reads",
+    );
+    await overlapRuntime.loadPage(0);
+    passed.push("overlapping uncached copy events complete through a single source request slot");
+  } finally {
+    overlapSelection?.removeAllRanges();
+    overlapHandle.unmount();
+    overlapView.dispose();
+    await overlapRuntime.dispose();
+    overlapRoot.remove();
+  }
+
   const copySource = new FixtureConversation("foreign-copy", 2);
   const copyRuntime = new ConversationRuntime("foreign-copy", copySource, { selectionBytes: 1 });
   await copyRuntime.loadPage();

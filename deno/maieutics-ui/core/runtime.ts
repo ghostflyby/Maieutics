@@ -215,11 +215,12 @@ export class ConversationRuntime {
     }));
     if (!this.#projection.apply(change, this.#pins(), this.#anchor)) return false;
     for (const pending of this.#pages) {
+      if (pending.overflow) continue;
       pending.bytes += changeSize(change);
       if (pending.bytes > this.limits.reconciliationBytes) {
         pending.overflow = true;
         pending.changes.length = 0;
-      } else if (!pending.overflow) pending.changes.push(change);
+      } else pending.changes.push(change);
     }
     for (const waiter of this.#pageWaiters) waiter();
     for (const operation of change.operations) {
@@ -301,6 +302,7 @@ export class ConversationRuntime {
     const pieces: string[] = [];
     let bytes = 0, next = start.ordinal;
     while (next <= end.ordinal) {
+      // Only source I/O holds a pool slot; the text reads below acquire their own requests.
       const page = await this.#tasks.run(
         (signal) =>
           this.#source.readPage({

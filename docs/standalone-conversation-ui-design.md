@@ -62,6 +62,9 @@ advancing global revision/total; cancellation and disposal release that wait. A 
 request admission or overflowing reconciliation gets one fresh-snapshot retry, with persistent
 inconsistency then failing explicitly. Pending snapshots reconcile bounded successor changes before
 entering the resident window. Admission fails atomically if it would retain no requested records.
+Once a pending reconciliation journal overflows, it stops retaining and serializing subsequent
+frames while the ordered reducer continues. Projection clearing restores its complete initial
+epoch/revision/total baseline together with slots and rows; disposal uses this after joining work.
 Concurrent initialization chooses one baseline in a synchronous publication, without an intervening
 await. Later initial replies cannot publish state older than that chosen baseline. Stream catch-up
 has a configurable failure deadline (15 seconds by default), observable request progress, and a
@@ -80,7 +83,12 @@ retaining that response is optional. Caller-owned mounted windows and the per-co
 limit bound those live responses separately from the shared cache. Cache pressure never becomes
 a visible body-read failure. Logical copy retains its separate byte bound and rejects non-integer,
 non-finite or unsafe ordinals before reading historical pages. Cross-bundle diagnostics use stable
-error codes. Persisted demo page transitions preserve its runtime until a final non-persisted close.
+error codes. Copy page jobs contain only page source I/O; exact text is resolved outside those jobs
+through independent content requests, avoiding nested pool ownership. Core coverage exercises
+uncached copies at concurrency 1 and 4 and subsequent source requests. Browser coverage dispatches
+four overlapping copy events with one source slot and no retained bodies. Bundle entrypoints use
+file URLs to preserve Windows drive-letter paths; browser CI currently runs on Ubuntu. Persisted
+demo page transitions preserve its runtime until a final non-persisted close.
 
 Actual viewport intersection drives unloaded-range admission, including scrollbar-only jumps and
 movement inside a range that is already mounted. A changed target cancels the old page request;

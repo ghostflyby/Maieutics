@@ -963,7 +963,12 @@ Concurrent first page requests choose an atomic snapshot baseline; older initial
 refresh. Catch-up waits expose progress, have a configurable failure budget, and support explicit
 cancel/retry while waiting. Page cancellation is linearized at synchronous publication: pre-commit
 abort publishes nothing, while cancellation from post-commit notification leaves the request
-successful. History acknowledges projection and gesture-release anchor writes with `anchorRestored`,
+successful. Copy page requests end before text resolution submits independent source work; the
+copy coordinator holds no parent pool slot. Uncached concurrency-1/4 copies and overlapping browser
+copy events through a single slot verify progress and later request availability. Overflowed
+reconciliation journals stop serializing later frames, and projection clear resets epoch, revision and
+total together with slots/rows. The browser bundler receives file-URL entrypoints for portable
+Windows paths. History acknowledges projection and gesture-release anchor writes with `anchorRestored`,
 including reason, ordinal and offset and an optional loaded-entry ID; conformance awaits that event
 before comparing geometry. The anchor fixture uses distinct fixed row heights that are multiples
 of the virtualizer estimate, keeping its chosen interior offset independent of font metrics;

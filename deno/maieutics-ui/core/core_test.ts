@@ -3,6 +3,7 @@ import { FixtureConversation } from "../fixtures/conversation.ts";
 import { ConversationRuntime } from "./runtime.ts";
 import { OwnedTasks } from "./tasks.ts";
 import { FrozenScrollLayout } from "./scroll_layout.ts";
+import { ConversationProjection } from "./projection.ts";
 import {
   compareRevision,
   type ConversationEntry,
@@ -10,6 +11,7 @@ import {
   type ConversationPage,
   type ConversationRow,
   type ConversationSource,
+  defaultLimits,
 } from "./types.ts";
 
 function entry(ordinal: number, revision = "0"): ConversationEntry {
@@ -730,6 +732,141 @@ Deno.test("logical copying spans evicted rows without expanding resident metadat
   assertEquals(runtime.statistics.entries, 10);
   assertEquals(view.pins.size, 2);
   await runtime.dispose();
+});
+
+for (const concurrency of [1, 4]) {
+  Deno.test(`uncached copying progresses with ${concurrency} occupied source request slots`, async () => {
+    const base = source();
+    const contentReads: string[] = [];
+    const runtime = new ConversationRuntime("s", {
+      ...base,
+      readContent(id, revision, signal) {
+        contentReads.push(id);
+        return base.readContent(id, revision, signal);
+      },
+    }, { concurrentRequests: concurrency });
+    // A deadline bounds a broken test's wait; success requires every exact copy and later source read.
+    const budget = AbortSignal.timeout(10_000);
+    try {
+      await runtime.loadPage(undefined, budget);
+      assertEquals(runtime.statistics.contentBytes, 0);
+      const copies = Array.from({ length: concurrency }, (_, ordinal) => {
+        const text = `record:${ordinal}`;
+        return runtime.copySelection(
+          {
+            epoch: "epoch",
+            projectionRevision: "0",
+            anchor: { id: `e${ordinal}`, ordinal, revision: "0", offset: 0 },
+            focus: { id: `e${ordinal}`, ordinal, revision: "0", offset: text.length },
+          },
+          new Set(),
+          budget,
+        );
+      });
+      assertEquals(
+        await Promise.all(copies),
+        Array.from({ length: concurrency }, (_, ordinal) => `record:${ordinal}`),
+        "historical copying retained parent request slots while waiting for its text reads",
+      );
+      assertEquals(contentReads.sort(), Array.from({ length: concurrency }, (_, i) => `e${i}`));
+      await runtime.loadPage(0, budget);
+      assertEquals(
+        await runtime.readText("e10", "0", budget),
+        "record:10",
+        "copying exhausted the shared source pool for later page/content requests",
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  });
+}
+
+Deno.test("projection clear restores an empty baseline before merging another epoch", () => {
+  const projection = new ConversationProjection("s", defaultLimits);
+  projection.merge(
+    {
+      sessionId: "s",
+      epoch: "old",
+      revision: "7",
+      total: 3,
+      entries: [entry(0, "7")],
+    },
+    [],
+    new Set(),
+    0,
+  );
+  projection.clear();
+  projection.clear();
+  assertEquals(projection.epoch, undefined, "clear retained the previous epoch");
+  assertEquals(projection.revision, "0", "clear retained the previous stream baseline");
+  assertEquals(projection.total, 0, "clear retained a total without any rows");
+  assertEquals(projection.size, 0);
+  assertEquals(projection.rows, []);
+  assertEquals(projection.find("e0"), undefined);
+  projection.merge(
+    {
+      sessionId: "s",
+      epoch: "new",
+      revision: "1",
+      total: 1,
+      entries: [entry(0, "1")],
+    },
+    [],
+    new Set(),
+    0,
+  );
+  assertEquals(projection.epoch, "new");
+  assertEquals(projection.revision, "1");
+  assertEquals(projection.total, 1);
+  assertEquals(projection.get(0)?.contentRevision, "1");
+});
+
+Deno.test("overflowed reconciliation stops serializing later stream frames", async () => {
+  const base = source();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let held = false, serializations = 0;
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    async readPage(query, signal) {
+      const page = await base.readPage(query, signal);
+      if (held) {
+        entered.resolve();
+        await release.promise;
+      }
+      return page;
+    },
+  }, { reconciliationBytes: 16 });
+  await runtime.loadPage();
+  held = true;
+  const pending = runtime.loadPage(0);
+  const rejected = assertRejects(() => pending, ConversationError, "snapshot_gap");
+  try {
+    await entered.promise;
+    for (const revision of [1, 2]) {
+      const change = {
+        epoch: "epoch",
+        baseRevision: String(revision - 1),
+        revision: String(revision),
+        total: 100,
+        operations: [],
+        toJSON() {
+          serializations++;
+          return { revision: this.revision, payload: "larger than the reconciliation budget" };
+        },
+      };
+      runtime.apply(change);
+    }
+    assertEquals(serializations, 1, "an already overflowed page kept serializing stream frames");
+    assertEquals(
+      runtime.projection.revision,
+      "2",
+      "journal overflow stopped ordered stream reduction",
+    );
+  } finally {
+    release.resolve();
+    await rejected;
+    await runtime.dispose();
+  }
 });
 
 Deno.test("selection capacity and stale historical snapshots never return partial/newer copy", async () => {

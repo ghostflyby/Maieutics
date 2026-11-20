@@ -184,9 +184,11 @@ additional page ahead of the reducer waits for the independently delivered strea
 never advances the global revision or total. Waiting remains request-owned and cancellable,
 including when stream updates change only an entry body. A stale snapshot or reconciliation overflow
 gets one fresh-snapshot retry; persistent inconsistency fails explicitly after that bounded retry.
-Concurrent first pages atomically choose the first successful snapshot as their baseline. A second
-page older than that baseline fetches fresh state; a newer one waits for the stream. Hosts need not
-serialize initial `loadPage` calls. Waits expose request-local `PageLoadProgress` and
+An overflowed pending reconciliation journal discards its retained changes and stops serializing
+subsequent frames for that request; ordered stream reduction continues normally. Concurrent first
+pages atomically choose the first successful snapshot as their baseline. A second page older than
+that baseline fetches fresh state; a newer one waits for the stream. Hosts need not serialize
+initial `loadPage` calls. Waits expose request-local `PageLoadProgress` and
 `statistics.waitingPages`, and fail with `stream_wait_timeout` after the configurable
 `pageWaitMilliseconds` budget (15 seconds by default). The UI shows synchronization state and can
 cancel/retry an active range immediately, as well as retry after timeout. Page admission fails
@@ -202,7 +204,9 @@ caches have independent budgets; unloaded ranges aggregate geometry without crea
 record per historical entry. Source requests have bounded concurrency/queues, caller cancellation,
 and joined runtime disposal. Source implementations must honor their supplied AbortSignal. The
 runtime fences late replies even when a source ignores cancellation, and waits for its owned work to
-finish before completing disposal.
+finish before completing disposal. Internal projection clearing restores the complete empty
+baseline, including epoch, revision and total as well as slots/rows. Runtime disposal uses that
+reset after joining its requests.
 
 The shared text cache retains its hard byte limit even with multiple pinned views. Cache admission
 is optional for a successful exact text read: when active pins leave no room, the mounted caller
@@ -213,9 +217,13 @@ keeps its own selection byte limit.
 
 Logical cross-block selection uses stable text points and exact revisions. Ordinary copy reads the
 text projection independently of mounted DOM; missing snapshots and the 8 MiB selection limit
-produce explicit failure rather than partial text. The prototype exposes passive text only, so its
-text projection matches displayed strings. Markdown/source mapping, interactive form checkpoints,
-iframe/native surfaces, and rich SSR are later design stages.
+produce explicit failure rather than partial text. Copy page jobs contain only `readPage`; body
+resolution happens outside those jobs and schedules independent `readText` work. A copy never holds
+a parent pool slot while awaiting a child request. Coverage includes uncached copies at concurrency
+1 and 4, subsequent page/body requests, and four overlapping browser copy events through a single
+slot with cache retention disabled. The passive text projection matches displayed strings.
+Markdown/source mapping, interactive form checkpoints, iframe/native surfaces, and rich SSR are
+later design stages.
 
 ## Validation
 
@@ -237,7 +245,9 @@ held-scroll position/extent through page replacement, session replacement, sibli
 separate history/input roots, independent unmount/remount and shared-view closure through the
 separately bundled ESM. Set `MAIEUTICS_UI_BROWSER` to select a Chromium executable; CI reuses the
 pinned `MAIEUTICS_ACTOR_BROWSER` browser. Browser results establish behavior and capacity bounds,
-not a device-independent timing benchmark.
+not a device-independent timing benchmark. Bundle entrypoints are passed to Deno as file URLs,
+preserving Windows drive letters and escaped path characters. Browser discovery includes Windows
+candidates; the browser CI job runs on Ubuntu.
 
 Review regressions separately control HTTP/stream ordering, zero-progress capacity, a non-frozen
 history anchor across measured predecessor eviction, actual live-end viewport geometry, cross-bundle

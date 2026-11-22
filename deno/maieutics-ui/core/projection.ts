@@ -230,7 +230,11 @@ export class ConversationProjection {
     this.#slots = slots;
     this.#total = total;
   }
+  /** Restore the same empty baseline as a newly constructed projection. */
   clear(): void {
+    this.#epoch = undefined;
+    this.#revision = "0";
+    this.#total = 0;
     this.#slots.clear();
     this.#rows = Object.freeze([]);
   }

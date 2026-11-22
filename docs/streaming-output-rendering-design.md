@@ -932,6 +932,18 @@ draft; neither owns the runtime or closes the supplied view. `ConversationView` 
 composition wrapper that owns one view attachment. Closing a view stops history subscriptions and
 disables input, including when the runtime continues receiving events.
 
+The standalone components now use binding-owned effect scopes instead of nested Session components.
+The virtual history is an ordered list with directly measured message articles and explicit logical
+position/count metadata; input is a separate form with direct editor/hint/submit children. The named
+scroll region leaves replay announcements off and has an independent polite status region. Static
+layout and visual styling ship in a separate `styles.css` under `@layer maieutics`; the demo shell
+has its own sheet. One host theme on a common ancestor styles independently mounted history and
+editors through inherited variables or ordinary CSS overrides, preserving their DOM identity,
+drafts, focus and selections. Only virtual extent/offset/size data remain inline. Browser coverage
+checks these semantics, external style overrides, host-control isolation, theme remeasurement and
+complete runtime/viewId replacement without transient attachments. Public mount/events and the
+kernel/frontend wire contracts are unchanged.
+
 The prototype admits history pages from actual viewport intersection, including scrollbar jumps.
 Page completion never forces row navigation. A bounded geometry snapshot keeps extent and offsets
 fixed while the scrollbar is held; lazy body measurement and page eviction cannot move the thumb.
@@ -951,7 +963,12 @@ Concurrent first page requests choose an atomic snapshot baseline; older initial
 refresh. Catch-up waits expose progress, have a configurable failure budget, and support explicit
 cancel/retry while waiting. Page cancellation is linearized at synchronous publication: pre-commit
 abort publishes nothing, while cancellation from post-commit notification leaves the request
-successful. History acknowledges projection and gesture-release anchor writes with `anchorRestored`,
+successful. Copy page requests end before text resolution submits independent source work; the
+copy coordinator holds no parent pool slot. Uncached concurrency-1/4 copies and overlapping browser
+copy events through a single slot verify progress and later request availability. Overflowed
+reconciliation journals stop serializing later frames, and projection clear resets epoch, revision and
+total together with slots/rows. The browser bundler receives file-URL entrypoints for portable
+Windows paths. History acknowledges projection and gesture-release anchor writes with `anchorRestored`,
 including reason, ordinal and offset and an optional loaded-entry ID; conformance awaits that event
 before comparing geometry. The anchor fixture uses distinct fixed row heights that are multiples
 of the virtualizer estimate, keeping its chosen interior offset independent of font metrics;

@@ -97,6 +97,83 @@ Include `dist/styles.css` or equivalent component styles and give the mount targ
 for history (or the combined view). Input has its own natural height; scrolling stays inside the
 history viewport.
 
+## DOM and external themes
+
+Load the component stylesheet once for the document. It contains the required virtual-list layout
+and the default theme, with no page/body/button reset for unrelated host content:
+
+```html
+<link rel="stylesheet" href="/conversation/styles.css">
+```
+
+Put history and input mount containers under a common themed ancestor, even when they are separate
+Vue applications. One host stylesheet can then theme every descendant view and editor:
+
+```css
+.workspace[data-theme="night"] {
+  --mui-color-scheme: dark;
+  --mui-text: #e3e9e3;
+  --mui-surface: #202923;
+  --mui-border: #3c4a40;
+  --mui-muted: #adb9af;
+  --mui-accent: #a8c6a2;
+  --mui-accent-text: #1b2a1e;
+  --mui-hover: #35433a;
+  --mui-focus: #b9d6a8;
+  --mui-input-surface: #2b382d;
+  --mui-activity-surface: #28332c;
+  --mui-activity-border: #435147;
+  --mui-code-surface: #18201b;
+  --mui-error: #efb69d;
+  --mui-editor-surface: #18201b;
+  --mui-editor-border: #53664e;
+  --mui-shadow: #0005;
+  --mui-font-family: system-ui, sans-serif;
+  --mui-body-font-size: 14px;
+  --mui-block-inset: 20px;
+  --mui-control-radius: 4px;
+}
+
+.workspace .mui-submit {
+  border-radius: 0;
+}
+```
+
+Changing the ancestor's theme attribute updates existing views without remounting or losing drafts,
+focus or editor selections. Typography/spacing changes are measured by the virtualizer. The demo
+supplies a complete dark palette and one theme toggle shared by its side-by-side views.
+
+The stylesheet is in `@layer maieutics`; ordinary unlayered host CSS overrides it without
+`!important`, regardless of stylesheet load order. No component inserts a style tag or hardcodes
+colors/fonts in its render function. The primary theme hooks are:
+
+| Group         | Custom properties                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Text          | `--mui-text`, `--mui-muted`, `--mui-error`                                                                                        |
+| Surfaces      | `--mui-surface`, `--mui-input-surface`, `--mui-activity-surface`, `--mui-code-surface`, `--mui-editor-surface`                    |
+| Controls      | `--mui-accent`, `--mui-accent-text`, `--mui-border`, `--mui-activity-border`, `--mui-editor-border`, `--mui-hover`, `--mui-focus` |
+| Typography    | `--mui-font-family`, `--mui-font-family-mono`, `--mui-font-size`, `--mui-body-font-size`, `--mui-body-line-height`                |
+| Shape/spacing | `--mui-radius`, `--mui-control-radius`, `--mui-block-inset`, `--mui-shadow`, `--mui-color-scheme`                                 |
+
+Stable `.mui-*` classes also support direct host styling. History uses a named, keyboard-focusable
+scroll region and an ordered list. Each loaded `li.mui-slot` contains one measured
+`article.mui-row.mui-block`, with a `header`/`h3`, body and logical position/count metadata. Gap
+items describe their unloaded ordinal range and contain an explicit load/retry button. Historical
+replay is not a live announcement; status messages use their own polite region. The input is a named
+form with a directly contained `.mui-editor`, `.mui-composer-hint` and `.mui-submit`.
+
+The old `.mui-row > .mui-block` and `.mui-composer-actions` wrappers are removed; selectors should
+target the article itself and the direct editor/hint/submit hooks. The optional composition is
+`ConversationView → ConversationHistory → OutputBlockHost`, with `ConversationComposer` as a
+sibling. Binding-owned effect scopes replace the internal Session component layers. Rebinding cleans
+up the previous scope before creating the next, after a complete runtime/viewId prop update.
+
+Only measured geometry remains inline as `--mui-virtual-extent`, `--mui-virtual-size` and
+`--mui-virtual-offset`. These are runtime layout data, distinct from theme properties. A replacement
+stylesheet must still use them for spacer height, item height and item position. Component CSS is
+shipped as `dist/styles.css`; the optional demo page additionally loads `dist/demo.css`, which is
+not required by an embedding host.
+
 The `ConversationSource` port exposes paged metadata and exact-revision text. Its safe integer
 ordinals are stable navigation coordinates inside one epoch, not identities or a finalized wire
 schema. A backend adapter must map its cursor/range contract explicitly. `readPage` returns a
@@ -107,9 +184,11 @@ additional page ahead of the reducer waits for the independently delivered strea
 never advances the global revision or total. Waiting remains request-owned and cancellable,
 including when stream updates change only an entry body. A stale snapshot or reconciliation overflow
 gets one fresh-snapshot retry; persistent inconsistency fails explicitly after that bounded retry.
-Concurrent first pages atomically choose the first successful snapshot as their baseline. A second
-page older than that baseline fetches fresh state; a newer one waits for the stream. Hosts need not
-serialize initial `loadPage` calls. Waits expose request-local `PageLoadProgress` and
+An overflowed pending reconciliation journal discards its retained changes and stops serializing
+subsequent frames for that request; ordered stream reduction continues normally. Concurrent first
+pages atomically choose the first successful snapshot as their baseline. A second page older than
+that baseline fetches fresh state; a newer one waits for the stream. Hosts need not serialize
+initial `loadPage` calls. Waits expose request-local `PageLoadProgress` and
 `statistics.waitingPages`, and fail with `stream_wait_timeout` after the configurable
 `pageWaitMilliseconds` budget (15 seconds by default). The UI shows synchronization state and can
 cancel/retry an active range immediately, as well as retry after timeout. Page admission fails
@@ -125,7 +204,9 @@ caches have independent budgets; unloaded ranges aggregate geometry without crea
 record per historical entry. Source requests have bounded concurrency/queues, caller cancellation,
 and joined runtime disposal. Source implementations must honor their supplied AbortSignal. The
 runtime fences late replies even when a source ignores cancellation, and waits for its owned work to
-finish before completing disposal.
+finish before completing disposal. Internal projection clearing restores the complete empty
+baseline, including epoch, revision and total as well as slots/rows. Runtime disposal uses that
+reset after joining its requests.
 
 The shared text cache retains its hard byte limit even with multiple pinned views. Cache admission
 is optional for a successful exact text read: when active pins leave no room, the mounted caller
@@ -136,9 +217,13 @@ keeps its own selection byte limit.
 
 Logical cross-block selection uses stable text points and exact revisions. Ordinary copy reads the
 text projection independently of mounted DOM; missing snapshots and the 8 MiB selection limit
-produce explicit failure rather than partial text. The prototype exposes passive text only, so its
-text projection matches displayed strings. Markdown/source mapping, interactive form checkpoints,
-iframe/native surfaces, and rich SSR are later design stages.
+produce explicit failure rather than partial text. Copy page jobs contain only `readPage`; body
+resolution happens outside those jobs and schedules independent `readText` work. A copy never holds
+a parent pool slot while awaiting a child request. Coverage includes uncached copies at concurrency
+1 and 4, subsequent page/body requests, and four overlapping browser copy events through a single
+slot with cache retention disabled. The passive text projection matches displayed strings.
+Markdown/source mapping, interactive form checkpoints, iframe/native surfaces, and rich SSR are
+later design stages.
 
 ## Validation
 
@@ -160,7 +245,9 @@ held-scroll position/extent through page replacement, session replacement, sibli
 separate history/input roots, independent unmount/remount and shared-view closure through the
 separately bundled ESM. Set `MAIEUTICS_UI_BROWSER` to select a Chromium executable; CI reuses the
 pinned `MAIEUTICS_ACTOR_BROWSER` browser. Browser results establish behavior and capacity bounds,
-not a device-independent timing benchmark.
+not a device-independent timing benchmark. Bundle entrypoints are passed to Deno as file URLs,
+preserving Windows drive letters and escaped path characters. Browser discovery includes Windows
+candidates; the browser CI job runs on Ubuntu.
 
 Review regressions separately control HTTP/stream ordering, zero-progress capacity, a non-frozen
 history anchor across measured predecessor eviction, actual live-end viewport geometry, cross-bundle
@@ -205,8 +292,11 @@ Mounting uses the injected source and explicit clipboard capability. Text is ren
 the prototype never selects executable output or needs `unsafe-eval`/remote assets.
 
 Build reads local sources and cached dependencies and writes `dist/`. The fixture host permits only
-loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener.
-Evidence checking starts the same owned loopback browser runner for each case and writes temporary
+loopback networking and reads the known files under `dist/`; Ctrl+C closes its owned listener. The
+passive asset step reads `styles.css` and `demo/`, copying the component sheet and separate demo
+sheet to `dist/styles.css` and `dist/demo.css`. Theme installation belongs to the host's normal CSS
+loading; component imports/mounts perform no stylesheet I/O or automatic style injection. Evidence
+checking starts the same owned loopback browser runner for each case and writes temporary
 bundles/profile/import maps. Recording additionally writes the generated evidence JSON. Inventory
 unit tests own isolated temporary fixtures. Browser conformance reads source/browser paths, writes a
 temporary bundle/profile, binds an ephemeral loopback port, and starts owned Deno/browser children.

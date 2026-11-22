@@ -29,6 +29,75 @@ import {
   workspaceEditToWire,
 } from "./ide.ts";
 
+Deno.test("IDE shutdown aggregates both earlier and concurrently settling dispatch failures", async () => {
+  const owner = new IdeRequestOwner();
+  const errors = [
+    new Error("earlier log failure"),
+    new Error("first closing failure"),
+    new Error("second closing failure"),
+  ];
+  const signal = new AbortController().signal;
+  const request = (index: number) =>
+    owner.respond(
+      { requestId: `failed-${index}`, method: "maieutics/documents/apply", params: {} },
+      {
+        execute: () => Promise.resolve(null),
+        submit: () => Promise.resolve(true),
+        log: () => {
+          throw errors[index];
+        },
+      },
+      signal,
+    );
+  await assertRejects(() => request(0), Error, "earlier log failure");
+  const pending = Promise.allSettled([request(1), request(2)]);
+  const closing = owner.dispose();
+  assertEquals(owner.dispose(), closing);
+  const failure = await assertRejects(() => closing, AggregateError, "IDE request dispatch failed");
+  await pending;
+  assertEquals(
+    failure.errors.length,
+    3,
+    "Shutdown must retain every dispatch failure, including failures that settle during disposal",
+  );
+  errors.forEach((error, index) =>
+    assert(
+      failure.errors[index] === error,
+      "AggregateError must retain the original failure objects",
+    )
+  );
+});
+
+Deno.test("IDE failure diagnostics stay bounded and explicitly count omitted causes", async () => {
+  const owner = new IdeRequestOwner();
+  const signal = new AbortController().signal;
+  const errors = Array.from({ length: 2049 }, (_, index) => new Error(`dispatch failure ${index}`));
+  for (const [index, error] of errors.entries()) {
+    await assertRejects(
+      () =>
+        owner.respond({
+          requestId: `overflow-${index}`,
+          method: "maieutics/documents/apply",
+          params: {},
+        }, {
+          execute: () => Promise.resolve(null),
+          submit: () => Promise.resolve(true),
+          log: () => {
+            throw error;
+          },
+        }, signal),
+      Error,
+      error.message,
+    );
+  }
+  const failure = await assertRejects(() => owner.dispose(), AggregateError);
+  assertEquals(failure.errors.length, 2049);
+  errors.slice(0, 2048).forEach((error, index) => assert(failure.errors[index] === error));
+  const overflow = failure.errors[2048] as Error & { code: string; omittedFailures: number };
+  assertEquals(overflow.code, "ide_failure_capacity");
+  assertEquals(overflow.omittedFailures, 1);
+});
+
 Deno.test("Notebook and conversation observers execute one physical IDE request and never replay its receipt", async () => {
   const owner = new IdeRequestOwner();
   const started = Promise.withResolvers<void>();

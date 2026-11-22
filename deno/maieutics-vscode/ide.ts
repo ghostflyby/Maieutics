@@ -16,6 +16,7 @@ import { waitForStartup } from "./startupWait.ts";
 /** The IDE capability version announced on the events upgrade and accepted
  * kernel-side; announced versions must match exactly. */
 export const IdeCapabilityVersion = 1;
+const MaximumIdeRequestRecords = 2048;
 
 /** One connection owns accepted physical IDE actions and their bounded receipts.
  * Observers cancel only their waits; the accepted action still answers the kernel.
@@ -24,7 +25,8 @@ export class IdeRequestOwner {
   private readonly lifetime = new AbortController();
   private readonly receipts = new Map<string, { task: Promise<void>; settled: boolean }>();
   private readonly active = new Set<Promise<void>>();
-  private failure: { error: unknown } | undefined;
+  private readonly failures: unknown[] = [];
+  private omittedFailures = 0;
   private disposal: Promise<void> | undefined;
 
   respond(
@@ -36,7 +38,7 @@ export class IdeRequestOwner {
     if (this.lifetime.signal.aborted) return Promise.reject(this.lifetime.signal.reason);
     const existing = this.receipts.get(request.requestId);
     if (existing) return waitForStartup(existing.task, observer);
-    if (this.receipts.size >= 2048) {
+    if (this.receipts.size >= MaximumIdeRequestRecords) {
       const victim = [...this.receipts].find(([, receipt]) => receipt.settled);
       if (victim) this.receipts.delete(victim[0]);
       else return Promise.reject(new Error("IDE request capacity exceeded"));
@@ -53,7 +55,8 @@ export class IdeRequestOwner {
       this.active.delete(receipt.task);
     };
     receipt.task.then(settled, (error) => {
-      this.failure ??= { error };
+      if (this.failures.length < MaximumIdeRequestRecords) this.failures.push(error);
+      else this.omittedFailures++;
       settled();
     });
     return waitForStartup(receipt.task, observer);
@@ -67,9 +70,16 @@ export class IdeRequestOwner {
     const finish = async () => {
       await Promise.allSettled(this.active);
       this.receipts.clear();
-      if (this.failure) {
-        throw new AggregateError([this.failure.error], "IDE request dispatch failed");
+      const failures = this.failures.splice(0);
+      if (this.omittedFailures) {
+        failures.push(Object.assign(
+          new Error(
+            `${this.omittedFailures} additional IDE dispatch failures omitted after retaining ${MaximumIdeRequestRecords}`,
+          ),
+          { code: "ide_failure_capacity", omittedFailures: this.omittedFailures },
+        ));
       }
+      if (failures.length) throw new AggregateError(failures, "IDE request dispatch failed");
     };
     finish().then(completion.resolve, completion.reject);
     return this.disposal;

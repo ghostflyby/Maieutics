@@ -36,7 +36,10 @@ observer, leaves the accepted action running so it can answer the kernel once. T
 30-second action budget still applies. Connection shutdown/restart cancels and joins those actions
 before releasing its transport, and clears its bounded receipts. A completed, cancelled or uncertain
 physical action is never replayed within that connection. This lifetime is deliberately independent
-of the first observer; cancellation of a Notebook stream now detaches its wait as well.
+of the first observer; cancellation of a Notebook stream now detaches its wait as well. Unexpected
+dispatch failures are aggregated during shutdown, including failures that settled earlier.
+Diagnostics retain up to 2,048 original causes; exceeding that budget adds an explicit
+omitted-failure count to the aggregate.
 
 `deno task build:conversation` packages the browser-only UI graph into `media/conversation.js` and
 copies the shared component CSS and host theme CSS. The Node extension bundle never imports Vue.

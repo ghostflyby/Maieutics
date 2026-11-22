@@ -10,6 +10,7 @@
  */
 
 import * as vscode from "vscode";
+import { ConversationPanels } from "./conversationPanels.ts";
 import { SessionTitles } from "./sessionTitles.ts";
 import { localProjectPaths } from "./projectMounts.ts";
 import { transcriptOutput } from "./transcriptView.ts";
@@ -66,6 +67,7 @@ let connecting: Promise<Connection> | undefined;
 let connectionStartup: AbortController | undefined;
 let controller: MaieuticsNotebookController | undefined;
 let disposeForms: (() => Promise<void>) | undefined;
+let conversations: ConversationPanels | undefined;
 let fsProvider: MaieuticsFileSystemProvider | undefined;
 let treeRefresh: (() => void) | undefined;
 const sessionTitles = new SessionTitles();
@@ -78,6 +80,12 @@ const treeEnvironment: TreeEnvironment = {
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Maieutics");
   context.subscriptions.push(output);
+  conversations = new ConversationPanels(
+    context.extensionUri,
+    clientOf,
+    (message) => output?.appendLine(message),
+  );
+  context.subscriptions.push(conversations);
 
   const fs = new MaieuticsFileSystemProvider({
     listSessions: () => clientOf().then((client) => client.listSessions()),
@@ -381,7 +389,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const client = await clientOf();
       const session = await client.newSession();
       treeProvider.refresh();
-      await openSessionNotebookForUser(session.id);
+      await conversations?.open(session.id);
     }),
     vscode.commands.registerCommand("maieutics.showStatus", async () => {
       const client = await clientOf();
@@ -408,7 +416,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (picked) {
         await client.resumeSession(picked.id);
         treeProvider.refresh();
-        await openSessionNotebookForUser(picked.id);
+        await conversations?.open(picked.id);
       }
     }),
     vscode.commands.registerCommand("maieutics.listTasks", async () => {
@@ -579,9 +587,17 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.window.showInformationMessage("Maieutics: server restarted.");
     }),
     vscode.commands.registerCommand(
+      "maieutics.openSessionConversation",
+      async (argument?: CommandArgument) => {
+        const sessionId = typeof argument === "string" ? argument : argument?.session?.id;
+        await conversations?.open(sessionId ?? (await (await clientOf()).session()).id);
+      },
+    ),
+    vscode.commands.registerCommand(
       "maieutics.openSessionNotebook",
-      async (sessionId: string) => {
-        await openSessionNotebookForUser(sessionId);
+      async (argument?: CommandArgument) => {
+        const sessionId = typeof argument === "string" ? argument : argument?.session?.id;
+        await openSessionNotebookForUser(sessionId ?? (await (await clientOf()).session()).id);
       },
     ),
     vscode.commands.registerCommand(
@@ -864,6 +880,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export async function deactivate(): Promise<void> {
   connectionStartup?.abort();
+  conversations?.dispose();
+  await conversations?.settled();
   const results = await Promise.allSettled([
     disposeForms?.(),
     controller?.dispose(),

@@ -20,6 +20,7 @@ import {
   parseRgMatchEvent,
   passesSearchFilters,
   respondToIdeRequest,
+  respondToIdeRequestOnce,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
@@ -27,6 +28,31 @@ import {
   transitionDebugSession,
   workspaceEditToWire,
 } from "./ide.ts";
+
+Deno.test("Notebook and conversation observers execute one physical IDE request and never replay its receipt", async () => {
+  const result = Promise.withResolvers<unknown>();
+  let executions = 0, answers = 0;
+  const request = { requestId: "shared-edit", method: "maieutics/documents/apply", params: {} };
+  const host = {
+    execute: () => {
+      executions++;
+      return result.promise;
+    },
+    submit: () => {
+      answers++;
+      return Promise.resolve(true);
+    },
+    log() {},
+  };
+  const signal = new AbortController().signal;
+  const first = respondToIdeRequestOnce("conformance", request, host, signal);
+  const second = respondToIdeRequestOnce("conformance", request, host, signal);
+  assertEquals(executions, 1);
+  result.resolve({ applied: true });
+  await Promise.all([first, second]);
+  await respondToIdeRequestOnce("conformance", request, host, signal);
+  assertEquals({ executions, answers }, { executions: 1, answers: 1 });
+});
 
 Deno.test("IDE text edit conversion reads public prototype coordinates", () => {
   class Position {

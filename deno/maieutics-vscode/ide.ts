@@ -16,6 +16,28 @@ import type { EventFrame } from "./protocol.ts";
  * kernel-side; announced versions must match exactly. */
 export const IdeCapabilityVersion = 1;
 
+const editorRequests = new Map<string, { task: Promise<void>; settled: boolean }>();
+
+/** Deduplicates physical editor actions observed by Notebook and conversation sockets.
+ * Receipts are bounded and retained after cancellation: an uncertain edit is never replayed. */
+export function respondToIdeRequestOnce(
+  scope: string,
+  ...args: Parameters<typeof respondToIdeRequest>
+): Promise<void> {
+  const key = `${scope}#${args[0].requestId}`;
+  const existing = editorRequests.get(key);
+  if (existing) return existing.task;
+  if (editorRequests.size >= 2048) {
+    const victim = [...editorRequests].find(([, item]) => item.settled);
+    if (victim) editorRequests.delete(victim[0]);
+    else return Promise.reject(new Error("IDE request capacity exceeded"));
+  }
+  const receipt = { settled: false, task: Promise.resolve() };
+  receipt.task = respondToIdeRequest(...args).finally(() => receipt.settled = true);
+  editorRequests.set(key, receipt);
+  return receipt.task;
+}
+
 /** One kernel-announced IDE request pulled out of a tool-progress frame. */
 export interface IdeRequestPayload {
   readonly requestId: string;

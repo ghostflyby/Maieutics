@@ -44,6 +44,7 @@ import { testDocumentEditing } from "./documentEditing.ts";
 import { testWorkspaceSaving } from "./workspaceSaving.ts";
 import { testRenderingDuringConnectionAsync } from "./renderingRecovery.ts";
 import { testHistoricalVueAsync } from "./historyRendering.ts";
+import { testConversationPanelAsync } from "./conversation.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -1231,6 +1232,11 @@ const tests: HostTest[] = [
     name: "standalone IDE requests answer outside an Agent run",
     run: testStandaloneIdeRequestsAsync,
   },
+  {
+    name:
+      "conversation panel pages history, streams changes and preserves drafts in a real webview",
+    run: testConversationPanelAsync,
+  },
 ];
 
 /** VS Code's extension-tests contract: the host calls exports.run() and a
@@ -1243,7 +1249,9 @@ export async function run(): Promise<void> {
   const failed: string[] = [];
   let firstError: string | null = null;
   try {
-    const selected = [...tests];
+    const filter = vscode.workspace.getConfiguration("maieutics").get<string>("testFilter");
+    const selected = tests.filter((test) => filter === undefined || test.name.includes(filter));
+    if (!selected.length) throw new Error(`No extension-host tests match ${filter}`);
     const liveRenderer = vscode.workspace.getConfiguration("maieutics").get<string>(
       "testRenderingDiscovery",
     );

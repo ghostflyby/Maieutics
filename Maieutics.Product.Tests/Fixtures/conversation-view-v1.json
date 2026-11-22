@@ -1,0 +1,48 @@
+{
+  "snapshot": {
+    "type": "view.snapshot",
+    "page": {
+      "sessionId": "session",
+      "epoch": "epoch",
+      "revision": "7",
+      "total": 1,
+      "entries": [
+        {
+          "id": "run:input",
+          "ordinal": 0,
+          "interactionId": "run",
+          "kind": "input",
+          "contentRevision": "7",
+          "preview": "问题",
+          "state": "sealed"
+        }
+      ]
+    },
+    "activeRunId": "run"
+  },
+  "change": {
+    "type": "view.change",
+    "change": {
+      "epoch": "epoch",
+      "baseRevision": "7",
+      "revision": "8",
+      "total": 2,
+      "operations": [
+        {
+          "type": "upsert",
+          "entry": {
+            "id": "run:message:answer",
+            "ordinal": 1,
+            "interactionId": "run",
+            "kind": "message",
+            "contentRevision": "8",
+            "preview": "回答",
+            "state": "open"
+          }
+        }
+      ]
+    },
+    "activeRunId": "run"
+  },
+  "content": { "entryId": "run:message:answer", "revision": "8", "text": "回答" }
+}

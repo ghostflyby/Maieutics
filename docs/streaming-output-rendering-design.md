@@ -13,7 +13,14 @@ advertise the supported output syntax and completion boundary to the model.
 
 Date: 2026-11-04
 
-Last updated: 2026-11-19
+Last updated: 2026-11-21
+
+The standalone conversation UI now has a live VS Code editor-area Webview host with independent
+history/composer mounts, real bounded kernel index pages and a projection snapshot/change socket.
+This first host renders inert text and explicit rich-content fallbacks. The existing Notebook
+renderer remains the shipped SSR, Vue and form host; its rendering APIs and persisted snapshot
+formats are unchanged. Integrating this output renderer into the new block surface remains a
+separate stage of [the standalone UI design](standalone-conversation-ui-design.md).
 
 Related: [Frontend protocol](web-frontend-protocol.md),
 [custom UI framework](custom-ui-framework-design.md),

@@ -31,6 +31,14 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     private readonly FrontendDenoReplPresentationRouter? _presentationRouter;
     private readonly ILogger _logger;
     private readonly TimeProvider _timeProvider;
+    private Action<FrontendEventFrame>? _viewPublisher;
+
+    /// <summary>Installs the synchronous frontend projection tap before the owned pump starts.</summary>
+    internal void AttachViewPublisher(Action<FrontendEventFrame> publisher)
+    {
+        if (Volatile.Read(ref _startState) != 0) throw new InvalidOperationException("The run already started.");
+        _viewPublisher = publisher;
+    }
     private Task _settlement = Task.CompletedTask;
     private readonly TaskCompletionSource _settlementBudgetRegistered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -594,6 +602,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
         lock (_gate)
         {
             _completed = true;
+            // Retained replay streams and session hubs must not retain an evicted view's bodies.
+            _viewPublisher = null;
             // Belt and braces for every pump exit path: the terminal pair is the last frame
             // pair, so nothing may be appended after the stream stopped draining its run.
             _publishClosed = true;
@@ -670,6 +680,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
     /// caller holds <see cref="_gate" />.</summary>
     private void PublishLocked(FrontendEventFrame frame, bool trackSequence)
     {
+        // No asynchronous work or callbacks into the run stream are allowed in this tap.
+        _viewPublisher?.Invoke(frame);
         if (trackSequence && frame.Sequence is { } sequence)
         {
             if (_oldestSequence == 0) _oldestSequence = sequence;

@@ -24,6 +24,71 @@ public sealed class FrontendApiIntegrationTests
 {
     private const string Answer = "streamed answer";
 
+    [Fact(Timeout = 45_000)]
+    public async Task ConversationSocketSnapshotPagesAndChangesShareOneWatermark()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {harness.Token}");
+        await socket.ConnectAsync(new Uri($"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId.ToUpperInvariant()}/view/events"), deadline.Token);
+        await using var reader = new FrontendEventsConnection(socket);
+        var snapshot = await reader.ReceiveFrameAsync(deadline.Token);
+        Assert.Equal("view.snapshot", snapshot.GetProperty("type").GetString());
+        var initial = snapshot.GetProperty("page");
+        Assert.Equal(sessionId, initial.GetProperty("sessionId").GetString());
+        Assert.Equal(0, initial.GetProperty("total").GetInt32());
+        var revision = initial.GetProperty("revision").GetString();
+        var epoch = initial.GetProperty("epoch").GetString();
+        var runId = await harness.SubmitTurnAsync(sessionId, "conversation question", deadline.Token);
+        var changes = await reader.CollectUntilAsync(frame => !frame.TryGetProperty("activeRunId", out _), deadline.Token);
+        foreach (var frame in changes)
+        {
+            Assert.Equal("view.change", frame.GetProperty("type").GetString());
+            var change = frame.GetProperty("change");
+            Assert.Equal(revision, change.GetProperty("baseRevision").GetString());
+            Assert.Equal(epoch, change.GetProperty("epoch").GetString());
+            revision = change.GetProperty("revision").GetString();
+        }
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId);
+        var page = await harness.Client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{sessionId}/view/entries?offset=1&limit=1&epoch={epoch}", deadline.Token);
+        Assert.Equal(revision, page.GetProperty("revision").GetString());
+        var entry = Assert.Single(page.GetProperty("entries").EnumerateArray());
+        Assert.Equal(1, entry.GetProperty("ordinal").GetInt32());
+        var id = Uri.EscapeDataString(entry.GetProperty("id").GetString() ?? throw new InvalidOperationException("Missing block id"));
+        var content = await harness.Client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{sessionId}/view/blocks/{id}?epoch={epoch}&revision={entry.GetProperty("contentRevision").GetString()}", deadline.Token);
+        Assert.Equal(Answer, content.GetProperty("text").GetString());
+        using var stale = await harness.Client.GetAsync($"/v1/agent/sessions/{sessionId}/view/entries?epoch=stale", deadline.Token);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+    }
+
+    [Fact(Timeout = 45_000)]
+    public async Task ClosingConversationSocketAcknowledgesCloseWithoutCancellingTheRun()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var harness = await StartHostWithHangingProviderAsync(deadline.Token);
+        var sessionId = await harness.GetSessionIdAsync(deadline.Token);
+        var runId = await harness.SubmitTurnAsync(sessionId, "keep running", deadline.Token);
+        using var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {harness.Token}");
+        await socket.ConnectAsync(new Uri($"{harness.Url.Replace("http://", "ws://")}/v1/agent/sessions/{sessionId}/view/events"), deadline.Token);
+        var reader = new FrontendEventsConnection(socket);
+        var snapshot = await reader.ReceiveFrameAsync(deadline.Token);
+        Assert.Equal(runId, snapshot.GetProperty("activeRunId").GetString());
+        using var close = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        close.CancelAfter(TimeSpan.FromSeconds(5));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "view closed", close.Token);
+        Assert.Equal(WebSocketState.Closed, socket.State);
+        Assert.True(harness.SessionService.TryGetRun(runId, out var stream));
+        Assert.NotNull(stream);
+        Assert.False(stream.Completion.IsCompleted, "Closing a view must leave the Agent run owned by the executable.");
+        harness.ReleaseProvider();
+        await harness.WaitForTurnCommittedAsync(sessionId, deadline.Token, runId);
+    }
+
     private const string DualProviderConfigTemplate = """
         {
           "Maieutics": {

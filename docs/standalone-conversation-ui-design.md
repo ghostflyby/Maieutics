@@ -1,8 +1,9 @@
 # Standalone Vue conversation UI
 
-Status: stage 1 passive UI prototype implemented, 2026-11-19. Backend projection routes,
-capabilities, persisted formats, and stages 2–5 remain proposed. The existing VS Code frontend and
-frontend v1 contract continue to describe shipped product behavior.
+Status: passive UI and the first live VS Code editor-area integration implemented, 2026-11-21. The
+bounded text projection is advertised as conversation view version 1. Rich rendering, persisted
+presentation history and the remaining stages 2–5 remain proposed; the normative frontend v1
+document specifies the smaller shipped contract.
 
 Maieutics will have a standalone Vue frontend whose reusable unit is one complete conversation. The
 conversation contains an ordered input/output history and a current input composer. Outputs are
@@ -128,10 +129,35 @@ the error at the source. Held-page fixtures settle
 on request abort, with an injected early-failure scenario proving disposal does not wait for the
 runner's outer timeout.
 
-There is no live kernel adapter, pending-input UI/registry, session-owned producer publisher,
-presentation journal, Markdown/SSR integration, form checkpoint implementation, executable iframe,
-or native bridge yet. The corresponding contracts below remain the implementation requirements for
-the subsequent stages. The fixture's submit/append/seal controls do not call models or tools.
+The VS Code extension now ships a separately bundled browser adapter in an editor-area
+`WebviewPanel`. The Sessions tree and New Session action open that view; Open Session Notebook
+remains available for existing rich output and snapshots. History and composer use separate mount
+roots sharing one view attachment. One host stylesheet maps the component tokens onto VS Code's live
+light/dark/high-contrast theme. Kernel credentials remain in the extension host, and its versioned
+bridge fences each request/reply by session, view, document generation and request ID.
+
+The executable's passive projection supplies real HTTP index pages and exact current text reads. Its
+WebSocket atomically subscribes with a newest-page snapshot, then publishes contiguous session
+revisions. Closing/hiding a panel aborts and joins its view work without cancelling the run.
+Reconnecting replaces the projection baseline and fences old replies; a timed-out submission is
+never automatically resent. Accepted submissions clear only their captured draft revision. Drafts
+remain bounded in host memory across hide/reveal and reconnect, while editor restoration persists
+only session/view identifiers. Scroll position resets to the newest page on a new document. Stdin,
+approvals, elicitation and IDE requests use the existing run-events channel; native input
+presentation is shared with notebooks and deduplicates simultaneous observers.
+
+This first integration deliberately retains only bounded passive text: 100,000 index entries,
+4,000,000 body units per warmed projection, 64,000 units per body, sixteen warmed projections, eight
+subscriptions per session and 256 queued transactions per socket. Over-budget content/index is
+visibly unavailable or labelled as a preview. Idle unsubscribed projections can be evicted;
+rebuilding from canonical committed history starts a new epoch. A missing old body revision fails
+explicitly, and transient output is not persisted. The HTTP/wire contract and limitations are
+specified in [the frontend protocol](web-frontend-protocol.md#passive-conversation-view-version-1).
+
+There is no pending-input registry, session-owned producer publisher, presentation journal,
+Markdown/SSR integration in this view, form checkpoint implementation, executable iframe or native
+block bridge yet. The richer contracts below are subsequent-stage requirements, not guarantees of
+conversation view version 1. Fixture controls remain local and do not call models or tools.
 
 ## Decisions
 
@@ -682,8 +708,10 @@ needs its own explicit owner and versioned contract.
 
 ### Proposed API surface
 
-Discovery adds `conversationView: {version: 1}` when the implementation is ready. These paths are
-design reservations under the existing authenticated frontend host, not current v1 endpoints:
+Conversation view version 1 uses the smaller socket-snapshot/offset-page contract above. A future
+negotiated capability version may add attachment leases, replay cursors, pending summaries and
+retained block versions. The following table reserves that richer API; its query/lease semantics are
+not implemented or advertised by version 1:
 
 | Operation                                                                   | Purpose                                                                                                                |
 | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |

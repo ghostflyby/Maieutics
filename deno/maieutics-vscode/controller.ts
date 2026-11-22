@@ -80,15 +80,7 @@ import { TimelineOutputCache, type TimelineOutputSnapshot } from "./timelineOutp
 import type { OutputSnapshot } from "./notebookFormat.ts";
 import { resolveSessionPin } from "./sessionPin.ts";
 import { SessionActivity } from "./runActivity.ts";
-import {
-  type ApprovalAction,
-  approvalAnswer,
-  approvalChoices,
-  approvalTitle,
-  isApprovalRequest,
-  planApproval,
-} from "./approval.ts";
-import { coerceField, planElicitation } from "./elicitation.ts";
+import { presentFrontendInput } from "./inputPresentation.ts";
 import {
   buildRgArgs,
   bundledRgPath,
@@ -112,7 +104,7 @@ import {
   parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
-  respondToIdeRequest,
+  respondToIdeRequestOnce,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
@@ -1078,7 +1070,7 @@ class NotebookStream {
     // Outstanding work is bounded, observed, and cancelled/joined by this stream.
     while (this.ideRequests.size >= 64) await Promise.race(this.ideRequests.values());
     if (signal.aborted || this.ideRequests.has(request.requestId)) return true;
-    const pending = respondToIdeRequest(request, {
+    const pending = respondToIdeRequestOnce(this.client.baseUrl, request, {
       execute: executeIdeMethod,
       submit: (id, answer, cancellation) => this.client.submitIdeAnswer(id, answer, cancellation),
       log: this.log,
@@ -2193,188 +2185,13 @@ class RunExecution {
     this.view = new TurnView(runId);
   }
 
-  /** Routes one input request to a VS Code surface and posts the answer back.
-   * A plain REPL prompt stays an input box (dismissing posts an empty value).
-   * An MCP elicitation carrying a form schema (ADR 0029) becomes a choice —
-   * fill the form field by field, or refuse with decline/cancel, which the
-   * plain input box could never express. A tool-approval request (ADR 0044)
-   * becomes an allow-once / always-allow / deny choice; its `always` action is
-   * the one the plain input box could not express either. */
   private answerInputRequest(frame: EventFrame): void {
-    const requestId = frame.requestId;
-    if (requestId === undefined) return;
-
-    if (isApprovalRequest(frame.kind)) {
-      void this.answerApprovalRequest(requestId, frame);
-      return;
-    }
-
-    const plan = planElicitation(
-      frame.prompt ?? "Input requested",
-      frame.schema,
-      typeof frame.serverId === "string" ? frame.serverId : undefined,
-    );
-
-    void (async () => {
-      if (plan === null) {
-        const value = await vscode.window.showInputBox({
-          prompt: frame.prompt ?? "REPL input",
-          password: frame.password === true,
-          ignoreFocusOut: true,
-        });
-        await this.client.submitInput(requestId, value ?? "");
-        return;
-      }
-
-      const origin = plan.serverId === undefined ? "" : ` (server ${plan.serverId})`;
-      const choice = await vscode.window.showQuickPick(
-        [
-          { label: "$(edit) Fill in form", description: "Answer every field", action: "accept" },
-          {
-            label: "$(circle-slash) Decline",
-            description: "Refuse this request",
-            action: "decline",
-          },
-          { label: "$(close) Cancel", description: "Cancel the request", action: "cancel" },
-        ] as const,
-        {
-          title: `${plan.prompt}${origin}`,
-          placeHolder: "This MCP server asked for structured input",
-          ignoreFocusOut: true,
-        },
-      );
-      if (choice === undefined) {
-        await this.client.submitInput(requestId, "", { action: "cancel" });
-        return;
-      }
-
-      if (choice.action === "decline" || choice.action === "cancel") {
-        await this.client.submitInput(requestId, "", { action: choice.action });
-        return;
-      }
-
-      const values: Record<string, unknown> = {};
-      for (const field of plan.fields) {
-        const raw = await this.promptField(plan, field);
-        if (raw === null) {
-          // The user abandoned the form midway: cancel rather than submit a
-          // partial object the server would treat as complete.
-          await this.client.submitInput(requestId, "", { action: "cancel" });
-          return;
-        }
-
-        const coerced = coerceField(field, raw);
-        if (!coerced.ok) {
-          vscode.window.showWarningMessage(
-            `Maieutics: ${coerced.error} The request was cancelled.`,
-          );
-          await this.client.submitInput(requestId, "", { action: "cancel" });
-          return;
-        }
-
-        if (coerced.value !== undefined) values[field.name] = coerced.value;
-      }
-
-      await this.client.submitInput(requestId, values, { action: "accept" });
-    })().catch((error: unknown) => {
-      // A replayed request that was already answered draws a 404 — replay noise, not a
-      // failure, and it must not paint an error over the cell. Anything else is real.
+    void presentFrontendInput(frame, this.client).catch((error: unknown) => {
       if (isNotFound(error)) return;
       this.execution.replaceOutput([
         errorOutput(new FrontendError("input_failed", 0, String(error))),
       ]);
     });
-  }
-
-  /** Presents one tool-approval request and posts the decision back (ADR 0044).
-   * Dismissing the pick denies: the kernel treats every non-accept action as a
-   * denial, so an abandoned dialog can never be read as consent. A plan without a
-   * usable tool name denies outright rather than opening an input box, because
-   * there is no sensible free-text answer to "may this run?". */
-  private async answerApprovalRequest(requestId: string, frame: EventFrame): Promise<void> {
-    const plan = planApproval(
-      frame.prompt ?? "Allow this tool to run?",
-      frame.tool,
-      frame.reason,
-      frame.schema,
-    );
-    if (!plan.usable) {
-      await this.postApproval(requestId, "decline");
-      return;
-    }
-
-    const choice = await vscode.window.showQuickPick(
-      approvalChoices(plan).map((row) => ({ ...row })),
-      {
-        title: approvalTitle(plan),
-        placeHolder: "This tool call needs your approval before it runs",
-        ignoreFocusOut: true,
-      },
-    );
-
-    await this.postApproval(requestId, approvalAnswer(choice?.action).action);
-  }
-
-  /** Posts one approval decision. A 404 means the request already settled (the run
-   * ended, the gate timed out, or a reconnect replayed it) — replay noise, absorbed
-   * silently like the IDE answer path. Any other failure is surfaced, because a
-   * silently dropped decision leaves the gate to time out with no trace on the
-   * client while the user believes they answered. */
-  private async postApproval(requestId: string, action: ApprovalAction): Promise<void> {
-    try {
-      await this.client.submitInput(requestId, "", { action, alwaysSendAction: true });
-    } catch (error: unknown) {
-      if (isNotFound(error)) return;
-      this.execution.replaceOutput([
-        errorOutput(new FrontendError("approval_failed", 0, String(error))),
-      ]);
-    }
-  }
-
-  /** Prompts one form field; null when the user abandoned the form. Enum
-   * fields and booleans are picks; everything else an input box. */
-  private async promptField(
-    plan: { prompt: string; serverId?: string },
-    field: {
-      name: string;
-      title: string;
-      description?: string;
-      type: "string" | "number" | "integer" | "boolean";
-      required: boolean;
-      defaultValue?: string;
-      enumValues?: readonly string[];
-    },
-  ): Promise<string | null> {
-    const title = `${plan.prompt} — ${field.title}${field.required ? "" : " (optional)"}`;
-    if (field.enumValues !== undefined) {
-      const picked = await vscode.window.showQuickPick(
-        field.enumValues.map((value) => ({
-          label: value,
-          description: value === field.defaultValue ? "default" : undefined,
-        })),
-        { title, placeHolder: field.description, ignoreFocusOut: true },
-      );
-      return picked?.label ?? null;
-    }
-
-    if (field.type === "boolean") {
-      const picked = await vscode.window.showQuickPick(
-        [
-          { label: "$(check) Yes", value: "true" },
-          { label: "$(circle-slash) No", value: "false" },
-        ],
-        { title, placeHolder: field.description, ignoreFocusOut: true },
-      );
-      return picked?.value ?? null;
-    }
-
-    const value = await vscode.window.showInputBox({
-      title,
-      prompt: field.description,
-      value: field.defaultValue,
-      ignoreFocusOut: true,
-    });
-    return value ?? null;
   }
 
   /** Paints the placeholder output so the cell shows progress before frames arrive. */

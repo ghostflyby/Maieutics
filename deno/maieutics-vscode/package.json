@@ -1,7 +1,7 @@
 {
   "name": "maieutics-vscode",
   "displayName": "Maieutics",
-  "description": "Notebook-native frontend for the Maieutics agent over the custom web protocol",
+  "description": "Conversation and notebook frontend for the Maieutics agent over the custom web protocol",
   "version": "0.1.0",
   "publisher": "ghostflyby",
   "license": "SEE LICENSE IN ../LICENSE",
@@ -38,7 +38,8 @@
     "onCommand:maieutics.queueTurn",
     "onCommand:maieutics.attachFile",
     "onCommand:maieutics.titleSettings",
-    "onRenderer:maieutics-form-renderer"
+    "onRenderer:maieutics-form-renderer",
+    "onWebviewPanel:maieutics.conversation"
   ],
   "contributes": {
     "notebooks": [
@@ -196,6 +197,16 @@
         "command": "maieutics.titleSettings",
         "title": "Task Title Settings",
         "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.openSessionConversation",
+        "title": "Open Conversation",
+        "category": "Maieutics"
+      },
+      {
+        "command": "maieutics.openSessionNotebook",
+        "title": "Open Session Notebook",
+        "category": "Maieutics"
       }
     ],
     "configuration": {
@@ -292,6 +303,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "maieutics.openSessionNotebook",
+          "group": "navigation",
+          "when": "view == maieutics.sessions && (viewItem == maieutics.storedSession || viewItem == maieutics.activeSession)"
+        },
         {
           "command": "maieutics.renameSession",
           "group": "1_session@1",

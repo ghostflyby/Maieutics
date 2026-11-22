@@ -1,8 +1,36 @@
 # Maieutics for Visual Studio Code
 
-Notebook-native frontend for the [Maieutics](../../) agent. The extension speaks the custom web
-protocol (`docs/web-frontend-protocol.md`) over HTTP + WebSocket to the `maieutics` executable — no
-Jupyter kernel involved (ADR 0023).
+Conversation and notebook frontend for the [Maieutics](../../) agent. The extension speaks the
+custom web protocol (`docs/web-frontend-protocol.md`) over HTTP + WebSocket to the `maieutics`
+executable — no Jupyter kernel involved (ADR 0023).
+
+The Sessions tree and New Session now open an editor-area conversation tab. **Maieutics: Open
+Conversation** opens the current session. **Open Session Notebook** retains the Notebook path for
+rich rendering and portable snapshots. Conversation history and input are independently mounted
+components, with shared draft ownership and a single external stylesheet mapping VS Code theme
+tokens. Theme changes apply without replacing the editor.
+
+The executable must advertise `conversationView.version: 1`. History uses real server index pages
+and lazy exact text reads; an atomic WebSocket snapshot fences following projection changes. The
+browser gets no bearer token or backend address, and its CSP disallows network connections. The
+extension host serves only addressed, bounded capabilities. Request cancellation, hide, reload and
+close release view work; stopping an Agent run requires the explicit Stop action. Reconnect starts a
+fresh snapshot and rejects responses from an earlier document generation. Submission acceptance
+clears only that submitted draft revision, and uncertain submissions are never automatically
+retried. Drafts survive hide/reconnect in host memory; closing/reloading the extension discards
+them. Restored tabs remember session identity and start at the newest page.
+
+This first host renders passive text, tool activity and diagnostic rows. Long bodies are explicitly
+labelled previews; exhausted capacity is visibly unavailable. Transient output is not persisted.
+Rich Markdown/Vue/forms remain in the Notebook renderer; a resource Custom Editor and compact
+sidebar/bottom-panel view are later stages. Stdin, approval, elicitation and IDE requests retain
+their native VS Code interactions, shared with the Notebook host.
+
+`deno task build:conversation` packages the browser-only UI graph into `media/conversation.js` and
+copies the shared component CSS and host theme CSS. The Node extension bundle never imports Vue.
+`deno task build:media` rebuilds both renderer families; commit their copied assets. CI checks
+browser type safety and rebuild freshness, and real VS Code conformance covers paging across 10,000
+entries, independent history/input, streamed changes, draft acknowledgement and close.
 
 Requires VS Code 1.101 or later. Its extension host provides Node 22, required by the bundled Actor
 runtime's `Promise.withResolvers` use; see the
@@ -147,7 +175,8 @@ macOS the runner captures the detached editor's stdout/stderr and prints their f
 starts, results, and startup errors remain visible after a timeout. Set
 `MAIEUTICS_VSCODE_DIAGNOSTICS_DIR` to enable debug logging and preserve the editor logs and verdict
 before termination and scratch cleanup. CI uploads these diagnostics for failed extension jobs and
-scheduled runs.
+scheduled runs. `MAIEUTICS_VSCODE_TEST_FILTER` selects scenarios by a case-sensitive name substring
+and fails if none match; omit it for the complete suite.
 
 ## Permissions
 
@@ -178,6 +207,15 @@ file). The renderer module regression tests also need `allow-write` for temporar
 gate rejects them. Temporary bundles are removed after the test. The packaged extension talks to the
 executable over loopback HTTP/WS only; spawning the executable uses the Node child-process API, not
 Deno permissions.
+
+On macOS the real-editor runner normally launches a hidden window. Set
+`MAIEUTICS_VSCODE_FOREGROUND=1` for a visible instance when verifying native focus behavior; the
+runner still owns and closes that isolated instance.
+
+Conversation assets are packaged locally. The webview has no network permission; all authenticated
+HTTP/WebSocket activity remains in the extension host. Copy uses the host clipboard only after the
+user's copy action. The browser build needs read/write/run permissions for bundling and copying
+assets; it adds no kernel or Deno runtime grants.
 
 The IDE file-system bridge receives standalone requests on the session socket even when no Agent
 turn is active, and serves them through the editor's workspace APIs under the kernel's existing

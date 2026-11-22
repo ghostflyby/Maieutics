@@ -1,0 +1,272 @@
+/* Load once. Unlayered host CSS overrides this layer without !important. */
+@layer maieutics {
+  :root {
+    --mui-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    --mui-font-family-mono: ui-monospace, monospace;
+    --mui-font-size: 16px;
+    --mui-body-font-size: 13px;
+    --mui-body-line-height: 1.9;
+    --mui-text: #353a35;
+    --mui-surface: #fffefa;
+    --mui-border: #e6e5dc;
+    --mui-muted: #7d8279;
+    --mui-accent: #44624c;
+    --mui-accent-text: #fff;
+    --mui-hover: #eeeee5;
+    --mui-focus: #6a8d72;
+    --mui-input-surface: #f0f2eb;
+    --mui-activity-surface: #f8f8f3;
+    --mui-activity-border: #eaeae2;
+    --mui-code-surface: #f6f6ef;
+    --mui-error: #98634b;
+    --mui-editor-surface: #fff;
+    --mui-editor-border: #d8dece;
+    --mui-shadow: #253e3010;
+    --mui-radius: 12px;
+    --mui-control-radius: 7px;
+    --mui-block-inset: 26px;
+    --mui-color-scheme: light;
+  }
+
+  :where(.mui-conversation, .mui-history, .mui-composer),
+  :where(.mui-conversation, .mui-history, .mui-composer) * {
+    box-sizing: border-box;
+  }
+  :where(.mui-conversation, .mui-history, .mui-composer) {
+    font-family: var(--mui-font-family);
+    font-size: var(--mui-font-size);
+    color: var(--mui-text);
+    color-scheme: var(--mui-color-scheme);
+    font-synthesis: none;
+  }
+  .mui-button {
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    border: 1px solid var(--mui-border);
+    background: transparent;
+    border-radius: var(--mui-control-radius);
+    padding: 7px 12px;
+  }
+  .mui-button:hover {
+    background: var(--mui-hover);
+  }
+  :where(.mui-button, .mui-editor, .mui-viewport):focus-visible {
+    outline: 2px solid var(--mui-focus);
+    outline-offset: 3px;
+  }
+  .mui-button:disabled {
+    opacity: .4;
+    cursor: default;
+  }
+  .mui-conversation {
+    display: flex;
+    block-size: 100%;
+    flex-direction: column;
+    position: relative;
+    min-block-size: 0;
+    min-inline-size: 0;
+    background: var(--mui-surface);
+    border: 1px solid var(--mui-border);
+    border-radius: var(--mui-radius);
+    box-shadow: 0 4px 20px var(--mui-shadow);
+    overflow: hidden;
+  }
+  .mui-history {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-block-size: 0;
+    min-inline-size: 0;
+    block-size: 100%;
+    position: relative;
+    overflow: hidden;
+    background: var(--mui-surface);
+  }
+  .mui-conversation-heading {
+    border-block-end: 1px solid var(--mui-border);
+    padding: 17px var(--mui-block-inset);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  .mui-conversation-heading h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .mui-conversation-heading > span {
+    font-size: 11px;
+    color: var(--mui-muted);
+  }
+  .mui-viewport {
+    flex: 1;
+    min-block-size: 100px;
+    overflow: auto;
+    overflow-anchor: none;
+    scrollbar-gutter: stable;
+  }
+  .mui-history-space {
+    position: relative;
+    block-size: var(--mui-virtual-extent, 0px);
+    padding: 0;
+    margin: 0;
+    list-style: none;
+  }
+  .mui-viewport[data-scroll-gesture="active"] > .mui-history-space {
+    overflow: clip;
+  }
+  .mui-slot,
+  .mui-range {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    inline-size: 100%;
+    block-size: var(--mui-virtual-size);
+    transform: translateY(var(--mui-virtual-offset));
+  }
+  .mui-slot {
+    overflow: hidden;
+  }
+  .mui-row {
+    margin: 0 var(--mui-block-inset);
+    padding-block: 19px 22px;
+    min-block-size: 88px;
+  }
+  .mui-block-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-block-end: 10px;
+  }
+  .mui-role {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--mui-muted);
+    letter-spacing: .5px;
+  }
+  .mui-input {
+    background: var(--mui-input-surface);
+    border-radius: var(--mui-control-radius);
+    padding: 25px 18px;
+  }
+  .mui-text {
+    font-size: var(--mui-body-font-size);
+    line-height: var(--mui-body-line-height);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  :where(.mui-tool, .mui-reasoning-summary, .mui-child-run) {
+    padding: 23px 16px;
+    border: 1px solid var(--mui-activity-border);
+    background: var(--mui-activity-surface);
+    border-radius: var(--mui-control-radius);
+  }
+  .mui-display .mui-text {
+    font-family: var(--mui-font-family-mono);
+    font-size: 12px;
+    padding: 14px;
+    border-radius: var(--mui-control-radius);
+    background: var(--mui-code-surface);
+  }
+  .mui-diagnostic {
+    color: var(--mui-muted);
+    font-size: 12px;
+  }
+  .mui-expand {
+    font-size: 10px;
+    padding: 2px 7px;
+    margin-inline-start: auto;
+    border: 0;
+    color: var(--mui-muted);
+  }
+  .mui-writing {
+    font-size: 10px;
+    color: var(--mui-muted);
+  }
+  :where(.mui-loading, .mui-missing) {
+    font-size: 12px;
+    color: var(--mui-muted);
+    padding-block: 10px;
+  }
+  .mui-range-label {
+    position: sticky;
+    inset-block-start: 20px;
+    margin: 24px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--mui-muted);
+    padding: 20px;
+  }
+  .mui-range-load {
+    display: block;
+    margin: 14px auto;
+  }
+  .mui-error {
+    color: var(--mui-error);
+    font-size: 12px;
+  }
+  .mui-retry {
+    margin-inline-start: 10px;
+    font-size: 11px;
+  }
+  .mui-latest {
+    position: absolute;
+    inset-block-end: 28px;
+    inset-inline-start: 50%;
+    transform: translateX(-50%);
+    background: var(--mui-surface);
+    box-shadow: 0 2px 10px var(--mui-shadow);
+    font-size: 11px;
+    z-index: 2;
+    white-space: nowrap;
+  }
+  .mui-composer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 7px;
+    margin: 12px 20px 5px;
+    border: 1px solid var(--mui-editor-border);
+    background: var(--mui-editor-surface);
+    border-radius: var(--mui-control-radius);
+    flex-shrink: 0;
+  }
+  .mui-editor {
+    grid-column: 1 / -1;
+    display: block;
+    font: inherit;
+    border: 0;
+    background: transparent;
+    resize: vertical;
+    min-block-size: 65px;
+    max-block-size: 180px;
+    inline-size: 100%;
+    padding: 15px;
+    font-size: var(--mui-body-font-size);
+    color: inherit;
+  }
+  .mui-editor::placeholder {
+    color: var(--mui-muted);
+  }
+  .mui-composer-hint {
+    margin: 0 11px 7px;
+    font-size: 10px;
+    color: var(--mui-muted);
+  }
+  .mui-submit {
+    margin: 0 11px 7px 0;
+    background: var(--mui-accent);
+    color: var(--mui-accent-text);
+    border-color: transparent;
+    font-size: 12px;
+  }
+  .mui-status {
+    margin: 0;
+    min-block-size: 18px;
+    padding: 0 24px 4px;
+    font-size: 10px;
+    color: var(--mui-muted);
+  }
+}

@@ -46,6 +46,44 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private readonly Func<IReadOnlyList<McpPromptServerAccess>>? _promptServersAccessor;
     private readonly ILogger _logger;
     private readonly ConcurrentDictionary<string, SessionRunHub> _hubs = new(StringComparer.Ordinal);
+    private readonly Lock _viewsGate = new();
+    private readonly Dictionary<string, FrontendConversationView> _views = new(StringComparer.Ordinal);
+
+    /// <summary>Acquires one bounded executable-owned view projection. A reservation prevents eviction during an HTTP operation.</summary>
+    internal ConversationReservation OpenConversation(string sessionId)
+    {
+        var session = ResolveSession(sessionId);
+        sessionId = session.Id.Value.ToString("N");
+        lock (_viewsGate)
+        {
+            if (!_views.TryGetValue(sessionId, out var view))
+            {
+                if (_hubs.TryGetValue(sessionId, out var hub) && hub.Latest is { } current && !current.Settled.IsCompleted)
+                    throw new FrontendFailureException("view_unavailable", "This run started without a view projection; reopen after it settles, or use the Notebook.");
+                if (_views.Count >= 16)
+                {
+                    var victim = _views.FirstOrDefault(pair => pair.Value.CanEvict);
+                    if (victim.Value is null) throw new FrontendFailureException("view_capacity", "All sixteen view projections are in use.");
+                    _views.Remove(victim.Key);
+                }
+                view = new FrontendConversationView(sessionId);
+                view.Seed(FrontendTranscriptMapper.ToTranscript(session.GetTranscriptSnapshot()));
+                _views.Add(sessionId, view);
+            }
+            view.Reserve();
+            return new ConversationReservation(view);
+        }
+    }
+
+    internal sealed class ConversationReservation(FrontendConversationView view) : IDisposable
+    {
+        private int _disposed;
+        internal FrontendConversationView View { get; } = view;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0) View.Release();
+        }
+    }
 
     public FrontendSessionService(
         MaieuticsAgentSessionManager sessionManager,
@@ -420,6 +458,9 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
         var session = ResolveSession(sessionId);
         ValidateTurnConfiguration();
         var turn = await BuildTurnAsync(text, cancellationToken).ConfigureAwait(false);
+        // Pin before starting the producer: even a turn completing immediately cannot fall
+        // between transcript seeding and the run's synchronous frontend projection tap.
+        using var viewReservation = TryReserveConversation(sessionId);
         IAgentRun run;
         try
         {
@@ -475,6 +516,11 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
                 "The session's previous turn is still settling; retry the submission.");
         }
 
+        if (viewReservation is { View: var view })
+        {
+            view.Start(run.Id.Value.ToString("N"), text);
+            stream.AttachViewPublisher(view.Publish);
+        }
         stream.Start(scope);
         _registry.Add(stream);
         // Child runs spawned by this run forward their frames into the stream while it is
@@ -742,6 +788,17 @@ internal sealed class FrontendSessionService : IFrontendSessionFramePublisher
     private SessionRunHub HubFor(AgentSessionId sessionId)
     {
         return _hubs.GetOrAdd(sessionId.Value.ToString("N"), static _ => new SessionRunHub());
+    }
+
+    private ConversationReservation? TryReserveConversation(string sessionId)
+    {
+        try { return OpenConversation(sessionId); }
+        catch (FrontendFailureException exception) when (exception.Code is "view_capacity" or "view_unavailable")
+        {
+            // Presentation cache admission must never prevent a notebook turn from running.
+            _logger.LogDebug("Conversation projection admission was deferred for session {SessionId}.", sessionId);
+            return null;
+        }
     }
 
     /// <summary>One session's run announcements: the latest stream for immediate

@@ -38,5 +38,9 @@
     <Using Include="Maieutics.Testing"/>
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures/conversation-view-v1.json" />
+  </ItemGroup>
+
 
 </Project>

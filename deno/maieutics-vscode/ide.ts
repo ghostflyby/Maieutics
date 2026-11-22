@@ -11,10 +11,80 @@
  * unit-testable; the executor that touches `vscode.*` lives in controller.ts. */
 
 import type { EventFrame } from "./protocol.ts";
+import { waitForStartup } from "./startupWait.ts";
 
 /** The IDE capability version announced on the events upgrade and accepted
  * kernel-side; announced versions must match exactly. */
 export const IdeCapabilityVersion = 1;
+const MaximumIdeRequestRecords = 2048;
+
+/** One connection owns accepted physical IDE actions and their bounded receipts.
+ * Observers cancel only their waits; the accepted action still answers the kernel.
+ * Connection shutdown cancels and joins all actions. Uncertain edits are never replayed. */
+export class IdeRequestOwner {
+  private readonly lifetime = new AbortController();
+  private readonly receipts = new Map<string, { task: Promise<void>; settled: boolean }>();
+  private readonly active = new Set<Promise<void>>();
+  private readonly failures: unknown[] = [];
+  private omittedFailures = 0;
+  private disposal: Promise<void> | undefined;
+
+  respond(
+    request: IdeRequestPayload,
+    host: Parameters<typeof respondToIdeRequest>[1],
+    observer: AbortSignal,
+  ): Promise<void> {
+    if (observer.aborted) return Promise.reject(observer.reason);
+    if (this.lifetime.signal.aborted) return Promise.reject(this.lifetime.signal.reason);
+    const existing = this.receipts.get(request.requestId);
+    if (existing) return waitForStartup(existing.task, observer);
+    if (this.receipts.size >= MaximumIdeRequestRecords) {
+      const victim = [...this.receipts].find(([, receipt]) => receipt.settled);
+      if (victim) this.receipts.delete(victim[0]);
+      else return Promise.reject(new Error("IDE request capacity exceeded"));
+    }
+    // Reserve before invoking any host callback, including a reentrant shutdown.
+    const receipt = { settled: false, task: Promise.resolve() };
+    receipt.task = Promise.resolve().then(() =>
+      respondToIdeRequest(request, host, this.lifetime.signal)
+    );
+    this.receipts.set(request.requestId, receipt);
+    this.active.add(receipt.task);
+    const settled = () => {
+      receipt.settled = true;
+      this.active.delete(receipt.task);
+    };
+    receipt.task.then(settled, (error) => {
+      if (this.failures.length < MaximumIdeRequestRecords) this.failures.push(error);
+      else this.omittedFailures++;
+      settled();
+    });
+    return waitForStartup(receipt.task, observer);
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
+    const completion = Promise.withResolvers<void>();
+    this.disposal = completion.promise;
+    this.lifetime.abort();
+    const finish = async () => {
+      await Promise.allSettled(this.active);
+      this.receipts.clear();
+      const failures = this.failures.splice(0);
+      if (this.omittedFailures) {
+        failures.push(Object.assign(
+          new Error(
+            `${this.omittedFailures} additional IDE dispatch failures omitted after retaining ${MaximumIdeRequestRecords}`,
+          ),
+          { code: "ide_failure_capacity", omittedFailures: this.omittedFailures },
+        ));
+      }
+      if (failures.length) throw new AggregateError(failures, "IDE request dispatch failed");
+    };
+    finish().then(completion.resolve, completion.reject);
+    return this.disposal;
+  }
+}
 
 /** One kernel-announced IDE request pulled out of a tool-progress frame. */
 export interface IdeRequestPayload {

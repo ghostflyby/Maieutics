@@ -1,5 +1,5 @@
 /// <reference lib="deno.ns" />
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   buildRgArgs,
   collectProblems,
@@ -8,6 +8,7 @@ import {
   extractIdeRequest,
   ideCommandArgs,
   ideMethodCommands,
+  IdeRequestOwner,
   isCoveredLocalTarget,
   isIdeMethodSupported,
   localFsEntriesAnswer,
@@ -27,6 +28,226 @@ import {
   transitionDebugSession,
   workspaceEditToWire,
 } from "./ide.ts";
+
+Deno.test("IDE shutdown aggregates both earlier and concurrently settling dispatch failures", async () => {
+  const owner = new IdeRequestOwner();
+  const errors = [
+    new Error("earlier log failure"),
+    new Error("first closing failure"),
+    new Error("second closing failure"),
+  ];
+  const signal = new AbortController().signal;
+  const request = (index: number) =>
+    owner.respond(
+      { requestId: `failed-${index}`, method: "maieutics/documents/apply", params: {} },
+      {
+        execute: () => Promise.resolve(null),
+        submit: () => Promise.resolve(true),
+        log: () => {
+          throw errors[index];
+        },
+      },
+      signal,
+    );
+  await assertRejects(() => request(0), Error, "earlier log failure");
+  const pending = Promise.allSettled([request(1), request(2)]);
+  const closing = owner.dispose();
+  assertEquals(owner.dispose(), closing);
+  const failure = await assertRejects(() => closing, AggregateError, "IDE request dispatch failed");
+  await pending;
+  assertEquals(
+    failure.errors.length,
+    3,
+    "Shutdown must retain every dispatch failure, including failures that settle during disposal",
+  );
+  errors.forEach((error, index) =>
+    assert(
+      failure.errors[index] === error,
+      "AggregateError must retain the original failure objects",
+    )
+  );
+});
+
+Deno.test("IDE failure diagnostics stay bounded and explicitly count omitted causes", async () => {
+  const owner = new IdeRequestOwner();
+  const signal = new AbortController().signal;
+  const errors = Array.from({ length: 2049 }, (_, index) => new Error(`dispatch failure ${index}`));
+  for (const [index, error] of errors.entries()) {
+    await assertRejects(
+      () =>
+        owner.respond({
+          requestId: `overflow-${index}`,
+          method: "maieutics/documents/apply",
+          params: {},
+        }, {
+          execute: () => Promise.resolve(null),
+          submit: () => Promise.resolve(true),
+          log: () => {
+            throw error;
+          },
+        }, signal),
+      Error,
+      error.message,
+    );
+  }
+  const failure = await assertRejects(() => owner.dispose(), AggregateError);
+  assertEquals(failure.errors.length, 2049);
+  errors.slice(0, 2048).forEach((error, index) => assert(failure.errors[index] === error));
+  const overflow = failure.errors[2048] as Error & { code: string; omittedFailures: number };
+  assertEquals(overflow.code, "ide_failure_capacity");
+  assertEquals(overflow.omittedFailures, 1);
+});
+
+Deno.test("Notebook and conversation observers execute one physical IDE request and never replay its receipt", async () => {
+  const owner = new IdeRequestOwner();
+  const started = Promise.withResolvers<void>();
+  const result = Promise.withResolvers<unknown>();
+  let executions = 0, answers = 0;
+  const request = { requestId: "shared-edit", method: "maieutics/documents/apply", params: {} };
+  const host = {
+    execute: () => {
+      executions++;
+      started.resolve();
+      return result.promise;
+    },
+    submit: () => {
+      answers++;
+      return Promise.resolve(true);
+    },
+    log() {},
+  };
+  const signal = new AbortController().signal;
+  try {
+    const first = owner.respond(request, host, signal);
+    const second = owner.respond(request, host, signal);
+    await started.promise;
+    assertEquals(executions, 1);
+    result.resolve({ applied: true });
+    await Promise.all([first, second]);
+    await owner.respond(request, host, signal);
+    assertEquals({ executions, answers }, { executions: 1, answers: 1 });
+  } finally {
+    result.resolve(null);
+    await owner.dispose();
+  }
+});
+
+Deno.test("hiding either IDE observer detaches its wait while the connection still answers once", async () => {
+  for (const hidden of [0, 1]) {
+    const owner = new IdeRequestOwner();
+    const started = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<unknown>();
+    const observers = [new AbortController(), new AbortController()];
+    let answers = 0, executions = 0;
+    const request = { requestId: "hide-observer", method: "maieutics/documents/apply", params: {} };
+    const host = {
+      execute: () => {
+        executions++;
+        started.resolve();
+        return finished.promise;
+      },
+      submit: () => {
+        answers++;
+        return Promise.resolve(true);
+      },
+      log() {},
+    };
+    try {
+      const waits = observers.map((observer) => owner.respond(request, host, observer.signal));
+      await started.promise;
+      const cancelled = assertRejects(() => waits[hidden], DOMException);
+      observers[hidden].abort();
+      await cancelled;
+      finished.resolve({ applied: true });
+      await waits[1 - hidden];
+      await owner.respond(request, host, new AbortController().signal);
+      assertEquals(
+        { executions, answers },
+        { executions: 1, answers: 1 },
+        "Hiding a view must neither orphan the kernel answer nor replay an edit",
+      );
+    } finally {
+      finished.resolve(null);
+      await owner.dispose();
+    }
+  }
+});
+
+Deno.test("an accepted IDE action still answers when every observer closes", async () => {
+  const owner = new IdeRequestOwner();
+  const result = Promise.withResolvers<unknown>();
+  const started = Promise.withResolvers<void>();
+  const answered = Promise.withResolvers<void>();
+  const observer = new AbortController();
+  try {
+    const wait = owner.respond({
+      requestId: "all-hidden",
+      method: "maieutics/documents/apply",
+      params: {},
+    }, {
+      execute: () => {
+        started.resolve();
+        return result.promise;
+      },
+      submit: () => {
+        answered.resolve();
+        return Promise.resolve(true);
+      },
+      log() {},
+    }, observer.signal);
+    await started.promise;
+    const cancelled = assertRejects(() => wait, DOMException);
+    observer.abort();
+    await cancelled;
+    result.resolve({ applied: true });
+    await answered.promise;
+  } finally {
+    result.resolve(null);
+    await owner.dispose();
+  }
+});
+
+Deno.test("connection shutdown cancels and joins an accepted IDE action without a late answer", async () => {
+  const owner = new IdeRequestOwner();
+  const started = Promise.withResolvers<AbortSignal>();
+  const result = Promise.withResolvers<unknown>();
+  let answers = 0;
+  let reentrant: Promise<void> | undefined;
+  const request = {
+    requestId: "connection-close",
+    method: "maieutics/documents/apply",
+    params: {},
+  };
+  const host = {
+    execute: (_method: string, _params: Record<string, unknown>, signal?: AbortSignal) => {
+      if (!signal) throw new Error("Missing IDE request lifetime");
+      signal.addEventListener("abort", () => {
+        reentrant = owner.dispose();
+      }, { once: true });
+      started.resolve(signal);
+      return result.promise;
+    },
+    submit: () => {
+      answers++;
+      return Promise.resolve(true);
+    },
+    log() {},
+  };
+  const wait = owner.respond(request, host, new AbortController().signal);
+  const signal = await started.promise;
+  const closing = owner.dispose();
+  assertEquals(reentrant, closing, "Reentrant shutdown must retain the original completion");
+  assertEquals(owner.dispose(), closing);
+  await closing;
+  await wait;
+  assert(signal.aborted, "The connection must cancel the physical action, not just its observers");
+  result.resolve({ applied: true });
+  await assertRejects(
+    () => owner.respond(request, host, new AbortController().signal),
+    DOMException,
+  );
+  assertEquals(answers, 0);
+});
 
 Deno.test("IDE text edit conversion reads public prototype coordinates", () => {
   class Position {

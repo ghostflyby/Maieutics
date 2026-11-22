@@ -480,6 +480,7 @@ public sealed class FrontendProcessSmokeTests
                 var capabilities = await client.GetFromJsonAsync<JsonElement>(
                     "/v1/agent/capabilities", TestContext.Current.CancellationToken);
                 Assert.Equal(1, capabilities.GetProperty("protocolVersion").GetInt32());
+                Assert.Equal(1, capabilities.GetProperty("conversationView").GetProperty("version").GetInt32());
                 var session = await client.GetFromJsonAsync<JsonElement>(
                     "/v1/agent/session", TestContext.Current.CancellationToken);
                 var sessionId = session.GetProperty("id").GetString()!;
@@ -519,6 +520,15 @@ public sealed class FrontendProcessSmokeTests
                 // asserts "smoke.txt" rode in the follow-up request) and the
                 // canonical transcript records the structured result envelope.
                 Assert.Contains("smoke.txt", transcript.GetRawText());
+                var page = await client.GetFromJsonAsync<JsonElement>(
+                    $"/v1/agent/sessions/{sessionId}/view/entries?offset=0&limit=1", TestContext.Current.CancellationToken);
+                var entry = Assert.Single(page.GetProperty("entries").EnumerateArray());
+                Assert.Equal("input", entry.GetProperty("kind").GetString());
+                var blockId = Uri.EscapeDataString(entry.GetProperty("id").GetString() ?? throw new InvalidOperationException("Missing view block id"));
+                var viewBody = await client.GetFromJsonAsync<JsonElement>(
+                    $"/v1/agent/sessions/{sessionId}/view/blocks/{blockId}?epoch={page.GetProperty("epoch").GetString()}&revision={entry.GetProperty("contentRevision").GetString()}",
+                    TestContext.Current.CancellationToken);
+                Assert.Equal("write the smoke file", viewBody.GetProperty("text").GetString());
                 Assert.NotEmpty(provider.RequestBodies);
                 Assert.All(provider.RequestBodies, request =>
                     Assert.Contains("VitePress-based Markdown", request.GetRawText()));

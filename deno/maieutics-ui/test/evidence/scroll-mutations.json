@@ -3,7 +3,7 @@
   "source": {
     "kind": "worktree-snapshot",
     "files_sha256": {
-      "../deno.json": "1575b889183ae5711df321a43d4a1dba2825de731fae966831ae6c6de5831e15",
+      "../deno.json": "aaf51208882be52b3726ecf6fa9b10a6f28dbe1ed380a09bf5d3acb5596e76c0",
       "../deno.lock": "5c00c7055aba386b2a7b5f95b72e36bd6337b4b47ea924662289762aadddfe04",
       ".gitignore": "ed19d3c9c8a5e34d0179e0b1a9c2907d2e657738733e4a432a8cf81c76ce56f1",
       "build.ts": "90c01f85ebb2dfdc88aaffd271d87636f29a1a75333f806e43c061dc44588225",

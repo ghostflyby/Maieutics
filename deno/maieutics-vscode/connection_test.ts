@@ -19,6 +19,42 @@ async function makeExecutable(script: string): Promise<string> {
 
 const fakeDiscovery = '{"version":1,"url":"http://127.0.0.1:9","token":"t","pid":1}';
 
+Deno.test("disposing an attached connection cancels and joins its shared IDE owner", async () => {
+  const path = await Deno.makeTempFile({ prefix: "maieutics-ide-owner-", suffix: ".json" });
+  await Deno.writeTextFile(path, fakeDiscovery);
+  const connection = await connect({ executablePath: "unused", discoveryFile: path });
+  const started = Promise.withResolvers<AbortSignal>();
+  const result = Promise.withResolvers<unknown>();
+  let answers = 0;
+  try {
+    const request = connection.client.ideRequests.respond({
+      requestId: "close-owner",
+      method: "maieutics/documents/apply",
+      params: {},
+    }, {
+      execute: (_method, _params, signal) => {
+        if (!signal) throw new Error("Missing request lifetime");
+        started.resolve(signal);
+        return result.promise;
+      },
+      submit: () => {
+        answers++;
+        return Promise.resolve(true);
+      },
+      log() {},
+    }, new AbortController().signal);
+    const signal = await started.promise;
+    await connection.dispose();
+    await request;
+    assert(signal.aborted, "Disposal must reach the request's connection owner");
+    assertEquals(answers, 0);
+  } finally {
+    result.resolve(null);
+    await connection.dispose();
+    await Deno.remove(path);
+  }
+});
+
 Deno.test("launch never promotes a VS Code project directory to the Agent home", async () => {
   const project = await Deno.makeTempDir({ prefix: "maieutics-project-" });
   const exe = await makeExecutable(`

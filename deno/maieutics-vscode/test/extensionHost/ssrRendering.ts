@@ -132,7 +132,11 @@ export async function testNotebookSsrAsync(
       });
     });
     await settings.update("discoveryFile", discovery, vscode.ConfigurationTarget.Workspace);
-    await vscode.commands.executeCommand("maieutics.newSession");
+    const connection = FrontendClient.fromDiscovery(JSON.parse(new TextDecoder().decode(
+      await vscode.workspace.fs.readFile(vscode.Uri.file(discovery)),
+    )));
+    const session = await connection.newSession();
+    await vscode.commands.executeCommand("maieutics.openSessionNotebook", session.id);
     const notebook = vscode.window.activeNotebookEditor?.notebook;
     if (notebook === undefined) {
       throw new Error("The real extension did not open its session notebook");

@@ -44,6 +44,8 @@ import { testDocumentEditing } from "./documentEditing.ts";
 import { testWorkspaceSaving } from "./workspaceSaving.ts";
 import { testRenderingDuringConnectionAsync } from "./renderingRecovery.ts";
 import { testHistoricalVueAsync } from "./historyRendering.ts";
+import { testConversationPanelAsync } from "./conversation.ts";
+import { testHiddenConversationIdeAsync } from "./conversationIde.ts";
 
 /** Upper bound on waiting for the built-in TypeScript extension: it
  * activates lazily on first use and starts (or warms) a TS server process,
@@ -777,6 +779,7 @@ async function testStandaloneIdeRequestsAsync(): Promise<void> {
   const stallAllowed = new Promise<void>((resolve) => startStall = resolve);
   let submittedStall = () => {};
   const stallSubmitted = new Promise<void>((resolve) => submittedStall = resolve);
+  let stalledSignal: AbortSignal | undefined;
   let reached = () => {};
   const allRequestsConsumed = new Promise<void>((resolve) => reached = resolve);
   const client = FrontendClient.fromDiscovery({
@@ -795,8 +798,9 @@ async function testStandaloneIdeRequestsAsync(): Promise<void> {
   client.session = () => Promise.resolve({ id: sessionId, turns: 0, persistenceEnabled: true });
   client.getQueue = () =>
     Promise.resolve({ sessionId, running: null, items: [], capacity: 64, outcomes: [] });
-  client.submitIdeAnswer = async (id, answer) => {
+  client.submitIdeAnswer = async (id, answer, signal) => {
     if (id === "ide-stalled") {
+      stalledSignal = signal;
       submittedStall();
       return await new Promise<boolean>(() => {});
     }
@@ -879,8 +883,13 @@ async function testStandaloneIdeRequestsAsync(): Promise<void> {
         await stallSubmitted;
         await owner.resetConnections();
         assert(
+          stalledSignal !== undefined && !stalledSignal.aborted,
+          "stream disposal detaches its wait without cancelling the connection-owned submission",
+        );
+        await client.ideRequests.dispose();
+        assert(
           logs.some((line) => line.includes("ide-stalled") && line.includes("cancelled")),
-          "stream disposal cancels and joins a stalled IDE submission",
+          "connection disposal cancels and joins a stalled IDE submission",
         );
       })(),
       new Promise<never>((_, reject) => {
@@ -926,6 +935,7 @@ async function testStandaloneIdeRequestsAsync(): Promise<void> {
     releaseRoots();
     startStall();
     await owner.dispose();
+    await client.ideRequests.dispose();
     output.dispose();
   }
 }
@@ -1231,6 +1241,15 @@ const tests: HostTest[] = [
     name: "standalone IDE requests answer outside an Agent run",
     run: testStandaloneIdeRequestsAsync,
   },
+  {
+    name:
+      "conversation panel pages history, streams changes and preserves drafts in a real webview",
+    run: testConversationPanelAsync,
+  },
+  {
+    name: "hidden conversation views retain one connection-owned IDE answer",
+    run: testHiddenConversationIdeAsync,
+  },
 ];
 
 /** VS Code's extension-tests contract: the host calls exports.run() and a
@@ -1243,7 +1262,9 @@ export async function run(): Promise<void> {
   const failed: string[] = [];
   let firstError: string | null = null;
   try {
-    const selected = [...tests];
+    const filter = vscode.workspace.getConfiguration("maieutics").get<string>("testFilter");
+    const selected = tests.filter((test) => filter === undefined || test.name.includes(filter));
+    if (!selected.length) throw new Error(`No extension-host tests match ${filter}`);
     const liveRenderer = vscode.workspace.getConfiguration("maieutics").get<string>(
       "testRenderingDiscovery",
     );

@@ -10,6 +10,69 @@ All JSON uses camelCase and is serialized with source-generated contexts on
 the NativeAOT path. No Jupyter type and no Microsoft.Extensions.AI type
 crosses the wire (invariant 11).
 
+## Passive conversation view (version 1)
+
+Capabilities advertise `conversationView: {"version":1}`. This projection is derived from the
+executable's canonical transcript and run-owned frontend events. It does not change Agent history,
+turn submission, input-answer semantics, or `.maieuticsnb` snapshots.
+
+All three routes below use existing bearer authentication. The socket also accepts the existing
+query-token authentication; a VS Code extension host keeps this credential outside the webview.
+
+| Route                                                                 | Direction and result                                                                                                               |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/agent/sessions/{sid}/view/events`                            | Server-to-client WebSocket. First frame is an atomic `view.snapshot`; subsequent frames are contiguous `view.change` transactions. |
+| `GET /v1/agent/sessions/{sid}/view/entries?epoch=E&offset=N&limit=80` | HTTP request/reply index page. `offset` is a nonnegative logical ordinal; omitted means the newest page. `limit` is 1–80.          |
+| `GET /v1/agent/sessions/{sid}/view/blocks/{id}?epoch=E&revision=R`    | HTTP request/reply exact, bounded text body. Both epoch and revision are required.                                                 |
+
+The socket subscription and its initial page are captured under the same projection lock. Clients
+open the socket first, install its snapshot, and consume every successor transaction while loading
+additional HTTP pages. Each page includes `sessionId`, `epoch`, decimal-string `revision`, `total`
+and `entries`. The page is an atomic observation at its own watermark: a leading page waits for the
+change reducer to catch up; it never advances the global stream cursor itself. No client needs a
+separate attachment lease or an unconnected-lease timeout in this version.
+
+An entry has `id`, `ordinal`, `interactionId`, `kind`, decimal-string `contentRevision`, bounded
+`preview`, and `state` (`open` or `sealed`). Kinds are `input`, `message`, `tool`,
+`reasoning-summary`, `display`, `diagnostic`, and `unavailable`. Content replies contain `entryId`,
+`revision`, and `text`. A change contains `epoch`, `baseRevision`, `revision`, `total`, and
+`operations: [{"type":"upsert","entry":...}]`. IDs and ordinals remain stable within an epoch; the
+projection cursor is independent of every run-local event sequence. Clear-output replaces display
+rows with explicit unavailable entries rather than renumbering later rows.
+
+Both socket frame types may carry `activeRunId`; absence means idle. Empty transactions can update
+this state. A child terminal frame seals that child's open rows without ending the parent; only
+the active parent's terminal frame clears `activeRunId`. The initial page is in
+`view.snapshot.page`, and successors are in `view.change.change`.
+Reconnect always obtains a fresh snapshot, instead of resuming an unbounded projection journal.
+Old-epoch pages/content fail with `409 epoch_changed`; a replaced content revision fails with
+`409 content_revision_gap`, never substituted text. Unknown fields are tolerated.
+
+Each warmed session projection is limited to 100,000 entries and 4,000,000 retained UTF-16 body
+units. A body is at most 64,000 units; oversized bodies include an explicit preview notice. Body
+capacity produces visible unavailable entries; index capacity reserves its last entry for an
+explicit capacity marker. The cache admits sixteen projections, evicting only idle, unsubscribed,
+unreserved projections. Each session admits eight sockets with 256 queued transactions per socket;
+overflow closes that connection with code 1011 (`view_backpressure`) and requires a fresh snapshot.
+Saturated admission is `429 view_capacity`. Presentation cache admission never prevents ordinary
+Notebook turns. If such a turn started without a projection, opening one mid-run is
+`503 view_unavailable`; reopen after settlement or use the Notebook.
+
+Current bodies and display-only history are ephemeral. Eviction/process restart creates a new epoch
+seeded from committed transcript messages; cancelled partial output, permitted display-only
+reasoning summaries and transient REPL displays may disappear. Existing transcript message parts are
+presented as passive text; non-text REPL content has an explicit Notebook fallback. This capability
+does not advertise rich rendering, form restoration, cross-run publishers, persisted presentation
+history, a pending-input registry, or resumable projection replay. Input/approval/IDE interactions
+still use the existing events and answer endpoints, independently of this view socket.
+
+Closing a view socket cancels only its subscription and pending view requests. The executable
+continues owning the Agent run. Cancellation remains the explicitly addressed run-cancel request.
+
+Representative wire examples live in
+[`conversation-view-v1.json`](../Maieutics.Product.Tests/Fixtures/conversation-view-v1.json) and are
+consumed by serialization compatibility tests.
+
 ## Passive Markdown rendering demo
 
 Capabilities may advertise `rendering: {"version":1}`. `POST /v1/render/markdown` is an authenticated,

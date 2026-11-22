@@ -84,8 +84,8 @@ export class MaieuticsSessionsProvider implements vscode.TreeDataProvider<Elemen
         item.iconPath = new vscode.ThemeIcon(busy ? "sync~spin" : "circle-filled");
         item.contextValue = "maieutics.activeSession";
         item.command = {
-          command: "maieutics.openSessionNotebook",
-          title: "Open Session Notebook",
+          command: "maieutics.openSessionConversation",
+          title: "Open Conversation",
           arguments: [element.session.id],
         };
         return item;

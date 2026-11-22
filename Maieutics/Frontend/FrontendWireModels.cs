@@ -24,7 +24,33 @@ internal sealed record FrontendCapabilities(
     [property: JsonPropertyName("ui")] FrontendUiCapability? Ui = null,
     [property: JsonPropertyName("multiSession")]
     bool? MultiSession = null,
-    [property: JsonPropertyName("rendering")] FrontendRenderingCapability? Rendering = null);
+    [property: JsonPropertyName("rendering")] FrontendRenderingCapability? Rendering = null,
+    FrontendConversationCapability? ConversationView = null);
+
+/// <summary>The independently versioned passive conversation projection capability.</summary>
+internal sealed record FrontendConversationCapability(int Version);
+
+/// <summary>A bounded, independently addressable conversation output block.</summary>
+internal sealed record FrontendViewEntry(string Id, int Ordinal, string InteractionId, string Kind,
+    string ContentRevision, string Preview, string State);
+
+/// <summary>An atomic index page; revision belongs to the projection, not an Agent run.</summary>
+internal sealed record FrontendViewPage(string SessionId, string Epoch, string Revision, int Total,
+    FrontendViewEntry[] Entries);
+
+/// <summary>Exact bounded text at a block revision.</summary>
+internal sealed record FrontendViewContent(string EntryId, string Revision, string Text);
+
+/// <summary>A metadata replacement in an ordered projection transaction.</summary>
+internal sealed record FrontendViewOperation(string Type, FrontendViewEntry Entry);
+
+/// <summary>One contiguous session projection transaction.</summary>
+internal sealed record FrontendViewChange(string Epoch, string BaseRevision, string Revision, int Total,
+    FrontendViewOperation[] Operations);
+
+/// <summary>The view socket begins with a snapshot and then publishes contiguous changes.</summary>
+internal sealed record FrontendViewFrame(string Type, FrontendViewPage? Page = null,
+    FrontendViewChange? Change = null, string? ActiveRunId = null);
 
 /// <summary>Versions of optional passive Markdown, data-template, explicit Vue and completed live-assistant rendering.</summary>
 internal sealed record FrontendRenderingCapability(int Version, int? TemplateVersion = null, int? VueVersion = null, int? AssistantVersion = null, int? ProgressiveVersion = null);
@@ -453,6 +479,9 @@ internal sealed record FrontendPromptList(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(FrontendCapabilities))]
+[JsonSerializable(typeof(FrontendViewPage))]
+[JsonSerializable(typeof(FrontendViewContent))]
+[JsonSerializable(typeof(FrontendViewFrame))]
 [JsonSerializable(typeof(FrontendRenderMarkdown))]
 [JsonSerializable(typeof(FrontendRenderedMarkdown))]
 [JsonSerializable(typeof(FrontendRendererReady))]

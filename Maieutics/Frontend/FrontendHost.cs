@@ -185,6 +185,20 @@ internal sealed class FrontendHost : IAsyncDisposable
         frontend.MapDelete("/v1/agent/sessions/{sessionId}/queue/{itemId}", HandleDeleteQueuedItem);
         frontend.MapDelete("/v1/agent/sessions/{sessionId}/queue", HandleClearQueue);
         frontend.MapGet("/v1/agent/sessions/{sessionId}/transcript", HandleTranscript);
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/view/entries",
+            (HttpContext context, string sessionId, int? offset, int? limit, string? epoch) => GuardAsync(context, () =>
+            {
+                using var reservation = _service.OpenConversation(sessionId);
+                return Task.FromResult(Results.Json(reservation.View.Page(offset, limit ?? 80, epoch), FrontendJsonContext.Default.FrontendViewPage));
+            }));
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/view/blocks/{blockId}",
+            (HttpContext context, string sessionId, string blockId, string revision, string epoch) => GuardAsync(context, () =>
+            {
+                using var reservation = _service.OpenConversation(sessionId);
+                return Task.FromResult(Results.Json(reservation.View.Content(blockId, revision, epoch), FrontendJsonContext.Default.FrontendViewContent));
+            }));
+        frontend.MapGet("/v1/agent/sessions/{sessionId}/view/events", HandleConversationEvents)
+            .WithMetadata(FrontendQueryTokenMetadata.Instance);
         frontend.MapGet("/v1/agent/sessions/{sessionId}/events", HandleEvents)
             .WithMetadata(FrontendQueryTokenMetadata.Instance);
         frontend.MapGet("/v1/agent/sessions/{sessionId}/comms", HandleComms)
@@ -413,7 +427,8 @@ internal sealed class FrontendHost : IAsyncDisposable
                     FrontendUiCapabilityVersion,
                     FrontendUiWire.FormVersion),
             MultiSession: true,
-            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1, ProgressiveVersion: 1)),
+            Rendering: _outputRenderer is null ? null : new FrontendRenderingCapability(1, TemplateVersion: 1, VueVersion: 1, AssistantVersion: 1, ProgressiveVersion: 1),
+            ConversationView: new FrontendConversationCapability(1)),
             FrontendJsonContext.Default.FrontendCapabilities);
     }
 
@@ -674,6 +689,54 @@ internal sealed class FrontendHost : IAsyncDisposable
         await GuardAsync(context, () => Task.FromResult(
             Results.Json(_service.GetTranscript(sessionId), FrontendJsonContext.Default.FrontendTranscript)));
     }
+
+    private Task HandleConversationEvents(HttpContext context, string sessionId) => GuardAsync(context, async () =>
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+            throw new FrontendFailureException("invalid_request", "A WebSocket upgrade is required.");
+        using var reservation = _service.OpenConversation(sessionId);
+        var view = reservation.View;
+        var (snapshot, channel) = view.Subscribe();
+        try
+        {
+            using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+            using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _lifetime.Token);
+            static async Task ReceiveAsync(WebSocket peer, CancellationTokenSource lifetime)
+            {
+                await DrainReceiveAsync(peer, lifetime.Token).ConfigureAwait(false);
+                await lifetime.CancelAsync().ConfigureAwait(false);
+            }
+            var receive = ReceiveAsync(socket, owner);
+            try
+            {
+                await SendAsync(socket, snapshot, owner.Token).ConfigureAwait(false);
+                await foreach (var frame in channel.Reader.ReadAllAsync(owner.Token).ConfigureAwait(false))
+                    await SendAsync(socket, frame, owner.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (owner.IsCancellationRequested) { }
+            catch (WebSocketException) { }
+            catch (FrontendFailureException exception)
+            {
+                _logger.LogDebug("Conversation view disconnected with {Code}.", exception.Code);
+                await CloseSocketOutputAsync(socket, (WebSocketCloseStatus)1011, exception.Code).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (socket.State == WebSocketState.CloseReceived)
+                    await CloseSocketOutputAsync(socket, WebSocketCloseStatus.NormalClosure, "view closed").ConfigureAwait(false);
+                await owner.CancelAsync().ConfigureAwait(false);
+                socket.Abort();
+                await receive.ConfigureAwait(false);
+            }
+            static async Task SendAsync(WebSocket peer, FrontendViewFrame frame, CancellationToken cancellationToken)
+            {
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, FrontendJsonContext.Default.FrontendViewFrame);
+                await peer.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally { view.Unsubscribe(channel); }
+        return Results.Empty;
+    });
 
     /// <summary>Serves the session's server-side turn queue snapshot (ADR 0025): the
     /// running item with its run id plus the pending items in run order, with texts.</summary>
@@ -1733,7 +1796,10 @@ internal sealed class FrontendHost : IAsyncDisposable
             FrontendErrors.McpPromptUnavailable => StatusCodes.Status409Conflict,
             FrontendErrors.SkillBudgetExceeded => StatusCodes.Status413PayloadTooLarge,
             "render_unavailable" => StatusCodes.Status503ServiceUnavailable,
+            "view_unavailable" => StatusCodes.Status503ServiceUnavailable,
             "render_busy" => StatusCodes.Status429TooManyRequests,
+            "view_capacity" => StatusCodes.Status429TooManyRequests,
+            "epoch_changed" or "content_revision_gap" => StatusCodes.Status409Conflict,
             _ => StatusCodes.Status400BadRequest
         };
         context.Response.ContentType = "application/json";

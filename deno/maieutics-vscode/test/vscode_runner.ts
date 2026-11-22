@@ -259,8 +259,7 @@ async function launchAsync(
     const open = new Deno.Command("open", {
       args: [
         "-n",
-        "-g",
-        "-j",
+        ...(Deno.env.get("MAIEUTICS_VSCODE_FOREGROUND") === "1" ? [] : ["-g", "-j"]),
         "--stdout",
         join(dirname(workspaceDir), "vscode-stdout.log"),
         "--stderr",
@@ -459,6 +458,7 @@ async function mainAsync(): Promise<number> {
       settings: {
         "maieutics.executablePath": join(scratch, "not-a-real-kernel"),
         "maieutics.testRenderingDiscovery": Deno.env.get("MAIEUTICS_RENDERING_DEMO_DISCOVERY"),
+        "maieutics.testFilter": Deno.env.get("MAIEUTICS_VSCODE_TEST_FILTER"),
       },
     }),
   );

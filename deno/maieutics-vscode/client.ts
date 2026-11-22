@@ -1,4 +1,5 @@
 import { readRenderDiagnostics } from "./protocol.ts";
+import type { ViewContent, ViewFrame, ViewPage } from "./conversationProtocol.ts";
 /**
  * HTTP + WebSocket client for the Maieutics frontend protocol (version 1).
  * Web platform standards only — `fetch` and `WebSocket` — so the module runs
@@ -31,7 +32,7 @@ import type {
   Transcript,
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
-import { IdeCapabilityVersion } from "./ide.ts";
+import { IdeCapabilityVersion, IdeRequestOwner } from "./ide.ts";
 import type { RenderedMarkdown, TemplateContext, VueRequest } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
@@ -95,6 +96,8 @@ export interface EventsOptions {
 }
 
 export class FrontendClient {
+  /** Shared by every observer of this connection; disposed before its transport. */
+  readonly ideRequests = new IdeRequestOwner();
   private constructor(
     readonly baseUrl: string,
     private readonly token: string,
@@ -129,6 +132,104 @@ export class FrontendClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return await this.get("/v1/agent/capabilities", signal);
+  }
+
+  /** Reads a real server index page, never a complete transcript. */
+  async conversationPage(
+    sessionId: string,
+    epoch: string,
+    offset: number | undefined,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<ViewPage> {
+    const query = new URLSearchParams({ epoch, limit: String(limit) });
+    if (offset !== undefined) query.set("offset", String(offset));
+    return await this.get(
+      `/v1/agent/sessions/${encodeURIComponent(sessionId)}/view/entries?${query}`,
+      signal,
+    );
+  }
+
+  async conversationContent(
+    sessionId: string,
+    epoch: string,
+    id: string,
+    revision: string,
+    signal: AbortSignal,
+  ): Promise<ViewContent> {
+    const query = new URLSearchParams({ epoch, revision });
+    return await this.get(
+      `/v1/agent/sessions/${encodeURIComponent(sessionId)}/view/blocks/${
+        encodeURIComponent(id)
+      }?${query}`,
+      signal,
+    );
+  }
+
+  /** A view owns this socket. Reopening starts with a fresh atomic snapshot, never a guessed cursor. */
+  async *conversationEvents(sessionId: string, signal: AbortSignal): AsyncGenerator<ViewFrame> {
+    signal.throwIfAborted();
+    const url = new URL(
+      `/v1/agent/sessions/${encodeURIComponent(sessionId)}/view/events`,
+      this.baseUrl,
+    );
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("token", this.token);
+    const socket = new WebSocket(url);
+    const queue: ViewFrame[] = [];
+    let wake: (() => void) | undefined;
+    let failure: unknown;
+    let closed = false;
+    const stop = (error?: unknown) => {
+      closed = true;
+      failure ??= error;
+      wake?.();
+    };
+    const abort = () => {
+      stop(signal.reason);
+      socket.close();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => {
+      stop(new FrontendError("unreachable", 0, "Conversation connection timed out"));
+      socket.close();
+    }, 15_000);
+    socket.onopen = () => clearTimeout(timeout);
+    socket.onmessage = (event) => {
+      try {
+        if (
+          typeof event.data !== "string" || event.data.length > 2_000_000 || queue.length >= 256
+        ) throw new Error("Conversation stream capacity exceeded");
+        const frame = JSON.parse(event.data) as ViewFrame;
+        if (frame.type !== "view.snapshot" && frame.type !== "view.change") return;
+        queue.push(frame);
+        wake?.();
+      } catch {
+        stop(new FrontendError("protocol_error", 0, "Invalid conversation stream frame"));
+        socket.close();
+      }
+    };
+    socket.onerror = () =>
+      stop(new FrontendError("unreachable", 0, "Conversation connection failed"));
+    socket.onclose = () =>
+      stop(new FrontendError("disconnected", 0, "Conversation disconnected; reload this view"));
+    try {
+      while (true) {
+        if (signal.aborted) throw signal.reason;
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        if (closed) throw failure;
+        await new Promise<void>((resolve) => wake = resolve);
+        wake = undefined;
+      }
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+      socket.close();
+    }
   }
 
   /** Requests a display snapshot; an explicit template context selects data expression evaluation. */

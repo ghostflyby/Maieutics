@@ -129,7 +129,7 @@ jobs:
         run: |
           deno task check:conversation
           deno fmt --no-config --check webview/ buildConversation.ts
-          deno lint --no-config webview/conversation.ts buildConversation.ts
+          deno lint --no-config webview/ buildConversation.ts
           deno task build:conversation
           git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css
 

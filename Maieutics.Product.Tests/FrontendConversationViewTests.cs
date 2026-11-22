@@ -85,6 +85,33 @@ public sealed class FrontendConversationViewTests
         Assert.Equal("invalid_request", Assert.Throws<FrontendFailureException>(() => view.Page(-1, 1, page.Epoch)).Code);
     }
 
+    [Theory]
+    [InlineData("run.completed", null)]
+    [InlineData("run.failed", "cancelled")]
+    [InlineData("run.failed", "agent_error")]
+    public void ChildTerminalSealsItsOpenRowsWithoutEndingTheParent(string terminal, string? code)
+    {
+        var view = new FrontendConversationView("session");
+        view.Start("parent", "question");
+        view.Publish(new FrontendEventFrame("text.delta", RunId: "parent", MessageId: "parent-answer", Text: "parent"));
+        view.Publish(new FrontendEventFrame("text.delta", RunId: "child", MessageId: "answer", Text: "partial child"));
+        view.Publish(new FrontendEventFrame("reasoning.delta", RunId: "child", MessageId: "summary", Text: "summary"));
+        view.Publish(new FrontendEventFrame("tool.started", RunId: "child", CallId: "tool", Tool: "read"));
+        var (_, channel) = view.Subscribe();
+        try
+        {
+            view.Publish(new FrontendEventFrame(terminal, RunId: "child", Code: code, Message: "child stopped"));
+            Assert.True(channel.Reader.TryRead(out var frame));
+            Assert.Equal("parent", frame.ActiveRunId);
+            var change = Assert.IsType<FrontendViewChange>(frame.Change);
+            Assert.Equal(3, change.Operations.Count(operation => operation.Entry.InteractionId == "child" && operation.Entry.Kind != "diagnostic"));
+            var rows = view.Page(null, 80, null).Entries;
+            Assert.All(rows.Where(row => row.InteractionId == "child"), row => Assert.Equal("sealed", row.State));
+            Assert.Equal("open", Assert.Single(rows, row => row.Id == "parent:message:parent-answer").State);
+        }
+        finally { view.Unsubscribe(channel); }
+    }
+
     [Fact(Timeout = 10_000)]
     public async Task SlowSubscriberFailsExplicitlyWithoutStoppingTheProducer()
     {

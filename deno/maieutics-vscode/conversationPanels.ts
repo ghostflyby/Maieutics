@@ -12,7 +12,7 @@ import {
 import { presentFrontendInput } from "./inputPresentation.ts";
 import { waitForStartup } from "./startupWait.ts";
 import { executeIdeMethod } from "./controller.ts";
-import { extractIdeRequest, respondToIdeRequestOnce } from "./ide.ts";
+import { extractIdeRequest } from "./ide.ts";
 
 const PanelType = "maieutics.conversation";
 
@@ -335,7 +335,7 @@ export class ConversationPanel {
         const operation = frame.type === "input.request"
           ? presentFrontendInput(frame, client, signal)
           : ide
-          ? respondToIdeRequestOnce(client.baseUrl, ide, {
+          ? client.ideRequests.respond(ide, {
             execute: executeIdeMethod,
             submit: (id, answer, cancellation) => client.submitIdeAnswer(id, answer, cancellation),
             log: this.log,

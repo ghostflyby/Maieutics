@@ -104,7 +104,6 @@ import {
   parseLaunchConfigurations,
   parseRgMatchEvent,
   passesSearchFilters,
-  respondToIdeRequestOnce,
   searchTree,
   type SearchTreeFs,
   sha256Hex,
@@ -1067,15 +1066,17 @@ class NotebookStream {
     if (request === undefined) return false;
     if (this.ideRequests.has(request.requestId)) return true;
     // Keep queue/status and run frames moving while an editor provider is busy.
-    // Outstanding work is bounded, observed, and cancelled/joined by this stream.
+    // The stream owns only its waits; the connection owns accepted IDE actions.
     while (this.ideRequests.size >= 64) await Promise.race(this.ideRequests.values());
     if (signal.aborted || this.ideRequests.has(request.requestId)) return true;
-    const pending = respondToIdeRequestOnce(this.client.baseUrl, request, {
+    const pending = this.client.ideRequests.respond(request, {
       execute: executeIdeMethod,
       submit: (id, answer, cancellation) => this.client.submitIdeAnswer(id, answer, cancellation),
       log: this.log,
     }, signal).catch(() => {
-      this.log(`IDE request ${request.requestId} (${request.method}) dispatcher failed`);
+      if (!signal.aborted) {
+        this.log(`IDE request ${request.requestId} (${request.method}) dispatcher failed`);
+      }
     }).finally(() => this.ideRequests.delete(request.requestId));
     this.ideRequests.set(request.requestId, pending);
     return true;

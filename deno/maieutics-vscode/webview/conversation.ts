@@ -1,47 +1,19 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 // Browser-only build entry. The extension host imports only its own wire contract.
-import { ConversationError, ConversationRuntime, type ConversationSubmission, type ConversationViewState, mountConversationComposer, mountConversationHistory } from "../../maieutics-ui/mod.ts";
+import { ConversationRuntime, type ConversationSubmission, type ConversationViewState, mountConversationComposer, mountConversationHistory } from "../../maieutics-ui/mod.ts";
 import type { ViewAddress, ViewEvent, ViewFrame, ViewPage, ViewRequest, ViewResponse } from "../conversationProtocol.ts";
+
+import { ViewRequests } from "./requests.ts";
 
 declare function acquireVsCodeApi(): { postMessage(value: unknown): void; setState(value: unknown): void };
 const vscode = acquireVsCodeApi();
 const config = JSON.parse(document.getElementById("configuration")!.textContent!) as ViewAddress;
 vscode.setState({ sessionId: config.sessionId, viewId: config.viewId });
 const owner = new AbortController();
-let nextId = 0;
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
-function send(method: ViewRequest["method"], params?: Record<string, unknown>): number {
-  const id = ++nextId;
-  vscode.postMessage({ ...config, id, method, params } satisfies ViewRequest);
-  return id;
-}
-function request<T>(method: ViewRequest["method"], params?: Record<string, unknown>, caller?: AbortSignal): Promise<T> {
-  const signal = caller ? AbortSignal.any([owner.signal, caller]) : owner.signal;
-  signal.throwIfAborted();
-  if (pending.size >= 64) return Promise.reject(new ConversationError("request_capacity"));
-  return new Promise<T>((resolve, reject) => {
-    const id = nextId + 1;
-    const finish = (value: unknown, error?: unknown) => {
-      if (!pending.delete(id)) return;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      if (error !== undefined) reject(error);
-      else resolve(value as T);
-    };
-    const abort = () => {
-      send("abort", { requestId: id });
-      finish(undefined, signal.reason);
-    };
-    const timer = setTimeout(() => {
-      send("abort", { requestId: id });
-      finish(undefined, new Error(method === "submit" ? "无法确认提交结果，请检查历史后再决定是否重发。" : "请求超时，请重新打开会话。"));
-    }, 15_000);
-    pending.set(id, { resolve: (value) => finish(value), reject: (error) => finish(undefined, error) });
-    signal.addEventListener("abort", abort, { once: true });
-    send(method, params);
-  });
-}
+const requests = new ViewRequests(config, (value) => vscode.postMessage(value), owner.signal);
+const send = (method: ViewRequest["method"], params?: Record<string, unknown>) => requests.send(method, params);
+const request = <T>(method: ViewRequest["method"], params?: Record<string, unknown>, caller?: AbortSignal): Promise<T> => requests.request<T>(method, params, caller);
 
 const element = (id: string) => document.getElementById(id)!;
 const status = element("status");
@@ -135,12 +107,7 @@ globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewE
   const message = event.data;
   if (!message || message.version !== 1 || message.viewId !== config.viewId || message.sessionId !== config.sessionId || message.generation !== config.generation) return;
   if ("id" in message) {
-    const target = pending.get(message.id);
-    if (message.error) {
-      const error = new ConversationError(message.error.code);
-      error.message = message.error.message;
-      target?.reject(error);
-    } else target?.resolve(message.result);
+    requests.receive(message);
   } else if (message.event === "draft" && typeof message.value === "string") {
     draft = message.value;
     view?.setDraft(draft);

@@ -146,6 +146,14 @@ only session/view identifiers. Scroll position resets to the newest page on a ne
 approvals, elicitation and IDE requests use the existing run-events channel; native input
 presentation is shared with notebooks and deduplicates simultaneous observers.
 
+Bootstrap waits for extension-owned startup and native readiness without a webview request
+deadline; hide/reload/close still cancel that document's wait. Normal reads and submissions retain
+their bounded request deadline. Accepted IDE actions are connection-owned, with the existing
+30-second action budget and bounded receipts. Notebook and conversation streams cancel only their
+own waits, including the first and last observers; accepted actions continue to answer the kernel
+once. Connection shutdown cancels and joins physical work before transport disposal. Thus the
+shared lifetime is an explicit contract, rather than a side effect of deduplication.
+
 This first integration deliberately retains only bounded passive text: 100,000 index entries,
 4,000,000 body units per warmed projection, 64,000 units per body, sixteen warmed projections, eight
 subscriptions per session and 256 queued transactions per socket. Over-budget content/index is

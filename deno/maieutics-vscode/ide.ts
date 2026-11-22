@@ -11,31 +11,69 @@
  * unit-testable; the executor that touches `vscode.*` lives in controller.ts. */
 
 import type { EventFrame } from "./protocol.ts";
+import { waitForStartup } from "./startupWait.ts";
 
 /** The IDE capability version announced on the events upgrade and accepted
  * kernel-side; announced versions must match exactly. */
 export const IdeCapabilityVersion = 1;
 
-const editorRequests = new Map<string, { task: Promise<void>; settled: boolean }>();
+/** One connection owns accepted physical IDE actions and their bounded receipts.
+ * Observers cancel only their waits; the accepted action still answers the kernel.
+ * Connection shutdown cancels and joins all actions. Uncertain edits are never replayed. */
+export class IdeRequestOwner {
+  private readonly lifetime = new AbortController();
+  private readonly receipts = new Map<string, { task: Promise<void>; settled: boolean }>();
+  private readonly active = new Set<Promise<void>>();
+  private failure: { error: unknown } | undefined;
+  private disposal: Promise<void> | undefined;
 
-/** Deduplicates physical editor actions observed by Notebook and conversation sockets.
- * Receipts are bounded and retained after cancellation: an uncertain edit is never replayed. */
-export function respondToIdeRequestOnce(
-  scope: string,
-  ...args: Parameters<typeof respondToIdeRequest>
-): Promise<void> {
-  const key = `${scope}#${args[0].requestId}`;
-  const existing = editorRequests.get(key);
-  if (existing) return existing.task;
-  if (editorRequests.size >= 2048) {
-    const victim = [...editorRequests].find(([, item]) => item.settled);
-    if (victim) editorRequests.delete(victim[0]);
-    else return Promise.reject(new Error("IDE request capacity exceeded"));
+  respond(
+    request: IdeRequestPayload,
+    host: Parameters<typeof respondToIdeRequest>[1],
+    observer: AbortSignal,
+  ): Promise<void> {
+    if (observer.aborted) return Promise.reject(observer.reason);
+    if (this.lifetime.signal.aborted) return Promise.reject(this.lifetime.signal.reason);
+    const existing = this.receipts.get(request.requestId);
+    if (existing) return waitForStartup(existing.task, observer);
+    if (this.receipts.size >= 2048) {
+      const victim = [...this.receipts].find(([, receipt]) => receipt.settled);
+      if (victim) this.receipts.delete(victim[0]);
+      else return Promise.reject(new Error("IDE request capacity exceeded"));
+    }
+    // Reserve before invoking any host callback, including a reentrant shutdown.
+    const receipt = { settled: false, task: Promise.resolve() };
+    receipt.task = Promise.resolve().then(() =>
+      respondToIdeRequest(request, host, this.lifetime.signal)
+    );
+    this.receipts.set(request.requestId, receipt);
+    this.active.add(receipt.task);
+    const settled = () => {
+      receipt.settled = true;
+      this.active.delete(receipt.task);
+    };
+    receipt.task.then(settled, (error) => {
+      this.failure ??= { error };
+      settled();
+    });
+    return waitForStartup(receipt.task, observer);
   }
-  const receipt = { settled: false, task: Promise.resolve() };
-  receipt.task = respondToIdeRequest(...args).finally(() => receipt.settled = true);
-  editorRequests.set(key, receipt);
-  return receipt.task;
+
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
+    const completion = Promise.withResolvers<void>();
+    this.disposal = completion.promise;
+    this.lifetime.abort();
+    const finish = async () => {
+      await Promise.allSettled(this.active);
+      this.receipts.clear();
+      if (this.failure) {
+        throw new AggregateError([this.failure.error], "IDE request dispatch failed");
+      }
+    };
+    finish().then(completion.resolve, completion.reject);
+    return this.disposal;
+  }
 }
 
 /** One kernel-announced IDE request pulled out of a tool-progress frame. */

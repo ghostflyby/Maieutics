@@ -102,15 +102,12 @@ internal sealed class FrontendConversationView(string sessionId)
                     PutLocked($"{run}:failure", run, "diagnostic", $"{frame.Code}: {frame.Message}", "sealed", operations);
                     goto case "run.completed";
                 case "run.completed":
-                    if (run == _activeRunId)
+                    foreach (var row in _rows.Where(row => row.Entry.State == "open" && row.Entry.InteractionId == run))
                     {
-                        foreach (var row in _rows.Where(row => row.Entry.State == "open" && row.Entry.InteractionId == run))
-                        {
-                            row.Entry = row.Entry with { State = "sealed" };
-                            operations.Add(new FrontendViewOperation("upsert", row.Entry));
-                        }
-                        _activeRunId = null;
+                        row.Entry = row.Entry with { State = "sealed" };
+                        operations.Add(new FrontendViewOperation("upsert", row.Entry));
                     }
+                    if (run == _activeRunId) _activeRunId = null;
                     break;
                 case "repl.display":
                 case "repl.updateDisplay":

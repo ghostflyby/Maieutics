@@ -32,7 +32,7 @@ import type {
   Transcript,
 } from "./protocol.ts";
 import { FrontendError, ProtocolVersion } from "./protocol.ts";
-import { IdeCapabilityVersion } from "./ide.ts";
+import { IdeCapabilityVersion, IdeRequestOwner } from "./ide.ts";
 import type { RenderedMarkdown, TemplateContext, VueRequest } from "./outputRendering.ts";
 
 /** The server-owned queue snapshot (re-exported so queue consumers have one
@@ -96,6 +96,8 @@ export interface EventsOptions {
 }
 
 export class FrontendClient {
+  /** Shared by every observer of this connection; disposed before its transport. */
+  readonly ideRequests = new IdeRequestOwner();
   private constructor(
     readonly baseUrl: string,
     private readonly token: string,

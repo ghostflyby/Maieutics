@@ -26,6 +26,18 @@ Rich Markdown/Vue/forms remain in the Notebook renderer; a resource Custom Edito
 sidebar/bottom-panel view are later stages. Stdin, approval, elicitation and IDE requests retain
 their native VS Code interactions, shared with the Notebook host.
 
+`ready` waits for extension-owned startup and the native hello without a view-level deadline;
+ordinary reads and uncertain submissions retain their 15-second request budget. Hiding, closing or
+reconnecting the document cancels its startup wait, while the extension continues owning startup.
+
+Accepted IDE actions and their receipts belong to the shared connection. Every Notebook or
+conversation stream owns only its cancellable wait: hiding either observer, or closing the last
+observer, leaves the accepted action running so it can answer the kernel once. The existing
+30-second action budget still applies. Connection shutdown/restart cancels and joins those actions
+before releasing its transport, and clears its bounded receipts. A completed, cancelled or uncertain
+physical action is never replayed within that connection. This lifetime is deliberately independent
+of the first observer; cancellation of a Notebook stream now detaches its wait as well.
+
 `deno task build:conversation` packages the browser-only UI graph into `media/conversation.js` and
 copies the shared component CSS and host theme CSS. The Node extension bundle never imports Vue.
 `deno task build:media` rebuilds both renderer families; commit their copied assets. CI checks

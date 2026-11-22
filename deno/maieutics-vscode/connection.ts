@@ -110,11 +110,28 @@ function ownConnection(client: FrontendClient, disposeTransport: () => Promise<v
     },
     capabilities: getCapabilities,
     syncProjects: (paths) => projects.sync(paths),
-    dispose: () =>
-      disposal ??= (async () => {
-        await projects.dispose();
-        await disposeTransport();
-      })(),
+    dispose: () => {
+      if (disposal) return disposal;
+      const completion = Promise.withResolvers<void>();
+      disposal = completion.promise;
+      const finish = async () => {
+        const results = await Promise.allSettled([
+          projects.dispose(),
+          client.ideRequests.dispose(),
+        ]);
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : []
+        );
+        try {
+          await disposeTransport();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length) throw new AggregateError(failures, "Connection cleanup failed");
+      };
+      finish().then(completion.resolve, completion.reject);
+      return disposal;
+    },
   };
 }
 

@@ -41,7 +41,9 @@ projection cursor is independent of every run-local event sequence. Clear-output
 rows with explicit unavailable entries rather than renumbering later rows.
 
 Both socket frame types may carry `activeRunId`; absence means idle. Empty transactions can update
-this state. The initial page is in `view.snapshot.page`, and successors are in `view.change.change`.
+this state. A child terminal frame seals that child's open rows without ending the parent; only
+the active parent's terminal frame clears `activeRunId`. The initial page is in
+`view.snapshot.page`, and successors are in `view.change.change`.
 Reconnect always obtains a fresh snapshot, instead of resuming an unbounded projection journal.
 Old-epoch pages/content fail with `409 epoch_changed`; a replaced content revision fails with
 `409 content_revision_gap`, never substituted text. Unknown fields are tolerated.

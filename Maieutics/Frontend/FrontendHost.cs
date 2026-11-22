@@ -701,17 +701,17 @@ internal sealed class FrontendHost : IAsyncDisposable
         {
             using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
             using var owner = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _lifetime.Token);
-            async Task ReceiveAsync()
+            static async Task ReceiveAsync(WebSocket peer, CancellationTokenSource lifetime)
             {
-                await DrainReceiveAsync(socket, owner.Token).ConfigureAwait(false);
-                await owner.CancelAsync().ConfigureAwait(false);
+                await DrainReceiveAsync(peer, lifetime.Token).ConfigureAwait(false);
+                await lifetime.CancelAsync().ConfigureAwait(false);
             }
-            var receive = ReceiveAsync();
+            var receive = ReceiveAsync(socket, owner);
             try
             {
-                await SendAsync(snapshot).ConfigureAwait(false);
+                await SendAsync(socket, snapshot, owner.Token).ConfigureAwait(false);
                 await foreach (var frame in channel.Reader.ReadAllAsync(owner.Token).ConfigureAwait(false))
-                    await SendAsync(frame).ConfigureAwait(false);
+                    await SendAsync(socket, frame, owner.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (owner.IsCancellationRequested) { }
             catch (WebSocketException) { }
@@ -728,10 +728,10 @@ internal sealed class FrontendHost : IAsyncDisposable
                 socket.Abort();
                 await receive.ConfigureAwait(false);
             }
-            async Task SendAsync(FrontendViewFrame frame)
+            static async Task SendAsync(WebSocket peer, FrontendViewFrame frame, CancellationToken cancellationToken)
             {
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, FrontendJsonContext.Default.FrontendViewFrame);
-                await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, owner.Token).ConfigureAwait(false);
+                await peer.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
             }
         }
         finally { view.Unsubscribe(channel); }

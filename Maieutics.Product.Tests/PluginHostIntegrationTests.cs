@@ -916,6 +916,8 @@ public sealed class PluginHostIntegrationTests
             var originalUrl = Assert.Single(manager.GetPluginSurfaces(manager.GetHttpGateway()),
                 surface => surface.Id == rootPluginId).PageUrl;
             Assert.NotNull(originalUrl);
+            // One client owns all requests in this isolated test and is disposed before its host.
+            // ReSharper disable once ShortLivedHttpClient
             using var http = new HttpClient();
             using (var live = await http.GetAsync(originalUrl, timeout.Token))
             {

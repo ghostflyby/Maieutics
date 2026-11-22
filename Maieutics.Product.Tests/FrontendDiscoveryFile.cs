@@ -43,14 +43,14 @@ internal static class FrontendDiscoveryFile
                 FullMode = BoundedChannelFullMode.DropWrite,
                 AllowSynchronousContinuations = false
             });
-            Exception? watcherFailure = null;
+            var watcherFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
             watcher.Created += (_, _) => published.Writer.TryWrite(true);
             watcher.Renamed += (_, _) => published.Writer.TryWrite(true);
             watcher.Changed += (_, _) => published.Writer.TryWrite(true);
             watcher.Error += (_, args) =>
             {
                 if (args.GetException() is not InternalBufferOverflowException)
-                    Interlocked.CompareExchange(ref watcherFailure, args.GetException(), null);
+                    watcherFailure.TrySetResult(args.GetException());
                 published.Writer.TryWrite(true);
             };
             watcher.EnableRaisingEvents = true;
@@ -58,8 +58,9 @@ internal static class FrontendDiscoveryFile
             while (true)
             {
                 deadline.Token.ThrowIfCancellationRequested();
-                if (Volatile.Read(ref watcherFailure) is { } failure)
-                    throw new IOException($"Watching frontend discovery file '{path}' failed.", failure);
+                if (watcherFailure.Task.IsCompletedSuccessfully)
+                    throw new IOException($"Watching frontend discovery file '{path}' failed.",
+                        await watcherFailure.Task.ConfigureAwait(false));
                 if (fault?.Invoke() is { } reported) throw new InvalidOperationException(reported);
 
                 try

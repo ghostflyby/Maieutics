@@ -12,19 +12,27 @@ tokens. Theme changes apply without replacing the editor.
 
 The executable must advertise `conversationView.version: 1`. History uses real server index pages
 and lazy exact text reads; an atomic WebSocket snapshot fences following projection changes. The
-browser gets no bearer token or backend address, and its CSP disallows network connections. The
-extension host serves only addressed, bounded capabilities. Request cancellation, hide, reload and
-close release view work; stopping an Agent run requires the explicit Stop action. Reconnect starts a
-fresh snapshot and rejects responses from an earlier document generation. Submission acceptance
-clears only that submitted draft revision, and uncertain submissions are never automatically
-retried. Drafts survive hide/reconnect in host memory; closing/reloading the extension discards
-them. Restored tabs remember session identity and start at the newest page.
+browser gets no bearer token or backend address. Its CSP admits only the extension-owned binary form
+gateway origin for network connections. The document permits evaluation of the authenticated
+compiler output used by the shared Vue renderer; model HTML remains inert. The extension host serves
+only addressed, bounded capabilities. Request cancellation, hide, reload and close release view
+work; stopping an Agent run requires the explicit Stop action. Reconnect starts a fresh snapshot and
+rejects responses from an earlier document generation. Submission acceptance clears only that
+submitted draft revision, and uncertain submissions are never automatically retried. Drafts survive
+hide/reconnect in host memory; closing/reloading the extension discards them. Restored tabs remember
+session identity and start at the newest page.
 
-This first host renders passive text, tool activity and diagnostic rows. Long bodies are explicitly
-labelled previews; exhausted capacity is visibly unavailable. Transient output is not persisted.
-Rich Markdown/Vue/forms remain in the Notebook renderer; a resource Custom Editor and compact
-sidebar/bottom-panel view are later stages. Stdin, approval, elicitation and IDE requests retain
-their native VS Code interactions, shared with the Notebook host.
+Conversation blocks now reuse the same `maieutics-output-client` shipped for Notebook output:
+passive Markdown fallback, kernel SSR/code groups, completed assistant Vue, explicit Vue/data
+templates, structured tools and live Vue forms. Virtual rows own only their surface attachment;
+revisions retain that surface, and recycling releases it. Long bodies are explicitly labelled
+previews; exhausted capacity is visibly unavailable. Transient output is not persisted. A resource
+Custom Editor and compact sidebar/bottom-panel view remain later stages. Rich text selection
+currently uses native selection within mounted renderer DOM; logical cross-block source copy remains
+available on plain-text rows. Markdown source-offset mapping and form checkpoints are not
+implemented. HTML MIME remains inert source, and binary object references retain a textual fallback
+in the conversation adapter. Stdin, approval, elicitation and IDE requests retain their native VS
+Code interactions, shared with the Notebook host.
 
 `ready` waits for extension-owned startup and the native hello without a view-level deadline;
 ordinary reads and uncertain submissions retain their 15-second request budget. Hiding, closing or
@@ -44,8 +52,10 @@ omitted-failure count to the aggregate.
 `deno task build:conversation` packages the browser-only UI graph into `media/conversation.js` and
 copies the shared component CSS and host theme CSS. The Node extension bundle never imports Vue.
 `deno task build:media` rebuilds both renderer families; commit their copied assets. CI checks
-browser type safety and rebuild freshness, and real VS Code conformance covers paging across 10,000
-entries, independent history/input, streamed changes, draft acknowledgement and close.
+browser type safety and rebuild freshness. Real VS Code conformance covers paging across 10,000
+entries, independent history/input, streamed changes, draft acknowledgement, shared
+Markdown/SSR/Vue, structured tool details, live form actions through the existing binary Actor
+bridge, and cleanup.
 
 Requires VS Code 1.101 or later. Its extension host provides Node 22, required by the bundled Actor
 runtime's `Promise.withResolvers` use; see the
@@ -227,10 +237,12 @@ On macOS the real-editor runner normally launches a hidden window. Set
 `MAIEUTICS_VSCODE_FOREGROUND=1` for a visible instance when verifying native focus behavior; the
 runner still owns and closes that isolated instance.
 
-Conversation assets are packaged locally. The webview has no network permission; all authenticated
-HTTP/WebSocket activity remains in the extension host. Copy uses the host clipboard only after the
-user's copy action. The browser build needs read/write/run permissions for bundling and copying
-assets; it adds no kernel or Deno runtime grants.
+Conversation assets are packaged locally. Kernel-authenticated HTTP/WebSocket activity remains in
+the extension host. For live forms, the webview CSP admits only the resolved origin of the
+extension-owned binary Actor gateway; the browser receives a generation-bound, one-use capability
+instead of kernel credentials. Copy uses the host clipboard only after the user's copy action. The
+browser build needs read/write/run permissions for bundling and copying assets; it adds no kernel or
+Deno runtime grants.
 
 The IDE file-system bridge receives standalone requests on the session socket even when no Agent
 turn is active, and serves them through the editor's workspace APIs under the kernel's existing

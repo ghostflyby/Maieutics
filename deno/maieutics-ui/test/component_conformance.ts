@@ -262,5 +262,130 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
     outside.remove();
     isolated.remove();
   }
+  const streamingSource = new FixtureConversation("surfaces", 100);
+  let failContent = false;
+  const streaming = new ConversationRuntime(streamingSource.sessionId, {
+    readPage: streamingSource.readPage.bind(streamingSource),
+    async readContent(id, revision, signal) {
+      if (failContent) throw new Error("injected content failure");
+      return {
+        ...await streamingSource.readContent(id, revision, signal),
+        presentation: { version: 1, kind: "markdown" },
+      };
+    },
+  });
+  const stop = streamingSource.subscribe((change) =>
+    streaming.apply({
+      ...change,
+      operations: change.operations.map((operation) => {
+        if (operation.type !== "append") return operation;
+        const previous = streaming.projection.find(operation.id);
+        assert(previous, "stream fixture lost its message");
+        return {
+          type: "upsert" as const,
+          entry: { ...previous, contentRevision: operation.revision },
+        };
+      }),
+    })
+  );
+  await streaming.loadPage();
+  const attachment = streaming.attachView("surface-view");
+  attachment.setDraft("keep draft");
+  const container = document.createElement("div");
+  container.style.height = "500px";
+  document.body.append(container);
+  const counts = new Map<
+    string,
+    { mounts: number; draws: number; disposed: number; lastSignal?: AbortSignal }
+  >();
+  const mounted = artifact.mountConversationHistory(container, {
+    view: attachment,
+    host: {
+      writeText: () => Promise.resolve(),
+      mountBlock(element) {
+        let id: string | undefined;
+        return {
+          render(entry, content, signal) {
+            if (!id) {
+              id = entry.id;
+              const count = counts.get(id) ?? { mounts: 0, draws: 0, disposed: 0 };
+              count.mounts++;
+              counts.set(id, count);
+            }
+            const count = counts.get(entry.id);
+            assert(count, "surface lost its owning entry");
+            count.draws++;
+            count.lastSignal = signal;
+            element.textContent = content.text;
+            return Promise.resolve();
+          },
+          dispose() {
+            if (id) {
+              const count = counts.get(id);
+              if (count) count.disposed++;
+            }
+          },
+        };
+      },
+    },
+  });
+  try {
+    const id = streamingSource.submit("stream into an existing surface");
+    await waitFor(() => (counts.get(id)?.draws ?? 0) === 1, "new rich row did not mount");
+    const first = container.querySelector(`[data-entry-id="${id}"] .mui-rendered`);
+    const initialSignal = counts.get(id)?.lastSignal;
+    streamingSource.append(id, "\nsecond revision");
+    await waitFor(
+      () => (counts.get(id)?.draws ?? 0) >= 2,
+      "stream append lost its presentation descriptor",
+    );
+    equal(counts.get(id)?.mounts, 1, "a streamed revision remounted its existing surface");
+    equal(
+      container.querySelector(`[data-entry-id="${id}"] .mui-rendered`),
+      first,
+      "streaming replaced the surface root",
+    );
+    assert(initialSignal?.aborted, "a new surface revision did not cancel stale preparation");
+    failContent = true;
+    streamingSource.append(id, "\nretry revision");
+    await waitFor(
+      () => !!container.querySelector(`[data-entry-id="${id}"] .mui-error`),
+      "failed rich revision hid its retry behind the previous surface",
+    );
+    equal(
+      container.querySelector(`[data-entry-id="${id}"] .mui-rendered`),
+      first,
+      "a transient read failure discarded the last rendered surface",
+    );
+    failContent = false;
+    const retry = container.querySelector<HTMLButtonElement>(`[data-entry-id="${id}"] .mui-retry`);
+    assert(retry, "failed rich revision has no recovery action");
+    retry.click();
+    await waitFor(
+      () =>
+        (counts.get(id)?.draws ?? 0) >= 3 &&
+        !container.querySelector(`[data-entry-id="${id}"] .mui-error`),
+      "retry did not recover the current rich revision",
+    );
+    const viewport = container.querySelector<HTMLElement>(".mui-viewport");
+    assert(viewport, "surface fixture has no viewport");
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event("scroll"));
+    await waitFor(
+      () => (counts.get(id)?.disposed ?? 0) === 1,
+      "virtual row recycling did not dispose its renderer",
+    );
+    assert(counts.get(id)?.lastSignal?.aborted, "recycled surface retained pending rendering work");
+    equal(attachment.draft, "keep draft", "history recycling discarded independent input state");
+    passed.push(
+      "streamed blocks retain their host surface and virtual recycling disposes its exact rendering scope",
+    );
+  } finally {
+    mounted.unmount();
+    attachment.dispose();
+    stop();
+    await streaming.dispose();
+    container.remove();
+  }
   return passed;
 }

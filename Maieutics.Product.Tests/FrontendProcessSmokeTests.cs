@@ -47,6 +47,8 @@ public sealed class FrontendProcessSmokeTests
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
         var id = session.GetProperty("id").GetString();
+        using var warmedView = await client.GetAsync($"/v1/agent/sessions/{id}/view/entries?limit=80", budget.Token);
+        warmedView.EnsureSuccessStatusCode();
         using var socket = new ClientWebSocket();
         socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
         await socket.ConnectAsync(new Uri($"ws://{new Uri(url).Authority}/v1/agent/sessions/{id}/events"), budget.Token);
@@ -77,6 +79,22 @@ public sealed class FrontendProcessSmokeTests
             }
             await provider.Completion.WaitAsync(budget.Token);
             Assert.True(displayed, "The published kernel and real REPL must emit versioned form data.");
+            var page = await client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{id}/view/entries?limit=80", budget.Token);
+            var epoch = page.GetProperty("epoch").GetString();
+            var projectedForm = false;
+            foreach (var entry in page.GetProperty("entries").EnumerateArray())
+            {
+                if (entry.GetProperty("kind").GetString() != "display") continue;
+                var blockId = Uri.EscapeDataString(entry.GetProperty("id").GetString() ?? throw new InvalidOperationException("Missing block id"));
+                var content = await client.GetFromJsonAsync<JsonElement>(
+                    $"/v1/agent/sessions/{id}/view/blocks/{blockId}?epoch={epoch}&revision={entry.GetProperty("contentRevision").GetString()}", budget.Token);
+                if (!content.TryGetProperty("presentation", out var presentation) || presentation.GetProperty("kind").GetString() != "mime") continue;
+                if (!presentation.GetProperty("value").TryGetProperty("application/vnd.maieutics.form+json", out var form)) continue;
+                Assert.Equal(1, form.GetProperty("version").GetInt32());
+                Assert.Single(form.GetProperty("state").GetProperty("fields").EnumerateArray());
+                projectedForm = true;
+            }
+            Assert.True(projectedForm, "The published conversation content route must retain the real REPL form descriptor.");
         }
         finally { socket.Abort(); }
     }

@@ -35,23 +35,19 @@ export class FormActorGateway {
 
   constructor(private readonly options: FormActorGatewayOptions) {}
 
+  /** Resolve the one host-owned connection origin before the embedding document fixes its CSP. */
+  async connectionSource(signal: AbortSignal): Promise<string> {
+    const endpoint = new URL(await this.base(signal));
+    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+    return endpoint.origin;
+  }
+
   /** Offer one authenticated connection; abort revokes the URL and terminates its accepted socket. */
   async listen(signal: AbortSignal, accept: (socket: WebSocket) => void): Promise<string> {
     signal.throwIfAborted();
     this.#lifetime.signal.throwIfAborted();
     const joined = AbortSignal.any([signal, this.#lifetime.signal]);
-    this.#starting ??= this.#start().catch(async (error) => {
-      this.#closed = true;
-      try {
-        await this.#stopResources();
-      } catch (cleanup) {
-        throw new AggregateError([error, cleanup], "Actor gateway startup cleanup failed", {
-          cause: error,
-        });
-      }
-      throw error;
-    });
-    const base = await waitForStartup(this.#starting, joined);
+    const base = await this.base(joined);
     joined.throwIfAborted();
     if (this.#leases.size >= 128) throw new Error("Form Actor endpoint admission exceeded");
     const id = randomUUID(), token = randomBytes(32);
@@ -74,6 +70,23 @@ export class FormActorGateway {
     endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/actor/${id}`;
     endpoint.searchParams.set("actorToken", token.toString("hex"));
     return endpoint.href;
+  }
+
+  private async base(signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted();
+    this.#lifetime.signal.throwIfAborted();
+    this.#starting ??= this.#start().catch(async (error) => {
+      this.#closed = true;
+      try {
+        await this.#stopResources();
+      } catch (cleanup) {
+        throw new AggregateError([error, cleanup], "Actor gateway startup cleanup failed", {
+          cause: error,
+        });
+      }
+      throw error;
+    });
+    return await waitForStartup(this.#starting, AbortSignal.any([signal, this.#lifetime.signal]));
   }
 
   dispose(): Promise<void> {

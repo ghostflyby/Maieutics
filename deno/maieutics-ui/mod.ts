@@ -4,6 +4,7 @@ export { ConversationHistory } from "./vue/history.ts";
 export { ConversationComposer } from "./vue/composer.ts";
 export type {
   ConversationAnchorRestoration,
+  ConversationBlockSurface,
   ConversationHost,
   ConversationSubmission,
 } from "./vue/contracts.ts";

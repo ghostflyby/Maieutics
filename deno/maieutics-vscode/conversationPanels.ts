@@ -14,6 +14,8 @@ import { waitForStartup } from "./startupWait.ts";
 import { executeIdeMethod } from "./controller.ts";
 import { extractIdeRequest } from "./ide.ts";
 
+import { ConversationPresentation } from "./conversationPresentation.ts";
+
 const PanelType = "maieutics.conversation";
 
 /** Editor-area host; browser code receives only addressed capabilities, never kernel credentials. */
@@ -115,6 +117,7 @@ export class ConversationPanel {
   private epoch = "";
   private activeRunId: string | undefined;
   private draft = "";
+  private presentation: ConversationPresentation | undefined;
   private ready = false;
   private submitting = false;
   private readonly viewId = randomUUID();
@@ -159,6 +162,10 @@ export class ConversationPanel {
   }
   private stop(): void {
     this.owner.abort();
+    if (this.presentation) {
+      this.closing(this.presentation.dispose());
+      this.presentation = undefined;
+    }
     for (const controller of this.requests.values()) controller.abort();
     this.requests.clear();
     this.closing(Promise.all([...this.tasks]).then(() => {}));
@@ -237,6 +244,10 @@ export class ConversationPanel {
   }
   private async execute(request: ViewRequest, signal: AbortSignal): Promise<unknown> {
     const params = request.params ?? {};
+    if (request.method === "presentation") {
+      await this.presentation?.receive(params.message);
+      return null;
+    }
     if (request.method === "draft") {
       this.draft = text(params.text, 64_000);
       return null;
@@ -359,6 +370,37 @@ export class ConversationPanel {
     await this.panel.webview.postMessage(message);
   }
   private render(): void {
+    const address = this.address;
+    const presentation = new ConversationPresentation({
+      sessionId: this.sessionId,
+      signal: this.owner.signal,
+      client: this.clientOf,
+      post: (value) => this.post({ ...address, event: "presentation", value }),
+      externalUri: async (url) =>
+        (await vscode.env.asExternalUri(vscode.Uri.parse(url))).toString(),
+      writeClipboard: async (text) => await vscode.env.clipboard.writeText(text),
+      log: this.log,
+    });
+    this.presentation = presentation;
+    this.track(
+      (async () => {
+        let connectionSource = "'none'";
+        try {
+          connectionSource = await presentation.connectionSource();
+        } catch {
+          if (!this.owner.signal.aborted) {
+            this.log(
+              "Conversation forms are unavailable; retaining Markdown and readonly previews.",
+            );
+          }
+        }
+        if (this.owner.signal.aborted || address.generation !== this.address.generation) return;
+        this.renderDocument(connectionSource);
+      })(),
+      address,
+    );
+  }
+  private renderDocument(connectionSource: string): void {
     const webview = this.panel.webview;
     const uri = (name: string) =>
       webview.asWebviewUri(vscode.Uri.joinPath(this.root, "media", name)).toString();
@@ -366,7 +408,7 @@ export class ConversationPanel {
     const config = JSON.stringify(this.address).replaceAll("<", "\\u003c");
     this.panel.webview.html = this.decorateHtml(
       `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; connect-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'unsafe-eval'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; connect-src ${connectionSource};">
 <link rel="stylesheet" href="${uri("conversation.css")}"><link rel="stylesheet" href="${
         uri("conversationTheme.css")
       }"></head>

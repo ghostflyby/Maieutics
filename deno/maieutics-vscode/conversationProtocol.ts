@@ -33,6 +33,7 @@ export interface ViewContent {
   entryId: string;
   revision: string;
   text: string;
+  presentation?: { version: 1; kind: string; value?: unknown };
 }
 export type ViewFrame =
   | { type: "view.snapshot"; page: ViewPage; activeRunId?: string }
@@ -47,6 +48,7 @@ export interface ViewAddress {
 export interface ViewRequest extends ViewAddress {
   id: number;
   method:
+    | "presentation"
     | "ready"
     | "page"
     | "content"
@@ -64,7 +66,7 @@ export interface ViewResponse extends ViewAddress {
   error?: { code: string; message: string };
 }
 export interface ViewEvent extends ViewAddress {
-  event: "frame" | "draft" | "failure";
+  event: "frame" | "draft" | "failure" | "presentation";
   value: unknown;
 }
 
@@ -76,7 +78,18 @@ export function readViewRequest(value: unknown, address: ViewAddress): ViewReque
     request.version !== 1 || request.sessionId !== address.sessionId ||
     request.viewId !== address.viewId || request.generation !== address.generation ||
     !Number.isSafeInteger(request.id) || (request.id ?? 0) < 1 ||
-    !["ready", "page", "content", "submit", "cancel", "copy", "draft", "abort", "reload"].includes(
+    ![
+      "presentation",
+      "ready",
+      "page",
+      "content",
+      "submit",
+      "cancel",
+      "copy",
+      "draft",
+      "abort",
+      "reload",
+    ].includes(
       request.method ?? "",
     ) ||
     (request.params !== undefined &&

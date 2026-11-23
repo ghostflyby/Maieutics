@@ -1,9 +1,10 @@
 /// <reference lib="deno.ns" />
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "node:path";
 
 const deno = new URL("../../", import.meta.url);
-const retiredPackage = /(?:^|\/)(?:preact|@preact\/signals-core|maieutics-widgets)(?:\/|@|$)/;
+const retiredPackage =
+  /(?:^|[/:])(?:preact(?:-[^/@:]+)?|@preact\/[^/@:]+|maieutics-widgets)(?:\/|@|$)/;
 const retiredSource =
   /\/(?:media\/(?:view|widget)Renderer\.js|maieutics-plugin-sdk\/(?:widgets\/|ui\/(?:family|runtime)\.ts))/;
 
@@ -59,21 +60,51 @@ for (
 Deno.test("public UI entry points exclude the retired rendering engine", async () => {
   const json = async <T>(path: string): Promise<T> =>
     JSON.parse(await Deno.readTextFile(new URL(path, deno))) as T;
-  const [workspace, sdk, extension] = await Promise.all([
+  const [workspace, sdk, extension, lock] = await Promise.all([
     json<{ imports: Record<string, string> }>("deno.json"),
     json<{ exports: Record<string, string> }>("maieutics-plugin-sdk/deno.json"),
     json<{
       contributes: {
-        notebookRenderer: { entrypoint: string | { path: string } }[];
+        notebookRenderer: { id: string; entrypoint: string | { path: string } }[];
       };
     }>("maieutics-vscode/package.json"),
+    json<{ specifiers: Record<string, string>; npm: Record<string, unknown> }>("deno.lock"),
   ]);
   assertEquals(Object.keys(workspace.imports).filter((key) => retiredPackage.test(key)), []);
   assertEquals(Object.keys(sdk.exports).filter((key) => /^\.\/widgets(?:\/|$)/.test(key)), []);
+  const renderers = extension.contributes.notebookRenderer;
   assertEquals(
-    extension.contributes.notebookRenderer.map(({ entrypoint }) =>
-      typeof entrypoint === "string" ? entrypoint : entrypoint.path
-    ).filter((path) => retiredSource.test(path)),
+    renderers.map(({ id }) => id).sort(),
+    ["maieutics-form-renderer", "maieutics-markdown-safety", "maieutics-turn-renderer"],
+    "Expected the three supported Notebook renderer IDs",
+  );
+  assertEquals(
+    [...Object.keys(lock.specifiers), ...Object.keys(lock.npm)].filter((entry) =>
+      retiredPackage.test(entry)
+    ),
+    [],
+    "Workspace lockfile contains a retired UI dependency",
+  );
+  assertEquals(
+    renderers.map(({ entrypoint }) => typeof entrypoint === "string" ? entrypoint : entrypoint.path)
+      .filter((path) => retiredSource.test(path)),
     [],
   );
+  for (
+    const path of [
+      "maieutics-vscode/renderer",
+      "maieutics-vscode/media/viewRenderer.js",
+      "maieutics-vscode/media/widgetRenderer.js",
+      "maieutics-plugin-sdk/widgets",
+      "maieutics-plugin-sdk/ui/family.ts",
+      "maieutics-plugin-sdk/ui/runtime.ts",
+    ]
+  ) {
+    await assertRejects(
+      () => Deno.lstat(new URL(path, deno)),
+      Deno.errors.NotFound,
+      undefined,
+      `Retired UI path exists: ${path}`,
+    );
+  }
 });

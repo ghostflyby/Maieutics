@@ -147,6 +147,91 @@ Deno.test("an in-flight invocation pins its worker until the call settles", asyn
   }
 });
 
+Deno.test("an acquired Actor channel pins its provider until the holder releases it", async () => {
+  await using fixture = new LifecycleFixture();
+  const provider = fixture.plugin(
+    "channel-provider",
+    `
+    import { defineActor } from ${JSON.stringify(SDK_URL)};
+    export const math = defineActor({ double: (value) => value * 2 });
+  `,
+  );
+  // No declared dependency: the provider's only reference is the acquired channel.
+  const holder = fixture.plugin(
+    "channel-holder",
+    `
+    import { capabilities, defineDependency } from ${JSON.stringify(SDK_URL)};
+    const remote = defineDependency(${JSON.stringify(provider.workers[0].specifier)});
+    export const hook = defineExtensionPoint("ToolPreInvoke", {
+      async handler({ hold }) {
+        await hold(await remote.math.double(21));
+        await remote.dispose();
+        // The release and capability request travel on the same Worker message channel.
+        // Its reply establishes that the host processed the release.
+        await capabilities.invokeTool("release-observed", {});
+        return { action: "pass" };
+      },
+    });
+  `,
+  );
+  const host = fixture.start([provider, holder]);
+  host.setCapabilityCaller(() => Promise.resolve({ status: "ok", value: null }));
+  await host.startAll();
+
+  const opened = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const call = host.invoke("channel-holder", "./main", "ToolPreInvoke", {
+    hold: (value: number) => {
+      opened.resolve(value);
+      return release.promise;
+    },
+  });
+  const observed = call.then(
+    (result) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Actor channel did not acquire or release")), 15_000);
+  });
+  const providerState = () => host.states().find(({ pluginId }) => pluginId === provider.id)?.state;
+  let settled = false;
+  try {
+    assertEquals(
+      await Promise.race([
+        opened.promise,
+        observed.then((result) => {
+          throw new Error("The holder call settled before successfully acquiring its channel", {
+            cause: result,
+          });
+        }),
+        deadline,
+      ]),
+      42,
+    );
+
+    const sweep = Date.now();
+    await host.reclaimIdleWorkers(sweep);
+    await host.reclaimIdleWorkers(sweep + IDLE_GRACE);
+    assertEquals(providerState(), "running", "The open Actor channel must pin its provider");
+
+    release.resolve();
+    const result = await Promise.race([observed, deadline]);
+    settled = true;
+    assertEquals(result, { result: { action: "pass" } });
+
+    const closedAt = Date.now();
+    await host.reclaimIdleWorkers(closedAt);
+    await host.reclaimIdleWorkers(closedAt + IDLE_GRACE);
+    assertEquals(providerState(), "stopped", "Closing the channel must release the provider pin");
+  } finally {
+    clearTimeout(timer);
+    release.resolve();
+    if (!settled) host.dispose();
+    await observed;
+  }
+});
+
 Deno.test("a running consumer pins its dependency until reclamation stops the consumer", async () => {
   await using fixture = new LifecycleFixture();
   const provider = fixture.plugin("provider");

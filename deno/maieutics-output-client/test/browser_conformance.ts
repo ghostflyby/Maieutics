@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertRejects, assertStrictEquals, assertThrows } from "@std/assert";
+import messages from "../locales/en.json" with { type: "json" };
 
 type OutputClient = typeof import("../mod.ts");
 type RenderRequest = Extract<import("../mod.ts").OutputMessage, { type: "render" }>;
@@ -40,7 +41,9 @@ async function assertHostStylesheet(root: ShadowRoot, selector: string): Promise
 
 async function renderedOutput(api: OutputClient): Promise<void> {
   const requests: RenderRequest[] = [];
+  const copyLabel = "Test output copy label";
   const renderer = api.createOutputRenderer({
+    localize: (message) => message === messages.copyCode ? copyLabel : message,
     stylesheetUrl: "/fixture-output.css",
     sendMessage(message) {
       if (message.type === "render") requests.push(message);
@@ -73,9 +76,16 @@ async function renderedOutput(api: OutputClient): Promise<void> {
     const markdown = requests.shift();
     assert(markdown);
     assertEquals(markdown.text, text);
-    await reply(markdown, '<pre class="shiki"><code>SSR response</code></pre>');
+    await reply(
+      markdown,
+      '<div class="code-block"><button class="code-copy" data-code-copy="source"></button>' +
+        '<pre class="shiki"><code>SSR response</code></pre></div>',
+    );
     const highlighted = renderedRoot(native, ".shiki");
     assertEquals(find(highlighted, "code").textContent, "SSR response");
+    const copy = find(highlighted, "button.code-copy");
+    assertEquals(copy.textContent, copyLabel, "createOutputRenderer must forward its localizer");
+    assertEquals(copy.getAttribute("aria-label"), copyLabel);
     assert(!highlighted.querySelector("h1"), "SSR left the native fallback attached");
     await assertHostStylesheet(highlighted, ".shiki");
 
@@ -418,7 +428,11 @@ async function toolDisclosure(api: OutputClient): Promise<void> {
 
 async function forms(api: OutputClient): Promise<void> {
   const sent: import("../mod.ts").FormMessage[] = [];
-  const client = api.createFormRenderer({ sendMessage: (message) => sent.push(message) });
+  const submitLabel = "Test form submit label";
+  const client = api.createFormRenderer({
+    localize: (message) => message === messages.submit ? submitLabel : message,
+    sendMessage: (message) => sent.push(message),
+  });
   const first = element();
   const second = element();
   const frozen = element();
@@ -451,6 +465,11 @@ async function forms(api: OutputClient): Promise<void> {
     assert(controls.disabled, "A form allows input before receiving model state");
     await publish("Updated");
     assert(!controls.disabled, "Live model state did not enable its form");
+    assertEquals(
+      find(root, ".submit").textContent,
+      submitLabel,
+      "createFormRenderer must forward its localizer",
+    );
     const note = find<HTMLInputElement>(root, '[name="note"]');
     note.focus();
     for (
@@ -532,6 +551,36 @@ async function forms(api: OutputClient): Promise<void> {
     cleanup.dispose();
     a.remove();
     b.remove();
+  }
+}
+
+async function localizedActorForm(api: OutputClient): Promise<void> {
+  const container = element();
+  const snapshotLabel = "Test Actor form snapshot label";
+  const renderer = api.createActorFormRenderer({
+    localize: (message) => message === messages.formSnapshot ? snapshotLabel : message,
+    postMessage() {
+      throw new Error("A snapshot must not contact the host");
+    },
+  });
+  try {
+    renderer.render("actor-snapshot", {
+      version: 1,
+      modelId: "actor-model",
+      snapshot: true,
+      state: { fields: [] },
+    }, container);
+    assertEquals(
+      find(formRoot(container), ".stale").textContent,
+      snapshotLabel,
+      "createActorFormRenderer must forward its localizer",
+    );
+  } finally {
+    try {
+      await renderer.dispose();
+    } finally {
+      container.remove();
+    }
   }
 }
 
@@ -619,6 +668,7 @@ export async function runBrowserConformance(): Promise<string[]> {
   await snapshotInteractions(api);
   await toolDisclosure(api);
   await forms(api);
+  await localizedActorForm(api);
   await nativeFetch(api);
   return [
     "shared Markdown is inert and template, SSR, and Vue replies replace their addressed output",
@@ -628,6 +678,7 @@ export async function runBrowserConformance(): Promise<string[]> {
     "SSR anchors and code tabs operate inside their addressed shadow boundary",
     "tool expansion survives updates and stays local to its output",
     "shared Vue forms retain focus, drafts, and scoped actions across updates and disposal",
+    "the Actor form renderer forwards its host localizer to its snapshot",
     "native browser HTTP streams binary across origins and unmount cancels only the owning request",
   ];
 }

@@ -141,8 +141,8 @@ internal sealed class FrontendConversationView(string sessionId)
                 case "repl.display":
                 case "repl.updateDisplay":
                 case "repl.error":
-                    var displayText = frame.Data is { ValueKind: System.Text.Json.JsonValueKind.Object } data &&
-                        data.TryGetProperty("text/plain", out var plain) && plain.ValueKind == System.Text.Json.JsonValueKind.String
+                    var displayText = frame.Data is { ValueKind: JsonValueKind.Object } data &&
+                        data.TryGetProperty("text/plain", out var plain) && plain.ValueKind == JsonValueKind.String
                         ? plain.GetString() ?? "" : "[富内容请在 Notebook 中查看]";
                     PutLocked($"{run}:display:{frame.DisplayId ?? _rows.Count.ToString(CultureInfo.InvariantCulture)}",
                         run, frame.Type == "repl.error" ? "diagnostic" : "display", displayText, "sealed", operations,

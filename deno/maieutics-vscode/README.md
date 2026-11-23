@@ -241,8 +241,8 @@ Conversation assets are packaged locally. Kernel-authenticated HTTP/WebSocket ac
 the extension host. For live forms, the webview CSP admits only the resolved origin of the
 extension-owned binary Actor gateway; the browser receives a generation-bound, one-use capability
 instead of kernel credentials. Copy uses the host clipboard only after the user's copy action. The
-browser build needs read/write/run permissions for bundling and copying assets; it adds no kernel
-or Deno runtime grants.
+browser build needs read/write/run permissions for bundling and copying assets; it adds no kernel or
+Deno runtime grants.
 
 The IDE file-system bridge receives standalone requests on the session socket even when no Agent
 turn is active, and serves them through the editor's workspace APIs under the kernel's existing

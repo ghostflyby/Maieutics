@@ -39,6 +39,8 @@ export interface TextContent {
   readonly entryId: string;
   readonly revision: string;
   readonly text: string;
+  /** Host-selected presentation data. The core never interprets or executes it. */
+  readonly presentation?: { readonly version: 1; readonly kind: string; readonly value?: unknown };
 }
 
 /** The shell owns this source; a runtime owns only its outstanding requests. */

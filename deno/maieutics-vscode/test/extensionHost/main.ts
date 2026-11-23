@@ -44,6 +44,7 @@ import { testDocumentEditing } from "./documentEditing.ts";
 import { testWorkspaceSaving } from "./workspaceSaving.ts";
 import { testRenderingDuringConnectionAsync } from "./renderingRecovery.ts";
 import { testHistoricalVueAsync } from "./historyRendering.ts";
+import { testConversationRenderingAsync } from "./conversationRendering.ts";
 import { testConversationPanelAsync } from "./conversation.ts";
 import { testHiddenConversationIdeAsync } from "./conversationIde.ts";
 
@@ -1245,6 +1246,10 @@ const tests: HostTest[] = [
     name:
       "conversation panel pages history, streams changes and preserves drafts in a real webview",
     run: testConversationPanelAsync,
+  },
+  {
+    name: "conversation rich rendering reuses Markdown SSR Vue tools and live forms",
+    run: testConversationRenderingAsync,
   },
   {
     name: "hidden conversation views retain one connection-owned IDE answer",

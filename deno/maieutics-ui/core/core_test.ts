@@ -916,3 +916,68 @@ Deno.test("an old snapshot cannot collide two stable entry identities", async ()
   assertEquals(runtime.statistics.entries, 0);
   await runtime.dispose();
 });
+
+Deno.test("presentation and copy text share one exact content read and one bounded cache", async () => {
+  const base = source(1);
+  let reads = 0;
+  const presentation = {
+    version: 1 as const,
+    kind: "mime",
+    value: { "application/json": { items: [1, 2, 3] } },
+  };
+  const runtime = new ConversationRuntime("s", {
+    ...base,
+    readContent(id, revision) {
+      reads++;
+      return Promise.resolve({ entryId: id, revision, text: "fallback", presentation });
+    },
+  });
+  try {
+    await runtime.loadPage();
+    const content = await runtime.readContent("e0", "0");
+    assertEquals(content.presentation, presentation);
+    assertEquals(await runtime.readText("e0", "0"), "fallback");
+    assertEquals(
+      reads,
+      1,
+      "rendering and copying must resolve the same revision without duplicate source reads",
+    );
+    runtime.apply({
+      epoch: "epoch",
+      baseRevision: "0",
+      revision: "1",
+      total: 1,
+      operations: [
+        { type: "append", id: "e0", baseRevision: "0", revision: "1", text: " plus" },
+      ],
+    });
+    assertEquals(
+      (await runtime.readContent("e0", "1")).presentation,
+      presentation,
+      "text append must retain its presentation lane",
+    );
+    assertEquals(reads, 1);
+    assert(
+      runtime.statistics.contentBytes > "fallback".length * 2,
+      "structured presentation must count against the shared cache budget",
+    );
+  } finally {
+    await runtime.dispose();
+  }
+  const bounded = new ConversationRuntime("s", {
+    ...base,
+    readContent(id, revision) {
+      return Promise.resolve({ entryId: id, revision, text: "fallback", presentation });
+    },
+  }, { contentBytes: 8 });
+  try {
+    assertEquals((await bounded.readContent("e0", "0")).presentation, presentation);
+    assertEquals(
+      bounded.statistics.contentBytes,
+      0,
+      "visible rich content may be delivered without bypassing retention capacity",
+    );
+  } finally {
+    await bounded.dispose();
+  }
+});

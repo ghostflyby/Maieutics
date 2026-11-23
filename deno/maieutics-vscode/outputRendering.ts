@@ -76,10 +76,12 @@ export class OutputRenderingBridge {
   >();
   #deliverySequence = 0;
   #epoch = 0;
+  #pumpFailure: { error: unknown } | undefined;
 
   constructor(private readonly options: OutputRenderingOptions) {}
 
-  async handle(message: unknown): Promise<void> {
+  /** Addressed event bridges acknowledge admission without occupying request slots until SSR is idle. */
+  async handle(message: unknown, options: { waitForIdle?: boolean } = {}): Promise<void> {
     if (this.#closed || typeof message !== "object" || message === null) return;
     const value = message as Record<string, unknown>;
     if (value.source !== "maieutics-output") return;
@@ -222,7 +224,7 @@ export class OutputRenderingBridge {
     this.#latest.set(request.documentId, request);
     this.#pending.set(request.documentId, request);
     this.#startPump();
-    await this.#pump;
+    if (options.waitForIdle !== false) await this.#pump;
   }
 
   async dispose(): Promise<void> {
@@ -234,6 +236,7 @@ export class OutputRenderingBridge {
     this.#deliveries.clear();
     this.#active?.controller.abort();
     await this.#pump;
+    if (this.#pumpFailure) throw this.#pumpFailure.error;
   }
 
   async #run(): Promise<void> {
@@ -355,10 +358,19 @@ export class OutputRenderingBridge {
   }
 
   #startPump(): void {
-    this.#pump ??= this.#run().finally(() => {
+    if (this.#pump) return;
+    this.#pump = this.#run().then(() => {
+      this.#pumpFailure = undefined;
+    }, (error) => {
+      // Record before finally can start a recovery cycle, whose success clears this failure.
+      this.#pumpFailure = { error };
+      throw error;
+    }).finally(() => {
       this.#pump = undefined;
       if (!this.#closed && this.#pending.size > 0) this.#startPump();
     });
+    // The pump belongs to this bridge even when its caller waits only for admission.
+    void this.#pump.catch(() => {});
   }
 
   #identity(request: RenderRequest) {

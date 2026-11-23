@@ -22,10 +22,15 @@ import {
   type ConversationEntry,
   type ConversationRow,
   type PageLoadProgress,
+  type TextContent,
   type TextPoint,
 } from "../core/types.ts";
 
-import type { ConversationAnchorRestoration, ConversationHost } from "./contracts.ts";
+import type {
+  ConversationAnchorRestoration,
+  ConversationBlockSurface,
+  ConversationHost,
+} from "./contracts.ts";
 import { useBinding } from "./binding.ts";
 
 const labels: Record<ConversationEntry["kind"], string> = {
@@ -61,10 +66,21 @@ const OutputBlockHost = defineComponent({
     entryId: { type: String, required: true },
     index: { type: Number, required: true },
     measure: { type: Function as PropType<(element: HTMLElement) => void>, required: true },
+    host: { type: Object as PropType<ConversationHost>, required: true },
   },
   setup(props) {
     const entry = shallowRef(props.runtime.projection.find(props.entryId));
-    const text = ref<string>();
+    const content = shallowRef<TextContent>();
+    const body = shallowRef<HTMLElement>();
+    let surface: ConversationBlockSurface | undefined;
+    let factory: ConversationHost["mountBlock"];
+    let drawing: AbortController | undefined;
+    const release = () => {
+      drawing?.abort();
+      const previous = surface;
+      surface = undefined;
+      previous?.dispose();
+    };
     const failure = ref("");
     const expanded = ref(props.view.isExpanded(props.entryId));
     let request: AbortController | undefined;
@@ -78,15 +94,19 @@ const OutputBlockHost = defineComponent({
       request?.abort();
       request = new AbortController();
       const signal = AbortSignal.any([request.signal, props.view.signal]);
-      text.value = undefined;
+      // Keep a mounted surface while the next revision loads, preserving its component state.
+      if (!surface) content.value = undefined;
       failure.value = "";
       const current = entry.value;
-      if (!current || current.kind === "unavailable" || (isActivity(current) && !expanded.value)) {
+      if (
+        !current || current.kind === "unavailable" ||
+        (!props.host.mountBlock && isActivity(current) && !expanded.value)
+      ) {
         return;
       }
       try {
-        const value = await props.runtime.readText(current.id, current.contentRevision, signal);
-        if (!signal.aborted) text.value = value;
+        const value = await props.runtime.readContent(current.id, current.contentRevision, signal);
+        if (!signal.aborted) content.value = value;
       } catch (error) {
         if (!signal.aborted) failure.value = message(error);
       }
@@ -94,10 +114,43 @@ const OutputBlockHost = defineComponent({
     watch(() => [entry.value?.contentRevision, entry.value?.kind, expanded.value], load, {
       immediate: true,
     });
+    watch(
+      [body, content, entry, () => props.host.mountBlock],
+      async ([element, value, current, mount]) => {
+        if (factory !== mount) {
+          release();
+          factory = mount;
+        }
+        if (!element || !value?.presentation) {
+          release();
+          return;
+        }
+        if (
+          !current || value.revision !== current.contentRevision || !mount
+        ) return;
+        drawing?.abort();
+        drawing = new AbortController();
+        const signal = AbortSignal.any([drawing.signal, props.view.signal]);
+        try {
+          surface ??= mount(element);
+          await surface.render(current, value, signal);
+        } catch (error) {
+          if (!signal.aborted) {
+            failure.value = message(error);
+            content.value = { ...value, presentation: undefined };
+          }
+        }
+      },
+      { flush: "post" },
+    );
     onBeforeUnmount(() => {
-      request?.abort();
-      stopEntry();
-      stopView();
+      try {
+        release();
+      } finally {
+        request?.abort();
+        stopEntry();
+        stopView();
+      }
     });
     return () => {
       const current = entry.value;
@@ -109,9 +162,13 @@ const OutputBlockHost = defineComponent({
         },
       };
       if (!current) return h("article", attributes, "内容已回收，滚动后可重新载入。");
-      const activity = isActivity(current);
+      const activity = !props.host.mountBlock && isActivity(current);
       const collapsed = activity && !expanded.value;
-      const value = collapsed || current.kind === "unavailable" ? current.preview : text.value;
+      const value = collapsed || current.kind === "unavailable"
+        ? current.preview
+        : content.value?.text;
+      const rich =
+        !!(props.host.mountBlock && content.value?.presentation && current.kind !== "unavailable");
       return h("article", {
         ...attributes,
         "aria-label": labels[current.kind],
@@ -133,14 +190,19 @@ const OutputBlockHost = defineComponent({
             ? h("span", { class: "mui-writing", "aria-label": "正在输出" }, "正在输出")
             : null,
         ]),
-        value !== undefined
+        rich
+          ? h("div", { class: "mui-rendered", ref: body })
+          : value !== undefined
           ? h("div", { class: "mui-text", "data-text-entry": current.id }, value)
-          : failure.value
+          : !failure.value
+          ? h("div", { class: "mui-loading", "aria-label": "正在载入内容" }, "正在载入…")
+          : null,
+        failure.value
           ? h("div", { role: "status", class: "mui-error" }, [
             failure.value,
             h("button", { class: "mui-button mui-retry", type: "button", onClick: load }, "重试"),
           ])
-          : h("div", { class: "mui-loading", "aria-label": "正在载入内容" }, "正在载入…"),
+          : null,
       ]);
     };
   },
@@ -728,6 +790,7 @@ export const ConversationHistory = defineComponent({
                 }, [h(OutputBlockHost, {
                   runtime,
                   view,
+                  host: props.host,
                   entryId: row.key,
                   index: item.index,
                   // The article measures its natural height; the slot clips pending growth.

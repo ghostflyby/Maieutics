@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 
 namespace Maieutics.Frontend;
@@ -42,8 +43,20 @@ internal sealed class FrontendConversationView(string sessionId)
                 for (var index = 0; index < turn.Messages.Count; index++)
                 {
                     var message = turn.Messages[index];
-                    PutLocked($"{turn.RunId}:stored:{index}", turn.RunId,
-                        message.Role == "user" ? "input" : "message", Render(message), "sealed", []);
+                    var text = string.Join("\n", message.Parts.Where(part => part.Kind == "text").Select(part => part.Text));
+                    if (text.Length > 0 || message.Parts.All(part => part.Kind is not ("tool_call" or "tool_result")))
+                        PutLocked($"{turn.RunId}:stored:{index}", turn.RunId,
+                            message.Role == "user" ? "input" : "message", text.Length > 0 ? text : Render(message), "sealed", [],
+                            message.Role == "assistant" ? new FrontendViewPresentation(1, turn.Truncated ? "markdown" : "assistant") :
+                            message.Role == "user" ? null : new FrontendViewPresentation(1, "markdown"));
+                    foreach (var part in message.Parts)
+                    {
+                        var id = $"{turn.RunId}:tool:{part.CallId}";
+                        if (part.Kind == "tool_call")
+                            PutToolLocked(id, turn.RunId, new FrontendViewTool(part.CallId ?? "", part.Name ?? "tool", "ok", part.Value), []);
+                        else if (part.Kind == "tool_result")
+                            PutToolLocked(id, turn.RunId, ReadTool(id) with { Status = ToolStatus(part.Value), Result = part.Value }, []);
+                    }
                 }
             _publishedRevision = _revision;
         }
@@ -78,32 +91,48 @@ internal sealed class FrontendConversationView(string sessionId)
                     var previous = _byId.GetValueOrDefault(messageId);
                     if (previous?.Truncated == true) break;
                     PutLocked(messageId, run, frame.Type == "reasoning.delta" ? "reasoning-summary" : "message",
-                        (previous?.Text ?? "") + frame.Text, "open", operations);
+                        (previous?.Text ?? "") + frame.Text, "open", operations,
+                        new FrontendViewPresentation(1, "markdown"));
                     break;
                 case "message.completed" when frame.AgentMessage is { } message:
                     // Tool calls/results have their own structured activity rows; avoid duplicating
                     // them as an empty assistant message on completion.
                     var text = string.Join("\n", message.Parts.Where(part => part.Kind == "text").Select(part => part.Text));
                     if (text.Length > 0 || _byId.ContainsKey(messageId))
-                        PutLocked(messageId, run, "message", text, "sealed", operations);
+                        PutLocked(messageId, run, "message", text, "sealed", operations, new FrontendViewPresentation(1, "markdown"));
                     break;
                 case "tool.started":
-                    PutLocked(toolId, run, "tool", $"{frame.Tool}\n{frame.Arguments}", "open", operations);
+                    PutToolLocked(toolId, run, new FrontendViewTool(frame.CallId ?? "", frame.Tool ?? "tool", "running", frame.Arguments), operations);
                     break;
                 case "tool.finished":
-                    PutLocked(toolId, run, "tool", $"{_byId.GetValueOrDefault(toolId)?.Text}\n{frame.Result}", "sealed", operations);
+                    var finished = ReadTool(toolId);
+                    PutToolLocked(toolId, run, finished with { Status = ToolStatus(frame.Result), Result = frame.Result }, operations);
                     break;
                 case "tool.progress" when frame.Content is { } content:
                     var tool = _byId.GetValueOrDefault(toolId);
                     if (tool?.Truncated == true) break;
-                    PutLocked(toolId, run, "tool", $"{tool?.Text}\n{content.Text ?? content.Value?.ToString()}", "open", operations);
+                    var progress = ReadTool(toolId);
+                    PutToolLocked(toolId, run, progress with { Progress = content.Text ?? content.Value?.ToString() }, operations);
                     break;
                 case "run.failed":
                     PutLocked($"{run}:failure", run, "diagnostic", $"{frame.Code}: {frame.Message}", "sealed", operations);
                     goto case "run.completed";
                 case "run.completed":
-                    foreach (var row in _rows.Where(row => row.Entry.State == "open" && row.Entry.InteractionId == run))
+                    foreach (var row in _rows.Where(row => row.Entry.InteractionId == run &&
+                        (row.Entry.State == "open" ||
+                         frame.Type == "run.completed" && frame.Truncated is not true && row.Entry.Kind == "message" && !row.Truncated)).ToArray())
                     {
+                        // Match Notebook provenance: failed, interrupted and truncated replies stay passive.
+                        if (row.Entry.Kind == "message" && !row.Truncated && frame.Type == "run.completed" && frame.Truncated is not true)
+                        {
+                            PutLocked(row.Entry.Id, run, "message", row.Text, "sealed", operations, new FrontendViewPresentation(1, "assistant"));
+                            continue;
+                        }
+                        if (row.Entry.Kind == "tool")
+                        {
+                            PutToolLocked(row.Entry.Id, run, ReadTool(row.Entry.Id) with { Status = "error" }, operations);
+                            continue;
+                        }
                         row.Entry = row.Entry with { State = "sealed" };
                         operations.Add(new FrontendViewOperation("upsert", row.Entry));
                     }
@@ -116,7 +145,8 @@ internal sealed class FrontendConversationView(string sessionId)
                         data.TryGetProperty("text/plain", out var plain) && plain.ValueKind == System.Text.Json.JsonValueKind.String
                         ? plain.GetString() ?? "" : "[富内容请在 Notebook 中查看]";
                     PutLocked($"{run}:display:{frame.DisplayId ?? _rows.Count.ToString(CultureInfo.InvariantCulture)}",
-                        run, frame.Type == "repl.error" ? "diagnostic" : "display", displayText, "sealed", operations);
+                        run, frame.Type == "repl.error" ? "diagnostic" : "display", displayText, "sealed", operations,
+                        frame.Data is { } bundle ? new FrontendViewPresentation(1, "mime", bundle.Clone()) : null);
                     break;
                 case "repl.clear":
                     foreach (var display in _rows.Where(row => row.Entry.InteractionId == run && row.Entry.Kind == "display").ToArray())
@@ -146,7 +176,7 @@ internal sealed class FrontendConversationView(string sessionId)
             if (!_byId.TryGetValue(id, out var row)) throw new FrontendFailureException("not_found", "No view block matches this id.");
             if (row.Entry.ContentRevision != revision)
                 throw new FrontendFailureException("content_revision_gap", "The live block has advanced; read its latest index entry.");
-            return new FrontendViewContent(id, revision, row.Text);
+            return new FrontendViewContent(id, revision, row.Text, row.Presentation);
         }
     }
 
@@ -177,7 +207,7 @@ internal sealed class FrontendConversationView(string sessionId)
     private FrontendViewPage PageLocked(int offset, int limit) => new(sessionId, _epoch, Revision(_revision),
         _rows.Count, _rows.Skip(offset).Take(limit).Select(row => row.Entry).ToArray());
 
-    private void PutLocked(string id, string run, string kind, string text, string state, List<FrontendViewOperation> operations)
+    private void PutLocked(string id, string run, string kind, string text, string state, List<FrontendViewOperation> operations, FrontendViewPresentation? presentation = null)
     {
         var row = _byId.GetValueOrDefault(id);
         if (row is null && _rows.Count >= MaximumEntries - 1)
@@ -185,23 +215,52 @@ internal sealed class FrontendConversationView(string sessionId)
             if (_overflowed) return;
             _overflowed = true;
             id = "view:capacity"; run = "view"; kind = "unavailable";
-            text = "此视图已达到索引容量；请在 Notebook 中打开完整历史。"; state = "sealed";
+            text = "此视图已达到索引容量；请在 Notebook 中打开完整历史。"; state = "sealed"; presentation = null;
         }
-        var available = MaximumRetainedCharacters - _retainedCharacters + (row?.Text.Length ?? 0);
+        var available = MaximumRetainedCharacters - _retainedCharacters + (row?.Size ?? 0);
+        var presentationSize = presentation?.Value?.GetRawText().Length ?? 0;
+        var presentationTruncated = presentationSize > MaximumTextCharacters || presentationSize + text.Length > available;
+        if (presentationTruncated)
+        { presentation = null; presentationSize = 0; text = string.Concat(text.AsSpan(0, Math.Min(text.Length, MaximumTextCharacters - Truncation.Length)), Truncation); }
         var budget = Math.Max(Truncation.Length, available);
         var limit = Math.Min(MaximumTextCharacters, budget);
-        var truncated = text.Length > limit;
-        if (truncated) text = string.Concat(text.AsSpan(0, limit - Truncation.Length), Truncation);
+        var truncated = presentationTruncated || text.Length > limit;
+        if (text.Length > limit) { text = string.Concat(text.AsSpan(0, limit - Truncation.Length), Truncation); presentation = null; presentationSize = 0; }
         // Once the shared budget is exhausted, only a fixed-size unavailable marker is admitted.
-        if (_retainedCharacters + text.Length - (row?.Text.Length ?? 0) > MaximumRetainedCharacters)
-        { text = ""; kind = "unavailable"; truncated = true; }
+        if (_retainedCharacters + text.Length + presentationSize - (row?.Size ?? 0) > MaximumRetainedCharacters)
+        { text = ""; kind = "unavailable"; truncated = true; presentation = null; presentationSize = 0; }
         var contentRevision = Revision(++_revision);
         var entry = new FrontendViewEntry(id, row?.Entry.Ordinal ?? _rows.Count, run, kind,
             contentRevision, kind == "unavailable" && text.Length == 0 ? "正文超出视图缓存容量；请在 Notebook 中查看。" : text[..Math.Min(text.Length, 240)], state);
-        _retainedCharacters += text.Length - (row?.Text.Length ?? 0);
-        if (row is null) { row = new Row(entry, text, truncated); _rows.Add(row); _byId.Add(id, row); }
-        else { row.Entry = entry; row.Text = text; row.Truncated = truncated; }
+        _retainedCharacters += text.Length + presentationSize - (row?.Size ?? 0);
+        if (row is null) { row = new Row(entry, text, truncated, presentation, text.Length + presentationSize); _rows.Add(row); _byId.Add(id, row); }
+        else { row.Entry = entry; row.Text = text; row.Truncated = truncated; row.Presentation = presentation; row.Size = text.Length + presentationSize; }
         operations.Add(new FrontendViewOperation("upsert", entry));
+    }
+
+    private static string ToolStatus(JsonElement? result) =>
+        result is { ValueKind: JsonValueKind.Object } value && value.TryGetProperty("status", out var status) &&
+        status.ValueKind == JsonValueKind.String && status.GetString() == "error" ? "error" : "ok";
+
+    private FrontendViewTool ReadTool(string id) =>
+        _byId.GetValueOrDefault(id)?.Presentation?.Value?.Deserialize(FrontendJsonContext.Default.FrontendViewTool)
+        ?? new FrontendViewTool(id, "tool", "running");
+
+    private void PutToolLocked(string id, string run, FrontendViewTool tool, List<FrontendViewOperation> operations)
+    {
+        // A truncated row has discarded its structured identity; only seal its retained preview.
+        if (_byId.TryGetValue(id, out var row) && row.Truncated)
+        {
+            if (tool.Status != "running" && row.Entry.State == "open")
+            {
+                row.Entry = row.Entry with { State = "sealed" };
+                operations.Add(new FrontendViewOperation("upsert", row.Entry));
+            }
+            return;
+        }
+        PutLocked(id, run, "tool", $"{tool.Tool}\n{tool.Arguments}\n{tool.Progress}\n{tool.Result}",
+            tool.Status == "running" ? "open" : "sealed", operations,
+            new FrontendViewPresentation(1, "tool", JsonSerializer.SerializeToElement(tool, FrontendJsonContext.Default.FrontendViewTool)));
     }
 
     private long _publishedRevision;
@@ -245,10 +304,12 @@ internal sealed class FrontendConversationView(string sessionId)
         return text.ToString();
     }
 
-    private sealed class Row(FrontendViewEntry entry, string text, bool truncated)
+    private sealed class Row(FrontendViewEntry entry, string text, bool truncated, FrontendViewPresentation? presentation, int size)
     {
         internal FrontendViewEntry Entry = entry;
         internal string Text = text;
         internal bool Truncated = truncated;
+        internal FrontendViewPresentation? Presentation = presentation;
+        internal int Size = size;
     }
 }

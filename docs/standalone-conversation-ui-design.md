@@ -154,7 +154,7 @@ own waits, including the first and last observers; accepted actions continue to 
 once. Connection shutdown cancels and joins physical work before transport disposal. Thus the
 shared lifetime is an explicit contract, rather than a side effect of deduplication.
 
-This first integration deliberately retains only bounded passive text: 100,000 index entries,
+The integration retains bounded source and structured presentation snapshots: 100,000 index entries,
 4,000,000 body units per warmed projection, 64,000 units per body, sixteen warmed projections, eight
 subscriptions per session and 256 queued transactions per socket. Over-budget content/index is
 visibly unavailable or labelled as a preview. Idle unsubscribed projections can be evicted;
@@ -162,10 +162,22 @@ rebuilding from canonical committed history starts a new epoch. A missing old bo
 explicitly, and transient output is not persisted. The HTTP/wire contract and limitations are
 specified in [the frontend protocol](web-frontend-protocol.md#passive-conversation-view-version-1).
 
+History now offers a host-owned `mountBlock` surface. The VS Code adapter uses the existing
+`maieutics-output-client` artifact and Notebook's `OutputRenderingBridge`, `FormActorHost`,
+`FormActorGateway` and `UiBridgeViews`; no alternate Markdown parser, Vue runtime adapter, form
+engine or virtual history is introduced. Exact content reads include optional version-one
+presentation descriptors for Markdown, assistant output, structured tools and REPL MIME bundles.
+Source and presentation share the content cache's byte budget. A streaming revision keeps its
+surface and cancels stale preparation; virtual eviction, clear, hide and close release that surface.
+Forms use the existing binary Actor transport and the panel's explicitly pinned session. CSP permits
+only that gateway's resolved origin and the shared compiler's Vue evaluation. Logical source-copy
+stays restricted to plain text; renderer DOM uses native selection. Source-offset mapping, form
+checkpoints, binary MIME resource rendering and raw HTML surfaces remain future work.
+
 There is no pending-input registry, session-owned producer publisher, presentation journal,
-Markdown/SSR integration in this view, form checkpoint implementation, executable iframe or native
-block bridge yet. The richer contracts below are subsequent-stage requirements, not guarantees of
-conversation view version 1. Fixture controls remain local and do not call models or tools.
+executable iframe or native block bridge yet. The richer contracts below are subsequent-stage
+requirements, not guarantees of conversation view version 1. Fixture controls remain local and do
+not call models or tools.
 
 ## Decisions
 

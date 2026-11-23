@@ -221,9 +221,16 @@ produce explicit failure rather than partial text. Copy page jobs contain only `
 resolution happens outside those jobs and schedules independent `readText` work. A copy never holds
 a parent pool slot while awaiting a child request. Coverage includes uncached copies at concurrency
 1 and 4, subsequent page/body requests, and four overlapping browser copy events through a single
-slot with cache retention disabled. The passive text projection matches displayed strings.
-Markdown/source mapping, interactive form checkpoints, iframe/native surfaces, and rich SSR are
-later design stages.
+slot with cache retention disabled. The passive text projection matches displayed strings. Hosts may
+supply `ConversationHost.mountBlock(element)` to attach their existing rendering engine. Each
+surface receives the entry and exact `TextContent`, including optional versioned presentation data;
+it survives streamed revisions and is disposed when its virtual row leaves the viewport. Preparation
+is cancelled on revision changes, and host replacement retires the old surface. Presentation data
+counts against the same cache byte budget as its fallback text. The VS Code host uses this port to
+reuse the existing Notebook output client for Markdown, SSR, Vue, structured tools and live forms;
+the core contains no rendering engine or transport credentials. Rich renderer DOM uses native
+selection, while logical source copy remains restricted to plain-text rows. Markdown/source mapping,
+interactive form checkpoints and iframe/native surfaces are later design stages.
 
 ## Validation
 

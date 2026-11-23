@@ -1,8 +1,11 @@
-import { ConversationError, textBytes } from "./types.ts";
+import { ConversationError, textBytes, type TextContent } from "./types.ts";
 
 /** An exact-revision text cache with atomic admission and explicit active-view pins. */
 export class TextCache {
-  readonly #values = new Map<string, { text: string; bytes: number }>();
+  readonly #values = new Map<
+    string,
+    { text: string; presentation?: TextContent["presentation"]; bytes: number }
+  >();
   #bytes = 0;
   constructor(readonly capacity: number) {}
   get bytes(): number {
@@ -12,14 +15,22 @@ export class TextCache {
     return this.#values.size;
   }
   get(key: string): string | undefined {
+    return this.content(key)?.text;
+  }
+  content(key: string): { text: string; presentation?: TextContent["presentation"] } | undefined {
     const value = this.#values.get(key);
     if (!value) return;
     this.#values.delete(key);
     this.#values.set(key, value);
-    return value.text;
+    return { text: value.text, presentation: value.presentation };
   }
-  put(key: string, text: string, pinned: ReadonlySet<string>): void {
-    const bytes = textBytes(text);
+  put(
+    key: string,
+    text: string,
+    pinned: ReadonlySet<string>,
+    presentation?: TextContent["presentation"],
+  ): void {
+    const bytes = textBytes(text) + (presentation ? textBytes(JSON.stringify(presentation)) : 0);
     let required = this.#bytes - (this.#values.get(key)?.bytes ?? 0) + bytes;
     const evictions: string[] = [];
     for (const [candidate, value] of this.#values) {
@@ -30,7 +41,7 @@ export class TextCache {
     }
     if (required > this.capacity) throw new ConversationError("content_capacity");
     for (const candidate of [...evictions, key]) this.delete(candidate);
-    this.#values.set(key, { text, bytes });
+    this.#values.set(key, { text, presentation, bytes });
     this.#bytes += bytes;
   }
   delete(key: string): void {

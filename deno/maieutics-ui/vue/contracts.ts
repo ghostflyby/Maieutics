@@ -1,6 +1,15 @@
+import type { ConversationEntry, TextContent } from "../core/types.ts";
+
+/** A host-owned surface survives revisions, and is released with its virtual row. */
+export interface ConversationBlockSurface {
+  render(entry: ConversationEntry, content: TextContent, signal: AbortSignal): Promise<void>;
+  dispose(): void;
+}
+
 /** Browser-only host capabilities. Credentials and native handles stay outside the component. */
 export interface ConversationHost {
   writeText(text: string): Promise<void>;
+  mountBlock?(element: HTMLElement): ConversationBlockSurface;
 }
 /** The draft snapshot remains provisional until the host confirms acceptance. */
 export interface ConversationSubmission {

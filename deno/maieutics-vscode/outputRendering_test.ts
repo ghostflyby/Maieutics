@@ -732,3 +732,133 @@ Deno.test("code copy requests are bounded and report clipboard failure without l
     await bridge.dispose();
   }
 });
+
+Deno.test("event admission releases view request slots while the bridge owns coalesced SSR", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const published = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  const bridge = new OutputRenderingBridge({
+    async render(_id, text) {
+      calls.push(text);
+      if (text === "first") {
+        entered.resolve();
+        await release.promise;
+      }
+      return snapshot(text);
+    },
+    post(message) {
+      if ((message as { requestId?: string }).requestId === "r101") published.resolve();
+      return Promise.resolve();
+    },
+    log: () => {},
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) =>
+    timer = setTimeout(
+      () => reject(new Error("SSR admission or publication exceeded its event budget")),
+      2000,
+    )
+  );
+  try {
+    await bridge.handle(request(1, "first"), { waitForIdle: false });
+    await entered.promise;
+    await Promise.race([
+      Promise.all(
+        Array.from(
+          { length: 100 },
+          (_, index) => bridge.handle(request(index + 2), { waitForIdle: false }),
+        ),
+      ),
+      deadline,
+    ]);
+    assertEquals(
+      calls,
+      ["first"],
+      "event admission must coalesce updates without waiting for the active render",
+    );
+    release.resolve();
+    await Promise.race([published.promise, deadline]);
+    assertEquals(calls, ["first", "101"]);
+  } finally {
+    clearTimeout(timer);
+    release.resolve();
+    await bridge.dispose();
+  }
+});
+
+Deno.test("a recovered pump clears its failure before disposal after draining queued work", async () => {
+  const entered = Promise.withResolvers<void>();
+  const fail = Promise.withResolvers<void>();
+  const recovering = Promise.withResolvers<void>();
+  const recover = Promise.withResolvers<void>();
+  const pumpError = new Error("unexpected pump diagnostic failure");
+  const calls: string[] = [];
+  const posted: unknown[] = [];
+  const bridge = new OutputRenderingBridge({
+    async render(_id, text) {
+      calls.push(text);
+      if (text === "first") {
+        entered.resolve();
+        await fail.promise;
+        throw new Error("request failure");
+      }
+      if (text === "second") {
+        recovering.resolve();
+        await recover.promise;
+      }
+      return snapshot(text);
+    },
+    post(message) {
+      posted.push(message);
+      return Promise.resolve();
+    },
+    // An exception escaping the request failure handler fails the owning pump itself.
+    log: () => {
+      throw pumpError;
+    },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) =>
+    timer = setTimeout(() => reject(new Error("pump recovery protocol did not complete")), 2000)
+  );
+  const first = bridge.handle(request(1, "first")).then(() => undefined, (error) => error);
+  try {
+    await Promise.race([entered.promise, deadline]);
+    await bridge.handle(request(2, "second"), { waitForIdle: false });
+    fail.resolve();
+    assertEquals(await Promise.race([first, deadline]), pumpError);
+    await Promise.race([recovering.promise, deadline]);
+    const drained = bridge.handle(request(3, "third"));
+    recover.resolve();
+    await Promise.race([drained, deadline]);
+    assertEquals(calls, ["first", "second", "third"]);
+    assertEquals(posted, [{
+      source: "maieutics-output",
+      documentId: "doc",
+      requestId: "r3",
+      type: "rendered",
+      html: "third",
+      css: "",
+    }]);
+  } finally {
+    clearTimeout(timer);
+    fail.resolve();
+    recover.resolve();
+    await bridge.dispose();
+  }
+});
+
+Deno.test("an unrecovered pump failure remains observable on disposal", async () => {
+  const pumpError = new Error("unrecovered pump diagnostic failure");
+  const bridge = new OutputRenderingBridge({
+    render: () => Promise.reject(new Error("request failure")),
+    post: () => Promise.resolve(),
+    log: () => {
+      throw pumpError;
+    },
+  });
+  const failure = await bridge.handle(request(1)).then(() => undefined, (error) => error);
+  assertEquals(failure, pumpError);
+  assertEquals(await bridge.dispose().then(() => undefined, (error) => error), pumpError);
+});

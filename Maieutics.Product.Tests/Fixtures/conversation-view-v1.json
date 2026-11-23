@@ -44,5 +44,28 @@
     },
     "activeRunId": "run"
   },
-  "content": { "entryId": "run:message:answer", "revision": "8", "text": "回答" }
+  "content": {
+    "entryId": "run:message:answer",
+    "revision": "8",
+    "text": "回答"
+  },
+  "richContent": {
+    "entryId": "run:display:form",
+    "revision": "9",
+    "text": "form fallback",
+    "presentation": {
+      "version": 1,
+      "kind": "mime",
+      "value": {
+        "application/vnd.maieutics.form+json": {
+          "version": 1,
+          "modelId": "form",
+          "state": {
+            "fields": [],
+            "values": {}
+          }
+        }
+      }
+    }
+  }
 }

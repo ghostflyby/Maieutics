@@ -60,6 +60,8 @@ public sealed class FrontendApiIntegrationTests
         var id = Uri.EscapeDataString(entry.GetProperty("id").GetString() ?? throw new InvalidOperationException("Missing block id"));
         var content = await harness.Client.GetFromJsonAsync<JsonElement>($"/v1/agent/sessions/{sessionId}/view/blocks/{id}?epoch={epoch}&revision={entry.GetProperty("contentRevision").GetString()}", deadline.Token);
         Assert.Equal(Answer, content.GetProperty("text").GetString());
+        Assert.Equal(1, content.GetProperty("presentation").GetProperty("version").GetInt32());
+        Assert.Equal("assistant", content.GetProperty("presentation").GetProperty("kind").GetString());
         using var stale = await harness.Client.GetAsync($"/v1/agent/sessions/{sessionId}/view/entries?epoch=stale", deadline.Token);
         Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
     }

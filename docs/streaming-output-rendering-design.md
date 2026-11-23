@@ -87,6 +87,22 @@ child lazily for authenticated rendering requests. The VS Code bridge applies co
 only to the current output revision; unsupported or failed rendering retains native Markdown.
 Opening an offline notebook never starts a kernel solely for rendering.
 
+The editor-area conversation view also reuses this same client artifact. Its existing virtual
+history mounts one host-owned rendering surface per admitted block. The executable's exact-content
+reply carries optional versioned presentation data; Markdown/assistant source stays in `text`, tools
+retain structured arguments/results, and REPL displays retain their MIME bundle. The extension
+adapts those descriptors to the existing browser renderer and reuses `OutputRenderingBridge` for
+SSR, completed Vue and clipboard receipts. Live forms reuse the existing binary Actor gateway and
+pinned-session comm adapter. Streaming updates retain the current surface; recycling or closing it
+disposes its output/component attachment. The composer remains independently mounted.
+Once a tool row exceeds its presentation budget, later completion only seals its retained text
+preview; discarded structured identity is never reconstructed into an empty tool. An unexpected
+rendering-pump failure remains observable until a subsequent pump successfully drains its work;
+recovery clears the old failure before disposal, while an unrecovered failure is still reported.
+Conversation HTML MIME is inert source; binary object references and durable form checkpoints are
+not yet adapted. Rendered-text selection uses native DOM selection until a source-offset adapter
+exists; the plain-text logical-copy contract is unchanged.
+
 ## Ownership and data flow
 
 ```text

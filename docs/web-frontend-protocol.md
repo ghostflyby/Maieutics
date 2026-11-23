@@ -23,7 +23,7 @@ query-token authentication; a VS Code extension host keeps this credential outsi
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /v1/agent/sessions/{sid}/view/events`                            | Server-to-client WebSocket. First frame is an atomic `view.snapshot`; subsequent frames are contiguous `view.change` transactions. |
 | `GET /v1/agent/sessions/{sid}/view/entries?epoch=E&offset=N&limit=80` | HTTP request/reply index page. `offset` is a nonnegative logical ordinal; omitted means the newest page. `limit` is 1–80.          |
-| `GET /v1/agent/sessions/{sid}/view/blocks/{id}?epoch=E&revision=R`    | HTTP request/reply exact, bounded text body. Both epoch and revision are required.                                                 |
+| `GET /v1/agent/sessions/{sid}/view/blocks/{id}?epoch=E&revision=R`    | HTTP request/reply exact, bounded source and optional presentation. Both epoch and revision are required.                                                 |
 
 The socket subscription and its initial page are captured under the same projection lock. Clients
 open the socket first, install its snapshot, and consume every successor transaction while loading
@@ -35,7 +35,15 @@ separate attachment lease or an unconnected-lease timeout in this version.
 An entry has `id`, `ordinal`, `interactionId`, `kind`, decimal-string `contentRevision`, bounded
 `preview`, and `state` (`open` or `sealed`). Kinds are `input`, `message`, `tool`,
 `reasoning-summary`, `display`, `diagnostic`, and `unavailable`. Content replies contain `entryId`,
-`revision`, and `text`. A change contains `epoch`, `baseRevision`, `revision`, `total`, and
+`revision`, and `text`. New servers may include `presentation: {"version":1,"kind":...,"value":...}`.
+Kinds are `markdown` (passive source), `assistant` (canonical or run-owned assistant source, selected
+by the authenticated host for the existing assistant rendering endpoint only after a successful,
+untruncated run; streaming and interrupted replies remain passive Markdown), `tool` (structured call
+identity/name/status/arguments/result/latest progress), and `mime` (the original REPL MIME bundle).
+Source for Markdown and assistant lanes is the containing `text`; other lanes use `value`. Clients
+ignore unknown versions/kinds and use the text fallback. Presentation descriptors are data, never
+compiled code or persisted execution authority. Metadata pages never embed bodies or MIME bundles.
+A change contains `epoch`, `baseRevision`, `revision`, `total`, and
 `operations: [{"type":"upsert","entry":...}]`. IDs and ordinals remain stable within an epoch; the
 projection cursor is independent of every run-local event sequence. Clear-output replaces display
 rows with explicit unavailable entries rather than renumbering later rows.
@@ -49,8 +57,9 @@ Old-epoch pages/content fail with `409 epoch_changed`; a replaced content revisi
 `409 content_revision_gap`, never substituted text. Unknown fields are tolerated.
 
 Each warmed session projection is limited to 100,000 entries and 4,000,000 retained UTF-16 body
-units. A body is at most 64,000 units; oversized bodies include an explicit preview notice. Body
-capacity produces visible unavailable entries; index capacity reserves its last entry for an
+units, including serialized structured presentation values. Source text and a serialized
+presentation value are each at most 64,000 units; oversized bodies include an explicit preview
+notice. Body capacity produces visible unavailable entries; index capacity reserves its last entry for an
 explicit capacity marker. The cache admits sixteen projections, evicting only idle, unsubscribed,
 unreserved projections. Each session admits eight sockets with 256 queued transactions per socket;
 overflow closes that connection with code 1011 (`view_backpressure`) and requires a fresh snapshot.
@@ -61,9 +70,10 @@ Notebook turns. If such a turn started without a projection, opening one mid-run
 Current bodies and display-only history are ephemeral. Eviction/process restart creates a new epoch
 seeded from committed transcript messages; cancelled partial output, permitted display-only
 reasoning summaries and transient REPL displays may disappear. Existing transcript message parts are
-presented as passive text; non-text REPL content has an explicit Notebook fallback. This capability
-does not advertise rich rendering, form restoration, cross-run publishers, persisted presentation
-history, a pending-input registry, or resumable projection replay. Input/approval/IDE interactions
+presented through versioned descriptors when available; unknown or oversized presentations retain
+a labelled text fallback. Rendering support is negotiated separately through `rendering` and `comm`
+capabilities. This capability does not advertise durable form restoration, cross-run publishers,
+persisted presentation history, a pending-input registry, or resumable projection replay. Input/approval/IDE interactions
 still use the existing events and answer endpoints, independently of this view socket.
 
 Closing a view socket cancels only its subscription and pending view requests. The executable

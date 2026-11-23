@@ -38,8 +38,15 @@ internal sealed record FrontendViewEntry(string Id, int Ordinal, string Interact
 internal sealed record FrontendViewPage(string SessionId, string Epoch, string Revision, int Total,
     FrontendViewEntry[] Entries);
 
-/// <summary>Exact bounded text at a block revision.</summary>
-internal sealed record FrontendViewContent(string EntryId, string Revision, string Text);
+/// <summary>Exact bounded text and optional presentation data at a block revision.</summary>
+internal sealed record FrontendViewContent(string EntryId, string Revision, string Text, FrontendViewPresentation? Presentation = null);
+
+/// <summary>Host-selected rendering lane; source text remains in the containing content record.</summary>
+internal sealed record FrontendViewPresentation(int Version, string Kind, JsonElement? Value = null);
+
+/// <summary>Structured tool activity, shared across revisions without flattening arguments or results.</summary>
+internal sealed record FrontendViewTool(string CallId, string Tool, string Status, JsonElement? Arguments = null,
+    JsonElement? Result = null, string? Progress = null);
 
 /// <summary>A metadata replacement in an ordered projection transaction.</summary>
 internal sealed record FrontendViewOperation(string Type, FrontendViewEntry Entry);
@@ -483,6 +490,7 @@ internal sealed record FrontendPromptList(
 [JsonSerializable(typeof(FrontendViewContent))]
 [JsonSerializable(typeof(FrontendViewFrame))]
 [JsonSerializable(typeof(FrontendRenderMarkdown))]
+[JsonSerializable(typeof(FrontendViewTool))]
 [JsonSerializable(typeof(FrontendRenderedMarkdown))]
 [JsonSerializable(typeof(FrontendRendererReady))]
 [JsonSerializable(typeof(FrontendSkillList))]

@@ -4,6 +4,8 @@
 import { ConversationRuntime, type ConversationSubmission, type ConversationViewState, mountConversationComposer, mountConversationHistory } from "../../maieutics-ui/mod.ts";
 import type { ViewAddress, ViewEvent, ViewFrame, ViewPage, ViewRequest, ViewResponse } from "../conversationProtocol.ts";
 
+import { createConversationSurfaces } from "./presentation.ts";
+
 import { ViewRequests } from "./requests.ts";
 
 declare function acquireVsCodeApi(): { postMessage(value: unknown): void; setState(value: unknown): void };
@@ -14,6 +16,8 @@ const owner = new AbortController();
 const requests = new ViewRequests(config, (value) => vscode.postMessage(value), owner.signal);
 const send = (method: ViewRequest["method"], params?: Record<string, unknown>) => requests.send(method, params);
 const request = <T>(method: ViewRequest["method"], params?: Record<string, unknown>, caller?: AbortSignal): Promise<T> => requests.request<T>(method, params, caller);
+
+const surfaces = createConversationSurfaces((message) => send("presentation", { message }));
 
 const element = (id: string) => document.getElementById(id)!;
 const status = element("status");
@@ -76,7 +80,7 @@ async function apply(frame: ViewFrame): Promise<void> {
     history = mountConversationHistory(element("history"), {
       view,
       title: "对话历史",
-      host: { writeText: (text) => request("copy", { text }) },
+      host: { writeText: (text) => request("copy", { text }), mountBlock: surfaces.mountBlock },
     });
     composer = mountConversationComposer(element("composer"), { view, onSubmit: (submission) => void submit(submission).catch(fail) });
   } else {
@@ -108,6 +112,8 @@ globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewE
   if (!message || message.version !== 1 || message.viewId !== config.viewId || message.sessionId !== config.sessionId || message.generation !== config.generation) return;
   if ("id" in message) {
     requests.receive(message);
+  } else if (message.event === "presentation") {
+    void surfaces.receive(message.value).catch(fail);
   } else if (message.event === "draft" && typeof message.value === "string") {
     draft = message.value;
     view?.setDraft(draft);
@@ -124,7 +130,8 @@ globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewE
   }
 }, { signal: owner.signal });
 globalThis.addEventListener("pagehide", () => {
-  owner.abort();
   clear();
+  void surfaces.dispose().catch(fail);
+  owner.abort();
 }, { once: true });
 void request("ready").catch(fail);

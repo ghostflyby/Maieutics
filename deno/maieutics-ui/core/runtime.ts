@@ -14,6 +14,7 @@ import {
   defaultLimits,
   type PageLoadProgress,
   textBytes,
+  type TextContent,
 } from "./types.ts";
 
 type Listener = () => void;
@@ -107,9 +108,9 @@ export class ConversationRuntime {
     }
     return keys;
   }
-  #remember(key: string, text: string): void {
+  #remember(key: string, text: string, presentation?: TextContent["presentation"]): void {
     try {
-      this.#cache.put(key, text, this.#contentPins());
+      this.#cache.put(key, text, this.#contentPins(), presentation);
     } catch (error) {
       // Admission is optional; mounted readers still receive exact text when pins fill the cache.
       if (!(error instanceof ConversationError && error.code === "content_capacity")) throw error;
@@ -226,12 +227,16 @@ export class ConversationRuntime {
     for (const operation of change.operations) {
       const id = operation.type === "upsert" ? operation.entry.id : operation.id;
       if (operation.type === "append") {
-        const cached = this.#cache.get(contentKey(id, operation.baseRevision));
+        const cached = this.#cache.content(contentKey(id, operation.baseRevision));
         if (
           cached !== undefined &&
-          cached.length + operation.text.length <= this.limits.contentCharacters
+          cached.text.length + operation.text.length <= this.limits.contentCharacters
         ) {
-          this.#remember(contentKey(id, operation.revision), cached + operation.text);
+          this.#remember(
+            contentKey(id, operation.revision),
+            cached.text + operation.text,
+            cached.presentation,
+          );
         }
       }
       this.#notify(id);
@@ -248,22 +253,30 @@ export class ConversationRuntime {
   }
   /** Deliver exact text even when pinned cache entries leave no retention capacity. */
   readText(id: string, revision: string, caller?: AbortSignal): Promise<string> {
+    return this.readContent(id, revision, caller).then((content) => content.text);
+  }
+  /** Resolve text and its presentation together under the same exact revision and cache budget. */
+  readContent(id: string, revision: string, caller?: AbortSignal): Promise<TextContent> {
     this.signal.throwIfAborted();
     caller?.throwIfAborted();
     const key = contentKey(id, revision);
-    const cached = this.#cache.get(key);
-    if (cached !== undefined) return Promise.resolve(cached);
+    const cached = this.#cache.content(key);
+    if (cached !== undefined) return Promise.resolve({ entryId: id, revision, ...cached });
     return this.#tasks.run(async (signal) => {
       const content = await this.#source.readContent(id, revision, signal);
       signal.throwIfAborted();
       if (content.entryId !== id || content.revision !== revision) {
         throw new ConversationError("content_revision_gap");
       }
-      if (content.text.length > this.limits.contentCharacters) {
+      if (
+        content.text.length > this.limits.contentCharacters ||
+        (content.presentation &&
+          JSON.stringify(content.presentation).length > this.limits.contentCharacters)
+      ) {
         throw new ConversationError("content_limit");
       }
-      this.#remember(key, content.text);
-      return content.text;
+      this.#remember(key, content.text, content.presentation);
+      return content;
     }, caller);
   }
   attachView(id: string): ConversationViewState {

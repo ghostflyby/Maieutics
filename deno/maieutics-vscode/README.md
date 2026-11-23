@@ -237,10 +237,12 @@ On macOS the real-editor runner normally launches a hidden window. Set
 `MAIEUTICS_VSCODE_FOREGROUND=1` for a visible instance when verifying native focus behavior; the
 runner still owns and closes that isolated instance.
 
-Conversation assets are packaged locally. The webview has no network permission; all authenticated
-HTTP/WebSocket activity remains in the extension host. Copy uses the host clipboard only after the
-user's copy action. The browser build needs read/write/run permissions for bundling and copying
-assets; it adds no kernel or Deno runtime grants.
+Conversation assets are packaged locally. Kernel-authenticated HTTP/WebSocket activity remains in
+the extension host. For live forms, the webview CSP admits only the resolved origin of the
+extension-owned binary Actor gateway; the browser receives a generation-bound, one-use capability
+instead of kernel credentials. Copy uses the host clipboard only after the user's copy action. The
+browser build needs read/write/run permissions for bundling and copying assets; it adds no kernel
+or Deno runtime grants.
 
 The IDE file-system bridge receives standalone requests on the session socket even when no Agent
 turn is active, and serves them through the editor's workspace APIs under the kernel's existing

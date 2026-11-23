@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { assertEquals, assertRejects } from "@std/assert";
 import { type PluginConfig, PluginHost } from "./host.ts";
 
@@ -6,6 +7,7 @@ import { type PluginConfig, PluginHost } from "./host.ts";
 // references. A stopped worker keeps its registry entries and is restarted on
 // demand by an invoke or an acquire.
 
+const IDLE_GRACE = 60_000;
 const SDK_URL = new URL("../maieutics-plugin-sdk/entry.ts", import.meta.url).href;
 const WORKER_ENTRY_URL = new URL("./worker_entry.ts", import.meta.url).href;
 
@@ -17,7 +19,7 @@ function createWorkerPlugin(dir: string, id: string, source: string): PluginConf
     permissions: { read: [dir] },
     workers: [{
       exportName: "./main",
-      entryUrl: new URL(`file://${dir}/mod.ts`).href,
+      entryUrl: pathToFileURL(`${dir}/mod.ts`).href,
       specifier: `@maieutics/${id}/main`,
     }],
   };
@@ -27,14 +29,33 @@ function hookSource(body: string): string {
   return `import { defineExtensionPoint } from ${JSON.stringify(SDK_URL)};\n${body}\n`;
 }
 
-function makeHost(plugins: PluginConfig[], idleGraceMs = 1_000): PluginHost {
-  return new PluginHost({
-    sdkUrl: SDK_URL,
-    workerEntryUrl: WORKER_ENTRY_URL,
-    plugins: [...plugins],
-    storageDataRoot: Deno.makeTempDirSync(),
-    idleGraceMs,
-  });
+class LifecycleFixture implements AsyncDisposable {
+  readonly #root = Deno.makeTempDirSync();
+  #host?: PluginHost;
+
+  plugin(id: string): PluginConfig {
+    const directory = Deno.makeTempDirSync({ dir: this.#root });
+    return createWorkerPlugin(directory, id, hookSource(PASS_HOOK));
+  }
+
+  start(plugins: PluginConfig[]): PluginHost {
+    this.#host = new PluginHost({
+      sdkUrl: SDK_URL,
+      workerEntryUrl: WORKER_ENTRY_URL,
+      plugins,
+      storageDataRoot: this.#root,
+      idleGraceMs: IDLE_GRACE,
+    });
+    return this.#host;
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    try {
+      await this.#host?.shutdown();
+    } finally {
+      await Deno.remove(this.#root, { recursive: true });
+    }
+  }
 }
 
 const PASS_HOOK = `export const hook = defineExtensionPoint("ToolPreInvoke", {
@@ -43,99 +64,52 @@ const PASS_HOOK = `export const hook = defineExtensionPoint("ToolPreInvoke", {
   },
 });`;
 
-async function waitFor(condition: () => boolean, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error("condition not met in time");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-}
-
-Deno.test("an unreferenced worker is reclaimed after the idle grace", async () => {
-  const dir = Deno.makeTempDirSync();
-  const plugin = createWorkerPlugin(dir, "idle", hookSource(PASS_HOOK));
-  const host = makeHost([plugin], 1_000);
+Deno.test("idle reclamation preserves registrations and the next invocation wakes the worker", async () => {
+  await using fixture = new LifecycleFixture();
+  const host = fixture.start([fixture.plugin("idle")]);
+  const startedAt = Date.now();
   await host.startAll();
 
-  // An invocation references the worker: it stays running through the grace.
-  const decision = await host.invoke("idle", "./main", "ToolPreInvoke", {}) as {
-    action: string;
-  };
-  assertEquals(decision.action, "pass");
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assertEquals(host.states()[0].state, "running");
+  const sweep = Date.now();
+  await host.reclaimIdleWorkers(sweep);
+  await host.reclaimIdleWorkers(startedAt + IDLE_GRACE - 1);
+  assertEquals(host.states()[0].state, "running", "the idle grace has not elapsed");
 
-  // Zero references for the whole grace: reclaimed.
-  await waitFor(() => host.states()[0].state === "stopped", 3_000);
-  assertEquals(host.states()[0].state, "stopped");
-  // Registration survives termination (Service-Worker registrations persist).
-  assertEquals(host.extensions.length, 1);
-  await host.dispose();
+  await host.reclaimIdleWorkers(sweep + IDLE_GRACE);
+  assertEquals(host.states()[0].state, "stopped", "the completed sweep must reclaim the worker");
+  assertEquals(host.extensions.map((entry) => entry.extensionPoint), ["ToolPreInvoke"]);
+
+  const result = await host.invoke("idle", "./main", "ToolPreInvoke", {});
+  assertEquals(result, { action: "pass" });
+  assertEquals(host.states()[0].state, "running", "the invocation must restart the worker");
 });
 
-Deno.test("an invoke on a reclaimed worker restarts it on demand", async () => {
-  const dir = Deno.makeTempDirSync();
-  const plugin = createWorkerPlugin(dir, "woken", hookSource(PASS_HOOK));
-  const host = makeHost([plugin], 300);
-  await host.startAll();
-  await host.invoke("woken", "./main", "ToolPreInvoke", {});
-  await waitFor(() => host.states()[0].state === "stopped", 3_000);
-
-  // The wake: invoking the stopped worker restarts it and dispatches.
-  const decision = await host.invoke("woken", "./main", "ToolPreInvoke", {}) as {
-    action: string;
-  };
-  assertEquals(decision.action, "pass");
-  assertEquals(host.states()[0].state, "running");
-  await host.dispose();
-});
-
-Deno.test("a running consumer pins its dependency from reclamation", async () => {
-  const providerDir = Deno.makeTempDirSync();
-  const provider = createWorkerPlugin(
-    providerDir,
-    "provider",
-    hookSource(PASS_HOOK),
-  );
-  const consumerDir = Deno.makeTempDirSync();
-  const consumer = createWorkerPlugin(
-    consumerDir,
-    "consumer",
-    hookSource(PASS_HOOK),
-  );
-  // The consumer declares the provider as a dependency: while the consumer
-  // runs, the provider is pinned.
+Deno.test("a running consumer pins its dependency until reclamation stops the consumer", async () => {
+  await using fixture = new LifecycleFixture();
+  const provider = fixture.plugin("provider");
+  const consumer = fixture.plugin("consumer");
   consumer.dependencies = ["provider"];
-  const host = makeHost([provider, consumer], 300);
+  const host = fixture.start([provider, consumer]);
   await host.startAll();
+  const state = () =>
+    Object.fromEntries(host.states().map((entry) => [entry.pluginId, entry.state]));
 
-  // Keep the consumer referenced while the grace elapses twice over.
-  const deadline = Date.now() + 900;
-  while (Date.now() < deadline) {
-    await host.invoke("consumer", "./main", "ToolPreInvoke", {});
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  const sweep = Date.now();
+  await host.reclaimIdleWorkers(sweep);
+  await host.reclaimIdleWorkers(sweep + IDLE_GRACE);
+  assertEquals(
+    state(),
+    { provider: "running", consumer: "stopped" },
+    "the provider was pinned during the sweep that stopped the consumer",
+  );
 
-  const providerState = host.states().find((state) => state.pluginId === "provider");
-  assertEquals(providerState?.state, "running", "the pinned provider must survive");
-
-  // The consumer stops being referenced and is reclaimed; the provider then
-  // loses its pin and follows.
-  await waitFor(() => host.states().every((state) => state.state === "stopped"), 5_000);
-  await host.dispose();
-});
-
-Deno.test("a stopped worker keeps its registry entries", async () => {
-  const dir = Deno.makeTempDirSync();
-  const plugin = createWorkerPlugin(dir, "registered", hookSource(PASS_HOOK));
-  const host = makeHost([plugin], 300);
-  const registered = await host.startAll();
-  assertEquals(registered.length, 1);
-  await waitFor(() => host.states()[0].state === "stopped", 3_000);
-  // Registrations survive termination — the kernel keeps routing by them.
-  assertEquals(host.extensions.length, 1);
-  assertEquals(host.extensions[0].extensionPoint, "ToolPreInvoke");
-  await host.dispose();
+  await host.reclaimIdleWorkers(sweep + IDLE_GRACE);
+  await host.reclaimIdleWorkers(sweep + 2 * IDLE_GRACE);
+  assertEquals(
+    state(),
+    { provider: "stopped", consumer: "stopped" },
+    "the provider is reclaimable after its consumer stops",
+  );
 });
 
 // ADR 0037 — revocation and activation: `stop` closes a worker and its dependents
@@ -144,9 +118,8 @@ Deno.test("a stopped worker keeps its registry entries", async () => {
 // dependents a stop cascade closed.
 
 Deno.test("stop removes the worker and its registrations from the host set", async () => {
-  const dir = Deno.makeTempDirSync();
-  const plugin = createWorkerPlugin(dir, "revoked", hookSource(PASS_HOOK));
-  const host = makeHost([plugin], 60_000);
+  await using fixture = new LifecycleFixture();
+  const host = fixture.start([fixture.plugin("revoked")]);
   await host.startAll();
   const decision = await host.invoke("revoked", "./main", "ToolPreInvoke", {}) as {
     action: string;
@@ -165,19 +138,16 @@ Deno.test("stop removes the worker and its registrations from the host set", asy
     Error,
     "No worker for key",
   );
-  await host.dispose();
 });
 
 Deno.test("a reload with a replacement creates a worker the host does not know", async () => {
-  const dir = Deno.makeTempDirSync();
-  const bootPlugin = createWorkerPlugin(dir, "boot", hookSource(PASS_HOOK));
-  const host = makeHost([bootPlugin], 60_000);
+  await using fixture = new LifecycleFixture();
+  const host = fixture.start([fixture.plugin("boot")]);
   await host.startAll();
 
   // The activated plugin was never in the boot config; its upsert reload must
   // create and start it (the approval activation path rides this).
-  const activatedDir = Deno.makeTempDirSync();
-  const activated = createWorkerPlugin(activatedDir, "activated", hookSource(PASS_HOOK));
+  const activated = fixture.plugin("activated");
   await host.reload("activated", "./main", activated);
 
   const decision = await host.invoke("activated", "./main", "ToolPreInvoke", {}) as {
@@ -188,16 +158,14 @@ Deno.test("a reload with a replacement creates a worker the host does not know",
     host.states().map((state) => state.pluginId).sort(),
     ["activated", "boot"],
   );
-  await host.dispose();
 });
 
 Deno.test("stop cascades to dependents and an upsert reload restarts the closure", async () => {
-  const providerDir = Deno.makeTempDirSync();
-  const provider = createWorkerPlugin(providerDir, "provider", hookSource(PASS_HOOK));
-  const consumerDir = Deno.makeTempDirSync();
-  const consumer = createWorkerPlugin(consumerDir, "consumer", hookSource(PASS_HOOK));
+  await using fixture = new LifecycleFixture();
+  const provider = fixture.plugin("provider");
+  const consumer = fixture.plugin("consumer");
   consumer.dependencies = ["provider"];
-  const host = makeHost([provider, consumer], 60_000);
+  const host = fixture.start([provider, consumer]);
   await host.startAll();
   assertEquals(
     host.states().map((state) => state.state).every((state) => state === "running"),
@@ -229,5 +197,4 @@ Deno.test("stop cascades to dependents and an upsert reload restarts the closure
     action: string;
   };
   assertEquals(decision.action, "pass");
-  await host.dispose();
 });

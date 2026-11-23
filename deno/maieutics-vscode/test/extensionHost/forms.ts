@@ -3,8 +3,8 @@ import * as vscode from "vscode";
 import { FormActorHost } from "../../runtime/formActorHost.js";
 import { FormActorGateway } from "../../formActorGateway.ts";
 
-/** Exercise the shared Vue components and the actual notebook adapter in a real browser. */
-export async function testVueFormsAsync(): Promise<void> {
+/** Exercise the actual notebook adapter and its host-issued Actor channel. */
+export async function testNotebookFormActorAsync(): Promise<void> {
   const extension = vscode.extensions.getExtension("ghostflyby.maieutics-vscode");
   if (!extension) throw new Error("Maieutics extension missing");
   const panel = vscode.window.createWebviewPanel("maieutics-form-test", "Vue form regression", {
@@ -61,58 +61,9 @@ export async function testVueFormsAsync(): Promise<void> {
       const vscode = acquireVsCodeApi();
       const assert = (value, message) => { if (!value) throw new Error(message); };
       try {
-        const module = await import(${JSON.stringify(asset("outputClient.js"))});
         const adapter = await import(${JSON.stringify(asset("formRenderer.js"))});
-        const messages = [];
-        const client = module.createFormRenderer({ sendMessage: (message) => messages.push(message) });
         const element = () => { const value = document.createElement('div'); document.body.append(value); return value; };
-        const state = { title: 'Original', fields: [
-          {name:'text',type:'text',required:true}, {name:'number',type:'number'},
-          {name:'ok',type:'boolean'}, {name:'pick',type:'choice',choices:['a','b']}, {name:'secret',type:'password'}
-        ], values: {text:'initial',number:1,ok:false,pick:'a',secret:''} };
-        const output = {version:1,modelId:'model',state};
-        const first = element(); client.render('one', output, first);
-        const root = first.shadowRoot;
-        assert(root.querySelector('fieldset').disabled, 'no actions before the kernel confirms a live model');
-        await client.receive({source:'maieutics-form',type:'state',modelId:'model',state});
-        assert(!root.querySelector('fieldset').disabled, 'live model enables the form');
-        const input = root.querySelector('[name=text]'); input.focus(); input.value='typed'; input.dispatchEvent(new Event('input'));
-        const number = root.querySelector('[name=number]'); number.value='2.5'; number.dispatchEvent(new Event('input'));
-        const ok = root.querySelector('[name=ok]'); ok.checked=true; ok.dispatchEvent(new Event('input'));
-        const pick = root.querySelector('[name=pick]'); pick.value='b'; pick.dispatchEvent(new Event('change'));
-        const secret = root.querySelector('[name=secret]'); secret.value='value'; secret.dispatchEvent(new Event('input'));
-        await module.vueUpdatesComplete();
-        await client.receive({source:'maieutics-form',type:'state',modelId:'model',state:{...state,title:'Updated'}});
-        assert(root.querySelector('[name=text]') === input && input.value === 'typed', 'state updates preserve edited controls');
-        assert(root.activeElement === input, 'state updates preserve input focus');
-        client.render('one', output, first);
-        assert(root.querySelector('[name=text]') === input, 'duplicate output retains the Vue app');
-        root.querySelector('.submit').click();
-        const submitted = messages.find((message) => message.name === 'submit');
-        assert(JSON.stringify(submitted?.payload.values) === JSON.stringify({text:'typed',number:2.5,ok:true,pick:'b',secret:'value'}), 'submit gathers the real mounted field values');
-        root.querySelector('.cancel').click(); assert(messages.at(-1).name === 'cancel', 'cancel reaches the host');
-        const second = element(); client.render('two', output, second);
-        await client.receive({source:'maieutics-form',type:'state',modelId:'model',state:{...state,title:'Shared'}});
-        assert(root.querySelector('.title').textContent === 'Shared' && second.shadowRoot.querySelector('.title').textContent === 'Shared', 'two views share backend state');
-        const oldButton = root.querySelector('.cancel'); const before = messages.length;
-        client.disposeOutput('one'); oldButton.click();
-        assert(messages.length === before + 1 && messages.at(-1).type === 'unmount', 'unmount releases handlers without closing the shared model');
-        second.shadowRoot.querySelector('.cancel').click(); assert(messages.at(-1).name === 'cancel', 'the other view remains functional');
-        await client.receive({source:'maieutics-form',type:'closed',modelId:'model'});
-        assert(second.shadowRoot.querySelector('fieldset').disabled, 'closed models become readonly snapshots');
-        const frozen = element(); const prior = messages.length;
-        client.render('frozen', {...output,snapshot:true,esmSource:'globalThis.executedOldSource=true'}, frozen);
-        await client.receive({source:'maieutics-form',type:'state',modelId:'model',state});
-        assert(frozen.shadowRoot.querySelector('fieldset').disabled && messages.length === prior, 'saved forms neither connect nor acquire live authority');
-        assert(globalThis.executedOldSource === undefined, 'legacy component source is inert data');
-        client.dispose(); client.dispose();
-        let rejected = false; try { client.render('late', output, element()); } catch { rejected = true; }
-        assert(rejected, 'terminal disposal rejects future mounts');
-        const cleanup = module.createFormRenderer({sendMessage(message){if(message.type === 'unmount') throw new Error('host closed');}});
-        const cleanupA = element(), cleanupB = element();
-        cleanup.render('cleanup-a', output, cleanupA); cleanup.render('cleanup-b', output, cleanupB);
-        try { cleanup.dispose(); } catch {}
-        assert(!cleanupA.shadowRoot.querySelector('form') && !cleanupB.shadowRoot.querySelector('form'), 'host delivery failure cannot prevent other Vue scopes from being unmounted');
+        const output = {version:1,modelId:'model',state:{title:'Initial',fields:[],values:{}}};
         const posted = []; let receive;
         window.addEventListener('message', event => receive?.(event.data));
         const notebook = adapter.activate({postMessage:(message)=>{posted.push(message); vscode.postMessage(message);},onDidReceiveMessage:(handler)=>{receive=handler;}});

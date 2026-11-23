@@ -70,8 +70,8 @@ export async function testConversationPanelAsync(): Promise<void> {
         );
       }
     },
-    conversationPage: (_id: string, epoch: string, offset: number | undefined, limit: number) => {
-      if (epoch !== "test" || limit !== 80) {
+    conversationPage: (id: string, epoch: string, offset: number | undefined, limit: number) => {
+      if (id !== sessionId || epoch !== "test" || limit !== 80) {
         throw new Error("Bridge lost page addressing");
       }
       if (offset !== undefined) pages++;
@@ -84,12 +84,14 @@ export async function testConversationPanelAsync(): Promise<void> {
         entries: entries.slice(start, start + limit),
       });
     },
-    conversationContent: (_id: string, epoch: string, id: string, revision: string) => {
-      if (epoch !== "test") throw new Error("Bridge lost content epoch");
+    conversationContent: (viewedSession: string, epoch: string, id: string, revision: string) => {
+      if (viewedSession !== sessionId || epoch !== "test") {
+        throw new Error("Bridge lost content addressing");
+      }
       return Promise.resolve({
         entryId: id,
         revision,
-        text: revision === "1" ? "已更新的历史" : `正文 ${id.slice(6)}`,
+        text: revision === "1" ? "已更新的历史" : `已加载 ${id}`,
       });
     },
     submitTurn: async (_id: string, text: string) => {
@@ -176,12 +178,16 @@ export async function testConversationPanelAsync(): Promise<void> {
       });
       (async () => {
         try {
-          await wait(() => document.querySelector('[data-entry-id="entry-9999"] .mui-text'), 'tail did not load');
-          assert(document.querySelectorAll('.mui-row').length <= 68, 'history was eagerly mounted');
-          assert(document.querySelectorAll('form').length === 1 && document.querySelectorAll('.mui-history').length === 1, 'history and input were not separate');
+          await wait(() => {
+            const stop = document.getElementById('cancel');
+            return stop && !stop.hidden && !stop.disabled && document.querySelector('[data-entry-id] .mui-text');
+          }, 'webview did not apply the addressed snapshot and read its content');
           assert(Object.keys(JSON.parse(document.getElementById('configuration').textContent)).sort().join(',') === 'generation,sessionId,version,viewId', 'configuration exposed more than the view address');
           const viewport = document.querySelector('.mui-viewport'); viewport.scrollTop = 0; viewport.dispatchEvent(new Event('scroll'));
-          await wait(() => document.querySelector('[data-entry-id="entry-0"] .mui-text'), 'dragged page did not load');
+          await wait(
+            () => document.querySelector('[data-entry-id="entry-0"] .mui-text')?.textContent === '已加载 entry-0',
+            'dragged page did not return its addressed content',
+          );
           const editor = document.querySelector('textarea'); editor.value = '提交这条消息'; editor.dispatchEvent(new Event('input', {bubbles:true}));
           const submitted = message(value => value.testSignal === 'submission-pending');
           const acknowledged = message(value => value.result?.kind === 'turn');

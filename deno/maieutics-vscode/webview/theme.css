@@ -1,35 +1,41 @@
-/* One host stylesheet maps the standalone component theme onto live VS Code theme tokens. */
+/* Host theme shared by independently mounted history, composer and rich output. */
 body {
   margin: 0;
-  color: var(--vscode-foreground);
-  background: var(--vscode-editor-background);
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground, #333);
+  background: var(--vscode-editor-background, #fff);
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
 }
 #app {
-  --mui-font-family: var(--vscode-font-family);
-  --mui-font-family-mono: var(--vscode-editor-font-family);
-  --mui-font-size: var(--vscode-font-size);
-  --mui-body-font-size: var(--vscode-editor-font-size);
-  --mui-text: var(--vscode-foreground);
-  --mui-surface: var(--vscode-editor-background);
+  --mui-font-family: var(--vscode-font-family, system-ui, sans-serif);
+  --mui-font-family-mono: var(--vscode-editor-font-family, monospace);
+  --mui-font-size: var(--vscode-font-size, 13px);
+  --mui-body-font-size: var(--mui-font-size);
+  --mui-body-line-height: 1.6;
+  --mui-text: var(--vscode-foreground, #333);
+  --mui-surface: var(--vscode-editor-background, #fff);
   --mui-border: var(--vscode-panel-border, transparent);
-  --mui-muted: var(--vscode-descriptionForeground);
-  --mui-accent: var(--vscode-button-background);
-  --mui-accent-text: var(--vscode-button-foreground);
-  --mui-hover: var(--vscode-list-hoverBackground);
-  --mui-focus: var(--vscode-focusBorder);
-  --mui-input-surface: var(--vscode-textBlockQuote-background);
-  --mui-activity-surface: var(--vscode-textCodeBlock-background);
+  --mui-muted: var(--vscode-descriptionForeground, #666);
+  --mui-accent: var(--vscode-button-background, #0078d4);
+  --mui-accent-text: var(--vscode-button-foreground, #fff);
+  --mui-hover: var(--vscode-list-hoverBackground, #8882);
+  --mui-focus: var(--vscode-focusBorder, #0078d4);
+  --mui-input-surface: var(--vscode-textBlockQuote-background, #8881);
+  --mui-activity-surface: var(--vscode-textCodeBlock-background, #8881);
   --mui-activity-border: var(--vscode-panel-border, transparent);
-  --mui-code-surface: var(--vscode-textCodeBlock-background);
-  --mui-error: var(--vscode-errorForeground);
-  --mui-editor-surface: var(--vscode-input-background);
-  --mui-editor-border: var(--vscode-input-border, transparent);
+  --mui-code-surface: var(--vscode-textCodeBlock-background, #8881);
+  --mui-error: var(--vscode-errorForeground, #c33);
+  --mui-editor-surface: var(--vscode-input-background, #8881);
+  --mui-editor-border: var(--vscode-input-border, var(--vscode-panel-border, #8885));
   --mui-shadow: transparent;
   --mui-radius: 0;
-  --mui-block-inset: 20px;
+  --mui-control-radius: 6px;
+  --conversation-width: 56rem;
+  --conversation-gutter: clamp(12px, 3vw, 24px);
+  --mui-block-inset: var(--conversation-gutter);
   block-size: 100vh;
+  block-size: 100dvh;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
@@ -37,49 +43,149 @@ body.vscode-dark #app,
 body.vscode-high-contrast #app {
   --mui-color-scheme: dark;
 }
-#app > header {
+.conversation-toolbar,
+#composer,
+#notice,
+#history .mui-row {
+  box-sizing: border-box;
+  inline-size: calc(100% - 2 * var(--conversation-gutter));
+  max-inline-size: var(--conversation-width);
+  margin-inline: auto;
+}
+.conversation-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 20px;
-  border-block-end: 1px solid var(--mui-border);
+  gap: 12px;
+  padding: 8px 0;
+  min-block-size: 44px;
+  font-size: 12px;
+}
+#status {
+  flex: 1;
+  min-inline-size: 0;
+  color: var(--mui-muted);
+}
+.conversation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.conversation-actions button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+#reload {
+  color: var(--vscode-button-secondaryForeground, var(--mui-text));
+  background: var(--vscode-button-secondaryBackground, var(--mui-hover));
+}
+#reload:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--mui-hover));
+}
+#cancel {
+  color: var(--mui-accent-text);
+  background: var(--mui-accent);
+}
+#cancel:hover {
+  background: var(--vscode-button-hoverBackground, var(--mui-accent));
+}
+.conversation-actions button:focus-visible {
+  outline: 1px solid var(--mui-focus);
+  outline-offset: 2px;
 }
 #history {
   min-block-size: 0;
+  min-inline-size: 0;
   display: flex;
 }
 #history > .mui-history {
   flex: 1;
-  min-inline-size: 0;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
+/* Keep the section heading for navigation without a duplicate visible banner. */
+#history .mui-history-heading {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+}
+#history .mui-viewport {
+  min-block-size: 0;
+  scrollbar-gutter: auto;
+}
+#history .mui-status:empty {
+  display: none;
+}
+#history .mui-row {
+  padding: 16px;
+  min-block-size: 0;
+}
+#history .mui-input {
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+#history .mui-block-heading {
+  margin-block-end: 8px;
+}
+#history .mui-role {
+  font-size: 12px;
+  letter-spacing: normal;
+}
+#history :is(.mui-tool, .mui-reasoning-summary, .mui-child-run) {
+  background: transparent;
+  border-color: transparent;
+}
+#history .mui-rendered {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
 #composer {
   min-inline-size: 0;
+  padding-block: 8px 12px;
+}
+#composer .mui-composer {
+  margin: 0;
+  gap: 6px;
+  border-radius: 8px;
+}
+#composer .mui-composer:focus-within {
+  border-color: var(--mui-focus);
+}
+#composer .mui-editor:focus-visible {
+  outline: none;
+}
+#composer .mui-editor {
+  box-sizing: border-box;
+  min-block-size: 72px;
+  max-block-size: 180px;
+  field-sizing: content;
+  resize: none;
+  padding: 12px;
+  line-height: var(--mui-body-line-height);
+}
+#composer .mui-composer-hint {
+  font-size: 11px;
+}
+#composer .mui-submit {
+  padding: 5px 12px;
+  border-radius: 4px;
 }
 #notice {
-  margin: 0;
+  margin-block: 0;
   max-block-size: 25vh;
   overflow: auto;
   white-space: pre-wrap;
-  padding-inline: 20px;
+  overflow-wrap: anywhere;
+  color: var(--mui-error);
+  font-size: 12px;
 }
 #notice:not(:empty) {
-  padding-block: 8px;
-}
-#cancel,
-#reload {
-  color: var(--vscode-button-foreground);
-  background: var(--vscode-button-background);
-  border: 1px solid var(--vscode-contrastBorder, transparent);
-  padding: 4px 12px;
-}
-#cancel:disabled {
-  opacity: .5;
-}
-#cancel:focus-visible,
-#reload:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: 2px;
+  padding-block: 0 12px;
 }

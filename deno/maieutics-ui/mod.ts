@@ -34,3 +34,5 @@ export type {
   TextContent,
   TextPoint,
 } from "./core/types.ts";
+
+export { type ConversationLocalizer, formatConversationMessage } from "./localization.ts";

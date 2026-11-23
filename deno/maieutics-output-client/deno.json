@@ -18,8 +18,9 @@
     "@types/markdown-it": "npm:@types/markdown-it@14.1.2"
   },
   "tasks": {
-    "check": "deno check mod.ts formActorHost.ts mod_test.ts formActor_test.ts",
+    "check": "deno check mod.ts formActorHost.ts mod_test.ts turnMarkup_test.ts formActor_test.ts test/",
     "test": "deno test --allow-env=NODE_ENV",
+    "test:browser": "deno run --allow-run --allow-read --allow-write --allow-env --allow-net=127.0.0.1 test/browser_runner.ts",
     "build": "deno bundle --platform=browser --format esm --minify -o dist/outputClient.js mod.ts && deno task build:metadata",
     "build:host": "deno bundle --platform=browser --format esm --minify -o dist/formActorHost.js formActorHost.ts && deno task build:metadata",
     "build:metadata": "deno run --allow-read=types.d.ts,formActorHost.d.ts,../maieutics-plugin-sdk/actor-runtime/LICENSE,../maieutics-plugin-sdk/actor-runtime/NOTICE --allow-write=dist build_types.ts",

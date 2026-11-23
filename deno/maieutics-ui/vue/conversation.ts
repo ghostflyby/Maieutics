@@ -1,3 +1,5 @@
+import messages from "../locales/en.json" with { type: "json" };
+import { type ConversationLocalizer, formatConversationMessage } from "../localization.ts";
 import { defineComponent, h, onScopeDispose, type PropType } from "vue";
 import type { ConversationRuntime } from "../core/runtime.ts";
 import { ConversationHistory } from "./history.ts";
@@ -13,7 +15,11 @@ const conversationProps = {
   runtime: { type: Object as PropType<ConversationRuntime>, required: true },
   viewId: { type: String, required: true },
   host: { type: Object as PropType<ConversationHost>, required: true },
-  title: { type: String, default: "对话" },
+  title: { type: String, default: "" },
+  localize: {
+    type: Function as PropType<ConversationLocalizer>,
+    default: formatConversationMessage,
+  },
 } as const;
 
 /** Compose history and input under one owned view attachment. */
@@ -35,10 +41,11 @@ export const ConversationView = defineComponent({
           key,
           class: "mui-conversation",
           "data-view-id": id,
-          "aria-label": props.title,
+          "aria-label": props.title || props.localize(messages.conversation),
         }, [
           h(ConversationHistory, {
             view,
+            localize: props.localize,
             host: props.host,
             title: props.title,
             onReady: () => emit("ready"),
@@ -47,6 +54,7 @@ export const ConversationView = defineComponent({
           }),
           h(ConversationComposer, {
             view,
+            localize: props.localize,
             onSubmit: (submission: ConversationSubmission) => emit("submit", submission),
           }),
         ]);

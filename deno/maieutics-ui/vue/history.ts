@@ -1,3 +1,9 @@
+import messages from "../locales/en.json" with { type: "json" };
+import {
+  type ConversationLocalizer,
+  formatConversationMessage,
+  historyErrorMessageKey,
+} from "../localization.ts";
 import {
   computed,
   defineComponent,
@@ -34,29 +40,15 @@ import type {
 import { useBinding } from "./binding.ts";
 
 const labels: Record<ConversationEntry["kind"], string> = {
-  input: "你",
-  message: "Maieutics",
-  tool: "工具",
-  "reasoning-summary": "分析摘要",
-  display: "数据",
-  "child-run": "子任务",
-  diagnostic: "状态",
-  unavailable: "不可用",
+  input: messages.user,
+  message: messages.assistant,
+  tool: messages.tool,
+  "reasoning-summary": messages.reasoning,
+  display: messages.display,
+  "child-run": messages.childRun,
+  diagnostic: messages.diagnostic,
+  unavailable: messages.unavailable,
 };
-function message(error: unknown): string {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? error.code
-    : undefined;
-  if (code === "selection_capacity") {
-    return "选区过大，请缩小选区或导出内容。";
-  }
-  if (code === "index_capacity") {
-    return "历史缓存已被其他视图或选区占用，请释放后重试。";
-  }
-  if (code === "range_capacity") return "历史分段过多，暂时无法载入这部分内容，请重试。";
-  if (code === "stream_wait_timeout") return "这部分历史尚未同步，请重试。";
-  return "暂时无法读取这部分内容，请重试。";
-}
 
 const OutputBlockHost = defineComponent({
   name: "OutputBlockHost",
@@ -67,6 +59,10 @@ const OutputBlockHost = defineComponent({
     index: { type: Number, required: true },
     measure: { type: Function as PropType<(element: HTMLElement) => void>, required: true },
     host: { type: Object as PropType<ConversationHost>, required: true },
+    localize: {
+      type: Function as PropType<ConversationLocalizer>,
+      default: formatConversationMessage,
+    },
   },
   setup(props) {
     const entry = shallowRef(props.runtime.projection.find(props.entryId));
@@ -108,7 +104,7 @@ const OutputBlockHost = defineComponent({
         const value = await props.runtime.readContent(current.id, current.contentRevision, signal);
         if (!signal.aborted) content.value = value;
       } catch (error) {
-        if (!signal.aborted) failure.value = message(error);
+        if (!signal.aborted) failure.value = messages[historyErrorMessageKey(error)];
       }
     };
     watch(() => [entry.value?.contentRevision, entry.value?.kind, expanded.value], load, {
@@ -136,7 +132,7 @@ const OutputBlockHost = defineComponent({
           await surface.render(current, value, signal);
         } catch (error) {
           if (!signal.aborted) {
-            failure.value = message(error);
+            failure.value = messages[historyErrorMessageKey(error)];
             content.value = { ...value, presentation: undefined };
           }
         }
@@ -161,33 +157,39 @@ const OutputBlockHost = defineComponent({
           if (element instanceof HTMLElement) props.measure(element);
         },
       };
-      if (!current) return h("article", attributes, "内容已回收，滚动后可重新载入。");
+      if (!current) return h("article", attributes, props.localize(messages.recycled));
       const activity = !props.host.mountBlock && isActivity(current);
       const collapsed = activity && !expanded.value;
-      const value = collapsed || current.kind === "unavailable"
+      const value = current.kind === "unavailable"
+        ? current.preview || props.localize(messages.removed)
+        : collapsed
         ? current.preview
         : content.value?.text;
       const rich =
         !!(props.host.mountBlock && content.value?.presentation && current.kind !== "unavailable");
       return h("article", {
         ...attributes,
-        "aria-label": labels[current.kind],
+        "aria-label": props.localize(labels[current.kind]),
         "data-entry-id": current.id,
         "data-revision": current.contentRevision,
         "data-ordinal": current.ordinal,
       }, [
         h("header", { class: "mui-block-heading" }, [
-          h("h3", { class: "mui-role" }, labels[current.kind]),
+          h("h3", { class: "mui-role" }, props.localize(labels[current.kind])),
           activity
             ? h("button", {
               class: "mui-button mui-expand",
               type: "button",
               "aria-expanded": !collapsed,
               onClick: () => props.view.toggle(current.id),
-            }, collapsed ? "展开" : "收起")
+            }, collapsed ? props.localize(messages.expand) : props.localize(messages.collapse))
             : null,
           current.state === "open"
-            ? h("span", { class: "mui-writing", "aria-label": "正在输出" }, "正在输出")
+            ? h(
+              "span",
+              { class: "mui-writing", "aria-label": props.localize(messages.writing) },
+              props.localize(messages.writing),
+            )
             : null,
         ]),
         rich
@@ -195,12 +197,19 @@ const OutputBlockHost = defineComponent({
           : value !== undefined
           ? h("div", { class: "mui-text", "data-text-entry": current.id }, value)
           : !failure.value
-          ? h("div", { class: "mui-loading", "aria-label": "正在载入内容" }, "正在载入…")
+          ? h("div", {
+            class: "mui-loading",
+            "aria-label": props.localize(messages.loadingContent),
+          }, props.localize(messages.loading))
           : null,
         failure.value
           ? h("div", { role: "status", class: "mui-error" }, [
-            failure.value,
-            h("button", { class: "mui-button mui-retry", type: "button", onClick: load }, "重试"),
+            props.localize(failure.value),
+            h(
+              "button",
+              { class: "mui-button mui-retry", type: "button", onClick: load },
+              props.localize(messages.retry),
+            ),
           ])
           : null,
       ]);
@@ -213,7 +222,11 @@ const estimatedHeight = 120;
 const historyProps = {
   view: { type: Object as PropType<ConversationViewState>, required: true },
   host: { type: Object as PropType<ConversationHost>, required: true },
-  title: { type: String, default: "对话" },
+  title: { type: String, default: "" },
+  localize: {
+    type: Function as PropType<ConversationLocalizer>,
+    default: formatConversationMessage,
+  },
 } as const;
 
 /** Independently mountable history. The caller owns the shared view attachment. */
@@ -230,7 +243,7 @@ export const ConversationHistory = defineComponent({
       const root = ref<HTMLElement>();
       const viewport = ref<HTMLElement>();
       const rows = shallowRef(signal.aborted ? [] : runtime.projection.rows);
-      const status = ref(signal.aborted ? "会话已关闭" : "");
+      const status = ref(signal.aborted ? messages.closed : "");
       const following = ref(true);
       const frozenLayout = shallowRef<FrozenScrollLayout>();
       let heldPointer: number | undefined;
@@ -254,7 +267,7 @@ export const ConversationHistory = defineComponent({
       } | undefined;
       const close = () => {
         rows.value = [];
-        status.value = "会话已关闭";
+        status.value = messages.closed;
         if (scanFrame !== undefined) cancelAnimationFrame(scanFrame);
         rangeRequest?.controller.abort();
         frozenLayout.value = undefined;
@@ -292,7 +305,7 @@ export const ConversationHistory = defineComponent({
               });
             }
           }).catch((error) => {
-            if (!signal.aborted) status.value = message(error);
+            if (!signal.aborted) status.value = messages[historyErrorMessageKey(error)];
           });
         }
       });
@@ -416,7 +429,7 @@ export const ConversationHistory = defineComponent({
               });
             }
           }).catch((error) => {
-            if (!signal.aborted) status.value = message(error);
+            if (!signal.aborted) status.value = messages[historyErrorMessageKey(error)];
           });
         }
       };
@@ -456,7 +469,7 @@ export const ConversationHistory = defineComponent({
           following.value = true;
           virtual.value.scrollToOffset(virtual.value.getTotalSize(), { align: "end" });
         } catch (error) {
-          if (!signal.aborted) status.value = message(error);
+          if (!signal.aborted) status.value = messages[historyErrorMessageKey(error)];
         }
       };
       watch(size, async () => {
@@ -506,7 +519,7 @@ export const ConversationHistory = defineComponent({
           });
         } catch (error) {
           if (!requestSignal.aborted) {
-            loadErrors.set(row.key, { offset, message: message(error) });
+            loadErrors.set(row.key, { offset, message: messages[historyErrorMessageKey(error)] });
             while (loadErrors.size > runtime.limits.ranges) {
               const key = loadErrors.keys().next().value;
               if (key !== undefined) loadErrors.delete(key);
@@ -602,9 +615,9 @@ export const ConversationHistory = defineComponent({
           const text = await view.copySelection();
           signal.throwIfAborted();
           await props.host.writeText(text);
-          status.value = "已复制选中内容";
+          status.value = messages.copied;
         } catch (error) {
-          if (!signal.aborted) status.value = message(error);
+          if (!signal.aborted) status.value = messages[historyErrorMessageKey(error)];
         }
       };
       watch(viewport, async (element) => {
@@ -644,7 +657,7 @@ export const ConversationHistory = defineComponent({
         h("section", {
           key,
           class: "mui-history",
-          "aria-label": `${props.title}历史`,
+          "aria-label": props.title || props.localize(messages.history),
           ref: root,
           "data-history-view-id": view.id,
           onCopy: copy,
@@ -663,15 +676,16 @@ export const ConversationHistory = defineComponent({
             ) focused.value = undefined;
           },
         }, [
-          h("header", { class: "mui-conversation-heading" }, [
-            h("h2", props.title),
-            h("span", "输入与输出，沿一条时间线展开。"),
-          ]),
+          h(
+            "h2",
+            { class: "mui-history-heading" },
+            props.title || props.localize(messages.history),
+          ),
           h("div", {
             class: "mui-viewport",
             ref: viewport,
             role: "region",
-            "aria-label": "对话历史",
+            "aria-label": props.localize(messages.history),
             "aria-live": "off",
             tabindex: 0,
             "data-scroll-gesture": frozenLayout.value ? "active" : "idle",
@@ -727,7 +741,7 @@ export const ConversationHistory = defineComponent({
               {
                 class: "mui-history-space",
                 role: "list",
-                "aria-label": "对话条目",
+                "aria-label": props.localize(messages.entries),
                 style: {
                   "--mui-virtual-extent": `${size.value}px`,
                 },
@@ -739,16 +753,21 @@ export const ConversationHistory = defineComponent({
                   void loadVersion.value;
                   const request = rangeRequest?.key === row.key ? rangeRequest : undefined;
                   const phase = request?.progress.phase;
+                  const loadError = loadErrors.get(row.key);
                   return h("li", {
                     key: row.key,
                     class: "mui-range",
                     "data-range-key": row.key,
                     "data-range-start": item.start,
-                    "data-range-state": phase ?? (loadErrors.has(row.key) ? "failed" : "idle"),
+                    "data-range-state": phase ?? (loadError ? "failed" : "idle"),
                     "aria-busy": !!request,
                     "aria-posinset": row.from + 1,
                     "aria-setsize": runtime.projection.total,
-                    "aria-label": `第 ${row.from + 1} 至 ${row.from + row.count} 条记录尚未载入`,
+                    "aria-label": props.localize(
+                      messages.unloadedRange,
+                      row.from + 1,
+                      row.from + row.count,
+                    ),
                     style: {
                       "--mui-virtual-size": `${item.size}px`,
                       "--mui-virtual-offset": `${item.start}px`,
@@ -757,24 +776,32 @@ export const ConversationHistory = defineComponent({
                     onVnodeUpdated: requestRangeScan,
                   }, [
                     h("div", { class: "mui-range-label" }, [
-                      loadErrors.get(row.key)?.message ?? (phase === "waiting-for-stream"
-                        ? "正在同步这部分历史…"
-                        : request
-                        ? "正在载入这部分历史…"
-                        : "更早的记录会在阅读时载入。"),
-                      h("button", {
-                        class: "mui-button mui-range-load",
-                        type: "button",
-                        onClick: () => {
-                          if (rangeRequest?.key === row.key) {
-                            rangeRequest.controller.abort();
-                            rangeRequest = undefined;
-                          }
-                          loadErrors.delete(row.key);
-                          following.value = false;
-                          void loadRange(row, item.start);
+                      loadError
+                        ? props.localize(loadError.message)
+                        : (phase === "waiting-for-stream"
+                          ? props.localize(messages.synchronizing)
+                          : request
+                          ? props.localize(messages.loadingHistory)
+                          : props.localize(messages.loadOnRead)),
+                      h(
+                        "button",
+                        {
+                          class: "mui-button mui-range-load",
+                          type: "button",
+                          onClick: () => {
+                            if (rangeRequest?.key === row.key) {
+                              rangeRequest.controller.abort();
+                              rangeRequest = undefined;
+                            }
+                            loadErrors.delete(row.key);
+                            following.value = false;
+                            void loadRange(row, item.start);
+                          },
                         },
-                      }, request ? "取消并重试" : "载入这部分"),
+                        request
+                          ? props.localize(messages.cancelRetry)
+                          : props.localize(messages.loadRange),
+                      ),
                     ]),
                   ]);
                 }
@@ -791,6 +818,7 @@ export const ConversationHistory = defineComponent({
                   runtime,
                   view,
                   host: props.host,
+                  localize: props.localize,
                   entryId: row.key,
                   index: item.index,
                   // The article measures its natural height; the slot clips pending growth.
@@ -803,10 +831,14 @@ export const ConversationHistory = defineComponent({
             ? h(
               "button",
               { class: "mui-button mui-latest", type: "button", onClick: latest },
-              "回到最新输出 ↓",
+              props.localize(messages.latest),
             )
             : null,
-          h("p", { class: "mui-status", role: "status", "aria-live": "polite" }, status.value),
+          h(
+            "p",
+            { class: "mui-status", role: "status", "aria-live": "polite" },
+            status.value ? props.localize(status.value) : "",
+          ),
         ]);
     });
   },

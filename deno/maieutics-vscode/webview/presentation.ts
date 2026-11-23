@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import type { ConversationBlockSurface, ConversationEntry, TextContent } from "../../maieutics-ui/mod.ts";
+import type { ConversationBlockSurface, ConversationEntry, ConversationLocalizer, TextContent } from "../../maieutics-ui/mod.ts";
 // @deno-types="../../maieutics-output-client/types.d.ts"
 import { createActorFormRenderer, createOutputRenderer } from "../media/outputClient.js";
 
@@ -8,9 +8,13 @@ const vueMime = "application/vnd.maieutics.vue+json";
 const formMime = "application/vnd.maieutics.form+json";
 
 /** Reuse the exact browser renderer shipped for Notebook output, with one surface per virtual row. */
-export function createConversationSurfaces(post: (message: unknown) => void) {
-  const renderer = createOutputRenderer({ sendMessage: post });
-  const forms = createActorFormRenderer({ postMessage: post });
+export function createConversationSurfaces(
+  post: (message: unknown) => void,
+  stylesheetUrl: string,
+  localize: ConversationLocalizer,
+) {
+  const renderer = createOutputRenderer({ sendMessage: post, stylesheetUrl, localize });
+  const forms = createActorFormRenderer({ postMessage: post, localize });
   return {
     mountBlock(element: HTMLElement): ConversationBlockSurface {
       let id: string | undefined;

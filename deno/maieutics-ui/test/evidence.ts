@@ -1,9 +1,12 @@
+import { BrowserScenarioFailure } from "../../test/browser_runner.ts";
+export { BrowserScenarioFailure };
 /** Portable evidence identifies input bytes, without claiming an unmeasured Git revision. */
 export type SourceHashes = Readonly<Record<string, string>>;
 
 export const scrollMutations = [
   {
     name: "following-scroll-disabled",
+    scenario: "following",
     mutation: {
       file: "vue/history.ts",
       before: "if (following.value && viewport.value && !frozenLayout.value)",
@@ -14,6 +17,7 @@ export const scrollMutations = [
   },
   {
     name: "anchor-write-omitted-acknowledgement-retained",
+    scenario: "projection-anchor",
     mutation: {
       file: "vue/history.ts",
       before: "virtual.value.scrollToOffset(position[0] + inside);",
@@ -24,6 +28,7 @@ export const scrollMutations = [
   },
   {
     name: "unloaded-gesture-offset-zeroed",
+    scenario: "unloaded-gesture",
     mutation: {
       file: "vue/history.ts",
       before: "offset: anchor.inside,",
@@ -34,6 +39,7 @@ export const scrollMutations = [
   },
   {
     name: "loaded-gesture-offset-zeroed",
+    scenario: "loaded-gesture",
     mutation: {
       file: "vue/history.ts",
       before: "offset: anchor.inside,",
@@ -44,6 +50,7 @@ export const scrollMutations = [
   },
   {
     name: "projection-ordinal-zeroed",
+    scenario: "projection-anchor",
     mutation: {
       file: "vue/history.ts",
       before: "ordinal: target.ordinal,",
@@ -54,6 +61,7 @@ export const scrollMutations = [
   },
   {
     name: "projection-offset-zeroed",
+    scenario: "projection-anchor",
     mutation: {
       file: "vue/history.ts",
       before: "offset: inside",
@@ -64,6 +72,8 @@ export const scrollMutations = [
   },
 ] as const;
 
+export type ScrollMutationCase = typeof scrollMutations[number];
+
 export interface ScrollMutation {
   readonly file: "vue/history.ts";
   readonly before: string;
@@ -72,9 +82,6 @@ export interface ScrollMutation {
 }
 
 /** Only a verdict received from the owned browser can be an expected negative scenario. */
-export class BrowserScenarioFailure extends Error {
-  override name = "BrowserScenarioFailure";
-}
 
 export interface ScrollEvidence {
   readonly schema_version: 3;
@@ -192,7 +199,7 @@ export async function sourceHashes(root: URL): Promise<SourceHashes> {
     }
   };
   await walk(root, "");
-  for (const name of ["../deno.json", "../deno.lock"]) {
+  for (const name of ["../deno.json", "../deno.lock", "../test/browser_runner.ts"]) {
     files.push({ name, url: new URL(name, root) });
   }
   const hashes = await Promise.all(
@@ -221,13 +228,13 @@ export function applyMutation(source: string, mutation: ScrollMutation): string 
 /** Execute each negative case and a restored suite; static JSON claims cannot satisfy this gate. */
 export async function observeEvidence(
   files: SourceHashes,
-  run: (mutation?: ScrollMutation) => Promise<string[]>,
+  run: (mutation?: ScrollMutationCase) => Promise<string[]>,
 ): Promise<ScrollEvidence> {
   const cases: ScrollEvidence["cases"][number][] = [];
   for (const expected of scrollMutations) {
     let failure: unknown;
     try {
-      await run(expected.mutation);
+      await run(expected);
     } catch (error) {
       failure = error;
     }
@@ -240,7 +247,8 @@ export async function observeEvidence(
         { cause: failure },
       );
     }
-    cases.push({ ...expected, outcome: "failed" });
+    const { name, mutation, assertion } = expected;
+    cases.push({ name, mutation, assertion, outcome: "failed" });
   }
   const scenarios = await run();
   const result: ScrollEvidence = {

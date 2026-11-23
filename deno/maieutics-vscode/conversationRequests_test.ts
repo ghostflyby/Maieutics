@@ -71,7 +71,7 @@ Deno.test("page and uncertain submission requests retain bounded deadlines witho
       const failure = assertRejects(
         () => request,
         Error,
-        method === "submit" ? "无法确认提交结果" : "请求超时",
+        method === "submit" ? "Submission could not be confirmed" : "The request timed out",
       );
       f.advance(14_999);
       assertEquals(f.posted.map((message) => message.method), [method]);

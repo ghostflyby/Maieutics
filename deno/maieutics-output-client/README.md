@@ -66,10 +66,18 @@ checks are unchanged from the [frontend protocol](../../docs/web-frontend-protoc
 
 The default Markdown renderer disables HTML and executable links, including command URLs. Hosts can
 inject `renderMarkdown(text, element, context)` for native rendering, and `onAction(href)` for
-explicit timeline action links. CSS inherits optional VS Code theme variables with browser defaults;
+explicit timeline action links. A trusted host can supply `stylesheetUrl` for its packaged CSS; the
+default Markdown shadow root loads it, and SSR roots load it after backend styles. Preload that
+sheet in the host document to avoid a cold first-render style change. A custom `renderMarkdown`
+adapter owns its own styles. CSS inherits optional VS Code theme variables with browser defaults;
 hosts can set those variables or `.dark` without installing any editor integration. `renderTurn` and
 `renderSubagents` are pure timeline markup helpers; their default Markdown fallback is escaped
 source. They do not grant trust to arbitrary HTML callbacks.
+
+Both output and form renderers accept `localize(message, ...args)` for renderer-owned labels,
+diagnostics, and default form actions. English message sources and the Simplified Chinese catalog
+live in `locales/`. Hosts choose the language. Form labels supplied by the author are rendered as
+provided.
 
 For hosts that already own SSR DOM, `mountVueIsland(element, compiledCode, progressive?)` exposes
 the lower-level hydration/update/disposal primitive using the same bundled Vue runtime. Only pass
@@ -85,6 +93,10 @@ module. `build:media` invokes the same copy task. CI verifies that committed bro
 their sources. Tests cover ESM exports, no external module imports, headless import/disposal, and
 direct browser use without VS Code renderer services. The real browser/kernel suite also exercises
 SSR, progressive ClientOnly state, abort during preparation and adapter/history compatibility.
+
+Run `deno task test:browser` for shared Markdown, SSR replies, form state, and native browser
+streaming. The runner needs a Chromium executable, loopback HTTP, and permission to read sources,
+write a temporary browser profile and bundles, and launch Deno and Chromium.
 
 This browser module needs no Deno permissions at runtime. Its build reads source/dependencies and
 writes local dist/; build:vscode additionally writes the one copied media artifact. No new runtime

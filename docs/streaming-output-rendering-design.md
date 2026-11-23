@@ -923,6 +923,25 @@ that already own SSR DOM and verified factories; it does not grant execution aut
 Existing revision guards prevent late work from publishing after disposal. The default Markdown
 fallback is passive, disables HTML/command links and uses a scoped shadow boundary.
 
+An optional host-owned `stylesheetUrl` applies to default Markdown shadow roots and after backend
+SSR styles. The conversation webview uses a packaged, preloaded sheet to keep prose typography and
+spacing consistent with its independent history and composer. The stylesheet inherits live VS Code
+theme tokens through the existing component boundary; it does not introduce a second renderer or
+alter notebook rendering, wire contracts, or content trust. Conversation chrome keeps connection
+actions together, hides idle stop controls, and bounds the common message/editor column. Its history
+heading remains available to assistive navigation without a visible demo banner. Ctrl/Cmd+Enter
+submits the composer while ordinary Enter and IME composition retain their input semantics.
+
+The conversation host passes a translation function to the history, composer and shared output
+renderer. Product labels and diagnostics come from message catalogs. VS Code chooses the display
+language, and the browser receives only the selected strings. Standalone hosts can supply their
+own translation function, with English as the default.
+
+The standalone output client browser suite owns DOM behavior for passive Markdown, SSR revision
+ordering, stylesheet loading, Vue hydration, form state, and streaming fetch. Extension-host
+tests exercise native notebook Markdown, webview request routing, Actor actions, and live theme
+tokens. The conversation shell layout runs in Chromium at actual editor viewport widths.
+
 The VS Code adapter maps MIME/items, injects protected native Markdown and forwards message/action
 services. The same built ESM is copied into media/outputClient.js; extension-host Node code does not
 import another workspace module. build:media and CI rebuild/copy it, and CI rejects a stale committed

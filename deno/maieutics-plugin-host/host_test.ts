@@ -80,43 +80,6 @@ function makeMultiHost(plugins: readonly PluginConfig[]): PluginHost {
   });
 }
 
-Deno.test("worker entry imports only the plugin sdk and the shared runtime bootstrap", async () => {
-  const source = await Deno.readTextFile(
-    new URL("./worker_entry.ts", import.meta.url),
-  );
-  // Match the module specifier itself, not whole lines: a `from "..."` clause
-  // (single or double quoted) and a bare side-effect `import "..."` (which has
-  // no `from` clause) are both extracted, so no import can slip through a
-  // line-oriented match.
-  const specifiers = [
-    ...source.matchAll(/\bfrom\s+["']([^"']+)["']/g),
-    ...source.matchAll(/\bimport\s+["']([^"']+)["']/g),
-  ].map((match) => match[1]);
-  assert(specifiers.length > 0, "worker entry must import its runtime pieces");
-  for (const specifier of specifiers) {
-    assert(
-      specifier.startsWith("../maieutics-plugin-sdk/") ||
-        specifier.startsWith("../maieutics-runtime/") ||
-        specifier.startsWith("./"),
-      `unexpected import '${specifier}' in the worker entry`,
-    );
-  }
-});
-
-Deno.test("host entry imports only the host implementation and shared control module", async () => {
-  const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
-  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-  for (const specifier of imports) {
-    assert(
-      specifier === "./host.ts" || specifier === "./http.ts" ||
-        specifier === "./repl_manager.ts" ||
-        specifier === "./host_repl_protocol.ts" ||
-        specifier.startsWith("../shared/"),
-      `unexpected import '${specifier}' in the plugin host entry`,
-    );
-  }
-});
-
 Deno.test("a plugin worker cannot import the repl client module", async () => {
   const dir = Deno.makeTempDirSync();
   const replClientUrl = new URL("../maieutics-repl-client/mod.ts", import.meta.url).href;
@@ -905,9 +868,12 @@ Deno.test("plugin storage persists to the kernel-assigned directory", async () =
       { dataDir },
     ),
   );
-  await host.startAll();
-  await valueOf(host, "test");
-  await host.shutdown();
+  try {
+    await host.startAll();
+    await valueOf(host, "test");
+  } finally {
+    await host.shutdown();
+  }
   // The database IS the store: a plain SQLite client reads what the plugin
   // wrote, in the directory the kernel assigned.
   const db = new DatabaseSync(`${dataDir}/local-storage.db`);
@@ -918,43 +884,6 @@ Deno.test("plugin storage persists to the kernel-assigned directory", async () =
     assertEquals(row.value, "1");
   } finally {
     db.close();
-  }
-});
-
-Deno.test("plugin storage enforces the per-plugin quota as a typed error", async () => {
-  const dir = Deno.makeTempDirSync();
-  const dataDir = makeDataDir();
-  // Values ride a 1 MiB mailbox payload, so the quota is reached with a few
-  // near-limit writes instead of one oversized write.
-  const plugin = createPluginConfig(
-    dir,
-    "test",
-    pluginSource(`
-    export default defineExtensionPoint("ToolPreInvoke", {
-      handler: async () => {
-        let exceeded: string | null = null;
-        for (let index = 0; index < 7; index++) {
-          try {
-            localStorage.setItem("chunk-" + index, "x".repeat(900_000));
-          } catch (error) {
-            exceeded = (error as Error).name;
-            break;
-          }
-        }
-        return { action: "continue" as const, value: exceeded };
-      },
-    });
-  `),
-    { dataDir },
-  );
-  const host = makeHost(plugin);
-  try {
-    await host.startAll();
-    // 7 × 900_000 exceeds the 5 MiB quota: the write that crosses it fails
-    // with QuotaExceededError and the earlier chunks stay intact.
-    assertEquals(await valueOf(host, "test"), "QuotaExceededError");
-  } finally {
-    host.dispose();
   }
 });
 

@@ -17,7 +17,12 @@ function evidence(files: SourceHashes = current): ScrollEvidence {
     schema_version: 3,
     source: { kind: "worktree-snapshot", files_sha256: { ...files } },
     command: "deno task check:evidence",
-    cases: scrollMutations.map((mutation) => ({ ...mutation, outcome: "failed" })),
+    cases: scrollMutations.map(({ name, mutation, assertion }) => ({
+      name,
+      mutation,
+      assertion,
+      outcome: "failed",
+    })),
     restored: { outcome: "passed", scenario_count: 2, scenarios: ["first", "second"] },
   };
 }
@@ -172,6 +177,8 @@ Deno.test("hash inventory includes every file format and hidden fixtures with ex
     await Deno.mkdir(root);
     await Deno.writeTextFile(new URL("deno.json", base), "{}");
     await Deno.writeTextFile(new URL("deno.lock", base), "{}");
+    await Deno.mkdir(new URL("test/", base));
+    await Deno.writeTextFile(new URL("test/browser_runner.ts", base), "");
     const names = [
       "component.vue",
       "client.js",
@@ -194,7 +201,10 @@ Deno.test("hash inventory includes every file format and hidden fixtures with ex
     }
     await Deno.writeTextFile(new URL(".DS_Store", root), "generated");
     const hashes = await sourceHashes(root);
-    assertEquals(Object.keys(hashes).sort(), [...names, "../deno.json", "../deno.lock"].sort());
+    assertEquals(
+      Object.keys(hashes).sort(),
+      [...names, "../deno.json", "../deno.lock", "../test/browser_runner.ts"].sort(),
+    );
     assert(/^[a-f0-9]{64}$/.test(hashes["fixture.bin"]));
     const before = hashes["fixture.bin"];
     await Deno.writeFile(new URL("fixture.bin", root), new Uint8Array([0, 255, 128, 2]));
@@ -252,7 +262,7 @@ Deno.test("executed mutation survival and unrelated failures reject even a match
 Deno.test("executed restored scenarios must match the record's names and count", async () => {
   const observed = await observeEvidence(current, (mutation) => {
     if (!mutation) return Promise.resolve(["first", "second"]);
-    const expected = scrollMutations.find((entry) => entry.mutation === mutation);
+    const expected = mutation;
     assert(expected);
     return Promise.reject(new BrowserScenarioFailure(expected.assertion));
   });

@@ -1,3 +1,5 @@
+import messages from "../locales/en.json" with { type: "json" };
+import { localize } from "./localization.ts";
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 // Browser-only build entry. The extension host imports only its own wire contract.
@@ -13,11 +15,17 @@ const vscode = acquireVsCodeApi();
 const config = JSON.parse(document.getElementById("configuration")!.textContent!) as ViewAddress;
 vscode.setState({ sessionId: config.sessionId, viewId: config.viewId });
 const owner = new AbortController();
-const requests = new ViewRequests(config, (value) => vscode.postMessage(value), owner.signal);
+const requests = new ViewRequests(config, (value) => vscode.postMessage(value), owner.signal, undefined, localize);
 const send = (method: ViewRequest["method"], params?: Record<string, unknown>) => requests.send(method, params);
 const request = <T>(method: ViewRequest["method"], params?: Record<string, unknown>, caller?: AbortSignal): Promise<T> => requests.request<T>(method, params, caller);
 
-const surfaces = createConversationSurfaces((message) => send("presentation", { message }));
+const outputTheme = document.querySelector<HTMLLinkElement>("#output-theme");
+if (!outputTheme) throw new Error(localize(messages.missingStylesheet));
+const surfaces = createConversationSurfaces(
+  (message) => send("presentation", { message }),
+  outputTheme.href,
+  localize,
+);
 
 const element = (id: string) => document.getElementById(id)!;
 const status = element("status");
@@ -48,9 +56,10 @@ function clear(): void {
 }
 async function apply(frame: ViewFrame): Promise<void> {
   if (owner.signal.aborted) return;
-  const state = frame.activeRunId ? "正在运行" : "已连接";
+  const state = frame.activeRunId ? localize(messages.running) : localize(messages.connected);
   if (status.textContent !== state) status.textContent = state;
   cancel.disabled = !frame.activeRunId;
+  cancel.hidden = !frame.activeRunId;
   if (frame.type === "view.snapshot") {
     clear();
     let first: ViewPage | undefined = frame.page;
@@ -79,12 +88,12 @@ async function apply(frame: ViewFrame): Promise<void> {
     });
     history = mountConversationHistory(element("history"), {
       view,
-      title: "对话历史",
+      localize,
       host: { writeText: (text) => request("copy", { text }), mountBlock: surfaces.mountBlock },
     });
-    composer = mountConversationComposer(element("composer"), { view, onSubmit: (submission) => void submit(submission).catch(fail) });
+    composer = mountConversationComposer(element("composer"), { view, localize, onSubmit: (submission) => void submit(submission).catch(fail) });
   } else {
-    if (!runtime) throw new Error("变更流缺少初始快照。");
+    if (!runtime) throw new Error(localize(messages.missingSnapshot));
     runtime.apply(frame.change);
   }
 }
@@ -96,8 +105,8 @@ async function submit(submission: ConversationSubmission): Promise<void> {
     const answer = await request<{ kind: "turn" | "command"; markdown?: string; sessionId?: string }>("submit", { text: submission.text });
     runtime?.confirmSubmission(submission.viewId, submission.revision);
     if (answer.kind === "command") {
-      notice.textContent = answer.markdown ?? "命令已完成";
-      if (answer.sessionId && answer.sessionId !== config.sessionId) notice.textContent += "\n已切换当前会话；此视图仍显示原会话。";
+      notice.textContent = answer.markdown ?? localize(messages.commandComplete);
+      if (answer.sessionId && answer.sessionId !== config.sessionId) notice.textContent += "\n" + localize(messages.sessionSwitched);
     }
   } finally {
     sending = false;
@@ -118,11 +127,11 @@ globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewE
     draft = message.value;
     view?.setDraft(draft);
   } else if (message.event === "failure") {
-    status.textContent = "连接已中断";
+    status.textContent = localize(messages.interrupted);
     fail((message.value as { message: string }).message);
   } else if (message.event === "frame") {
     if (++queuedFrames > 256) {
-      fail("视图变更积压；请重新打开会话。");
+      fail(localize(messages.frameBacklog));
       owner.abort();
       return;
     }

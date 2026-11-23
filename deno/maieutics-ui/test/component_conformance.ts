@@ -39,7 +39,13 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
     .test-mui-theme[data-theme="night"] .mui-submit { border-radius: 0; }
   `;
   document.head.append(sheet);
+  const translated: Record<string, string> = {
+    "Conversation history": "[history label]",
+    "Send a message…": "[editor placeholder]",
+  };
+  const localize = (message: string) => translated[message] ?? message;
   const panels = [0, 1].map((index) => {
+    const submissions: string[] = [];
     const view = runtime.attachView(`theme-${index}`);
     const panel = document.createElement("div");
     const historyRoot = document.createElement("div");
@@ -51,12 +57,17 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
       view,
       historyRoot,
       inputRoot,
+      submissions,
       history: artifact.mountConversationHistory(historyRoot, {
         view,
         host: { writeText: () => Promise.resolve() },
-        title: `Theme ${index}`,
+        localize: index === 0 ? localize : undefined,
       }),
-      input: artifact.mountConversationComposer(inputRoot, { view }),
+      input: artifact.mountConversationComposer(inputRoot, {
+        view,
+        localize: index === 0 ? localize : undefined,
+        onSubmit: (submission) => submissions.push(submission.text),
+      }),
     };
   });
   try {
@@ -68,6 +79,22 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
         ),
       "themed component fixtures did not finish natural row measurement",
     );
+    equal(
+      panels[0].historyRoot.querySelector(".mui-viewport")?.getAttribute("aria-label"),
+      "[history label]",
+      "the history ignored the host's accessible label",
+    );
+    equal(
+      panels[0].inputRoot.querySelector("textarea")?.placeholder,
+      "[editor placeholder]",
+      "the independent composer ignored the host's placeholder",
+    );
+    equal(
+      panels[1].inputRoot.querySelector("textarea")?.placeholder,
+      "Send a message…",
+      "the host's translation leaked to another mount",
+    );
+    passed.push("independently mounted components accept scoped host translations");
     for (
       const property of [
         "font",
@@ -134,6 +161,42 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
     }
     passed.push(
       "semantic history entries and composer controls use a shallow DOM with only dynamic geometry inline",
+    );
+    const shortcutEditor = panels[0].inputRoot.querySelector<HTMLTextAreaElement>("textarea");
+    assert(shortcutEditor, "shortcut fixture has no editor");
+    shortcutEditor.value = "快捷键发送";
+    shortcutEditor.dispatchEvent(new Event("input", { bubbles: true }));
+    shortcutEditor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    shortcutEditor.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        ctrlKey: true,
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    equal(panels[0].submissions.length, 0, "newline or IME composition submitted a message");
+    for (const modifier of ["ctrlKey", "metaKey"]) {
+      shortcutEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          [modifier]: true,
+          bubbles: true,
+        }),
+      );
+    }
+    equal(
+      panels[0].submissions.join(","),
+      "快捷键发送,快捷键发送",
+      "send shortcuts lost the captured draft",
+    );
+    equal(
+      panels[0].view.draft,
+      "快捷键发送",
+      "shortcut cleared a draft before host acknowledgement",
+    );
+    passed.push(
+      "composer send shortcuts preserve newline, IME composition and host-owned draft acknowledgement",
     );
     const editors = panels.map(({ inputRoot }) => {
       const editor = inputRoot.querySelector<HTMLTextAreaElement>(".mui-editor");

@@ -334,5 +334,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/ghostflyby/Maieutics"
-  }
+  },
+  "l10n": "./l10n"
 }

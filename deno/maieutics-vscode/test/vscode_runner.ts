@@ -236,6 +236,10 @@ function launchFlags(
     `--extensionTestsPath=${testsPath}`,
     "--disable-extensions",
     "--disable-gpu",
+    // Hidden Launch Services windows still need to deliver Chromium's layout frames.
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
     "--no-sandbox",
     "--disable-updates",
     "--skip-welcome",

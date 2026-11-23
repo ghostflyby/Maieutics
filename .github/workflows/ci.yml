@@ -107,6 +107,14 @@ jobs:
         working-directory: deno/maieutics-plugin-sdk
         run: deno task test:actor:browser
 
+      - name: Shared output client in a real browser
+        working-directory: deno/maieutics-output-client
+        run: deno task test:browser
+
+      - name: Conversation shell in a real browser
+        working-directory: deno/maieutics-vscode
+        run: deno task test:browser
+
       - name: Verify standalone UI mutations and restored browser suite
         working-directory: deno/maieutics-ui
         run: deno task check:evidence
@@ -131,7 +139,7 @@ jobs:
           deno fmt --no-config --check webview/ buildConversation.ts
           deno lint --no-config webview/ buildConversation.ts
           deno task build:conversation
-          git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css
+          git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css media/conversationOutput.css l10n/
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
@@ -386,24 +394,11 @@ jobs:
           path: deno/maieutics-vscode/.vscode-test
           key: ${{ runner.os }}-vscode-stable
 
-      - name: Build extension
-        run: deno task --config deno/maieutics-vscode/deno.json build
-
-      - name: Build test bundle
-        run: deno task --config deno/maieutics-vscode/deno.json build:test
-
-      # Electron needs a display server: wrap with xvfb on Linux, macOS runs headed directly.
+      # test:vscode builds both bundles. Its runner owns the display server on Linux.
       - name: Test in VS Code
-        shell: bash
         env:
           MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]
-          then
-            xvfb-run -a deno task --config deno/maieutics-vscode/deno.json test:vscode
-          else
-            deno task --config deno/maieutics-vscode/deno.json test:vscode
-          fi
+        run: deno task --config deno/maieutics-vscode/deno.json test:vscode
 
       - name: Upload VS Code diagnostics
         if: failure() || github.event_name == 'schedule'

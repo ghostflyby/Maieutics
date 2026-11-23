@@ -83,21 +83,12 @@
     overflow: hidden;
     background: var(--mui-surface);
   }
-  .mui-conversation-heading {
+  .mui-history-heading {
     border-block-end: 1px solid var(--mui-border);
     padding: 17px var(--mui-block-inset);
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-  }
-  .mui-conversation-heading h2 {
     font-size: 13px;
     font-weight: 600;
     margin: 0;
-  }
-  .mui-conversation-heading > span {
-    font-size: 11px;
-    color: var(--mui-muted);
   }
   .mui-viewport {
     flex: 1;

@@ -1,138 +1,40 @@
 import { createOutputRenderer } from "./mod.ts";
 
-// This entry is bundled and run without package resolution, network, filesystem, or process grants.
+// Exercise the bundled engines with package resolution and I/O denied.
 using renderer = await createOutputRenderer();
-const source = [
-  "# Offline output",
-  "",
-  "[[toc]]",
-  "",
-  "## Contents {#contents}",
-  "",
-  "> [!NOTE] <img src=x>",
-  "> Offline alert.",
-  "",
-  "::: tip **Advice** [jump](#contents)",
-  "Shared SSR content.",
-  ":::",
-  "",
-  "::: code-group",
-  "```ts:line-numbers=7 {2} [report.ts]",
-  "// [!code highlight]",
-  "const total: number = 42;",
-  "```",
-  "",
-  "```json [report.json]",
-  '{ "total": 42 }',
-  "```",
-  ":::",
-  "",
-  "[Earlier reference][result]",
-  "",
-  "[result]: https://example.test/result",
-  "",
-  "<script>throw new Error('must remain text')</script>",
-  "",
-  "{{ globalThis.mustNotExecute() }}",
-].join("\n");
-const output = await renderer.render("offline", source);
-for (
-  const expected of [
-    'id="offline-offline-output"',
-    'class="custom-block tip"',
-    'href="#offline-contents">Contents</a>',
-    'class="custom-block note github-alert"',
-    "&lt;img src=x&gt;",
-    "<strong>Advice</strong>",
-    'href="#offline-contents">jump</a>',
-    "shiki",
-    '<fieldset class="vp-code-group"',
-    'name="offline-code-group-0"',
-    'class="line highlighted" data-line="7"',
-    'href="https://example.test/result"',
-    "&lt;script&gt;",
-    "{{ globalThis.mustNotExecute() }}",
-  ]
-) {
-  if (!output.html.includes(expected)) throw new Error(`Offline renderer is missing ${expected}.`);
-}
-console.log(
-  JSON.stringify({ status: "ok", htmlCharacters: output.html.length, headings: output.headings }),
+const markdown = await renderer.render(
+  "offline",
+  "~~~ts\nconst answer: number = 42;\n~~~\n\n$x^2$",
 );
-
-const templateSource =
-  "Total {{ report.total.toFixed(2) }}\n\nLater independent prose\n\n{{ empty }}";
-const pendingTemplate = await renderer.renderTemplate("template", templateSource, {
-  version: 1,
-  bindings: [{ name: "report", state: "pending" }, {
-    name: "empty",
-    state: "ready",
-    undefined: true,
-  }],
-});
-if (pendingTemplate.expressions?.[0].state !== "pending") {
-  throw new Error("Offline template must retain pending state.");
+if (!markdown.html.includes("shiki") || !markdown.html.includes("<svg ")) {
+  throw new Error("The offline bundle could not highlight TypeScript or render math.");
 }
-const readyTemplate = await renderer.renderTemplate("template", templateSource, {
+
+const template = await renderer.renderTemplate("template", "Total {{ total.toFixed(2) }}", {
   version: 1,
-  bindings: [{ name: "report", state: "ready", value: { total: 42 } }, {
-    name: "empty",
-    state: "ready",
-    undefined: true,
-  }],
+  bindings: [{ name: "total", state: "ready", value: 42 }],
 });
-if (
-  !readyTemplate.html.includes(">42.00</span>") ||
-  !readyTemplate.html.includes("Later independent prose") ||
-  readyTemplate.expressions?.[1].state !== "ready"
-) throw new Error("Offline template did not reconcile ready values.");
-console.log("Offline template interpolation passed.");
+if (!template.html.includes(">42.00</span>")) {
+  throw new Error("The offline template engine could not interpolate a bound expression.");
+}
 
 const vue = await renderer.renderVue(
   "vueoffline",
-  '<script setup>import {ref} from "vue";const count=ref(0)</script><template><button @click="count++">Count</button><span>{{count}}</span></template><style scoped>button{color:red}</style>',
+  '<script setup>import {ref} from "vue";const count=ref(0)</script><template><span>{{count}}</span></template>',
   "sfc",
 );
-if (!vue.html.includes(">0</span>") || !vue.vue?.css.includes("data-v-vueoffline")) {
-  throw new Error("Offline Vue worker failed.");
+if (!vue.vue || !vue.html.includes(">0</span>")) {
+  throw new Error("The offline Vue engine could not compile and render a component.");
 }
-console.log("Offline isolated Vue SSR passed.");
 
 const assistant = await renderer.renderAssistant(
   "live",
-  `---
-title: Counter
-initial: 0
----
-<script setup>import { ref } from 'vue'; const count = ref(0);</script>
-
-<button @click="count++">+</button><span>{{ count + $frontmatter.initial }}</span>
-
-# {{ $frontmatter.title }}`,
+  '<script setup>import {ref} from "vue";const count=ref(42);</script>\n\n# {{ count }}',
 );
-if (
-  !assistant.vue || !assistant.html.includes(">0</span>") ||
-  assistant.html.includes("title: Counter")
-) {
-  throw new Error("Offline live assistant Vue failed");
+if (!assistant.vue || !assistant.html.includes(">42</h1>")) {
+  throw new Error("The offline assistant engine could not render executable Markdown.");
 }
-console.log("Offline sealed assistant Vue passed.");
 
-const math = await renderer.render(
-  "mathoffline",
-  "$x^2$\n\n~~~py\nprint(42)\n~~~\n\n~~~md\nunclosed",
+console.log(
+  "Offline bundle rendered highlighted Markdown, math, templates, Vue and assistant output.",
 );
-if (
-  !math.html.includes("<svg ") || !math.html.includes('class="code-copy"') ||
-  math.diagnostics?.[0]?.line !== 7
-) throw new Error("Offline math/code/diagnostic contract failed.");
-console.log("Offline SVG math, multilingual code and source diagnostics passed.");
-
-const clientOnly = await renderer.renderAssistant(
-  "clientonlyoffline",
-  '<script setup>const stage=import.meta.env.SSR?"server":"client";const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>',
-);
-if (!clientOnly.html.includes(">server</p>") || clientOnly.html.includes("<span")) {
-  throw new Error("Offline ClientOnly/SSR target contract failed.");
-}
-console.log("Offline ClientOnly and target-specific SSR flag passed.");

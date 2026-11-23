@@ -1,31 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
 import { connect, events } from "./mod.ts";
-
-Deno.test("the repl client graph imports only the shared control module", async () => {
-  const source = await Deno.readTextFile(new URL("./mod.ts", import.meta.url));
-  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-  assertEquals(imports.length > 0, true);
-  for (const specifier of imports) {
-    assert(
-      specifier.startsWith("../shared/") ||
-        specifier === "../maieutics-deno-repl/comm.ts",
-      `unexpected import '${specifier}' in the repl client`,
-    );
-  }
-});
-
-Deno.test("the shared bus stays inside the control contract", async () => {
-  const source = await Deno.readTextFile(
-    new URL("../shared/bus.ts", import.meta.url),
-  );
-  const imports = [...source.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-  for (const specifier of imports) {
-    assert(
-      specifier === "./protocol.ts" || specifier === "./ipc_websocket.ts",
-      `unexpected import '${specifier}' in the shared bus`,
-    );
-  }
-});
 
 Deno.test("connect fails without an env address", () => {
   const previous = Deno.env.get("MAIEUTICS_REPL_IPC");

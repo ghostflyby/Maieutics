@@ -1,3 +1,6 @@
+import messages from "./locales/en.json" with { type: "json" };
+import { formatOutputMessage } from "./localization.ts";
+import type { OutputLocalizer } from "./types.d.ts";
 /// <reference lib="dom" />
 import {
   createApp,
@@ -24,8 +27,8 @@ interface FormState {
   title?: string;
   fields: Field[];
   values: Record<string, unknown>;
-  submitLabel: string;
-  cancelLabel: string;
+  submitLabel?: string;
+  cancelLabel?: string;
 }
 interface Model {
   state: FormState;
@@ -78,16 +81,17 @@ export function readFormState(value: unknown): FormState {
     title: typeof state.title === "string" ? state.title : undefined,
     fields,
     values: isRecord(state.values) ? state.values : {},
-    submitLabel: typeof state.submitLabel === "string" ? state.submitLabel : "Submit",
-    cancelLabel: typeof state.cancelLabel === "string" ? state.cancelLabel : "Cancel",
+    submitLabel: typeof state.submitLabel === "string" ? state.submitLabel : undefined,
+    cancelLabel: typeof state.cancelLabel === "string" ? state.cancelLabel : undefined,
   };
 }
 
 const Form = defineComponent({
-  props: ["model", "send"],
+  props: ["model", "send", "localize"],
   setup(props) {
     const draft = reactive<Record<string, unknown>>(Object.create(null));
     const model = props.model as ShallowRef<Model>;
+    const t = props.localize as OutputLocalizer;
     watch(() => model.value.state, (state, previous) => {
       const names = new Set(state.fields.map((field) => field.name));
       for (const name of Object.keys(draft)) if (!names.has(name)) delete draft[name];
@@ -148,7 +152,7 @@ const Form = defineComponent({
         },
       }, [
         state.title === undefined ? null : h("div", { class: "title" }, state.title),
-        live ? null : h("div", { class: "stale" }, "Snapshot — this form is not connected"),
+        live ? null : h("div", { class: "stale" }, t(messages.formSnapshot)),
         h("fieldset", { disabled: !live }, [
           ...state.fields.map((field) =>
             h("label", { key: field.name, class: "row" }, [
@@ -157,11 +161,15 @@ const Form = defineComponent({
             ])
           ),
           h("div", { class: "actions" }, [
-            h("button", { type: "submit", class: "submit" }, state.submitLabel),
+            h(
+              "button",
+              { type: "submit", class: "submit" },
+              state.submitLabel ?? t(messages.submit),
+            ),
             h(
               "button",
               { type: "button", class: "cancel", onClick: () => send("cancel") },
-              state.cancelLabel,
+              state.cancelLabel ?? t(messages.cancel),
             ),
           ]),
         ]),
@@ -180,7 +188,11 @@ button{padding:4px 12px;cursor:pointer}.submit{background:var(--vscode-button-ba
 
 /** Vue form renderer shared by notebook and standalone hosts. The host owns transport subscriptions. */
 export function createFormRenderer(
-  options: { sendMessage(message: FormMessage): void; activeView?(viewId: string): boolean },
+  options: {
+    sendMessage(message: FormMessage): void;
+    activeView?(viewId: string): boolean;
+    localize?: OutputLocalizer;
+  },
 ): FormRenderer {
   const views = new Map<string, View>();
   let closed = false;
@@ -250,6 +262,7 @@ export function createFormRenderer(
       root.append(style, container);
       const app = createApp(Form, {
         model: slot,
+        localize: options.localize ?? formatOutputMessage,
         send(name: "submit" | "cancel", payload?: { values: Record<string, unknown> }) {
           if (!closed && views.has(id) && slot.value.live && !snapshot) {
             options.sendMessage({

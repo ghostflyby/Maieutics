@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { createActorFormRenderer, createOutputRenderer, renderTurn } from "./mod.ts";
+import { renderTurn as renderTranslatedTurn } from "./renderer.js";
 
 Deno.test("standalone imports and scope disposal require no DOM, VS Code or transport globals", async () => {
   const sent: unknown[] = [];
@@ -35,4 +36,14 @@ Deno.test("standalone timeline helpers keep untrusted content inert without a ho
   const html = renderTurn({ text: "<script>alert(1)</script>" });
   assertEquals(html.includes("<script>"), false);
   assertEquals(html.includes("&lt;script&gt;"), true);
+});
+
+Deno.test("timeline markup escapes translated labels and preserves tool data", () => {
+  const html = renderTranslatedTurn(
+    { tools: [{ status: "ok", tool: "tool_name", arguments: { raw: "original" } }] },
+    undefined,
+    (message: string) => message === "Arguments" ? "<localized>" : message,
+  );
+  assertEquals(html.includes('<div class="detail-label">&lt;localized&gt;</div>'), true);
+  assertEquals(html.includes("&quot;raw&quot;: &quot;original&quot;"), true);
 });

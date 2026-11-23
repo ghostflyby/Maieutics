@@ -10,7 +10,7 @@
   "publish": false,
   "compilerOptions": {
     "lib": [
-      "ES2023"
+      "ES2024"
     ],
     "types": [
       "npm:@types/node@22.17.0"
@@ -27,10 +27,9 @@
     "watch": "deno bundle --format cjs --external vscode -o dist/extension.js extension.ts --watch",
     "package": "deno run -A --no-lock npm:@vscode/vsce@3.9.2 package --no-dependencies",
     "build:conversation": "deno run --allow-read --allow-write --allow-run buildConversation.ts",
-    "check:conversation": "deno check --no-config --import-map ../maieutics-ui/deno.json webview/conversation.ts"
+    "check:conversation": "deno check webview/conversation.ts"
   },
   "exclude": [
-    "webview/",
     "buildConversation.ts"
   ]
 }

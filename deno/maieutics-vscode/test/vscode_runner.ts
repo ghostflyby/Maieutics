@@ -251,6 +251,83 @@ function launchFlags(
   ];
 }
 
+/** Install the editor language pack into the same isolated profile used for the test. */
+async function installLanguagePack(
+  install: ResolvedInstall,
+  pack: string,
+  locale: string,
+  userDataDir: string,
+  extensionsDir: string,
+): Promise<void> {
+  const mac = Deno.build.os === "darwin";
+  const executable = mac
+    ? join(install.target, "Contents", "Resources", "app", "bin", "code")
+    : install.target;
+  const launcherArgs = mac
+    ? []
+    : [join(dirname(install.target), "resources", "app", "out", "cli.js")];
+  const result = await new Deno.Command(executable, {
+    env: mac ? { VSCODE_IPC_HOOK_CLI: "" } : { ELECTRON_RUN_AS_NODE: "1" },
+    args: [
+      ...launcherArgs,
+      `--user-data-dir=${userDataDir}`,
+      `--extensions-dir=${extensionsDir}`,
+      "--install-extension",
+      pack,
+    ],
+    stdout: "inherit",
+    stderr: "inherit",
+    signal: AbortSignal.timeout(120_000),
+  }).output();
+  if (!result.success) {
+    throw new Error(`Installing the VS Code language pack exited ${result.code}`);
+  }
+
+  // The CLI can install the extension without writing the startup NLS cache.
+  // Seed only this isolated profile from the installed pack's own contribution.
+  const packIndex = join(userDataDir, "languagepacks.json");
+  if (await isFileAsync(packIndex)) return;
+  for await (const entry of Deno.readDir(extensionsDir)) {
+    if (!entry.isDirectory) continue;
+    const directory = join(extensionsDir, entry.name);
+    const manifest = JSON.parse(await Deno.readTextFile(join(directory, "package.json"))) as {
+      publisher: string;
+      name: string;
+      version: string;
+      contributes?: {
+        localizations?: {
+          languageId: string;
+          languageName: string;
+          localizedLanguageName?: string;
+          translations: { id: string; path: string }[];
+        }[];
+      };
+    };
+    const contribution = manifest.contributes?.localizations?.find(
+      ({ languageId }) => languageId.toLowerCase() === locale,
+    );
+    if (!contribution) continue;
+    await Deno.writeTextFile(
+      packIndex,
+      JSON.stringify({
+        [locale]: {
+          hash: manifest.version,
+          extensions: [{
+            extensionIdentifier: { id: `${manifest.publisher}.${manifest.name}` },
+            version: manifest.version,
+          }],
+          translations: Object.fromEntries(
+            contribution.translations.map(({ id, path }) => [id, join(directory, path)]),
+          ),
+          label: contribution.localizedLanguageName ?? contribution.languageName,
+        },
+      }),
+    );
+    return;
+  }
+  throw new Error(`The installed language pack has no contribution for ${locale}`);
+}
+
 async function launchAsync(
   install: ResolvedInstall,
   flags: string[],
@@ -432,6 +509,11 @@ async function mainAsync(): Promise<number> {
   }
 
   const install = await resolveInstallAsync();
+  const requestedLocale = Deno.env.get("MAIEUTICS_VSCODE_TEST_LOCALE");
+  const languagePack = Deno.env.get("MAIEUTICS_VSCODE_TEST_LANGUAGE_PACK");
+  const locale = requestedLocale === undefined
+    ? undefined
+    : Intl.getCanonicalLocales(requestedLocale)[0].toLowerCase();
 
   const scratch = await makeScratchDirAsync();
   const userDataDir = join(scratch, "user-data-dir");
@@ -463,6 +545,7 @@ async function mainAsync(): Promise<number> {
         "maieutics.executablePath": join(scratch, "not-a-real-kernel"),
         "maieutics.testRenderingDiscovery": Deno.env.get("MAIEUTICS_RENDERING_DEMO_DISCOVERY"),
         "maieutics.testFilter": Deno.env.get("MAIEUTICS_VSCODE_TEST_FILTER"),
+        "maieutics.testLocale": locale,
       },
     }),
   );
@@ -476,9 +559,16 @@ async function mainAsync(): Promise<number> {
 
   let result = "Editor launch request did not complete";
   try {
+    if (locale && languagePack) {
+      result = `Installing the language pack for ${locale}`;
+      await installLanguagePack(install, languagePack, locale, userDataDir, extensionsDir);
+    }
     const launch = await launchAsync(
       install,
-      launchFlags(extensionRoot, testsPath, userDataDir, extensionsDir),
+      [
+        ...launchFlags(extensionRoot, testsPath, userDataDir, extensionsDir),
+        ...(locale ? [`--locale=${locale}`] : []),
+      ],
       workspaceFile,
     );
     result = "Editor launch request accepted; waiting for extension-host verdict";

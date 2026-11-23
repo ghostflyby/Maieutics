@@ -3,21 +3,48 @@ import { localize } from "./localization.ts";
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 // Browser-only build entry. The extension host imports only its own wire contract.
-import { ConversationRuntime, type ConversationSubmission, type ConversationViewState, mountConversationComposer, mountConversationHistory } from "../../maieutics-ui/mod.ts";
-import type { ViewAddress, ViewEvent, ViewFrame, ViewPage, ViewRequest, ViewResponse } from "../conversationProtocol.ts";
+import {
+  ConversationRuntime,
+  type ConversationSubmission,
+  type ConversationViewState,
+  mountConversationComposer,
+  mountConversationHistory,
+} from "../../maieutics-ui/mod.ts";
+import type {
+  ViewAddress,
+  ViewEvent,
+  ViewFrame,
+  ViewPage,
+  ViewRequest,
+  ViewResponse,
+} from "../conversationProtocol.ts";
 
 import { createConversationSurfaces } from "./presentation.ts";
 
 import { ViewRequests } from "./requests.ts";
 
-declare function acquireVsCodeApi(): { postMessage(value: unknown): void; setState(value: unknown): void };
+declare function acquireVsCodeApi(): {
+  postMessage(value: unknown): void;
+  setState(value: unknown): void;
+};
 const vscode = acquireVsCodeApi();
 const config = JSON.parse(document.getElementById("configuration")!.textContent!) as ViewAddress;
 vscode.setState({ sessionId: config.sessionId, viewId: config.viewId });
 const owner = new AbortController();
-const requests = new ViewRequests(config, (value) => vscode.postMessage(value), owner.signal, undefined, localize);
-const send = (method: ViewRequest["method"], params?: Record<string, unknown>) => requests.send(method, params);
-const request = <T>(method: ViewRequest["method"], params?: Record<string, unknown>, caller?: AbortSignal): Promise<T> => requests.request<T>(method, params, caller);
+const requests = new ViewRequests(
+  config,
+  (value) => vscode.postMessage(value),
+  owner.signal,
+  undefined,
+  localize,
+);
+const send = (method: ViewRequest["method"], params?: Record<string, unknown>) =>
+  requests.send(method, params);
+const request = <T>(
+  method: ViewRequest["method"],
+  params?: Record<string, unknown>,
+  caller?: AbortSignal,
+): Promise<T> => requests.request<T>(method, params, caller);
 
 const outputTheme = document.querySelector<HTMLLinkElement>("#output-theme");
 if (!outputTheme) throw new Error(localize(messages.missingStylesheet));
@@ -91,7 +118,11 @@ async function apply(frame: ViewFrame): Promise<void> {
       localize,
       host: { writeText: (text) => request("copy", { text }), mountBlock: surfaces.mountBlock },
     });
-    composer = mountConversationComposer(element("composer"), { view, localize, onSubmit: (submission) => void submit(submission).catch(fail) });
+    composer = mountConversationComposer(element("composer"), {
+      view,
+      localize,
+      onSubmit: (submission) => void submit(submission).catch(fail),
+    });
   } else {
     if (!runtime) throw new Error(localize(messages.missingSnapshot));
     runtime.apply(frame.change);
@@ -102,11 +133,15 @@ async function submit(submission: ConversationSubmission): Promise<void> {
   sending = true;
   notice.textContent = "";
   try {
-    const answer = await request<{ kind: "turn" | "command"; markdown?: string; sessionId?: string }>("submit", { text: submission.text });
+    const answer = await request<
+      { kind: "turn" | "command"; markdown?: string; sessionId?: string }
+    >("submit", { text: submission.text });
     runtime?.confirmSubmission(submission.viewId, submission.revision);
     if (answer.kind === "command") {
       notice.textContent = answer.markdown ?? localize(messages.commandComplete);
-      if (answer.sessionId && answer.sessionId !== config.sessionId) notice.textContent += "\n" + localize(messages.sessionSwitched);
+      if (answer.sessionId && answer.sessionId !== config.sessionId) {
+        notice.textContent += "\n" + localize(messages.sessionSwitched);
+      }
     }
   } finally {
     sending = false;
@@ -118,7 +153,10 @@ cancel.addEventListener("click", () => {
 element("reload").addEventListener("click", () => send("reload"), { signal: owner.signal });
 globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewEvent>) => {
   const message = event.data;
-  if (!message || message.version !== 1 || message.viewId !== config.viewId || message.sessionId !== config.sessionId || message.generation !== config.generation) return;
+  if (
+    !message || message.version !== 1 || message.viewId !== config.viewId ||
+    message.sessionId !== config.sessionId || message.generation !== config.generation
+  ) return;
   if ("id" in message) {
     requests.receive(message);
   } else if (message.event === "presentation") {
@@ -135,7 +173,9 @@ globalThis.addEventListener("message", (event: MessageEvent<ViewResponse | ViewE
       owner.abort();
       return;
     }
-    frameQueue = frameQueue.then(() => apply(message.value as ViewFrame)).catch(fail).finally(() => queuedFrames--);
+    frameQueue = frameQueue.then(() => apply(message.value as ViewFrame)).catch(fail).finally(() =>
+      queuedFrames--
+    );
   }
 }, { signal: owner.signal });
 globalThis.addEventListener("pagehide", () => {

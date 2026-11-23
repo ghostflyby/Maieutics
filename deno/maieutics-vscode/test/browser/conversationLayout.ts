@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 /// <reference lib="es2024.promise" />
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   ConversationRuntime,
   mountConversationComposer,
@@ -47,6 +47,34 @@ function assertContained(outer: Element, element: Element, name: string): void {
       box.top >= viewport.top - 1 && box.bottom <= viewport.bottom + 1,
     `${name} escapes its visible container`,
   );
+}
+
+async function assertOutputEdgeSpacing(): Promise<void> {
+  const host = document.createElement("div");
+  const root = host.attachShadow({ mode: "open" });
+  // The Markdown surface attaches the host stylesheet after authored content.
+  root.innerHTML = "<h2>Heading</h2><p>First paragraph</p><p>Last paragraph</p>";
+  const sheet = document.createElement("link");
+  sheet.rel = "stylesheet";
+  sheet.href = "/output.css";
+  const loaded = new Promise<void>((resolve, reject) => {
+    sheet.onload = () => resolve();
+    sheet.onerror = () => reject(new Error("Could not load the conversation output stylesheet"));
+  });
+  root.append(sheet);
+  document.body.append(host);
+  try {
+    await loaded;
+    assertEquals(getComputedStyle(requireElement(root, "h2")).marginBlockStart, "0px");
+    assertEquals(getComputedStyle(requireElement(root, "p")).marginBlockEnd, "12px");
+    assertEquals(
+      getComputedStyle(requireElement(root, "p + p")).marginBlockEnd,
+      "0px",
+      "The final content paragraph must lose its trailing margin even with a stylesheet sibling",
+    );
+  } finally {
+    host.remove();
+  }
 }
 
 export async function runBrowserConformance(): Promise<string[]> {
@@ -115,7 +143,9 @@ export async function runBrowserConformance(): Promise<string[]> {
       viewport.getComputedStyle(editor).outlineStyle === "none",
       "Input focus draws through the footer",
     );
+    await assertOutputEdgeSpacing();
     return [
+      "the conversation output stylesheet removes shadow content edge margins",
       "the conversation shell keeps actual editor and submit control visible at narrow and wide viewport sizes",
     ];
   } finally {

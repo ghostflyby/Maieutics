@@ -4,6 +4,7 @@ import { conversationChrome } from "../../conversationChrome.ts";
 const stylesheetFiles = {
   "/ui.css": new URL("../../../maieutics-ui/styles.css", import.meta.url),
   "/theme.css": new URL("../../webview/theme.css", import.meta.url),
+  "/output.css": new URL("../../webview/output.css", import.meta.url),
 };
 for (
   const scenario of await runInBrowser({
@@ -37,7 +38,7 @@ for (
               { headers: { "content-type": "text/html" } },
             );
           }
-          if (path === "/ui.css" || path === "/theme.css") {
+          if (path === "/ui.css" || path === "/theme.css" || path === "/output.css") {
             return new Response(await Deno.readFile(stylesheetFiles[path]), {
               headers: { "content-type": "text/css" },
             });

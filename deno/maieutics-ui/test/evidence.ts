@@ -81,8 +81,7 @@ export interface ScrollMutation {
   readonly expected_matches: number;
 }
 
-/** Only a verdict received from the owned browser can be an expected negative scenario. */
-
+/** Recorded negative and restored browser verdicts for the hashed inputs. */
 export interface ScrollEvidence {
   readonly schema_version: 3;
   readonly source: { readonly kind: "worktree-snapshot"; readonly files_sha256: SourceHashes };

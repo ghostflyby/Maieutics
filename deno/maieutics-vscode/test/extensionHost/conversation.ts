@@ -2,11 +2,40 @@ import * as vscode from "vscode";
 import { ConversationPanel } from "../../conversationPanels.ts";
 import type { FrontendClient } from "../../client.ts";
 import type { ViewEntry, ViewFrame } from "../../conversationProtocol.ts";
+import hostEnglish from "../../locales/en.json" with { type: "json" };
+import uiEnglish from "../../../maieutics-ui/locales/en.json" with { type: "json" };
+
+async function expectedLocale(extension: vscode.Extension<unknown>) {
+  const locale = vscode.workspace.getConfiguration("maieutics").get<string>("testLocale");
+  if (!locale) return undefined;
+  if (vscode.env.language.toLowerCase() !== locale) {
+    throw new Error(`Requested VS Code locale ${locale}, received ${vscode.env.language}`);
+  }
+  const filename = Intl.getCanonicalLocales(locale)[0] + ".json";
+  const catalog = async (path: string) =>
+    JSON.parse(new TextDecoder().decode(
+      await vscode.workspace.fs.readFile(
+        vscode.Uri.joinPath(extension.extensionUri, path, filename),
+      ),
+    )) as Record<string, string>;
+  const [host, ui] = await Promise.all([catalog("locales"), catalog("../maieutics-ui/locales")]);
+  if (
+    !host.reload || host.reload === hostEnglish.reload ||
+    !ui.placeholder || ui.placeholder === uiEnglish.placeholder
+  ) {
+    throw new Error(`Locale ${locale} must supply distinct host and composer translations`);
+  }
+  return { locale, reload: host.reload, placeholder: ui.placeholder };
+}
 
 /** Uses the shipped browser bundle and real editor bridge; the source controls every interleaving. */
 export async function testConversationPanelAsync(): Promise<void> {
   const extension = vscode.extensions.getExtension("ghostflyby.maieutics-vscode");
   if (!extension) throw new Error("Maieutics extension missing");
+  const locale = await expectedLocale(extension);
+  // The filtered probe may run before workbench startup activates this extension.
+  if (locale) await extension.activate();
+  const localeJson = JSON.stringify(locale ?? null).replaceAll("<", "\\u003c");
   const sessionId = "d".repeat(32);
   const entries: ViewEntry[] = Array.from({ length: 10_000 }, (_, ordinal) => ({
     id: `entry-${ordinal}`,
@@ -182,6 +211,12 @@ export async function testConversationPanelAsync(): Promise<void> {
             const stop = document.getElementById('cancel');
             return stop && !stop.hidden && !stop.disabled && document.querySelector('[data-entry-id] .mui-text');
           }, 'webview did not apply the addressed snapshot and read its content');
+          const locale = ${localeJson};
+          if (locale) {
+            assert(document.documentElement.lang.toLowerCase() === locale.locale, 'The selected locale did not reach the document');
+            assert(document.getElementById('reload').textContent === locale.reload, 'VS Code did not translate the host toolbar label');
+            assert(document.querySelector('textarea').placeholder === locale.placeholder, 'The injected catalog did not translate the shared composer');
+          }
           assert(Object.keys(JSON.parse(document.getElementById('configuration').textContent)).sort().join(',') === 'generation,sessionId,version,viewId', 'configuration exposed more than the view address');
           const viewport = document.querySelector('.mui-viewport'); viewport.scrollTop = 0; viewport.dispatchEvent(new Event('scroll'));
           await wait(

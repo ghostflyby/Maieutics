@@ -1,6 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { createActorFormRenderer, createOutputRenderer, renderTurn } from "./mod.ts";
-import { renderTurn as renderTranslatedTurn } from "./renderer.js";
 
 Deno.test("standalone imports and scope disposal require no DOM, VS Code or transport globals", async () => {
   const sent: unknown[] = [];
@@ -39,7 +38,7 @@ Deno.test("standalone timeline helpers keep untrusted content inert without a ho
 });
 
 Deno.test("timeline markup escapes translated labels and preserves tool data", () => {
-  const html = renderTranslatedTurn(
+  const html = renderTurn(
     { tools: [{ status: "ok", tool: "tool_name", arguments: { raw: "original" } }] },
     undefined,
     (message: string) => message === "Arguments" ? "<localized>" : message,

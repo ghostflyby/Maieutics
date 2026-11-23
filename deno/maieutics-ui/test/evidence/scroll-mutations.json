@@ -33,7 +33,7 @@
       "test/check_evidence.ts": "58da68c1266d3018dd4b5dcc5f778857e56ce040698a37f1a7b43a65cf22b44a",
       "test/component_conformance.ts": "06f0f7cdf004439c98e49b8a1c2324bdebb1ddc3237a206eaefad17c4501e516",
       "test/evidence_test.ts": "e97d57e039c3d642874b7f689c7f23e27e4941be3a818a0941cc96472163dbb9",
-      "test/evidence.ts": "183fe63b4f6a78a137ed9b5014fae6a5e3886b56fc5f1dbac4fd044a8e28f5a8",
+      "test/evidence.ts": "333de24dedb7695728b73445446fe5deb5471736061a0486b8a74af5ee20642d",
       "test/localization_test.ts": "171a24776ae97d2b5a899ffa8e9d5d1e1b059d2427d7080cd90af12e1455d300",
       "test/review_conformance.ts": "ad6fc55fb03a7c02491d67a216ce8ccdb83a805ba308c3f44c73f858f40a820c",
       "vue/binding.ts": "dcebd63c1718fdaeaca6b8e73d24198df80dcbc51e1cece22120002e75f041d0",

@@ -33,9 +33,9 @@ class LifecycleFixture implements AsyncDisposable {
   readonly #root = Deno.makeTempDirSync();
   #host?: PluginHost;
 
-  plugin(id: string): PluginConfig {
+  plugin(id: string, hook = PASS_HOOK): PluginConfig {
     const directory = Deno.makeTempDirSync({ dir: this.#root });
-    return createWorkerPlugin(directory, id, hookSource(PASS_HOOK));
+    return createWorkerPlugin(directory, id, hookSource(hook));
   }
 
   start(plugins: PluginConfig[]): PluginHost {
@@ -82,6 +82,69 @@ Deno.test("idle reclamation preserves registrations and the next invocation wake
   const result = await host.invoke("idle", "./main", "ToolPreInvoke", {});
   assertEquals(result, { action: "pass" });
   assertEquals(host.states()[0].state, "running", "the invocation must restart the worker");
+});
+
+Deno.test("an in-flight invocation pins its worker until the call settles", async () => {
+  await using fixture = new LifecycleFixture();
+  const host = fixture.start([fixture.plugin(
+    "active",
+    `
+    export const hook = defineExtensionPoint("ToolPreInvoke", {
+      async handler({ hold }) {
+        await hold();
+        return { action: "pass" };
+      },
+    });
+  `,
+  )]);
+  await host.startAll();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const active = host.invoke("active", "./main", "ToolPreInvoke", {
+    hold: () => {
+      entered.resolve();
+      return release.promise;
+    },
+  });
+  const observed = active.then(
+    (result) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Worker invocation did not reach its next phase")),
+      15_000,
+    );
+  });
+  let settled = false;
+  try {
+    await Promise.race([
+      entered.promise,
+      observed.then(() => {
+        throw new Error("Worker call settled before entering the hold");
+      }),
+      deadline,
+    ]);
+    const sweep = Date.now();
+    await host.reclaimIdleWorkers(sweep);
+    await host.reclaimIdleWorkers(sweep + IDLE_GRACE);
+    assertEquals(host.states()[0].state, "running", "The held call must pin its worker");
+    release.resolve();
+    const value = await Promise.race([observed, deadline]);
+    settled = true;
+    assertEquals(value, { result: { action: "pass" } });
+
+    const completed = Date.now();
+    await host.reclaimIdleWorkers(completed);
+    await host.reclaimIdleWorkers(completed + IDLE_GRACE);
+    assertEquals(host.states()[0].state, "stopped", "The settled call must release its pin");
+  } finally {
+    clearTimeout(timer);
+    release.resolve();
+    if (!settled) host.dispose();
+    await observed;
+  }
 });
 
 Deno.test("a running consumer pins its dependency until reclamation stops the consumer", async () => {

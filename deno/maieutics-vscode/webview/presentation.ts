@@ -1,13 +1,20 @@
 /// <reference lib="dom" />
-import type { ConversationBlockSurface, ConversationEntry, ConversationLocalizer, TextContent } from "../../maieutics-ui/mod.ts";
-// @deno-types="../../maieutics-output-client/types.d.ts"
-import { createActorFormRenderer, createOutputRenderer } from "../media/outputClient.js";
+import type {
+  ConversationBlockSurface,
+  ConversationEntry,
+  ConversationLocalizer,
+  TextContent,
+} from "../../maieutics-ui/mod.ts";
+import {
+  createActorFormRenderer,
+  createOutputRenderer,
+} from "../../maieutics-output-client/mod.ts";
 
 const templateMime = "application/vnd.maieutics.template+json";
 const vueMime = "application/vnd.maieutics.vue+json";
 const formMime = "application/vnd.maieutics.form+json";
 
-/** Reuse the exact browser renderer shipped for Notebook output, with one surface per virtual row. */
+/** Reuse the shared browser renderer used by Notebook output, with one surface per virtual row. */
 export function createConversationSurfaces(
   post: (message: unknown) => void,
   stylesheetUrl: string,
@@ -32,7 +39,8 @@ export function createConversationSurfaces(
           if (closed) return;
           signal.throwIfAborted();
           const presentation = content.presentation;
-          let kind: "turn" | "assistant" | "vue" | "template" = presentation?.version === 1 && presentation.kind === "assistant" ? "assistant" : "turn";
+          let kind: "turn" | "assistant" | "vue" | "template" =
+            presentation?.version === 1 && presentation.kind === "assistant" ? "assistant" : "turn";
           let value: unknown = { text: content.text, streaming: entry.state === "open" };
           let nextFamily: "output" | "form" = "output";
           if (presentation?.version === 1 && presentation.kind === "tool") {
@@ -51,7 +59,12 @@ export function createConversationSurfaces(
             } else {
               // HTML remains inert source; only the authenticated compiler produces executable DOM.
               const text = bundle["text/markdown"] ?? bundle["text/plain"];
-              value = { text: typeof text === "string" ? text : "```json\n" + JSON.stringify(bundle["application/json"] ?? bundle, null, 2) + "\n```" };
+              value = {
+                text: typeof text === "string"
+                  ? text
+                  : "```json\n" + JSON.stringify(bundle["application/json"] ?? bundle, null, 2) +
+                    "\n```",
+              };
             }
           }
           if (id !== entry.id || family !== nextFamily) clear();
@@ -78,5 +91,7 @@ export function createConversationSurfaces(
   };
 }
 function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }

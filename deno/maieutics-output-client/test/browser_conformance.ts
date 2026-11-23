@@ -161,10 +161,20 @@ async function streamingRevisions(api: OutputClient): Promise<void> {
     assert(content(boundary)?.includes("Second prefix"), "An older reply regressed the prefix");
 
     const third = await paint("Prefix grows again");
-    await reply(third, "Unsafe preview", {
-      vue: { version: 1, code: 'throw Error("must stay passive")', scopeId: "data-v-preview" },
-    });
-    assert(content(boundary)?.includes("Second prefix"), "A passive stream accepted a Vue reply");
+    const probe = document.documentElement.dataset;
+    try {
+      await reply(third, "Unsafe preview", {
+        vue: {
+          version: 1,
+          code: 'document.documentElement.dataset.passiveFactoryRan = "yes"; throw Error("probe");',
+          scopeId: `data-v-${third.documentId}`,
+        },
+      });
+      assertEquals(probe.passiveFactoryRan, undefined, "A passive stream executed a Vue factory");
+      assert(content(boundary)?.includes("Second prefix"), "A passive stream accepted a Vue reply");
+    } finally {
+      delete probe.passiveFactoryRan;
+    }
     await paint("Rewrite");
     await paint("Prefix grows again after rewrite");
     const rewritten = committed();

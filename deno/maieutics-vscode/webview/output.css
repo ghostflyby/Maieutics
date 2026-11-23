@@ -44,11 +44,11 @@
 :host :is(h4, h5, h6) {
   font-size: 1em;
 }
-:host > :first-child,
+:host > :nth-child(1 of :not(style, link)),
 :host .maieutics-output > :first-child {
   margin-block-start: 0;
 }
-:host > :last-child:not(link),
+:host > :nth-last-child(1 of :not(style, link)),
 :host .maieutics-output > :last-child {
   margin-block-end: 0;
 }

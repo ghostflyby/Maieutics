@@ -1,9 +1,14 @@
 /// <reference lib="dom" />
 // @deno-types="npm:@types/markdown-it@14.1.2"
 import MarkdownIt from "markdown-it";
-import { createRenderer } from "./renderer.js";
+import {
+  createRenderer,
+  renderSubagents as renderSubagentsMarkup,
+  renderTurn as renderTurnMarkup,
+} from "./renderer.js";
 
-export { renderSubagents, renderTurn } from "./renderer.js";
+export const renderSubagents: typeof import("./types.d.ts").renderSubagents = renderSubagentsMarkup;
+export const renderTurn: typeof import("./types.d.ts").renderTurn = renderTurnMarkup;
 export { mountVueIsland, vueUpdatesComplete } from "./vueIslands.ts";
 export { createFormRenderer } from "./forms.ts";
 export { createActorFormRenderer } from "./actorForms.ts";

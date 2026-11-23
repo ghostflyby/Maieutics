@@ -887,6 +887,58 @@ Deno.test("plugin storage persists to the kernel-assigned directory", async () =
   }
 });
 
+Deno.test("the host returns QuotaExceededError to the plugin that exceeded its storage limit", async () => {
+  const dir = await Deno.makeTempDir();
+  const dataDir = makeDataDir();
+  try {
+    const plugin = createPluginConfig(
+      dir,
+      "test",
+      pluginSource(`
+        export default defineExtensionPoint("ToolPreInvoke", {
+          handler() {
+            const chunk = "x".repeat(900_000);
+            for (let index = 0; index < 7; index++) {
+              try {
+                localStorage.setItem("chunk-" + index, chunk);
+              } catch (error) {
+                return {
+                  action: "continue",
+                  value: {
+                    name: error.name,
+                    isDomException: error instanceof DOMException,
+                    rejectedWrite: index,
+                    retainedBytes: localStorage.getItem("chunk-0")?.length,
+                  },
+                };
+              }
+            }
+            return { action: "continue", value: null };
+          },
+        });
+      `),
+      { dataDir },
+    );
+    const host = makeHost(plugin);
+    try {
+      await host.startAll();
+      assertEquals(await valueOf(host, "test"), {
+        name: "QuotaExceededError",
+        isDomException: true,
+        rejectedWrite: 5,
+        retainedBytes: 900_000,
+      });
+    } finally {
+      await host.shutdown();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(dataDir, { recursive: true }).catch((error: unknown) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    });
+  }
+});
+
 // —— REPL process derivation (ADR 0020) ——
 
 Deno.test("host derives a REPL process actor and receives its pid", async () => {

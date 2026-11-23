@@ -136,8 +136,8 @@ jobs:
         working-directory: deno/maieutics-vscode
         run: |
           deno task check:conversation
-          deno fmt --no-config --check webview/ buildConversation.ts
-          deno lint --no-config webview/ buildConversation.ts
+          deno fmt --no-config --check buildConversation.ts
+          deno lint --no-config buildConversation.ts
           deno task build:conversation
           git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css media/conversationOutput.css l10n/
 
@@ -399,6 +399,16 @@ jobs:
         env:
           MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs
         run: deno task --config deno/maieutics-vscode/deno.json test:vscode
+
+      - name: Test localized conversation in VS Code
+        if: runner.os == 'Linux'
+        working-directory: deno/maieutics-vscode
+        env:
+          MAIEUTICS_VSCODE_TEST_LOCALE: zh-cn
+          MAIEUTICS_VSCODE_TEST_LANGUAGE_PACK: MS-CEINTL.vscode-language-pack-zh-hans
+          MAIEUTICS_VSCODE_TEST_FILTER: conversation panel pages history
+          MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs/localized
+        run: deno run -A test/vscode_runner.ts
 
       - name: Upload VS Code diagnostics
         if: failure() || github.event_name == 'schedule'

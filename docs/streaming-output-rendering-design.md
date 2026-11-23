@@ -944,7 +944,10 @@ tokens. The conversation shell layout runs in Chromium at actual editor viewport
 
 The VS Code adapter maps MIME/items, injects protected native Markdown and forwards message/action
 services. The same built ESM is copied into media/outputClient.js; extension-host Node code does not
-import another workspace module. build:media and CI rebuild/copy it, and CI rejects a stale committed
+import another workspace module. The conversation bundle compiles the same output client sources
+with the conversation components so both share one Vue runtime in the webview. CI inspects browser
+bundle source maps for that single runtime and retired renderer dependencies. build:media and CI
+rebuild/copy the browser assets, and CI rejects a stale committed
 artifact. At extraction time the widget/view renderers remained separate; ADR 0050 retires them in the
 subsequent Vue UI migration described below. Public frontend envelopes, capability
 versions, provenance and notebook persistence are unchanged: assistant/vue kinds are explicit host
@@ -1445,7 +1448,11 @@ not sleeps. Platform test jobs run the pinned runtime and retain their own outco
 The Deno CI job now rebuilds and runs `git diff --exit-code --stat -- bundle/` from the renderer
 module before offline smoke. Both committed service and embedded worker-source artifacts must match;
 the .NET job can no longer silently embed a stale committed service while source tests pass against
-a freshly overwritten file. The check has been exercised with a deliberately modified artifact
+a freshly overwritten file. The separate bundled `smoke.ts` entry runs without package resolution
+or I/O grants. It exercises the Markdown plugins and passive rendering, copy metadata and source
+diagnostics, template reconciliation, scoped Vue, assistant frontmatter, and ClientOnly/SSR behavior.
+The service freshness check covers the committed artifacts, while this smoke exercises the bundled
+renderer paths offline. The check has been exercised with a deliberately modified artifact
 (rejected) and a clean Deno 2.9.6 rebuild (accepted). Renderer wire/API and notebook formats are unchanged.
 
 The recovery increment passes 17 focused renderer integration cases on pinned Deno 2.9.6. The full

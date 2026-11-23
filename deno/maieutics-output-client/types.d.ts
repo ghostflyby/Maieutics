@@ -109,12 +109,14 @@ export declare function vueUpdatesComplete(): Promise<void>;
 export declare function renderTurn(
   turn: unknown,
   markdownToHtml?: (text: string) => string,
+  localize?: OutputLocalizer,
 ): string;
 /** Render child-run summaries to markup. */
 export declare function renderSubagents(
   subagents: unknown,
   overflow?: boolean,
   markdownToHtml?: (text: string) => string,
+  localize?: OutputLocalizer,
 ): string;
 
 export interface FormRenderer {

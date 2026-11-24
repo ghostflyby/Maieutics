@@ -26,12 +26,12 @@
       "mod.ts": "519e7cdb37943c797d0cc252cd0c1831e3845bc84e84d1e059717cbd999fbc34",
       "README.md": "80d4c28cd4e9c644a213be66d6f0092dc95d4315f5109846c2400164436e477e",
       "serve.ts": "d904e50debbf625b1854c6438f397715be64b8d30d9d216350ed6ef31b457247",
-      "styles.css": "3a92acf48a38872fe9023fa9b0388e4c6ae14b6b4481c4c0087c50fc8061fe33",
+      "styles.css": "685fb662eefcff22037a776ea4fe392ff7a0a913799212354072a9f9215d6156",
       "test/browser_assertions.ts": "843e229b9a463da3078195aede711aed4e79749503d9af0e4c1d6fa80f2bedad",
       "test/browser_conformance.ts": "ad04458622f65692a0cd03c14bc7f77d8d8f67d90ae5b5e478841805284523e7",
       "test/browser_runner.ts": "46b222a2cf9e22da92a5eb8a4b2387d4df5167bbc1d885567a55caf5c18d3f3a",
       "test/check_evidence.ts": "58da68c1266d3018dd4b5dcc5f778857e56ce040698a37f1a7b43a65cf22b44a",
-      "test/component_conformance.ts": "06f0f7cdf004439c98e49b8a1c2324bdebb1ddc3237a206eaefad17c4501e516",
+      "test/component_conformance.ts": "53caf09287b55fc00cae606d41589579242fef14ac520342457bebed21621832",
       "test/evidence_test.ts": "e97d57e039c3d642874b7f689c7f23e27e4941be3a818a0941cc96472163dbb9",
       "test/evidence.ts": "333de24dedb7695728b73445446fe5deb5471736061a0486b8a74af5ee20642d",
       "test/localization_test.ts": "171a24776ae97d2b5a899ffa8e9d5d1e1b059d2427d7080cd90af12e1455d300",
@@ -40,7 +40,7 @@
       "vue/composer.ts": "b0c664491df8739e0440a7fcec6a690ed85f245897390092a114e603923f0d24",
       "vue/contracts.ts": "cefef0162d167bcaa9a2406a7b1f7dee179f35117c8d0c5e00d780b651427a7c",
       "vue/conversation.ts": "405de8bbab7e5206f1aa94f2646a04c6d9fab8f37934ee51a5d4a28a733bce66",
-      "vue/history.ts": "7866b89c0335ba1be018ef2e6f08f1af1a8b17944b6f5d4b75c1ccaf46456a33",
+      "vue/history.ts": "319220030fbde3baa4c2b6babe2bb1059552969890f306784f7b7cf594780a70",
       "vue/mount.ts": "b3a6e0244c005a1eeefdba581197f25f3b05b2a0258d06405f6a9edbc55064e7"
     }
   },
@@ -115,7 +115,7 @@
   ],
   "restored": {
     "outcome": "passed",
-    "scenario_count": 35,
+    "scenario_count": 36,
     "scenarios": [
       "following keeps the actual viewport at the measured live end beyond overscan",
       "100,000 entries mount a bounded tail and load bodies lazily",
@@ -151,7 +151,8 @@
       "composer send shortcuts preserve newline, IME composition and host-owned draft acknowledgement",
       "one external stylesheet themes separate views and editors without remounting or losing input",
       "flattened components bind a complete runtime/viewId pair without an intermediate attachment",
-      "streamed blocks retain their host surface and virtual recycling disposes its exact rendering scope"
+      "streamed blocks retain their host surface and virtual recycling disposes its exact rendering scope",
+      "adjacent tool calls share a heading and keep independent disclosure across appends"
     ]
   }
 }

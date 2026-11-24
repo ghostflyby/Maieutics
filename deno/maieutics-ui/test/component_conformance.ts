@@ -1,4 +1,4 @@
-import { ConversationRuntime } from "../mod.ts";
+import { type ConversationEntry, ConversationRuntime } from "../mod.ts";
 import { FixtureConversation } from "../fixtures/conversation.ts";
 import { assert, equal, geometryApplied, waitFor } from "./browser_assertions.ts";
 
@@ -450,5 +450,122 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
     await streaming.dispose();
     container.remove();
   }
+  await checkToolGroups(artifact);
+  passed.push("adjacent tool calls share a heading and keep independent disclosure across appends");
   return passed;
+}
+
+async function checkToolGroups(artifact: Artifact): Promise<void> {
+  const entries: ConversationEntry[] = (["tool", "tool", "message", "tool", "tool"] as const)
+    .map((kind, ordinal) => ({
+      kind,
+      ordinal,
+      id: `group-entry-${ordinal}`,
+      interactionId: ordinal < 4 ? "first-turn" : "second-turn",
+      contentRevision: "0",
+      preview: `Entry ${ordinal}`,
+      state: "sealed",
+    }));
+  const runtime = new ConversationRuntime("tool-groups", {
+    readPage: () =>
+      Promise.resolve({
+        sessionId: "tool-groups",
+        epoch: "groups",
+        revision: "0",
+        total: entries.length,
+        entries,
+      }),
+    readContent(id, revision) {
+      const entry = entries.find((entry) => entry.id === id);
+      return Promise.resolve({
+        entryId: id,
+        revision,
+        text: entry?.preview ?? "",
+        presentation: entry?.kind === "tool" ? { version: 1, kind: "tool" } : undefined,
+      });
+    },
+  });
+  await runtime.loadPage();
+  const view = runtime.attachView("tool-groups");
+  const root = document.createElement("div");
+  root.style.height = "620px";
+  document.body.append(root);
+  const history = artifact.mountConversationHistory(root, {
+    view,
+    host: {
+      writeText: () => Promise.resolve(),
+      mountBlock(element) {
+        const details = document.createElement("details");
+        const summary = details.appendChild(document.createElement("summary"));
+        const body = details.appendChild(document.createElement("p"));
+        body.textContent = "Tool result";
+        element.append(details);
+        return {
+          render(entry) {
+            summary.textContent = entry.preview;
+            return Promise.resolve();
+          },
+          dispose: () => details.remove(),
+        };
+      },
+    },
+  });
+  const row = (ordinal: number) => root.querySelector<HTMLElement>(`[data-ordinal="${ordinal}"]`);
+  const headingOrdinals = () =>
+    [...root.querySelectorAll(".mui-tool h3")].map((heading) =>
+      heading.closest("[data-ordinal]")?.getAttribute("data-ordinal")
+    ).join(",");
+  try {
+    await waitFor(
+      () => root.querySelectorAll(".mui-tool details").length === 4 && geometryApplied(root),
+      "the tool group fixture did not render and measure its calls",
+    );
+    equal(
+      headingOrdinals(),
+      "0,3,4",
+      "tool headings must follow non-tool and interaction boundaries",
+    );
+    const first = row(0)?.querySelector("details");
+    const firstSummary = first?.querySelector("summary");
+    const second = row(1)?.querySelector("details");
+    const secondSummary = second?.querySelector("summary");
+    assert(
+      first && firstSummary && second && secondSummary,
+      "each tool call needs its own disclosure",
+    );
+    const gap = secondSummary.getBoundingClientRect().top -
+      firstSummary.getBoundingClientRect().bottom;
+    assert(gap >= -1 && gap <= 12, "consecutive tools have excess spacing or overlap");
+    secondSummary.click();
+    assert(second.open && !first.open, "expanding a tool changed another tool's disclosure");
+
+    const priorTail = row(4);
+    const next: ConversationEntry = {
+      ...entries[4],
+      id: "group-entry-5",
+      ordinal: 5,
+      state: "open",
+    };
+    entries.push(next);
+    runtime.apply({
+      epoch: "groups",
+      baseRevision: "0",
+      revision: "1",
+      total: entries.length,
+      operations: [{ type: "upsert", entry: next }],
+    });
+    await waitFor(
+      () => !!row(5)?.querySelector("details") && geometryApplied(root),
+      "the appended tool did not settle into its group",
+    );
+    equal(headingOrdinals(), "0,3,4", "an appended tool duplicated its group's heading");
+    assert(row(5)?.querySelector(".mui-writing"), "grouping hid the open call's status");
+    equal(row(4), priorTail, "adding a tool remounted the preceding row");
+    assert(second.isConnected && second.open, "adding a tool reset the earlier expanded call");
+  } finally {
+    history.unmount();
+    view.dispose();
+    await runtime.dispose();
+    root.remove();
+  }
 }

@@ -57,6 +57,8 @@ const OutputBlockHost = defineComponent({
     view: { type: Object as PropType<ConversationViewState>, required: true },
     entryId: { type: String, required: true },
     index: { type: Number, required: true },
+    joinsPreviousTool: { type: Boolean, default: false },
+    joinsNextTool: { type: Boolean, default: false },
     measure: { type: Function as PropType<(element: HTMLElement) => void>, required: true },
     host: { type: Object as PropType<ConversationHost>, required: true },
     localize: {
@@ -151,7 +153,10 @@ const OutputBlockHost = defineComponent({
     return () => {
       const current = entry.value;
       const attributes = {
-        class: ["mui-row", "mui-block", current ? `mui-${current.kind}` : "mui-missing"],
+        class: ["mui-row", "mui-block", current ? `mui-${current.kind}` : "mui-missing", {
+          "mui-tool-joins-previous": props.joinsPreviousTool,
+          "mui-tool-joins-next": props.joinsNextTool,
+        }],
         "data-index": props.index,
         ref: (element: unknown) => {
           if (element instanceof HTMLElement) props.measure(element);
@@ -167,6 +172,7 @@ const OutputBlockHost = defineComponent({
         : content.value?.text;
       const rich =
         !!(props.host.mountBlock && content.value?.presentation && current.kind !== "unavailable");
+      const writing = current.state === "open";
       return h("article", {
         ...attributes,
         "aria-label": props.localize(labels[current.kind]),
@@ -174,24 +180,28 @@ const OutputBlockHost = defineComponent({
         "data-revision": current.contentRevision,
         "data-ordinal": current.ordinal,
       }, [
-        h("header", { class: "mui-block-heading" }, [
-          h("h3", { class: "mui-role" }, props.localize(labels[current.kind])),
-          activity
-            ? h("button", {
-              class: "mui-button mui-expand",
-              type: "button",
-              "aria-expanded": !collapsed,
-              onClick: () => props.view.toggle(current.id),
-            }, collapsed ? props.localize(messages.expand) : props.localize(messages.collapse))
-            : null,
-          current.state === "open"
-            ? h(
-              "span",
-              { class: "mui-writing", "aria-label": props.localize(messages.writing) },
-              props.localize(messages.writing),
-            )
-            : null,
-        ]),
+        !props.joinsPreviousTool || activity || writing
+          ? h("header", { class: "mui-block-heading" }, [
+            props.joinsPreviousTool
+              ? null
+              : h("h3", { class: "mui-role" }, props.localize(labels[current.kind])),
+            activity
+              ? h("button", {
+                class: "mui-button mui-expand",
+                type: "button",
+                "aria-expanded": !collapsed,
+                onClick: () => props.view.toggle(current.id),
+              }, collapsed ? props.localize(messages.expand) : props.localize(messages.collapse))
+              : null,
+            writing
+              ? h(
+                "span",
+                { class: "mui-writing", "aria-label": props.localize(messages.writing) },
+                props.localize(messages.writing),
+              )
+              : null,
+          ])
+          : null,
         rich
           ? h("div", { class: "mui-rendered", ref: body })
           : value !== undefined
@@ -805,6 +815,13 @@ export const ConversationHistory = defineComponent({
                     ]),
                   ]);
                 }
+                const entry = runtime.projection.get(row.ordinal);
+                const joinsTool = (ordinal: number) => {
+                  if (entry?.kind !== "tool") return false;
+                  const neighbor = runtime.projection.get(ordinal);
+                  return neighbor?.kind === "tool" &&
+                    neighbor.interactionId === entry.interactionId;
+                };
                 return h("li", {
                   key: row.key,
                   class: "mui-slot",
@@ -821,6 +838,8 @@ export const ConversationHistory = defineComponent({
                   localize: props.localize,
                   entryId: row.key,
                   index: item.index,
+                  joinsPreviousTool: joinsTool(row.ordinal - 1),
+                  joinsNextTool: joinsTool(row.ordinal + 1),
                   // The article measures its natural height; the slot clips pending growth.
                   measure: (element: HTMLElement) => virtual.value.measureElement(element),
                 })]);

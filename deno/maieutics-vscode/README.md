@@ -50,12 +50,29 @@ Diagnostics retain up to 2,048 original causes; exceeding that budget adds an ex
 omitted-failure count to the aggregate.
 
 `deno task build:conversation` packages the browser-only UI graph into `media/conversation.js` and
-copies the shared component CSS and host theme CSS. The Node extension bundle never imports Vue.
-`deno task build:media` rebuilds both renderer families; commit their copied assets. CI checks
-browser type safety and rebuild freshness. Real VS Code conformance covers paging across 10,000
-entries, independent history/input, streamed changes, draft acknowledgement, shared
-Markdown/SSR/Vue, structured tool details, live form actions through the existing binary Actor
-bridge, and cleanup.
+copies the shared component CSS and host theme CSS. A separate packaged output sheet applies the
+same typography inside the shared renderer's Markdown/SSR shadow roots. Messages and the independent
+editor share a bounded, responsive column. The toolbar groups connection actions and only shows Stop
+while running; Ctrl/Cmd+Enter sends input and Enter inserts a newline. The browser build compiles
+the shared output renderer source and the conversation components together with one Vue runtime.
+`deno task build:media` rebuilds the conversation browser bundle and the Notebook's standalone
+output client. CI checks the bundled module graph, browser type safety, and rebuild freshness. Real
+VS Code conformance covers addressed paging, streamed changes, submission acknowledgement, native
+notebook Markdown, webview SSR delivery, live form actions over the binary Actor bridge, and live
+theme tokens. The shared browser suites own the layout, Markdown, SSR revision, and Vue interaction
+checks.
+
+The conversation follows the VS Code display language. `build:conversation` combines the English and
+Simplified Chinese catalogs from this host, the conversation components, and the shared output
+client into VS Code's `l10n/` bundles. Components receive a translation function from the host.
+English is the fallback for untranslated languages. Add another language by supplying a catalog
+named by its locale. The build checks keys and placeholders against the English catalog.
+
+CI repeats the conversation bridge case with an isolated Simplified Chinese editor profile. For a
+local run, set `MAIEUTICS_VSCODE_TEST_LOCALE` to the locale and
+`MAIEUTICS_VSCODE_TEST_LANGUAGE_PACK` to a Marketplace extension ID or local VSIX path. Use
+`MAIEUTICS_VSCODE_TEST_FILTER='conversation panel pages history'` with `deno task test:vscode`. The
+case reads the owning source catalogs for its expected host label and shared composer placeholder.
 
 Requires VS Code 1.101 or later. Its extension host provides Node 22, required by the bundled Actor
 runtime's `Promise.withResolvers` use; see the
@@ -181,16 +198,16 @@ manifest), and `@vscode/vsce` runs directly under `deno run npm:@vscode/vsce` (t
 incompatibility, deno#26637, is fixed on current Deno).
 
 ```sh
-deno task check   # type-check shipped sources against ES2023 + @types/node
+deno task check   # type-check the workspace sources and tests
 deno task test    # unit tests (pure modules + protocol client against a mock server)
+deno task test:browser # Chromium layout at narrow and wide editor viewport widths
 deno task build   # bundle dist/extension.js (CJS, vscode external)
 deno task package # deno run npm:@vscode/vsce package --no-dependencies → .vsix
 ```
 
-Type-checking uses two configs on purpose: `deno.extension.json` gives shipped sources an ES2023 lib
-plus `@types/node` — the runtime the VS Code extension host actually provides — so no phantom Deno
-globals slip into the bundle. The member `deno.json` (used by `deno test`) keeps the default Deno
-libs because the tests use the Deno CLI runtime (`Deno.test`, `Deno.serve`).
+The member `deno.json` checks the extension and its browser entry against ES2024, including
+`Promise.withResolvers`. Tests use the Deno CLI for fixtures, while the extension host bundle runs
+on VS Code's Node runtime and the conversation bundle runs in the webview.
 
 Debug: open this folder in VS Code and use "Run Extension" (F5) after `deno task build` —
 `launch.json` points the extension host at `dist/`.

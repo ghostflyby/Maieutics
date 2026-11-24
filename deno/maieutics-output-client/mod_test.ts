@@ -36,3 +36,13 @@ Deno.test("standalone timeline helpers keep untrusted content inert without a ho
   assertEquals(html.includes("<script>"), false);
   assertEquals(html.includes("&lt;script&gt;"), true);
 });
+
+Deno.test("timeline markup escapes translated labels and preserves tool data", () => {
+  const html = renderTurn(
+    { tools: [{ status: "ok", tool: "tool_name", arguments: { raw: "original" } }] },
+    undefined,
+    (message: string) => message === "Arguments" ? "<localized>" : message,
+  );
+  assertEquals(html.includes('<div class="detail-label">&lt;localized&gt;</div>'), true);
+  assertEquals(html.includes("&quot;raw&quot;: &quot;original&quot;"), true);
+});

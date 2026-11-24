@@ -212,9 +212,6 @@ body {
   .demo-split {
     width: calc(100% - 24px);
   }
-  .mui-conversation-heading > span {
-    display: none;
-  }
   .demo-shell {
     --mui-block-inset: 16px;
   }

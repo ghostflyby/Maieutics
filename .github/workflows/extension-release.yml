@@ -72,6 +72,40 @@ jobs:
       - name: Package vsix
         run: deno task --config deno/maieutics-vscode/deno.json package
 
+      - name: Verify packaged extension entry points and assets
+        working-directory: deno/maieutics-vscode
+        run: |
+          python3 - "maieutics-vscode-${EXTENSION_VERSION}.vsix" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as archive:
+              manifest = json.loads(archive.read("extension/package.json"))
+              required = {
+                  manifest["main"],
+                  "media/conversation.js",
+                  "media/conversation.css",
+                  "media/conversationTheme.css",
+                  "media/conversationOutput.css",
+                  "media/outputClient.js",
+                  "runtime/formActorHost.js",
+              }
+              for renderer in manifest["contributes"]["notebookRenderer"]:
+                  entry = renderer["entrypoint"]
+                  required.add(entry["path"] if isinstance(entry, dict) else entry)
+              catalogs = Path(manifest["l10n"])
+              required.add(str(catalogs / "bundle.l10n.json"))
+              required.update(str(path) for path in catalogs.glob("bundle.l10n.*.json"))
+              packaged = {entry.filename for entry in archive.infolist() if entry.file_size}
+              missing = sorted(name for name in required if "extension/" + name.removeprefix("./") not in packaged)
+              if missing:
+                  sys.exit(f"Missing VSIX assets: {', '.join(missing)}")
+              if any(name.startswith(("extension/dist/test/", "extension/test/")) for name in packaged):
+                  sys.exit("VSIX contains test fixtures")
+          PY
+
       # Manual dispatch is a build-only dry run: only a vscode-v* tag
       # publishes a release.
       - name: Create GitHub release and upload vsix

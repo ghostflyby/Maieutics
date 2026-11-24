@@ -241,12 +241,14 @@ export const slow = defineTool({
   }
 });
 
-Deno.test("cancelInvoke is a no-op only for a worker the host does not know", () => {
+Deno.test("cancelInvoke for an unknown worker leaves the registered worker set unchanged", () => {
   // A known-but-stopped worker queues the cancel (an invocation wakes it on demand,
   // ADR 0035), so "no-op" applies exactly to a worker id the host never registered.
   const runtime = host([plugin("tools", ECHO_TOOL)]);
   try {
+    const before = runtime.states();
     runtime.cancelInvoke("never-registered", "./main", "call-1");
+    assertEquals(runtime.states(), before);
   } finally {
     runtime.dispose();
   }

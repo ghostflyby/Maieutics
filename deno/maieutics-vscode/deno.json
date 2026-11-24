@@ -10,7 +10,7 @@
   "publish": false,
   "compilerOptions": {
     "lib": [
-      "ES2023"
+      "ES2024"
     ],
     "types": [
       "npm:@types/node@22.17.0"
@@ -22,14 +22,14 @@
     "build": "deno bundle --format cjs --external vscode --minify -o dist/extension.js extension.ts",
     "build:test": "deno bundle --format cjs --external vscode -o dist/test/extensionHost.cjs test/extensionHost/main.ts",
     "test:vscode": "deno task build && deno task build:test && deno run -A test/vscode_runner.ts",
+    "test:browser": "deno run --allow-run --allow-read --allow-write --allow-env --allow-net=127.0.0.1 test/browser/runner.ts",
     "build:media": "deno task --config ../maieutics-output-client/deno.json build:vscode && deno task build:conversation",
     "watch": "deno bundle --format cjs --external vscode -o dist/extension.js extension.ts --watch",
     "package": "deno run -A --no-lock npm:@vscode/vsce@3.9.2 package --no-dependencies",
     "build:conversation": "deno run --allow-read --allow-write --allow-run buildConversation.ts",
-    "check:conversation": "deno check --no-config --import-map ../maieutics-ui/deno.json webview/conversation.ts"
+    "check:conversation": "deno check webview/conversation.ts"
   },
   "exclude": [
-    "webview/",
     "buildConversation.ts"
   ]
 }

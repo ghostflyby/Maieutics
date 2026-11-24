@@ -1,3 +1,5 @@
+import messages from "./locales/en.json" with { type: "json" };
+import { formatOutputMessage } from "./localization.ts";
 import { mountVueIsland } from "./vueIslands.ts";
 
 "use strict";
@@ -99,14 +101,14 @@ function formatDuration(ms) {
  * this only caps the visible preview. */
 const MaximumDiffPreviewLines = 40;
 
-function diffBodyLines(diff) {
+function diffBodyLines(diff, t) {
   const unified = typeof diff.unified === "string" ? diff.unified : "";
   const body = unified.length > 0 && unified.endsWith("\n")
     ? unified.slice(0, -1).split("\n")
     : unified.split("\n");
   const lines = body.slice(0, MaximumDiffPreviewLines);
   if (body.length > MaximumDiffPreviewLines || diff.truncated === true) {
-    lines.push("… diff preview truncated");
+    lines.push(t(messages.diffTruncated));
   }
   return lines;
 }
@@ -120,8 +122,8 @@ function diffLineClass(line) {
 
 /** A snapshot diff as a colorized <pre>; the unified text is raw here and is
  * escaped line by line. */
-function diffHtml(diff) {
-  const rows = diffBodyLines(diff)
+function diffHtml(diff, t) {
+  const rows = diffBodyLines(diff, t)
     .map((line) => `<div class="diffline ${diffLineClass(line)}">${escapeHtml(line)}</div>`)
     .join("");
   return `<pre class="diff">${rows}</pre>`;
@@ -157,7 +159,7 @@ function retryHtml(text) {
 /** One tool row of a timeline (parent or subagent): status mark, name,
  * argument/duration detail, and the colorized diff body. All fields are
  * escaped — tool arguments are untrusted model output. */
-function toolLi(tool) {
+function toolLi(tool, t) {
   const diff = tool && typeof tool.diff === "object" && tool.diff !== null ? tool.diff : null;
   const detail = [
     typeof tool.argsSummary === "string" && tool.argsSummary.length > 0
@@ -176,46 +178,44 @@ function toolLi(tool) {
     detail === "" ? "" : ` · ${detail}`
   }${
     tool.arguments !== undefined
-      ? `<div class="detail-label">参数</div><pre class="json">${
+      ? `<div class="detail-label">${escapeHtml(t(messages.arguments))}</div><pre class="json">${
         escapeHtml(JSON.stringify(tool.arguments, null, 2))
       }</pre>`
       : ""
   }${
     tool.progress
-      ? `<div class="detail-label">进度</div><pre class="original">${
+      ? `<div class="detail-label">${escapeHtml(t(messages.progress))}</div><pre class="original">${
         escapeHtml(tool.progress)
       }</pre>`
       : ""
   }${
     tool.result !== undefined
-      ? `<div class="detail-label">结果</div><pre class="json">${
+      ? `<div class="detail-label">${escapeHtml(t(messages.result))}</div><pre class="json">${
         escapeHtml(JSON.stringify(tool.result, null, 2))
       }</pre>`
       : ""
-  }${diff !== null ? diffHtml(diff) : ""}${
-    tool.detailsTruncated
-      ? '<div class="note">工具详情超过显示上限，仅保留前 20,000 个字符。</div>'
-      : ""
+  }${diff !== null ? diffHtml(diff, t) : ""}${
+    tool.detailsTruncated ? `<div class="note">${escapeHtml(t(messages.toolTruncated))}</div>` : ""
   }</li>`;
 }
 
 /** Summary text is always escaped plain text; it cannot inject HTML or command links. */
-function reasoningHtml(summaries) {
+function reasoningHtml(summaries, t) {
   if (!Array.isArray(summaries)) return "";
   const entries = summaries.filter((entry) =>
     entry !== null && typeof entry === "object" && typeof entry.text === "string" &&
     entry.text.length > 0
   );
   const note = entries.reduce((count, entry) => count + entry.text.length, 0) >= 20_000
-    ? '<div class="note">思考摘要仅显示前 20,000 个字符。</div>'
+    ? `<div class="note">${escapeHtml(t(messages.reasoningTruncated))}</div>`
     : "";
   return entries.map((entry) => `<pre class="original">${escapeHtml(entry.text)}</pre>`).join(
     "\n",
   ) + note;
 }
 
-function toolListHtml(tools) {
-  return `<ul class="tools">${tools.map(toolLi).join("")}</ul>`;
+function toolListHtml(tools, t) {
+  return `<ul class="tools">${tools.map((tool) => toolLi(tool, t)).join("")}</ul>`;
 }
 
 /** Status marks of the subagent timeline (⏳ running, ✅ ok, ❌ failed,
@@ -229,23 +229,30 @@ function subagentMark(child) {
 /** The folded subagent child runs as indented sections inside the timeline:
  * a status heading, the child's tool rows, then its report text (rendered
  * through the same escape-first markdown pass as the answer). */
-function subagentsHtml(subagents, overflow = false, markdownToHtml = plainMarkdown) {
+function subagentsHtml(
+  subagents,
+  overflow = false,
+  markdownToHtml = plainMarkdown,
+  t = formatOutputMessage,
+) {
   const many = subagents.length > 1;
   const sections = subagents.map((child, index) => {
-    const body = [reasoningHtml(child.reasoning)];
+    const body = [reasoningHtml(child.reasoning, t)];
     if (Array.isArray(child.tools) && child.tools.length > 0) {
-      body.push(toolListHtml(child.tools));
+      body.push(toolListHtml(child.tools, t));
     }
     if (typeof child.text === "string" && child.text.length > 0) {
       body.push(`<div class="text">${markdownToHtml(child.text)}</div>`);
     }
     if (child.truncated) {
-      body.push('<div class="note">⚠️ 子代理输出被截断。</div>');
+      body.push(`<div class="note">⚠️ ${escapeHtml(t(messages.childTruncated))}</div>`);
     }
     if (overflow) {
-      body.push('<div class="note">⚠️ 子代理过多，仅显示前 16 个。</div>');
+      body.push(`<div class="note">⚠️ ${escapeHtml(t(messages.childrenOverflow))}</div>`);
     }
-    const head = `🤖 子代理${many ? ` ${index + 1}` : ""} · ${subagentMark(child)}`;
+    const head = `🤖 ${many ? t(messages.childHeading, index + 1) : t(messages.child)} · ${
+      subagentMark(child)
+    }`;
     return `<div class="subagent"><div class="subagent-head">${escapeHtml(head)}</div>${
       body.join("\n")
     }</div>`;
@@ -256,18 +263,18 @@ function subagentsHtml(subagents, overflow = false, markdownToHtml = plainMarkdo
 /** The structured timeline (the default view): tool rows with diffs, the
  * subagent child timeline, the answer, truncation/error notes, and the
  * terminal model/token metadata. */
-function renderExpanded(turn, markdownToHtml = plainMarkdown) {
+function renderExpanded(turn, markdownToHtml = plainMarkdown, t = formatOutputMessage) {
   const parts = [];
   if (Array.isArray(turn.timeline) && turn.timeline.length > 0) {
-    parts.push(timelineHtml(turn, markdownToHtml));
+    parts.push(timelineHtml(turn, markdownToHtml, t));
   } else {
-    const reasoning = reasoningHtml(turn.reasoning);
+    const reasoning = reasoningHtml(turn.reasoning, t);
     if (reasoning) parts.push(reasoning);
     if (Array.isArray(turn.tools) && turn.tools.length > 0) {
-      parts.push(toolListHtml(turn.tools));
+      parts.push(toolListHtml(turn.tools, t));
     }
     if (Array.isArray(turn.subagents) && turn.subagents.length > 0) {
-      parts.push(subagentsHtml(turn.subagents, turn.subagentsOverflow === true, markdownToHtml));
+      parts.push(subagentsHtml(turn.subagents, turn.subagentsOverflow === true, markdownToHtml, t));
     }
   }
   if (typeof turn.text === "string" && turn.text.length > 0) {
@@ -290,7 +297,7 @@ function renderExpanded(turn, markdownToHtml = plainMarkdown) {
   }
   if (turn.truncated) {
     parts.push(
-      '<div class="note">⚠️ 输出已截断。</div>',
+      `<div class="note">⚠️ ${escapeHtml(t(messages.outputTruncated))}</div>`,
     );
   }
   if (turn.error) {
@@ -308,15 +315,15 @@ function renderExpanded(turn, markdownToHtml = plainMarkdown) {
   if (turn.usage && typeof turn.usage === "object") {
     const input = formatTokens(turn.usage.inputTokens);
     const output = formatTokens(turn.usage.outputTokens);
-    if (input !== "" || output !== "") meta.push(`${input}\u2191 ${output}\u2193 tokens`);
+    if (input !== "" || output !== "") meta.push(escapeHtml(t(messages.tokens, input, output)));
   }
   if (meta.length > 0) parts.push(`<div class="meta">${meta.join(" \u00b7 ")}</div>`);
-  return parts.length > 0 ? parts.join("\n") : "<em>(empty turn)</em>";
+  return parts.length > 0 ? parts.join("\n") : `<em>${escapeHtml(t(messages.empty))}</em>`;
 }
 
 /** Ordered display entries reference the folded summaries, tools and children, so
  * status updates replace one row without losing the earlier model rounds. */
-function timelineHtml(turn, markdownToHtml) {
+function timelineHtml(turn, markdownToHtml, t) {
   const rows = [];
   for (const entry of turn.timeline) {
     if (entry === null || typeof entry !== "object") continue;
@@ -328,18 +335,21 @@ function timelineHtml(turn, markdownToHtml) {
         (Array.isArray(turn.reasoning) ? turn.reasoning : []).filter((summary) =>
           summary?.messageId === entry.messageId
         ),
+        t,
       );
     } else if (entry.kind === "tool" && turn.tools?.[entry.index]) {
-      body = toolListHtml([turn.tools[entry.index]]);
+      body = toolListHtml([turn.tools[entry.index]], t);
     } else if (entry.kind === "subagent" && turn.subagents?.[entry.index]) {
-      body = subagentsHtml([turn.subagents[entry.index]], false, markdownToHtml);
+      body = subagentsHtml([turn.subagents[entry.index]], false, markdownToHtml, t);
     }
     if (body) rows.push(body);
   }
   if (turn.timelineTruncated) {
-    rows.push('<li class="note">⚠️ 时间线预览已截断。</li>');
+    rows.push(`<li class="note">⚠️ ${escapeHtml(t(messages.timelineTruncated))}</li>`);
   }
-  if (turn.subagentsOverflow) rows.push('<li class="note">⚠️ 子代理过多，仅显示前 16 个。</li>');
+  if (turn.subagentsOverflow) {
+    rows.push(`<li class="note">⚠️ ${escapeHtml(t(messages.childrenOverflow))}</li>`);
+  }
   return rows.join("\n");
 }
 
@@ -348,25 +358,25 @@ function compact(value) {
   return text.length > 110 ? `${text.slice(0, 110)}…` : text;
 }
 
-function collapsedNode(id, title, preview, body, kind = "text") {
+function collapsedNode(id, title, preview, body, kind = "text", t = formatOutputMessage) {
   const icons = {
-    "✅": ["✓", "ok", "成功"],
-    "❌": ["×", "error", "失败"],
-    "⏳": ["◌", "running", "运行中"],
-    "🚫": ["−", "cancelled", "已中断"],
-    "⚠️": ["!", "warning", "注意"],
-    "🤖": ["◇", "agent", "子代理"],
+    "✅": ["✓", "ok", t(messages.ok)],
+    "❌": ["×", "error", t(messages.failed)],
+    "⏳": ["◌", "running", t(messages.running)],
+    "🚫": ["−", "cancelled", t(messages.cancelled)],
+    "⚠️": ["!", "warning", t(messages.warning)],
+    "🤖": ["◇", "agent", t(messages.child)],
   };
   const mark = Object.keys(icons).find((mark) => title.startsWith(mark));
   const [glyph, status, label] = mark
     ? icons[mark]
-    : ["·", "neutral", kind === "reasoning" ? "思考摘要" : "活动"];
+    : ["·", "neutral", kind === "reasoning" ? t(messages.reasoning) : t(messages.activity)];
   const name = mark ? title.slice(mark.length).trim() : title;
   return `<details class="timeline-node ${escapeHtml(kind)}" data-node-id="${
     escapeHtml(id)
-  }"><summary><span class="disclosure" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="status-icon ${status}" role="img" aria-label="${label}">${glyph}</span><span class="node-title">${
-    escapeHtml(name)
-  }</span><span class="preview">${
+  }"><summary><span class="disclosure" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="status-icon ${status}" role="img" aria-label="${
+    escapeHtml(label)
+  }">${glyph}</span><span class="node-title">${escapeHtml(name)}</span><span class="preview">${
     escapeHtml(compact(preview))
   }</span></summary><div class="node-body">${body}</div></details>`;
 }
@@ -383,43 +393,53 @@ function toolPreview(tool) {
 }
 
 /** The sole Agent rendering: compact nodes which reveal their original content on demand. */
-function render(turn, markdownToHtml = plainMarkdown) {
+function render(turn, markdownToHtml = plainMarkdown, t = formatOutputMessage) {
   const parts = [];
   if (
     turn.nodeId === "header" ||
     (!turn.nodeId && (turn.runId || turn.error || turn.model || turn.usage || turn.truncated))
   ) {
     const title = turn.streaming
-      ? "⏳ 运行中"
+      ? `⏳ ${t(messages.running)}`
       : turn.error?.code === "run_cancelled"
-      ? "🚫 已中断"
+      ? `🚫 ${t(messages.cancelled)}`
       : turn.error
-      ? "❌ 失败"
+      ? `❌ ${t(messages.failed)}`
       : turn.truncated
-      ? "⚠️ 已截断"
-      : "✅ 已完成";
+      ? `⚠️ ${t(messages.truncated)}`
+      : `✅ ${t(messages.completed)}`;
     const meta = [];
     if (turn.model) meta.push(`${turn.model.provider}/${turn.model.model}`);
     if (turn.usage) {
       meta.push(
-        `${formatTokens(turn.usage.inputTokens)}↑ ${formatTokens(turn.usage.outputTokens)}↓ tokens`,
+        t(
+          messages.tokens,
+          formatTokens(turn.usage.inputTokens),
+          formatTokens(turn.usage.outputTokens),
+        ),
       );
     }
-    if (turn.timelineTruncated) meta.push("⚠️ 时间线预览已截断");
-    if (turn.subagentsOverflow) meta.push("⚠️ 子代理过多，仅显示前 16 个");
+    if (turn.timelineTruncated) meta.push(`⚠️ ${t(messages.timelineTruncated)}`);
+    if (turn.subagentsOverflow) meta.push(`⚠️ ${t(messages.childrenOverflow)}`);
     const body = (turn.input
-      ? `<div class="detail-label">输入</div><pre class="original">${escapeHtml(turn.input)}</pre>`
+      ? `<div class="detail-label">${escapeHtml(t(messages.input))}</div><pre class="original">${
+        escapeHtml(turn.input)
+      }</pre>`
       : "") +
-      renderExpanded({
-        ...turn,
-        text: turn.error ? turn.text : "",
-        timeline: [],
-        tools: [],
-        reasoning: [],
-        subagents: [],
-      }, markdownToHtml);
+      renderExpanded(
+        {
+          ...turn,
+          text: turn.error ? turn.text : "",
+          timeline: [],
+          tools: [],
+          reasoning: [],
+          subagents: [],
+        },
+        markdownToHtml,
+        t,
+      );
     parts.push(
-      collapsedNode("header", title, turn.error?.message ?? meta.join(" · "), body, "status"),
+      collapsedNode("header", title, turn.error?.message ?? meta.join(" · "), body, "status", t),
     );
     if (turn.nodeId === "header") {
       return parts.join("\n");
@@ -440,12 +460,12 @@ function render(turn, markdownToHtml = plainMarkdown) {
     if (!entry || typeof entry !== "object") continue;
     let title = "", preview = "";
     if (entry.kind === "text" && typeof entry.text === "string" && entry.text) {
-      title = "助手回复";
+      title = t(messages.assistant);
       preview = entry.text;
     } else if (entry.kind === "reasoning" && Array.isArray(turn.reasoning)) {
       const summary = turn.reasoning.find((item) => item?.messageId === entry.messageId);
       if (summary?.text) {
-        title = "思考摘要";
+        title = t(messages.reasoning);
         preview = summary.text;
       }
     } else if (entry.kind === "tool" && turn.tools?.[entry.index]) {
@@ -459,7 +479,7 @@ function render(turn, markdownToHtml = plainMarkdown) {
       ].filter(Boolean).join(" · ");
     } else if (entry.kind === "subagent" && turn.subagents?.[entry.index]) {
       const child = turn.subagents[entry.index];
-      title = `🤖 子代理 · ${subagentMark(child)}`;
+      title = `🤖 ${t(messages.child)} · ${subagentMark(child)}`;
       preview = child.text ?? "";
     }
     if (title) {
@@ -472,13 +492,18 @@ function render(turn, markdownToHtml = plainMarkdown) {
           turn.nodeId ?? `entry:${index}`,
           title,
           preview,
-          renderExpanded({
-            timeline: [entry],
-            tools: turn.tools,
-            reasoning: turn.reasoning,
-            subagents: turn.subagents,
-          }, markdownToHtml),
+          renderExpanded(
+            {
+              timeline: [entry],
+              tools: turn.tools,
+              reasoning: turn.reasoning,
+              subagents: turn.subagents,
+            },
+            markdownToHtml,
+            t,
+          ),
           entry.kind,
+          t,
         ),
       );
     }
@@ -489,11 +514,14 @@ function render(turn, markdownToHtml = plainMarkdown) {
   ) {
     parts.push(`<div class="assistant-reply">${markdownToHtml(turn.text)}</div>`);
   }
-  return parts.join("\n") || "<em>(empty turn)</em>";
+  return parts.join("\n") || `<em>${escapeHtml(t(messages.empty))}</em>`;
 }
 
 /** Browser-only renderer; its owner supplies transport and native Markdown adaptation. */
-export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
+export function createRenderer(
+  { sendMessage, renderMarkdown, onAction, stylesheetUrl, localize = formatOutputMessage },
+) {
+  const t = localize;
   const states = new Map();
   const pending = new Map();
   const streams = new Map();
@@ -547,7 +575,7 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
       const copy = copies.get(message.requestId);
       copy?.cleanup();
       if (copy?.button.isConnected) {
-        copy.button.textContent = message.ok === true ? "已复制" : "复制失败";
+        copy.button.textContent = message.ok === true ? t(messages.copied) : t(messages.copyFailed);
         copy.button.disabled = false;
       }
       return;
@@ -613,17 +641,16 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
         ? (request.streaming ? "pending" : "failed")
         : "ready";
       const labels = {
-        unclosed_code_fence:
-          "代码围栏未闭合；展示含代码块的 Markdown 示例时，请给外层使用更长的围栏。",
-        component_compile_failed: "组件编译或执行失败；此位置标记组件的起点。",
-        math_invalid: "公式无法解析，已保留源码。",
-        math_limit: "公式超过渲染限制，已保留源码。",
+        unclosed_code_fence: t(messages.fence),
+        component_compile_failed: t(messages.componentFailed),
+        math_invalid: t(messages.mathInvalid),
+        math_limit: t(messages.mathLimit),
       };
       const details = Array.isArray(message.diagnostics)
         ? message.diagnostics.slice(0, 32).filter((item) =>
           labels[item?.code] && Number.isSafeInteger(item.line) && item.line > 0 &&
           Number.isSafeInteger(item.column) && item.column > 0
-        ).map((item) => `第 ${item.line} 行，第 ${item.column} 列：${labels[item.code]}`)
+        ).map((item) => t(messages.location, item.line, item.column, labels[item.code]))
         : [];
       if ((incomplete || details.length) && !request.streaming) {
         const note = document.createElement("div");
@@ -631,7 +658,7 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
         note.setAttribute("role", "status");
         note.style.whiteSpace = "pre-wrap";
         note.textContent = [
-          ...(incomplete ? ["组件更新未完成，保留上一次可用显示。"] : []),
+          ...(incomplete ? [t(messages.incomplete)] : []),
           ...details,
         ].join("\n");
         root.appendChild(note);
@@ -711,6 +738,10 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
     style.textContent = message.css;
     const rendered = document.createElement("div");
     rendered.innerHTML = message.html;
+    for (const button of rendered.querySelectorAll("button.code-copy[data-code-copy]")) {
+      button.textContent = t(messages.copyCode);
+      button.setAttribute("aria-label", t(messages.copyCode));
+    }
     const interactions = new AbortController();
     rendered.addEventListener("click", (event) => {
       const copy = event.target instanceof Element
@@ -772,6 +803,12 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
     releaseRegion(state.regions.get(request.node));
     state.regions.delete(request.node);
     root.replaceChildren(style, rendered);
+    if (stylesheetUrl) {
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = stylesheetUrl;
+      root.append(stylesheet);
+    }
     let dispose;
     if (component) {
       try {
@@ -864,7 +901,7 @@ export function createRenderer({ sendMessage, renderMarkdown, onAction }) {
         const index = blocks.push(text) - 1;
         return `<div data-markdown-index="${index}"></div>`;
       };
-      const markup = render(turn, markdownToHtml);
+      const markup = render(turn, markdownToHtml, t);
       const content = state.markup === markup && state.content?.parentNode === element
         ? state.content
         : document.createElement("div");

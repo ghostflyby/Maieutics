@@ -1,98 +1,69 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { fromWebSocket } from "./core/transport_v8.ts";
-import { createRpcProxy, makeRpcHandler, requestFrame, sendRpcResult } from "./core/rpc.ts";
-import type { ResponseFrame } from "./core/protocol.ts";
-import { PayloadCodecRegistry } from "./core/codec.ts";
 
-/**
- * Local WebSocket round-trip: a server and a client, each side wrapped in
- * fromWebSocket (message-kind Transport). The server serves an RPC api, the
- * client proxies calls to it — the same machinery as a process actor, over a
- * WebSocket connection.
- */
-
-Deno.test("WebSocket: RPC round-trip over a message-kind transport", async () => {
-  // Watchdog: fail if the test hangs.
-  const watchdog = setTimeout(() => {
-    throw new Error("websocket test hung");
-  }, 5000);
+Deno.test("a real WebSocket carries V8 graph data across its binary message boundary", async () => {
+  const lifetime = new AbortController();
+  const peer = new Set<WebSocket>();
+  const transports = new Set<ReturnType<typeof fromWebSocket>>();
+  const ready = Promise.withResolvers<Deno.NetAddr>();
+  const failure = Promise.withResolvers<never>();
+  // The test installs its first wait after the listener is created.
+  void failure.promise.catch(() => {});
+  const timer = setTimeout(
+    () => failure.reject(new Error("V8 WebSocket exchange timed out")),
+    5_000,
+  );
+  const wait = <T>(operation: Promise<T>) => Promise.race([operation, failure.promise]);
+  const adopt = (socket: WebSocket) => {
+    peer.add(socket);
+    const transport = fromWebSocket(socket, {
+      onClosed: (error) => {
+        if (!lifetime.signal.aborted) failure.reject(error);
+      },
+    });
+    transports.add(transport);
+    socket.onmessage = (event) => transport.deliver(event.data);
+    return transport;
+  };
+  let server: Deno.HttpServer | undefined;
   try {
-    // Start a WS server that serves an api on its transport.
-    const registry = new PayloadCodecRegistry();
-    const serverApi = {
-      echo(x: unknown): unknown {
-        return x;
-      },
-      add(a: number, b: number): number {
-        return a + b;
-      },
-    };
-    const serverHandler = makeRpcHandler(serverApi, registry);
-
-    const ac = new AbortController();
-    const server = Deno.serve(
-      { port: 0, signal: ac.signal, onListen: () => {} },
-      (req) => {
-        if (req.headers.get("upgrade") !== "websocket") {
-          return new Response("no", { status: 400 });
+    server = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, signal: lifetime.signal, onListen: ready.resolve },
+      (request) => {
+        if (request.headers.get("upgrade") !== "websocket") {
+          return new Response(null, { status: 400 });
         }
-        const { socket, response } = Deno.upgradeWebSocket(req);
-        const transport = fromWebSocket(socket);
-        socket.onmessage = (ev) => {
-          transport.deliver(ev.data);
-        };
-        transport.onMessage((ev) => {
-          const frame = ev.data as {
-            type: string;
-            id: number;
-            method: string;
-            args: unknown[];
-          };
-          if (frame.type === "request") {
-            void serverHandler(frame).then((res) =>
-              sendRpcResult(res, (result) => transport.send(result))
-            );
-          }
-        });
+        const { socket, response } = Deno.upgradeWebSocket(request);
+        const transport = adopt(socket);
+        transport.onMessage((frame) => transport.send(frame.data));
         return response;
       },
     );
-    await new Promise<void>((r) => setTimeout(r, 50)); // let the server bind
-    const { port } = server.addr;
-
-    // Client: connect, wrap transport, proxy RPC calls.
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => resolve();
-      ws.onerror = (_e) => reject(new Error("ws connect failed"));
-    });
-    const clientTransport = fromWebSocket(ws);
-    ws.onmessage = (ev) => clientTransport.deliver(ev.data);
-
-    const clientRegistry = new PayloadCodecRegistry();
-    const proxy = createRpcProxy(clientRegistry, {
-      send: (request, _transfer) => clientTransport.send(requestFrame(request)),
-      transport: clientTransport,
-    });
-    // Feed main-channel responses into the proxy.
-    clientTransport.onMessage((ev) => {
-      const frame = ev.data as ResponseFrame;
-      if (frame.type === "response") {
-        proxy.deliver(frame);
-      }
-    });
-
-    const echo = await proxy.call("echo", ["hello"]);
-    assertEquals(echo, "hello");
-    const sum = await proxy.call("add", [2, 3]);
-    assertEquals(sum, 5);
-
-    // Teardown.
-    clientTransport.close();
-    ws.close();
-    ac.abort();
-    await server.shutdown();
+    const { port } = await wait(ready.promise);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    peer.add(socket);
+    const opened = Promise.withResolvers<void>();
+    socket.onopen = () => opened.resolve();
+    socket.onerror = () => failure.reject(new Error("V8 WebSocket upgrade failed"));
+    await wait(opened.promise);
+    const client = adopt(socket);
+    type Graph = { bytes: Uint8Array; self?: Graph };
+    const outbound: Graph = { bytes: new Uint8Array([0, 128, 255]) };
+    outbound.self = outbound;
+    const received = Promise.withResolvers<Graph>();
+    client.onMessage((frame) => received.resolve(frame.data as Graph));
+    client.send(outbound);
+    const result = await wait(received.promise);
+    assertEquals(result.bytes, outbound.bytes);
+    assertStrictEquals(result.self, result, "The V8 message retained its cyclic reference");
   } finally {
-    clearTimeout(watchdog);
+    clearTimeout(timer);
+    lifetime.abort();
+    for (const transport of transports) transport.close();
+    for (const socket of peer) socket.close();
+    await Promise.all([
+      server?.finished,
+      ...[...transports].map((transport) => transport.completion),
+    ]);
   }
 });

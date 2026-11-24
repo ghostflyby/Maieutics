@@ -67,12 +67,15 @@ function runScenario(name, mode) {
     // Not JSON; the scenario aborted before reporting.
   }
 
-  if (report !== null && report.ok === true) {
+  if (!result.error && result.status === 0 && result.signal === null && report?.ok === true) {
     console.log(`ok - ${name} (${mode})`);
     return true;
   }
   console.log(`not ok - ${name} (${mode})`);
-  const detail = report === null ? stdout : JSON.stringify(report.payload);
+  if (result.error) console.log(`  child failed: ${result.error.message}`);
+  else if (result.signal) console.log(`  child signal: ${result.signal}`);
+  else if (result.status !== 0) console.log(`  child exited with status ${result.status}`);
+  const detail = JSON.stringify(report?.payload) ?? stdout;
   console.log(`  ${detail.split("\n").join("\n  ")}`);
   if (stderr.length > 0) {
     console.log(`  stderr: ${stderr.split("\n").join("\n  ")}`);

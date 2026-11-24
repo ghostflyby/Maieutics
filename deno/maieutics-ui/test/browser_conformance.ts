@@ -4,19 +4,35 @@ import {
   ConversationRuntime,
   type ConversationSubmission,
   ConversationView,
-  type mountConversation,
+  mountConversation,
   type mountConversationComposer,
   type mountConversationHistory,
 } from "../mod.ts";
 import { FixtureConversation } from "../fixtures/conversation.ts";
 
 import { assert, equal, geometryApplied, guarded, waitFor } from "./browser_assertions.ts";
-import { runReviewConformance } from "./review_conformance.ts";
+import { checkProjectionAnchor, runReviewConformance } from "./review_conformance.ts";
 import { runComponentConformance } from "./component_conformance.ts";
 
 /** Signal-driven scenarios run against actual Vue, geometry and browser Selection. */
 export async function runBrowserConformance(): Promise<string[]> {
+  const scenario = document.querySelector<HTMLMetaElement>('meta[name="scroll-scenario"]')?.content;
+  if (scenario === "following") return await checkFollowing();
+  const artifact = await import(new URL("/conversation.js", location.href).href) as Artifact;
   const passed: string[] = [];
+  switch (scenario) {
+    case "unloaded-gesture":
+      return await checkUnloadedGesture(artifact);
+    case "loaded-gesture":
+      return await checkLoadedGesture(artifact);
+    case "projection-anchor":
+      return await checkProjectionAnchor(artifact);
+    case undefined:
+      break;
+    default:
+      throw new Error(`Unknown scroll scenario: ${scenario}`);
+  }
+  passed.push(...await checkFollowing());
   const fixture = new FixtureConversation("browser", 10_000);
   const contentReads = new Map<string, number>();
   const runtime = new ConversationRuntime(fixture.sessionId, {
@@ -129,16 +145,6 @@ export async function runBrowserConformance(): Promise<string[]> {
 
     const viewport = first().querySelector<HTMLElement>(".mui-viewport");
     assert(viewport, "history viewport missing");
-    await waitFor(
-      () => geometryApplied(first()),
-      "live tail body never completed natural measurement",
-    );
-    assert(
-      viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
-      "following mode left a measured growing tail below the viewport",
-    );
-    equal(viewport.dataset.scrollGesture, "idle", "live following was mistaken for user dragging");
-    passed.push("following keeps the actual viewport at the measured live end beyond overscan");
     viewport.scrollTop = 50_000 * 120;
     viewport.dispatchEvent(new Event("scroll"));
     await waitFor(
@@ -250,11 +256,6 @@ export async function runBrowserConformance(): Promise<string[]> {
   );
   passed.push("terminal disposal releases source requests, cached content and view attachments");
 
-  const artifact = await import(new URL("/conversation.js", location.href).href) as {
-    mountConversation: typeof mountConversation;
-    mountConversationHistory: typeof mountConversationHistory;
-    mountConversationComposer: typeof mountConversationComposer;
-  };
   const isolatedSource = new FixtureConversation("artifact", 2);
   const isolated = new ConversationRuntime("artifact", isolatedSource);
   await isolated.loadPage();
@@ -285,6 +286,234 @@ export async function runBrowserConformance(): Promise<string[]> {
     await isolated.dispose();
     target.remove();
   }
+  passed.push(...await checkUnloadedGesture(artifact));
+  passed.push(...await checkLoadedGesture(artifact));
+  const splitSource = new FixtureConversation("split", 10_000);
+  const splitEntered = Promise.withResolvers<void>(),
+    splitAborted = Promise.withResolvers<void>(),
+    splitRelease = Promise.withResolvers<void>();
+  let splitDelayed = false;
+  const splitRuntime = new ConversationRuntime("split", {
+    async readPage(query, signal) {
+      if (!splitDelayed && query.offset !== undefined && query.offset < 99_000) {
+        splitDelayed = true;
+        await new Promise<void>((resolve, reject) => {
+          const cancel = () => {
+            splitAborted.resolve();
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", cancel, { once: true });
+          splitRelease.promise.then(() => {
+            signal.removeEventListener("abort", cancel);
+            resolve();
+          });
+          splitEntered.resolve();
+        });
+      }
+      return splitSource.readPage(query, signal);
+    },
+    readContent: (id, revision, signal) => splitSource.readContent(id, revision, signal),
+  }, { entries: 160 });
+  await splitRuntime.loadPage();
+  const sharedView = splitRuntime.attachView("split-view");
+  const historyRoot = document.createElement("div"), composerRoot = document.createElement("div");
+  historyRoot.style.height = "600px";
+  document.body.append(historyRoot, composerRoot);
+  let submittedDraft: ConversationSubmission | undefined;
+  const receiveDraft = (value: ConversationSubmission) => submittedDraft = value;
+  const host = { writeText: () => Promise.resolve() };
+  let historyHandle = artifact.mountConversationHistory(historyRoot, { view: sharedView, host });
+  let composerHandle = artifact.mountConversationComposer(composerRoot, {
+    view: sharedView,
+    onSubmit: receiveDraft,
+  });
+  let changedRuntime: ConversationRuntime | undefined;
+  let stopChanged = () => {};
+  try {
+    await waitFor(
+      () => !!historyRoot.querySelector('[data-entry-id="entry-99999"] .mui-text'),
+      "independently mounted history did not load its visible content",
+    );
+    assert(!historyRoot.querySelector("textarea"), "standalone history includes an input editor");
+    assert(
+      !composerRoot.querySelector(".mui-viewport"),
+      "standalone input includes a history viewport",
+    );
+    equal(
+      splitRuntime.statistics.views,
+      1,
+      "separate components created duplicate view attachments",
+    );
+    const editor = composerRoot.querySelector<HTMLTextAreaElement>("textarea");
+    assert(editor, "independently mounted input editor missing");
+    editor.value = "separate submission";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    composerRoot.querySelector("form")?.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    assert(submittedDraft, "standalone input did not emit its submission");
+    equal(submittedDraft.viewId, sharedView.id, "standalone input submitted the wrong view");
+    equal(submittedDraft.text, "separate submission", "standalone input lost its draft snapshot");
+    editor.value = "newer draft";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    splitRuntime.confirmSubmission(sharedView.id, submittedDraft.revision);
+    await nextTick();
+    equal(
+      editor.value,
+      "newer draft",
+      "accepting an older separate submission cleared newer input",
+    );
+    passed.push("history and input mount in separate DOM roots under one caller-owned view");
+
+    const viewport = historyRoot.querySelector<HTMLElement>(".mui-viewport");
+    assert(viewport, "standalone history viewport missing");
+    viewport.scrollTop = 25_000 * 120;
+    viewport.dispatchEvent(new Event("scroll"));
+    await guarded(splitEntered.promise, "standalone history did not request its controlled page");
+    historyHandle.unmount();
+    await guarded(splitAborted.promise, "history unmount did not cancel its owned page request");
+    assert(!sharedView.signal.aborted, "history unmount closed the input's shared view");
+    equal(splitRuntime.statistics.views, 1, "history unmount released the caller-owned view");
+    equal(sharedView.pins.size, 0, "history unmount retained viewport/selection pins");
+    equal(editor.value, "newer draft", "history unmount discarded the independent input draft");
+    editor.value = "preserved draft";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    historyHandle = artifact.mountConversationHistory(historyRoot, { view: sharedView, host });
+    await waitFor(
+      () => !!historyRoot.querySelector('[data-entry-id="entry-99999"] .mui-text'),
+      "standalone history could not remount beside the existing input",
+    );
+    composerHandle.unmount();
+    equal(sharedView.draft, "preserved draft", "input unmount discarded the caller-owned draft");
+    assert(!sharedView.signal.aborted, "input unmount closed the history's shared view");
+    assert(historyRoot.querySelector(".mui-text"), "input unmount removed independent history");
+    composerHandle = artifact.mountConversationComposer(composerRoot, {
+      view: sharedView,
+      onSubmit: receiveDraft,
+    });
+    equal(
+      composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.value,
+      "preserved draft",
+      "remounting standalone input did not restore the shared draft",
+    );
+    passed.push("independent unmount cancels history work while preserving the sibling and draft");
+
+    const changedSource = new FixtureConversation("changed-split", 2);
+    const nextRuntime = new ConversationRuntime("changed-split", changedSource);
+    changedRuntime = nextRuntime;
+    await nextRuntime.loadPage();
+    stopChanged = changedSource.subscribe((change) => nextRuntime.apply(change));
+    const changedView = nextRuntime.attachView("changed-view");
+    historyHandle.update({ view: changedView, host });
+    composerHandle.update({ view: changedView, onSubmit: receiveDraft });
+    await waitFor(
+      () => !!historyRoot.querySelector('[data-entry-id="entry-19"] .mui-text'),
+      "standalone components did not rebind to the replacement view",
+    );
+    equal(
+      composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.value,
+      "",
+      "replacement input borrowed the previous view's draft",
+    );
+    equal(sharedView.pins.size, 0, "history replacement retained the previous view's pins");
+    equal(
+      sharedView.draft,
+      "preserved draft",
+      "replacing input destroyed the previous view's draft",
+    );
+    sharedView.dispose();
+    equal(splitRuntime.statistics.views, 0, "caller disposal did not release the previous view");
+    equal(
+      changedRuntime.statistics.views,
+      1,
+      "replacement components lost their shared attachment",
+    );
+    changedView.dispose();
+    changedSource.submit("update after view closure");
+    // The runtime still accepts changes after a view closes; retired history must stay empty.
+    await waitFor(
+      () =>
+        composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.disabled === true &&
+        !historyRoot.querySelector("[data-ordinal]"),
+      "closing the shared view left an independent component interactive or repopulated history",
+    );
+    passed.push("separate components rebind and close together without owning either runtime");
+  } finally {
+    splitRelease.resolve();
+    historyHandle.unmount();
+    composerHandle.unmount();
+    sharedView.dispose();
+    stopChanged();
+    await splitRuntime.dispose();
+    await changedRuntime?.dispose();
+    historyRoot.remove();
+    composerRoot.remove();
+  }
+  passed.push(...await runReviewConformance(artifact));
+  passed.push(...await runComponentConformance(artifact));
+  return passed;
+}
+
+async function checkFollowing(): Promise<string[]> {
+  const fixture = new FixtureConversation("following", 50);
+  const runtime = new ConversationRuntime(fixture.sessionId, fixture);
+  await runtime.loadPage();
+  const unsubscribe = fixture.subscribe((change) => runtime.apply(change));
+  const root = document.createElement("div");
+  root.style.height = "600px";
+  document.body.append(root);
+  const handle = mountConversation(root, {
+    runtime,
+    viewId: "following",
+    host: { writeText: () => Promise.resolve() },
+  });
+  try {
+    await waitFor(
+      () => !!root.querySelector('[data-entry-id="entry-499"] .mui-text') && geometryApplied(root),
+      "following fixture did not acquire its initial tail geometry",
+    );
+    const viewport = root.querySelector<HTMLElement>(".mui-viewport");
+    assert(viewport, "following viewport missing");
+    const id = fixture.submit("follow the live end");
+    await waitFor(
+      () => !!root.querySelector(`[data-entry-id="${id}"] .mui-text`),
+      "new output did not reach the mounted tail",
+    );
+    fixture.append(id, "\nstrict successor fragment".repeat(80));
+    fixture.seal(id);
+    await waitFor(
+      () =>
+        root.querySelector(`[data-entry-id="${id}"] .mui-text`)?.textContent?.includes(
+          "strict successor fragment",
+        ) === true,
+      "growing output did not update the mounted tail",
+    );
+    await waitFor(
+      () => geometryApplied(root),
+      "live tail body never completed natural measurement",
+    );
+    assert(
+      viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= 2,
+      "following mode left a measured growing tail below the viewport",
+    );
+    equal(viewport.dataset.scrollGesture, "idle", "live following was mistaken for user dragging");
+    return ["following keeps the actual viewport at the measured live end beyond overscan"];
+  } finally {
+    handle.unmount();
+    unsubscribe();
+    await runtime.dispose();
+    root.remove();
+  }
+}
+
+type Artifact = {
+  mountConversation: typeof mountConversation;
+  mountConversationHistory: typeof mountConversationHistory;
+  mountConversationComposer: typeof mountConversationComposer;
+};
+
+async function checkUnloadedGesture(artifact: Artifact): Promise<string[]> {
+  const passed: string[] = [];
   const dragSource = new FixtureConversation("drag", 10_000);
   const entered = Promise.withResolvers<void>(),
     aborted = Promise.withResolvers<void>(),
@@ -379,6 +608,11 @@ export async function runBrowserConformance(): Promise<string[]> {
     await dragRuntime.dispose();
     dragRoot.remove();
   }
+  return passed;
+}
+
+async function checkLoadedGesture(artifact: Artifact): Promise<string[]> {
+  const passed: string[] = [];
   const heldSource = new FixtureConversation("held", 10_000);
   const pageEntered = Promise.withResolvers<void>(), pageRelease = Promise.withResolvers<void>();
   let holdPage = true;
@@ -526,169 +760,5 @@ export async function runBrowserConformance(): Promise<string[]> {
     await heldRuntime.dispose();
     heldRoot.remove();
   }
-  const splitSource = new FixtureConversation("split", 10_000);
-  const splitEntered = Promise.withResolvers<void>(),
-    splitAborted = Promise.withResolvers<void>(),
-    splitRelease = Promise.withResolvers<void>();
-  let splitDelayed = false;
-  const splitRuntime = new ConversationRuntime("split", {
-    async readPage(query, signal) {
-      if (!splitDelayed && query.offset !== undefined && query.offset < 99_000) {
-        splitDelayed = true;
-        await new Promise<void>((resolve, reject) => {
-          const cancel = () => {
-            splitAborted.resolve();
-            reject(signal.reason);
-          };
-          signal.addEventListener("abort", cancel, { once: true });
-          splitRelease.promise.then(() => {
-            signal.removeEventListener("abort", cancel);
-            resolve();
-          });
-          splitEntered.resolve();
-        });
-      }
-      return splitSource.readPage(query, signal);
-    },
-    readContent: (id, revision, signal) => splitSource.readContent(id, revision, signal),
-  }, { entries: 160 });
-  await splitRuntime.loadPage();
-  const sharedView = splitRuntime.attachView("split-view");
-  const historyRoot = document.createElement("div"), composerRoot = document.createElement("div");
-  historyRoot.style.height = "600px";
-  document.body.append(historyRoot, composerRoot);
-  let submittedDraft: ConversationSubmission | undefined;
-  const receiveDraft = (value: ConversationSubmission) => submittedDraft = value;
-  const host = { writeText: () => Promise.resolve() };
-  let historyHandle = artifact.mountConversationHistory(historyRoot, { view: sharedView, host });
-  let composerHandle = artifact.mountConversationComposer(composerRoot, {
-    view: sharedView,
-    onSubmit: receiveDraft,
-  });
-  let changedRuntime: ConversationRuntime | undefined;
-  let stopChanged = () => {};
-  try {
-    await waitFor(
-      () => !!historyRoot.querySelector('[data-entry-id="entry-99999"] .mui-text'),
-      "independently mounted history did not load its visible content",
-    );
-    assert(!historyRoot.querySelector("textarea"), "standalone history includes an input editor");
-    assert(
-      !composerRoot.querySelector(".mui-viewport"),
-      "standalone input includes a history viewport",
-    );
-    equal(
-      splitRuntime.statistics.views,
-      1,
-      "separate components created duplicate view attachments",
-    );
-    const editor = composerRoot.querySelector<HTMLTextAreaElement>("textarea");
-    assert(editor, "independently mounted input editor missing");
-    editor.value = "separate submission";
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
-    composerRoot.querySelector("form")?.dispatchEvent(
-      new Event("submit", { bubbles: true, cancelable: true }),
-    );
-    assert(submittedDraft, "standalone input did not emit its submission");
-    equal(submittedDraft.viewId, sharedView.id, "standalone input submitted the wrong view");
-    equal(submittedDraft.text, "separate submission", "standalone input lost its draft snapshot");
-    editor.value = "newer draft";
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
-    splitRuntime.confirmSubmission(sharedView.id, submittedDraft.revision);
-    await nextTick();
-    equal(
-      editor.value,
-      "newer draft",
-      "accepting an older separate submission cleared newer input",
-    );
-    passed.push("history and input mount in separate DOM roots under one caller-owned view");
-
-    const viewport = historyRoot.querySelector<HTMLElement>(".mui-viewport");
-    assert(viewport, "standalone history viewport missing");
-    viewport.scrollTop = 25_000 * 120;
-    viewport.dispatchEvent(new Event("scroll"));
-    await guarded(splitEntered.promise, "standalone history did not request its controlled page");
-    historyHandle.unmount();
-    await guarded(splitAborted.promise, "history unmount did not cancel its owned page request");
-    assert(!sharedView.signal.aborted, "history unmount closed the input's shared view");
-    equal(splitRuntime.statistics.views, 1, "history unmount released the caller-owned view");
-    equal(sharedView.pins.size, 0, "history unmount retained viewport/selection pins");
-    equal(editor.value, "newer draft", "history unmount discarded the independent input draft");
-    editor.value = "preserved draft";
-    editor.dispatchEvent(new Event("input", { bubbles: true }));
-    historyHandle = artifact.mountConversationHistory(historyRoot, { view: sharedView, host });
-    await waitFor(
-      () => !!historyRoot.querySelector('[data-entry-id="entry-99999"] .mui-text'),
-      "standalone history could not remount beside the existing input",
-    );
-    composerHandle.unmount();
-    equal(sharedView.draft, "preserved draft", "input unmount discarded the caller-owned draft");
-    assert(!sharedView.signal.aborted, "input unmount closed the history's shared view");
-    assert(historyRoot.querySelector(".mui-text"), "input unmount removed independent history");
-    composerHandle = artifact.mountConversationComposer(composerRoot, {
-      view: sharedView,
-      onSubmit: receiveDraft,
-    });
-    equal(
-      composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.value,
-      "preserved draft",
-      "remounting standalone input did not restore the shared draft",
-    );
-    passed.push("independent unmount cancels history work while preserving the sibling and draft");
-
-    const changedSource = new FixtureConversation("changed-split", 2);
-    const nextRuntime = new ConversationRuntime("changed-split", changedSource);
-    changedRuntime = nextRuntime;
-    await nextRuntime.loadPage();
-    stopChanged = changedSource.subscribe((change) => nextRuntime.apply(change));
-    const changedView = nextRuntime.attachView("changed-view");
-    historyHandle.update({ view: changedView, host });
-    composerHandle.update({ view: changedView, onSubmit: receiveDraft });
-    await waitFor(
-      () => !!historyRoot.querySelector('[data-entry-id="entry-19"] .mui-text'),
-      "standalone components did not rebind to the replacement view",
-    );
-    equal(
-      composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.value,
-      "",
-      "replacement input borrowed the previous view's draft",
-    );
-    equal(sharedView.pins.size, 0, "history replacement retained the previous view's pins");
-    equal(
-      sharedView.draft,
-      "preserved draft",
-      "replacing input destroyed the previous view's draft",
-    );
-    sharedView.dispose();
-    equal(splitRuntime.statistics.views, 0, "caller disposal did not release the previous view");
-    equal(
-      changedRuntime.statistics.views,
-      1,
-      "replacement components lost their shared attachment",
-    );
-    changedView.dispose();
-    changedSource.submit("update after view closure");
-    // The runtime still accepts changes after a view closes; retired history must stay empty.
-    await waitFor(
-      () =>
-        composerRoot.querySelector<HTMLTextAreaElement>("textarea")?.disabled === true &&
-        historyRoot.querySelector(".mui-status")?.textContent === "会话已关闭" &&
-        !historyRoot.querySelector("[data-ordinal]"),
-      "closing the shared view left an independent component interactive or repopulated history",
-    );
-    passed.push("separate components rebind and close together without owning either runtime");
-  } finally {
-    splitRelease.resolve();
-    historyHandle.unmount();
-    composerHandle.unmount();
-    sharedView.dispose();
-    stopChanged();
-    await splitRuntime.dispose();
-    await changedRuntime?.dispose();
-    historyRoot.remove();
-    composerRoot.remove();
-  }
-  passed.push(...await runReviewConformance(artifact));
-  passed.push(...await runComponentConformance(artifact));
   return passed;
 }

@@ -99,6 +99,16 @@ history viewport.
 
 ## DOM and external themes
 
+The `localize(message, ...args)` binding is available on both independent mounts and on the combined
+mount. The component reads English message sources from `locales/en.json` and formats positional
+placeholders by default. Hosts can supply translations, including the range labels, status messages
+and accessibility text. `locales/zh-CN.json` contains the matching Chinese catalog.
+
+History exposes a simple `.mui-history-heading` without explanatory demo copy. Hosts can visually
+hide this heading while keeping it available for assistive navigation. The independent composer
+supports Ctrl/Cmd+Enter to submit; Enter inserts a newline, and active IME composition never
+submits. The host still acknowledges a captured submission before its draft is cleared.
+
 Load the component stylesheet once for the document. It contains the required virtual-list layout
 and the default theme, with no page/body/button reset for unrelated host content:
 
@@ -265,9 +275,9 @@ anchor case awaits its explicit correction acknowledgement before checking geome
 fixture uses distinct fixed row heights, all multiples of the virtualizer's estimate, so the chosen
 37px nonzero remainder does not depend on font metrics. Other cases exercise natural variable-height
 output. Verifier tests cover command and mutation-definition drift, symbolic inputs and literal
-dollar sequences in replacement text. Controlled held-page fixtures observe cancellation, including
-an injected early-failure cleanup scenario. Recorded mutation commands, measured input hashes,
-outcomes and normalized failure assertions live in
+dollar sequences in replacement text. Controlled held-page fixtures observe cancellation, and finish
+on scenario-owned deadlines. Recorded mutation commands, measured input hashes, outcomes and
+normalized failure assertions live in
 [`test/evidence/scroll-mutations.json`](test/evidence/scroll-mutations.json).
 
 The version 3 record explicitly describes a content-addressed **worktree snapshot**, not a Git
@@ -277,20 +287,22 @@ metadata are excluded. Assertions identify the violated mechanism rather than a 
 pixel delta.
 
 `deno task check:evidence` recomputes the input inventory/hashes, then executes all declared
-mutations and the unmodified browser suite. The negative runs must fail at their intended
-assertions; a surviving mutant or an unrelated startup failure rejects the gate. The restored
-scenario names and count must equal the actual executed output. Matching JSON/hashes alone cannot
-satisfy this check. CI runs this complete gate without a redundant standalone browser run. The
-declared mutations also zero the gesture offsets and projection ordinal/offset, proving that the
-acknowledgement assertions check the coordinates of loaded and unloaded anchors.
+mutations and the unmodified browser suite. Each mutation runs its addressed scroll fixture. The
+negative runs must fail at their intended assertions; a surviving mutant or an unrelated startup
+failure rejects the gate. The restored scenario names and count must equal the actual executed
+output. Matching JSON/hashes alone cannot satisfy this check. CI runs this complete gate without a
+redundant standalone browser run. The declared mutations also zero the gesture offsets and
+projection ordinal/offset, proving that the acknowledgement assertions check the coordinates of
+loaded and unloaded anchors.
 
 All regular files under this module are hashed, without an extension whitelist, including hidden
 fixtures, documentation and binary inputs. The only exclusions are root `.git/`, `dist/`,
 `node_modules/`, generated `test/evidence/` records and `.DS_Store` files. Symlink inputs fail
-closed. The workspace config/lock are also inputs. Changed, added or removed inputs reject stale
-records. `deno task record:evidence` executes the same browser runs and writes a new record only
-after they pass and the input hashes still match. Temporary import-map overlays apply mutations
-without editing workspace files. Updating hashes alone is no longer a sufficient refresh.
+closed. The workspace config, lockfile and shared browser runner are also inputs. Changed, added or
+removed inputs reject stale records. `deno task record:evidence` executes the same browser runs and
+writes a new record only after they pass and the input hashes still match. Temporary import-map
+overlays apply mutations without editing workspace files. Updating hashes alone is no longer a
+sufficient refresh.
 
 ## Permissions and packaging
 

@@ -1,6 +1,5 @@
 import {
   observeEvidence,
-  scrollMutations,
   sourceHashes,
   verifyEvidence,
   verifyObservedEvidence,
@@ -23,9 +22,7 @@ try {
   const observed = await observeEvidence(current, async (mutation) => {
     console.log(
       mutation
-        ? `Running negative browser case: ${
-          scrollMutations.find((entry) => entry.mutation === mutation)?.name
-        }`
+        ? `Running negative browser case: ${mutation.name} (${mutation.scenario})`
         : "Running restored browser suite",
     );
     return await runBrowserSuite({ mutation, signal: owner.signal });

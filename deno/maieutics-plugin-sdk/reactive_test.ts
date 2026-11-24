@@ -248,170 +248,131 @@ Deno.test("provide rejects a non-identity value", () => {
   );
 });
 
-Deno.test("subscribe streams collection snapshots", async () => {
-  const ep = defineExtensionPoint<number>("stream.ep");
-  const a = shallowRef<number | undefined>(1);
-  const b = shallowRef<number | undefined>(2);
-  provide(ep, a);
-  provide(ep, b);
+async function within<T>(work: Promise<T>, description: string): Promise<T> {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error(description)), 2_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
 
-  const collected: number[][] = [];
-  const iterator = subscribe(ep)[Symbol.asyncIterator]();
-  const read = async (): Promise<void> => {
-    for (let index = 0; index < 4; index++) {
-      const next = await iterator.next();
-      if (next.done) break;
-      collected.push(next.value);
-    }
+async function observe<T>(
+  source: AsyncIterable<T>,
+  verify: (read: (expected: T) => Promise<void>, expectDone: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  const iterator = source[Symbol.asyncIterator]();
+  const next = (expected: IteratorResult<T>) => async () => {
+    assertEquals(
+      await within(iterator.next(), `Missing reactive event: ${JSON.stringify(expected)}`),
+      expected,
+    );
   };
-  const reading = read();
+  try {
+    await verify((value) => next({ done: false, value })(), next({ done: true, value: undefined }));
+  } finally {
+    await within(Promise.resolve(iterator.return?.()), "Reactive iterator failed to close");
+  }
+}
 
-  // Let the initial snapshot be emitted.
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 10; // snapshot [10, 2]
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = undefined; // snapshot [10]
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 1; // snapshot [1]
-  await new Promise((resolve) => setTimeout(resolve, 10));
+function contributePair(name: string, first: number, second: number) {
+  const point = defineExtensionPoint<number>(name);
+  const a = shallowRef<number | undefined>(first);
+  const b = shallowRef<number | undefined>(second);
+  const firstRegistration = provide(point, a);
+  const secondRegistration = provide(point, b);
+  return {
+    point,
+    a,
+    b,
+    [Symbol.dispose]() {
+      unprovide(secondRegistration);
+      unprovide(firstRegistration);
+    },
+  };
+}
 
-  await reading;
-  assertEquals(collected[0], [1, 2]);
-  assertEquals(collected[1], [10, 2]);
-  assertEquals(collected[2], [10]);
-  assertEquals(collected[3], [1]);
+Deno.test("subscribe streams collection snapshots", async () => {
+  using pair = contributePair("stream.ep", 1, 2);
+  await observe(subscribe(pair.point), async (read) => {
+    await read([1, 2]);
+    pair.a.value = 10;
+    await read([10, 2]);
+    pair.b.value = undefined;
+    await read([10]);
+    pair.a.value = 1;
+    await read([1]);
+  });
 });
 
-Deno.test("values streams the current values then each change", async () => {
-  const ep = defineExtensionPoint<number>("values.ep");
-  const a = shallowRef<number | undefined>(1);
-  const b = shallowRef<number | undefined>(2);
-  provide(ep, a);
-  provide(ep, b);
-
-  const collected: number[] = [];
-  const iterator = values(ep)[Symbol.asyncIterator]();
-  const read = async (): Promise<void> => {
-    for (let index = 0; index < 5; index++) {
-      const next = await iterator.next();
-      if (next.done) break;
-      collected.push(next.value);
-    }
-  };
-  const reading = read();
-
-  // Initial values are emitted on subscription.
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 10; // change → 10
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = 20; // change → 20
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = undefined; // silent: no value flows
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = 30; // change → 30
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  await reading;
-  // Initial [1, 2], then each changed value; the undefined transition is silent.
-  assertEquals(collected.slice(0, 4), [1, 2, 10, 20]);
-  assertEquals(collected[4], 30);
+Deno.test("values streams the current values then each change and omits withdrawals", async () => {
+  using pair = contributePair("values.ep", 1, 2);
+  await observe(values(pair.point), async (read) => {
+    await read(1);
+    await read(2);
+    pair.a.value = 10;
+    await read(10);
+    pair.b.value = 20;
+    await read(20);
+    pair.a.value = undefined;
+    pair.b.value = 30;
+    await read(30);
+  });
 });
 
 Deno.test("values map/filter transform each flowing value lazily", async () => {
-  const ep = defineExtensionPoint<number>("values.map.ep");
-  const a = shallowRef<number | undefined>(1);
-  const b = shallowRef<number | undefined>(3);
-  provide(ep, a);
-  provide(ep, b);
-
-  // map and filter compose; the stream only emits values where the predicate
-  // holds, transformed. The pipeline is lazy: nothing runs until iterated.
-  const stream = values(ep).map((v) => v * 2).filter((v) => v > 4);
-  const collected: number[] = [];
-  const iterator = stream[Symbol.asyncIterator]();
-  const read = async (): Promise<void> => {
-    for (let index = 0; index < 3; index++) {
-      const next = await iterator.next();
-      if (next.done) break;
-      collected.push(next.value);
-    }
-  };
-  const reading = read();
-
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 5; // 10 > 4 → 10
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = 1; // 2, not > 4 → skipped
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = 6; // 12 > 4 → 12
-  await new Promise((resolve) => setTimeout(resolve, 10));
-
-  await reading;
-  // Initial [1,3] → map [2,6] → filter [6]; then 10, then 12.
-  assertEquals(collected, [6, 10, 12]);
+  using pair = contributePair("values.map.ep", 1, 3);
+  const mapped: number[] = [];
+  const stream = values(pair.point).map((value) => {
+    mapped.push(value);
+    return value * 2;
+  }).filter((value) => value > 4);
+  assertEquals(mapped, [], "Constructing a pipeline must not iterate it");
+  await observe(stream, async (read) => {
+    await read(6);
+    pair.a.value = 5;
+    await read(10);
+    pair.b.value = 1;
+    pair.b.value = 6;
+    await read(12);
+  });
+  assertEquals(
+    mapped,
+    [1, 3, 5, 1, 6],
+    "The filtered event must be evaluated before its successor",
+  );
 });
 
-Deno.test("values take/drop bound the stream", async () => {
-  const ep = defineExtensionPoint<number>("values.take.ep");
-  const a = shallowRef<number | undefined>(1);
-  const b = shallowRef<number | undefined>(2);
-  provide(ep, a);
-  provide(ep, b);
+Deno.test("values take closes the stream at its limit", async () => {
+  using pair = contributePair("values.take.ep", 1, 2);
+  await observe(values(pair.point).take(3), async (read, expectDone) => {
+    await read(1);
+    await read(2);
+    pair.a.value = 10;
+    await read(10);
+    pair.b.value = 20;
+    await expectDone();
+  });
+});
 
-  // take(3): the first three flowing values (initial 1, 2, then a change).
-  const taken: number[] = [];
-  const takeIterator = values(ep).take(3)[Symbol.asyncIterator]();
-  const readTake = async (): Promise<void> => {
-    for (;;) {
-      const next = await takeIterator.next();
-      if (next.done) break;
-      taken.push(next.value);
-    }
-  };
-  const readingTake = readTake();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 10; // the third value
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  b.value = 20; // beyond take(3): ignored
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  await readingTake;
-  assertEquals(taken, [1, 2, 10]);
-
-  // drop(1): skip the first flowing value, then emit the rest. Uses a fresh
-  // extension point so the initial state is independent of the take part.
-  const dropEp = defineExtensionPoint<number>("values.drop.ep");
-  const c = shallowRef<number | undefined>(1);
-  const d = shallowRef<number | undefined>(2);
-  provide(dropEp, c);
-  provide(dropEp, d);
-  const dropped: number[] = [];
-  const dropIterator = values(dropEp).drop(1)[Symbol.asyncIterator]();
-  const readDrop = async (): Promise<void> => {
-    for (let index = 0; index < 2; index++) {
-      const next = await dropIterator.next();
-      if (next.done) break;
-      dropped.push(next.value);
-    }
-  };
-  const readingDrop = readDrop();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  c.value = 30;
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  await readingDrop;
-  // Initial [1, 2] → drop 1 → [2], then 30.
-  assertEquals(dropped, [2, 30]);
+Deno.test("values drop skips only the specified prefix", async () => {
+  using pair = contributePair("values.drop.ep", 1, 2);
+  await observe(values(pair.point).drop(1), async (read) => {
+    await read(2);
+    pair.a.value = 30;
+    await read(30);
+  });
 });
 
 Deno.test("values toArray collects a finite stream", async () => {
-  const ep = defineExtensionPoint<number>("values.toArray.ep");
-  const a = shallowRef<number | undefined>(1);
-  provide(ep, a);
-
-  // take(2) makes the stream finite: initial 1, then one change.
-  const read = values(ep).take(2);
-  const promise = read.toArray();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  a.value = 2;
-  const collected = await promise;
-  assertEquals(collected, [1, 2]);
+  using pair = contributePair("values.toArray.ep", 1, 2);
+  assertEquals(
+    await within(values(pair.point).take(2).toArray(), "Finite collection did not complete"),
+    [1, 2],
+  );
 });

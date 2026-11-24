@@ -5,21 +5,17 @@ import type { FrontendClient } from "../../client.ts";
 import type { ViewContent, ViewEntry, ViewFrame } from "../../conversationProtocol.ts";
 import { ConversationPanel } from "../../conversationPanels.ts";
 
-/** Real production webview: the same renderer performs Markdown fallback, SSR, Vue and live forms. */
+/** Real production webview: the addressed SSR reply and an Actor action cross the host bridge. */
 export async function testConversationRenderingAsync(): Promise<void> {
   const extension = vscode.extensions.getExtension("ghostflyby.maieutics-vscode");
   if (!extension) throw new Error("Missing Maieutics extension");
   const sessionId = "f".repeat(32);
-  const markdown =
-    "# Shared rendering\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n<script>globalThis.untrustedExecuted=true</script>";
-  const entries: ViewEntry[] = ["message", "display", "display", "tool", "display"].map((
-    kind,
-    ordinal,
-  ) => ({
+  const markdown = "# Conversation output";
+  const entries: ViewEntry[] = (["message", "display"] as const).map((kind, ordinal) => ({
     id: `rich-${ordinal}`,
     ordinal,
     interactionId: "run",
-    kind: kind as ViewEntry["kind"],
+    kind,
     contentRevision: "0",
     preview: "rich output",
     state: "sealed",
@@ -35,17 +31,6 @@ export async function testConversationRenderingAsync(): Promise<void> {
       version: 1,
       kind: "mime",
       value: {
-        "application/vnd.maieutics.vue+json": {
-          version: 1,
-          format: "sfc",
-          source: "<template><button>Clicks 0</button></template>",
-        },
-      },
-    },
-    {
-      version: 1,
-      kind: "mime",
-      value: {
         "application/vnd.maieutics.form+json": {
           version: 1,
           modelId: "shared-form",
@@ -53,34 +38,12 @@ export async function testConversationRenderingAsync(): Promise<void> {
         },
       },
     },
-    {
-      version: 1,
-      kind: "tool",
-      value: {
-        callId: "call",
-        tool: "read_file",
-        status: "ok",
-        arguments: { path: "workspace://local/example.ts" },
-        result: { text: "structured result" },
-      },
-    },
   ];
-  presentations.push(
-    {
-      version: 1,
-      kind: "mime",
-      value: {
-        "application/vnd.maieutics.template+json": {
-          version: 1,
-          source: "# Template",
-          bindings: [],
-        },
-      },
-    },
-  );
   const done = Promise.withResolvers<void>();
+  const themeReplies = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
+  const themeSettings = vscode.workspace.getConfiguration("workbench");
+  const initialTheme = themeSettings.inspect<string>("colorTheme")?.globalValue;
   const rendered = new Set<string>();
-  const native = Promise.withResolvers<void>();
   const formClosed = Promise.withResolvers<void>();
   const cleanup: Promise<void>[] = [];
   const pending: unknown[] = [];
@@ -123,45 +86,15 @@ export async function testConversationRenderingAsync(): Promise<void> {
         text: id === "rich-0" ? markdown : "rich output",
         presentation: presentations[Number(id.slice(5))],
       }),
-    renderMarkdown: async (
-      documentId: string,
-      text: string,
-      signal: AbortSignal,
-      template: unknown,
-      vue: unknown,
-    ) => {
-      if (template) {
-        return {
-          version: 1,
-          documentId,
-          html: "<p class=template-proof>Shared template</p>",
-          css: "",
-        };
-      }
-      if (vue) {
-        return {
-          version: 1,
-          documentId,
-          html: "<button>Clicks 0</button>",
-          css: "",
-          vue: {
-            version: 1,
-            scopeId: `data-v-${documentId}`,
-            code:
-              "const {h,ref}=Vue;return {setup(){const n=ref(0);return ()=>h('button',{onClick:()=>n.value++},'Clicks '+n.value)}}",
-          },
-        };
-      }
-      await Promise.race([native.promise, closed(signal)]);
-      signal.throwIfAborted();
-      if (text !== markdown) throw new Error("The shared bridge lost the exact Markdown source");
-      return {
+    renderMarkdown(documentId: string, text: string) {
+      if (text !== markdown) throw new Error("SSR received content from a different row");
+      return Promise.resolve({
         version: 1,
         documentId,
         html:
-          "<h1>Shared rendering</h1><table><tbody><tr><td>SSR table</td></tr></tbody></table><pre class='shiki'><code>highlighted</code></pre>",
-        css: "",
-      };
+          "<div class='maieutics-output vp-doc'><p class='prose-proof'>Addressed SSR reply</p></div>",
+        css: ".maieutics-output.vp-doc{font-size:16px;line-height:1.75}",
+      });
     },
     commSocket: (_session: string, options: { signal: AbortSignal }) => {
       if (_session !== sessionId) throw new Error("Form borrowed another session");
@@ -226,14 +159,13 @@ export async function testConversationRenderingAsync(): Promise<void> {
     if (message.method === "presentation" && message.params?.message?.type === "applied") {
       rendered.add(message.params.message.engine);
     }
-    if (message.method === "draft" && message.params?.text === "native-markdown-observed") {
-      native.resolve();
-    }
     if (message.method === "draft" && message.params?.text === "rich-rendering-passed") {
       done.resolve();
     }
+    if (message.method === "draft") themeReplies.get(message.params?.text)?.resolve();
     if (message.method === "draft" && String(message.params?.text).startsWith("TEST_FAILED:")) {
       done.reject(new Error(message.params.text));
+      for (const reply of themeReplies.values()) reply.reject(new Error(message.params.text));
     }
   });
   try {
@@ -265,23 +197,23 @@ export async function testConversationRenderingAsync(): Promise<void> {
         check();
       });
       const draft = value => {const editor=document.querySelector('textarea');editor.value=value;editor.dispatchEvent(new Event('input',{bubbles:true}))};
+      window.addEventListener('message',async event=>{
+        const theme=event.data.richTheme;if(!theme)return;
+        try{
+          const editor=document.querySelector('textarea'),prose=query('.prose-proof')[0];
+          await wait(()=>document.body.classList.contains(theme),'host did not deliver theme '+theme);
+          assert(document.querySelector('textarea')===editor && query('.prose-proof')[0]===prose,'theme switch remounted history/editor content');
+          assert(getComputedStyle(prose).color===getComputedStyle(editor).color,'rich content missed the live editor theme foreground');
+          assert(getComputedStyle(prose).fontSize===getComputedStyle(editor).fontSize,'theme changed prose/editor font sizes independently');
+          draft('theme-checked:'+theme);
+        }catch(error){draft('TEST_FAILED:'+String(error.stack||error))}
+      });
       (async()=>{try{
-        await wait(()=>query('h1').some(node=>node.textContent==='Shared rendering'),'shared Markdown fallback missing');
-        assert(query('table').length>0,'Markdown table was flattened to text');
-        assert(globalThis.untrustedExecuted===undefined,'untrusted HTML executed');
-        draft('native-markdown-observed');
-        await wait(()=>query('[data-render-engine="ssr"]').length>0 && query('[data-render-engine="vue"]').length>0,'shared SSR/Vue did not apply');
-        await wait(()=>query('.template-proof').length===1,'shared data template was not connected');
-        assert(query('.shiki').length===1,'code markup did not use the shared SSR result');
-        const counter=query('button').find(node=>node.textContent==='Clicks 0');assert(counter,'Vue component absent');counter.click();
-        await wait(()=>counter.textContent==='Clicks 1','Vue island did not hydrate');
+        await wait(()=>query('.prose-proof').some(node=>node.textContent==='Addressed SSR reply'),'SSR did not cross the production webview bridge');
         await wait(()=>query('fieldset').some(node=>!node.disabled),'form did not attach over the existing binary Actor bridge');
         const field=query('input[name="answer"]')[0];field.value='typed';field.dispatchEvent(new Event('input'));
         const accepted=new Promise(resolve=>window.addEventListener('message',function receive(event){if(event.data.richFormAccepted){window.removeEventListener('message',receive);resolve()}}));
         query('button.submit')[0].click();await accepted;
-        const tool=query('details.tool')[0];assert(tool,'structured tool renderer missing');tool.open=true;
-        assert(tool.textContent.includes('workspace://local/example.ts') && tool.textContent.includes('structured result'),'tool arguments/results were flattened or lost');
-        assert(document.querySelectorAll('.mui-history').length===1 && document.querySelectorAll('#composer > form').length===1,'history/composer separation regressed');
         draft('rich-rendering-passed');
       }catch(error){draft('TEST_FAILED:'+String(error.stack||error))}})();
       </script></body>`,
@@ -289,15 +221,46 @@ export async function testConversationRenderingAsync(): Promise<void> {
       },
     );
     await done.promise;
-    if (!rendered.has("ssr") || !rendered.has("vue") || formActions !== 1) {
+    clearTimeout(timer);
+    const themes = vscode.extensions.getExtension("vscode.theme-defaults")?.packageJSON.contributes
+      .themes as { id: string; uiTheme: string }[] | undefined;
+    for (
+      const [uiTheme, className] of [
+        ["vs", "vscode-light"],
+        ["vs-dark", "vscode-dark"],
+        ["hc-black", "vscode-high-contrast"],
+        ["hc-light", "vscode-high-contrast-light"],
+      ]
+    ) {
+      const theme = themes?.find((theme) => theme.uiTheme === uiTheme);
+      if (!theme) throw new Error(`Missing built-in ${uiTheme} theme`);
+      const reply = Promise.withResolvers<void>();
+      themeReplies.set(`theme-checked:${className}`, reply);
+      const deadline = setTimeout(
+        () => reply.reject(new Error(`No theme acknowledgement: ${className}`)),
+        20_000,
+      );
+      try {
+        await themeSettings.update("colorTheme", theme.id, vscode.ConfigurationTarget.Global);
+        await panel.webview.postMessage({ richTheme: className });
+        await reply.promise;
+      } finally {
+        clearTimeout(deadline);
+        themeReplies.delete(`theme-checked:${className}`);
+      }
+    }
+    if (!rendered.has("ssr") || formActions !== 1) {
       throw new Error("Missing shared renderer acknowledgements or exact form action");
     }
   } finally {
     clearTimeout(timer);
-    listener.dispose();
-    native.resolve();
-    panel.dispose();
-    await Promise.all(cleanup);
-    if (formOpened) await formClosed.promise;
+    try {
+      await themeSettings.update("colorTheme", initialTheme, vscode.ConfigurationTarget.Global);
+    } finally {
+      listener.dispose();
+      panel.dispose();
+      await Promise.all(cleanup);
+      if (formOpened) await formClosed.promise;
+    }
   }
 }

@@ -1,3 +1,5 @@
+import messages from "./locales/en.json" with { type: "json" };
+import { conversationChrome, escapeHtml } from "./conversationChrome.ts";
 import * as vscode from "vscode";
 import { randomUUID } from "node:crypto";
 import type { FrontendClient } from "./client.ts";
@@ -49,7 +51,7 @@ export class ConversationPanels implements vscode.Disposable {
 
   async open(sessionId: string): Promise<void> {
     if (this.closed) return;
-    if (!/^[a-f0-9]{32}$/.test(sessionId)) throw new Error("Invalid session id");
+    if (!/^[a-f0-9]{32}$/.test(sessionId)) throw new Error(vscode.l10n.t(messages.invalidSession));
     const existing = this.panels.get(sessionId);
     if (existing) {
       existing.panel.reveal();
@@ -57,7 +59,7 @@ export class ConversationPanels implements vscode.Disposable {
     }
     const client = await waitForStartup(this.clientOf(), this.owner.signal);
     if ((await client.capabilities(this.owner.signal)).conversationView?.version !== 1) {
-      throw new Error("Update the Maieutics executable to use conversation views");
+      throw new Error(vscode.l10n.t(messages.updateExecutable));
     }
     if (this.closed) return;
     const competing = this.panels.get(sessionId);
@@ -181,7 +183,7 @@ export class ConversationPanel {
       this.trackFailure(this.post({
         ...address,
         event: "failure",
-        value: { message: "连接已中断。重新打开此会话以恢复；运行会继续。" },
+        value: { message: vscode.l10n.t(messages.reconnect) },
       }));
     }).finally(() => this.tasks.delete(observed));
     this.tasks.add(observed);
@@ -208,7 +210,7 @@ export class ConversationPanel {
         this.post({
           ...address,
           id: request.id,
-          error: { code: "request_capacity", message: "Too many pending view requests" },
+          error: { code: "request_capacity", message: vscode.l10n.t(messages.capacity) },
         }),
       );
       return;
@@ -227,7 +229,9 @@ export class ConversationPanel {
             id: request.id,
             error: {
               code: error instanceof FrontendError ? error.code : "view_error",
-              message: error instanceof Error ? error.message : "Conversation operation failed",
+              message: error instanceof Error
+                ? error.message
+                : vscode.l10n.t(messages.operationFailed),
             },
           });
         }
@@ -283,11 +287,11 @@ export class ConversationPanel {
     if (request.method === "page") {
       const offset = params.offset;
       if (offset !== undefined && (!Number.isSafeInteger(offset) || Number(offset) < 0)) {
-        throw new Error("Invalid page offset");
+        throw new Error(vscode.l10n.t(messages.invalidOffset));
       }
       const limit = Number(params.limit);
       if (!Number.isInteger(limit) || limit < 1 || limit > 80) {
-        throw new Error("Invalid page limit");
+        throw new Error(vscode.l10n.t(messages.invalidLimit));
       }
       return await client.conversationPage(
         this.sessionId,
@@ -311,7 +315,7 @@ export class ConversationPanel {
       return null;
     }
     if (request.method === "submit") {
-      if (this.submitting) throw new Error("A submission is already pending");
+      if (this.submitting) throw new Error(vscode.l10n.t(messages.pending));
       this.submitting = true;
       try {
         return await client.submitTurn(this.sessionId, text(params.text, 64_000), signal);
@@ -319,7 +323,7 @@ export class ConversationPanel {
         this.submitting = false;
       }
     }
-    throw new Error("Unsupported conversation request");
+    throw new Error(vscode.l10n.t(messages.unsupported));
   }
   private async pump(client: FrontendClient, signal: AbortSignal): Promise<void> {
     const address = this.address;
@@ -406,13 +410,25 @@ export class ConversationPanel {
       webview.asWebviewUri(vscode.Uri.joinPath(this.root, "media", name)).toString();
     const nonce = randomUUID();
     const config = JSON.stringify(this.address).replaceAll("<", "\\u003c");
+    const localization = JSON.stringify(vscode.l10n.bundle ?? {}).replaceAll("<", "\\u003c");
     this.panel.webview.html = this.decorateHtml(
-      `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+      `<!doctype html><html lang="${
+        escapeHtml(vscode.env.language)
+      }"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'unsafe-eval'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; connect-src ${connectionSource};">
 <link rel="stylesheet" href="${uri("conversation.css")}"><link rel="stylesheet" href="${
         uri("conversationTheme.css")
-      }"></head>
-<body><main id="app" aria-label="Maieutics 会话"><header><span id="status" role="status">正在连接…</span><button id="reload" type="button">重新连接</button><button id="cancel" type="button" disabled>停止</button></header><div id="history"></div><div id="composer"></div><p id="notice" role="alert"></p></main>
+      }"><link id="output-theme" rel="stylesheet" href="${uri("conversationOutput.css")}"></head>
+<body>${
+        conversationChrome({
+          conversation: vscode.l10n.t(messages.conversation),
+          connecting: vscode.l10n.t(messages.connecting),
+          actions: vscode.l10n.t(messages.actions),
+          reload: vscode.l10n.t(messages.reload),
+          stop: vscode.l10n.t(messages.stop),
+        })
+      }
+<script id="localization" nonce="${nonce}" type="application/json">${localization}</script>
 <script id="configuration" nonce="${nonce}" type="application/json">${config}</script><script type="module" nonce="${nonce}" src="${
         uri("conversation.js")
       }"></script></body></html>`,
@@ -422,7 +438,7 @@ export class ConversationPanel {
 
 function text(value: unknown, limit: number): string {
   if (typeof value !== "string" || value.length > limit) {
-    throw new Error("Invalid or oversized conversation text");
+    throw new Error(vscode.l10n.t(messages.invalidText));
   }
   return value;
 }

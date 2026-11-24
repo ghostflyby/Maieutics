@@ -1,0 +1,108 @@
+/* Loaded after SSR CSS inside each shared renderer shadow root. No document-wide rules. */
+:host,
+:host .maieutics-output.vp-doc {
+  font-family: var(--mui-font-family, var(--vscode-font-family, system-ui, sans-serif));
+  font-size: var(--mui-body-font-size, var(--vscode-font-size, 13px));
+  line-height: var(--mui-body-line-height, 1.6);
+  color: var(--mui-text, var(--vscode-foreground, #333));
+  overflow-wrap: anywhere;
+  min-inline-size: 0;
+}
+:host {
+  --vp-font-family-base: var(--mui-font-family, var(--vscode-font-family, system-ui, sans-serif));
+  --vp-font-family-mono: var(--mui-font-family-mono, var(--vscode-editor-font-family, monospace));
+  --vp-c-text-1: var(--mui-text, var(--vscode-foreground, #333));
+  --vp-c-text-2: var(--mui-muted, var(--vscode-descriptionForeground, #666));
+  --vp-c-bg: var(--mui-surface, var(--vscode-editor-background, #fff));
+  --vp-c-bg-soft: var(--mui-code-surface, var(--vscode-textCodeBlock-background, #8881));
+  --vp-c-divider: var(--mui-border, var(--vscode-panel-border, #8885));
+  --vp-c-brand-1: var(--vscode-textLink-foreground, #0078d4);
+  --vp-code-font-size: .92em;
+  --vp-code-color: var(--vscode-textPreformat-foreground, inherit);
+  --vp-code-bg: var(--vscode-textPreformat-background, #8882);
+}
+:host :is(p, ul, ol, blockquote, pre, table) {
+  margin-block: 0 12px;
+}
+:host :is(h1, h2, h3, h4, h5, h6) {
+  line-height: 1.4;
+  margin-block: 20px 10px;
+  padding: 0;
+  border: 0;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+:host h1 {
+  font-size: 1.5em;
+}
+:host h2 {
+  font-size: 1.3em;
+}
+:host h3 {
+  font-size: 1.15em;
+}
+:host :is(h4, h5, h6) {
+  font-size: 1em;
+}
+:host > :nth-child(1 of :not(style, link)),
+:host .maieutics-output > :first-child {
+  margin-block-start: 0;
+}
+:host > :nth-last-child(1 of :not(style, link)),
+:host .maieutics-output > :last-child {
+  margin-block-end: 0;
+}
+:host :is(ul, ol) {
+  padding-inline-start: 24px;
+}
+:host li + li {
+  margin-block-start: 4px;
+}
+:host li > :is(p, ul, ol) {
+  margin-block: 4px;
+}
+:host a {
+  color: var(--vscode-textLink-foreground, #0078d4);
+}
+:host a:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #0078d4);
+}
+:host :is(code, pre, kbd) {
+  font-family: var(--vp-font-family-mono);
+  font-size: .92em;
+}
+:host :not(pre) > code {
+  background: var(--vp-code-bg);
+  color: var(--vp-code-color);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+:host pre {
+  max-inline-size: 100%;
+  overflow: auto;
+  background: var(--vp-c-bg-soft);
+  padding: 12px;
+  border-radius: 4px;
+}
+:host pre code {
+  font-size: inherit;
+}
+:host blockquote {
+  border-inline-start: 3px solid var(--vscode-textBlockQuote-border, #8885);
+  padding-inline: 12px 0;
+  color: var(--vp-c-text-2);
+}
+:host table {
+  display: block;
+  max-inline-size: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+  font-size: inherit;
+}
+:host :is(th, td) {
+  padding: 6px 12px;
+  border: 1px solid var(--vscode-panel-border, #8885);
+}
+:host :is(img, video, svg) {
+  max-inline-size: 100%;
+}

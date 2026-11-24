@@ -144,7 +144,7 @@ export class ConversationProjection {
           entry: Object.freeze({
             ...previous.entry,
             kind: "unavailable",
-            preview: "内容已移除",
+            preview: "",
             contentRevision: change.revision,
             state: "sealed",
           }),

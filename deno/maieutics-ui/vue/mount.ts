@@ -1,3 +1,4 @@
+import type { ConversationLocalizer } from "../localization.ts";
 import { createApp, h, shallowRef, type VNode } from "vue";
 import { ConversationError } from "../core/types.ts";
 import type { ConversationRuntime, ConversationViewState } from "../core/runtime.ts";
@@ -16,6 +17,7 @@ export interface ConversationBinding {
   readonly viewId: string;
   readonly host: ConversationHost;
   readonly title?: string;
+  readonly localize?: ConversationLocalizer;
   readonly onSubmit?: (submission: ConversationSubmission) => void;
   readonly onReady?: () => void;
   readonly onAnchorRestored?: (anchor: ConversationAnchorRestoration) => void;
@@ -23,6 +25,7 @@ export interface ConversationBinding {
 
 /** History accepts an existing view attachment owned by the caller. */
 export interface ConversationHistoryBinding {
+  readonly localize?: ConversationLocalizer;
   readonly view: ConversationViewState;
   readonly host: ConversationHost;
   readonly title?: string;
@@ -33,6 +36,7 @@ export interface ConversationHistoryBinding {
 /** Input needs only draft/submission state, independently of history or clipboard capabilities. */
 export interface ConversationComposerBinding {
   readonly view: ConversationViewState;
+  readonly localize?: ConversationLocalizer;
   readonly onSubmit?: (submission: ConversationSubmission) => void;
 }
 

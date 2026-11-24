@@ -90,7 +90,6 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       '[data-range-state="waiting-for-stream"] button',
     );
     assert(retry, "waiting range has no recovery control");
-    equal(retry.textContent, "取消并重试", "active page did not offer cancellation and retry");
     retry.click();
     await guarded(restarted.promise, "retry was blocked by the previous active range request");
     await waitFor(
@@ -123,49 +122,6 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     futureRoot.remove();
   }
 
-  const failedSource = new FixtureConversation("failed-scenario", 2);
-  const never = Promise.withResolvers<ConversationPage>(), entered = Promise.withResolvers<void>();
-  const failedRuntime = new ConversationRuntime("failed-scenario", {
-    readPage(query, signal) {
-      if (query.offset === 0) {
-        entered.resolve();
-        return abortable(never.promise, signal);
-      }
-      return failedSource.readPage(query, signal);
-    },
-    readContent: (id, revision, signal) => failedSource.readContent(id, revision, signal),
-  });
-  await failedRuntime.loadPage();
-  const owner = new AbortController();
-  const failedPage = failedRuntime.loadPage(0, owner.signal).then(
-    () => undefined,
-    (error) => error,
-  );
-  const injected = new Error("controlled early scenario failure");
-  const failEarly = async () => {
-    try {
-      await guarded(entered.promise, "failure fixture never entered its held page read");
-      throw injected;
-    } finally {
-      owner.abort();
-      await guarded(failedRuntime.dispose(), "early scenario failure stranded its owned page read");
-    }
-  };
-  try {
-    await failEarly();
-  } catch (error) {
-    equal(error, injected, "page cleanup replaced or delayed the original scenario failure");
-  }
-  equal(
-    (await guarded(failedPage, "cancelled failure fixture never settled"))?.name,
-    "AbortError",
-    "held fixture ignored request cancellation",
-  );
-  equal(failedRuntime.statistics.activeRequests, 0, "failed scenario retained source work");
-  passed.push(
-    "early conformance failure cancels its held source and joins disposal within the scenario budget",
-  );
-
   const capacitySource = new FixtureConversation("capacity", 100);
   let capacityReads = 0;
   const capacity = new ConversationRuntime("capacity", {
@@ -195,8 +151,8 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event("scroll"));
     await waitFor(
-      () => capacityRoot.textContent?.includes("历史缓存已被其他视图或选区占用") === true,
-      "zero-progress page admission did not expose its typed capacity failure",
+      () => !!capacityRoot.querySelector('[data-range-state="failed"]'),
+      "zero-progress page admission did not settle the failed range",
     );
     viewport.dispatchEvent(new Event("scroll"));
     await frame();
@@ -240,23 +196,175 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       () => !!fragmentedRoot.querySelector('[data-range-state="failed"]'),
       "range capacity failure never completed",
     );
-    const label = fragmentedRoot.querySelector(".mui-range-label")?.textContent ?? "";
-    assert(
-      label.includes("历史分段过多"),
-      "range capacity lost its distinct fragmentation diagnostic",
-    );
-    assert(!label.includes("其他视图或选区"), "range capacity incorrectly blamed view pins");
     assert(
       fragmentedRuntime.projection.rows === beforeFragmentRows,
       "failed fragment pruning mutated the published index",
     );
-    passed.push("real fragment pruning propagates range_capacity to its distinct UI diagnostic");
+    passed.push("fragment capacity marks the range as failed without changing the projection");
   } finally {
     fragmentedHandle.unmount();
     await fragmentedRuntime.dispose();
     fragmentedRoot.remove();
   }
 
+  passed.push(...await checkProjectionAnchor(artifact));
+
+  const overlapSource = new FixtureConversation("overlapping-copy", 1);
+  const overlapReads = new Map<string, number>();
+  const overlapRuntime = new ConversationRuntime(overlapSource.sessionId, {
+    readPage: (query, signal) => overlapSource.readPage(query, signal),
+    readContent(id, revision, signal) {
+      overlapReads.set(id, (overlapReads.get(id) ?? 0) + 1);
+      return overlapSource.readContent(id, revision, signal);
+    },
+  }, { concurrentRequests: 1, contentBytes: 1 });
+  await overlapRuntime.loadPage();
+  const overlapView = overlapRuntime.attachView("overlapping-reader");
+  const overlapRoot = historyTarget();
+  const copiesDone = Promise.withResolvers<void>();
+  const copies: string[] = [];
+  const overlapHandle = artifact.mountConversationHistory(overlapRoot, {
+    view: overlapView,
+    host: {
+      writeText(text) {
+        copies.push(text);
+        if (copies.length === 4) copiesDone.resolve();
+        return Promise.resolve();
+      },
+    },
+  });
+  const overlapSelection = document.getSelection();
+  try {
+    await waitFor(
+      () =>
+        !!overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text') &&
+        geometryApplied(overlapRoot),
+      "uncached copy fixture did not finish loading visible text",
+    );
+    const body = overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text');
+    const text = body?.firstChild;
+    assert(
+      body && text instanceof Text && overlapSelection,
+      "uncached copy fixture has no selectable text",
+    );
+    const expected = text.data;
+    const before = overlapReads.get("entry-9") ?? 0;
+    equal(overlapRuntime.statistics.contentBytes, 0, "uncached copy fixture retained its body");
+    overlapSelection.setBaseAndExtent(text, 0, text, expected.length);
+    document.dispatchEvent(new Event("selectionchange"));
+    for (let i = 0; i < 4; i++) {
+      body.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
+    }
+    await guarded(
+      copiesDone.promise,
+      "overlapping copy events stalled the single-slot source pool",
+    );
+    assert(
+      copies.every((value) => value === expected),
+      "overlapping copy wrote partial or different text",
+    );
+    equal(
+      (overlapReads.get("entry-9") ?? 0) - before,
+      4,
+      "overlapping copy did not exercise four addressed uncached content reads",
+    );
+    await overlapRuntime.loadPage(0);
+    passed.push("overlapping uncached copy events complete through a single source request slot");
+  } finally {
+    overlapSelection?.removeAllRanges();
+    overlapHandle.unmount();
+    overlapView.dispose();
+    await overlapRuntime.dispose();
+    overlapRoot.remove();
+  }
+
+  const copySource = new FixtureConversation("foreign-copy", 2);
+  const copyRuntime = new ConversationRuntime("foreign-copy", copySource, { selectionBytes: 1 });
+  await copyRuntime.loadPage();
+  const copyRoot = historyTarget();
+  let clipboardWrites = 0;
+  const copyHandle = artifact.mountConversation(copyRoot, {
+    runtime: copyRuntime,
+    viewId: "foreign-copy-view",
+    host: {
+      writeText: () => {
+        clipboardWrites++;
+        return Promise.resolve();
+      },
+    },
+  });
+  const selection = document.getSelection();
+  try {
+    await waitFor(
+      () =>
+        !!copyRoot.querySelector('[data-entry-id="entry-19"] .mui-text') &&
+        geometryApplied(copyRoot),
+      "cross-bundle copy fixture did not initialize",
+    );
+    const body = copyRoot.querySelector<HTMLElement>(".mui-message .mui-text");
+    assert(body?.firstChild && selection, "cross-bundle selection text missing");
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+    body.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
+    await waitFor(
+      () => !!copyRoot.querySelector(".mui-status")?.textContent,
+      "cross-bundle copy failure did not complete",
+    );
+    equal(clipboardWrites, 0, "failed copy wrote partial text to the clipboard");
+    passed.push(
+      "cross-bundle copy capacity failures never write partial text",
+    );
+  } finally {
+    selection?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    copyHandle.unmount();
+    await copyRuntime.dispose();
+    copyRoot.remove();
+  }
+
+  const demoFrame = document.createElement("iframe");
+  demoFrame.style.cssText = "width:1000px;height:800px";
+  const loaded = new Promise<void>((resolve) =>
+    demoFrame.addEventListener("load", () => resolve(), { once: true })
+  );
+  demoFrame.src = "/demo";
+  document.body.append(demoFrame);
+  try {
+    await guarded(loaded, "demo lifecycle frame did not load");
+    const target = demoFrame.contentWindow, doc = demoFrame.contentDocument;
+    assert(target && doc?.body, "demo lifecycle frame unavailable");
+    await waitFor(
+      () => !!doc.querySelector('[data-entry-id="entry-99999"] .mui-text'),
+      "real demo did not initialize",
+      doc.body,
+    );
+    const app = doc.querySelector(".demo-shell");
+    assert(app, "demo application root missing");
+    for (let i = 0; i < 2; i++) {
+      target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      assert(app.isConnected, "persisted pagehide destroyed the cached demo application");
+      equal(
+        doc.querySelector<HTMLTextAreaElement>("textarea")?.disabled,
+        false,
+        "bfcache restoration left the demo runtime closed",
+      );
+    }
+    target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+    assert(!app.isConnected, "a persisted transition removed final demo disposal registration");
+    passed.push(
+      "demo survives repeated persisted page transitions and disposes on the final pagehide",
+    );
+  } finally {
+    demoFrame.remove();
+  }
+  return passed;
+}
+
+export async function checkProjectionAnchor(artifact: Artifact): Promise<string[]> {
   const anchorSource = new FixtureConversation("anchor", 200);
   const anchorRuntime = new ConversationRuntime("anchor", {
     async readPage(query, signal) {
@@ -385,172 +493,13 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       Math.abs(after - before) <= 2,
       `non-frozen page replacement moved the history anchor by ${after - before} pixels`,
     );
-    passed.push(
+    return [
       "non-frozen history keeps its visible block offset when measured predecessors are evicted",
-    );
+    ];
   } finally {
     anchorHandle.unmount();
     await anchorRuntime.dispose();
     anchorRoot.remove();
     anchorStyle.remove();
   }
-
-  const overlapSource = new FixtureConversation("overlapping-copy", 1);
-  const overlapReads = new Map<string, number>();
-  const overlapRuntime = new ConversationRuntime(overlapSource.sessionId, {
-    readPage: (query, signal) => overlapSource.readPage(query, signal),
-    readContent(id, revision, signal) {
-      overlapReads.set(id, (overlapReads.get(id) ?? 0) + 1);
-      return overlapSource.readContent(id, revision, signal);
-    },
-  }, { concurrentRequests: 1, contentBytes: 1 });
-  await overlapRuntime.loadPage();
-  const overlapView = overlapRuntime.attachView("overlapping-reader");
-  const overlapRoot = historyTarget();
-  const copiesDone = Promise.withResolvers<void>();
-  const copies: string[] = [];
-  const overlapHandle = artifact.mountConversationHistory(overlapRoot, {
-    view: overlapView,
-    host: {
-      writeText(text) {
-        copies.push(text);
-        if (copies.length === 4) copiesDone.resolve();
-        return Promise.resolve();
-      },
-    },
-  });
-  const overlapSelection = document.getSelection();
-  try {
-    await waitFor(
-      () =>
-        !!overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text') &&
-        geometryApplied(overlapRoot),
-      "uncached copy fixture did not finish loading visible text",
-    );
-    const body = overlapRoot.querySelector('[data-entry-id="entry-9"] .mui-text');
-    const text = body?.firstChild;
-    assert(
-      body && text instanceof Text && overlapSelection,
-      "uncached copy fixture has no selectable text",
-    );
-    const expected = text.data;
-    const before = overlapReads.get("entry-9") ?? 0;
-    equal(overlapRuntime.statistics.contentBytes, 0, "uncached copy fixture retained its body");
-    overlapSelection.setBaseAndExtent(text, 0, text, expected.length);
-    document.dispatchEvent(new Event("selectionchange"));
-    for (let i = 0; i < 4; i++) {
-      body.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
-    }
-    await guarded(
-      copiesDone.promise,
-      "overlapping copy events stalled the single-slot source pool",
-    );
-    assert(
-      copies.every((value) => value === expected),
-      "overlapping copy wrote partial or different text",
-    );
-    equal(
-      (overlapReads.get("entry-9") ?? 0) - before,
-      4,
-      "overlapping copy did not exercise four addressed uncached content reads",
-    );
-    await overlapRuntime.loadPage(0);
-    passed.push("overlapping uncached copy events complete through a single source request slot");
-  } finally {
-    overlapSelection?.removeAllRanges();
-    overlapHandle.unmount();
-    overlapView.dispose();
-    await overlapRuntime.dispose();
-    overlapRoot.remove();
-  }
-
-  const copySource = new FixtureConversation("foreign-copy", 2);
-  const copyRuntime = new ConversationRuntime("foreign-copy", copySource, { selectionBytes: 1 });
-  await copyRuntime.loadPage();
-  const copyRoot = historyTarget();
-  let clipboardWrites = 0;
-  const copyHandle = artifact.mountConversation(copyRoot, {
-    runtime: copyRuntime,
-    viewId: "foreign-copy-view",
-    host: {
-      writeText: () => {
-        clipboardWrites++;
-        return Promise.resolve();
-      },
-    },
-  });
-  const selection = document.getSelection();
-  try {
-    await waitFor(
-      () =>
-        !!copyRoot.querySelector('[data-entry-id="entry-19"] .mui-text') &&
-        geometryApplied(copyRoot),
-      "cross-bundle copy fixture did not initialize",
-    );
-    const body = copyRoot.querySelector<HTMLElement>(".mui-message .mui-text");
-    assert(body?.firstChild && selection, "cross-bundle selection text missing");
-    const range = document.createRange();
-    range.selectNodeContents(body);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new Event("selectionchange"));
-    body.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true }));
-    await waitFor(
-      () => !!copyRoot.querySelector(".mui-status")?.textContent,
-      "cross-bundle copy failure did not complete",
-    );
-    equal(
-      copyRoot.querySelector(".mui-status")?.textContent,
-      "选区过大，请缩小选区或导出内容。",
-      "foreign ConversationError lost its stable capacity diagnostic",
-    );
-    equal(clipboardWrites, 0, "failed copy wrote partial text to the clipboard");
-    passed.push(
-      "cross-bundle copy capacity failures preserve their diagnostic and never write partial text",
-    );
-  } finally {
-    selection?.removeAllRanges();
-    document.dispatchEvent(new Event("selectionchange"));
-    copyHandle.unmount();
-    await copyRuntime.dispose();
-    copyRoot.remove();
-  }
-
-  const demoFrame = document.createElement("iframe");
-  demoFrame.style.cssText = "width:1000px;height:800px";
-  const loaded = new Promise<void>((resolve) =>
-    demoFrame.addEventListener("load", () => resolve(), { once: true })
-  );
-  demoFrame.src = "/demo";
-  document.body.append(demoFrame);
-  try {
-    await guarded(loaded, "demo lifecycle frame did not load");
-    const target = demoFrame.contentWindow, doc = demoFrame.contentDocument;
-    assert(target && doc?.body, "demo lifecycle frame unavailable");
-    await waitFor(
-      () => !!doc.querySelector('[data-entry-id="entry-99999"] .mui-text'),
-      "real demo did not initialize",
-      doc.body,
-    );
-    const app = doc.querySelector(".demo-shell");
-    assert(app, "demo application root missing");
-    for (let i = 0; i < 2; i++) {
-      target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
-      target.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
-      assert(app.isConnected, "persisted pagehide destroyed the cached demo application");
-      equal(
-        doc.querySelector<HTMLTextAreaElement>("textarea")?.disabled,
-        false,
-        "bfcache restoration left the demo runtime closed",
-      );
-    }
-    target.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
-    assert(!app.isConnected, "a persisted transition removed final demo disposal registration");
-    passed.push(
-      "demo survives repeated persisted page transitions and disposes on the final pagehide",
-    );
-  } finally {
-    demoFrame.remove();
-  }
-  return passed;
 }

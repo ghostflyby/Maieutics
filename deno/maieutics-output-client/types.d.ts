@@ -55,10 +55,16 @@ export type OutputMessage =
     };
   };
 
+/** Host-owned translation and positional formatting of bundled English message sources. */
+export type OutputLocalizer = (message: string, ...args: readonly (string | number)[]) => string;
+
 /** Host services. No VS Code APIs, credentials, network or clipboard globals are captured. */
 export interface OutputRendererOptions {
+  readonly localize?: OutputLocalizer;
   /** Dispatch synchronously; the host owns asynchronous delivery and observes its failures. */
   sendMessage(message: OutputMessage): void;
+  /** Trusted host stylesheet applied after SSR styles and to default Markdown shadow roots. */
+  readonly stylesheetUrl?: string;
   /** Optional native Markdown adapter; the default is passive, bundled Markdown-it. */
   renderMarkdown?(
     text: string,
@@ -103,12 +109,14 @@ export declare function vueUpdatesComplete(): Promise<void>;
 export declare function renderTurn(
   turn: unknown,
   markdownToHtml?: (text: string) => string,
+  localize?: OutputLocalizer,
 ): string;
 /** Render child-run summaries to markup. */
 export declare function renderSubagents(
   subagents: unknown,
   overflow?: boolean,
   markdownToHtml?: (text: string) => string,
+  localize?: OutputLocalizer,
 ): string;
 
 export interface FormRenderer {
@@ -120,6 +128,7 @@ export interface FormRenderer {
 
 /** Host bootstrap delivery; data uses the offered binary endpoint. Live mounts start the scope. */
 export interface ActorFormRendererOptions {
+  readonly localize?: OutputLocalizer;
   postMessage(message: unknown): void | PromiseLike<unknown>;
   log?(message: string): void;
 }
@@ -169,5 +178,6 @@ export function createFormRenderer(
     sendMessage(message: FormMessage): void;
     /** Optional host admission guard; retired attachments cannot share or acquire live state. */
     activeView?(viewId: string): boolean;
+    localize?: OutputLocalizer;
   },
 ): FormRenderer;

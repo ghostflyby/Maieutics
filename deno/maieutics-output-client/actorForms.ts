@@ -6,6 +6,7 @@ import type { ActorFormRenderer, ActorFormRendererOptions } from "./types.d.ts";
 export function createActorFormRenderer(options: ActorFormRendererOptions): ActorFormRenderer {
   const forms = createFormRenderer({
     sendMessage: (message) => actor.send(message),
+    localize: options.localize,
     activeView: (viewId) => actor.hasView(viewId),
   });
   const actor = new FormActorClient({

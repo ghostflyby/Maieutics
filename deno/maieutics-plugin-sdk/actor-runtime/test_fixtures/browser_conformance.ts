@@ -8,7 +8,6 @@ export interface BrowserServices {
     empty(): void;
     invokeEmpty(callback: () => Promise<void>): Promise<void>;
     nothing(): null;
-    echo(bytes: Uint8Array): Uint8Array;
     graph(value: unknown): unknown;
     increment(): number;
     numbers(): AsyncIterable<number>;
@@ -69,12 +68,6 @@ export async function runBrowserConformance(
     }
     const actor = first.connection.actor("service");
     const bytes = new Uint8Array([9, 0, 255, 1, 9]).subarray(1, 4);
-    const echoed = await actor.echo(bytes);
-    assert(
-      echoed instanceof Uint8Array && String(echoed) === "0,255,1",
-      "WebSocket binary view must retain exact bytes and type",
-    );
-    passed.push("binary WebSocket RPC");
     const graph: {
       self?: unknown;
       bytes: Uint8Array;

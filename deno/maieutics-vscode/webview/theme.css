@@ -125,8 +125,11 @@ body.vscode-high-contrast #app {
   display: none;
 }
 #history .mui-row {
-  padding: 16px;
+  padding-inline: 16px;
   min-block-size: 0;
+}
+#history .mui-row:not(.mui-tool) {
+  padding-block: 16px;
 }
 #history .mui-input {
   border: 1px solid var(--vscode-contrastBorder, transparent);

@@ -174,6 +174,10 @@ only that gateway's resolved origin and the shared compiler's Vue evaluation. Lo
 stays restricted to plain text; renderer DOM uses native selection. Source-offset mapping, form
 checkpoints, binary MIME resource rendering and raw HTML surfaces remain future work.
 
+Adjacent loaded tool calls from one interaction share a heading and compact spacing in the
+ordered history. Each call keeps its own virtual row, renderer surface, and disclosure state.
+Another block, an interaction boundary, or an unloaded range starts a new group.
+
 There is no pending-input registry, session-owned producer publisher, presentation journal,
 executable iframe or native block bridge yet. The richer contracts below are subsequent-stage
 requirements, not guarantees of conversation view version 1. Fixture controls remain local and do

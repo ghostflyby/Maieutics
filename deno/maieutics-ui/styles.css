@@ -154,6 +154,22 @@
     background: var(--mui-activity-surface);
     border-radius: var(--mui-control-radius);
   }
+  .mui-tool {
+    min-block-size: 0;
+    padding-block: 12px;
+  }
+  .mui-tool-joins-previous {
+    padding-block-start: 4px;
+    border-block-start: 0;
+    border-start-start-radius: 0;
+    border-start-end-radius: 0;
+  }
+  .mui-tool-joins-next {
+    padding-block-end: 4px;
+    border-block-end: 0;
+    border-end-start-radius: 0;
+    border-end-end-radius: 0;
+  }
   .mui-display .mui-text {
     font-family: var(--mui-font-family-mono);
     font-size: 12px;

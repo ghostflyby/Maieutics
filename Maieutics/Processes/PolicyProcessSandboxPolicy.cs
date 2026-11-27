@@ -4,139 +4,167 @@ using Maieutics.Permissions;
 
 namespace Maieutics.Processes;
 
-/// <summary>
-///     The default <see cref="IProcessSandboxPolicy"/>: one <see cref="EffectivePolicy"/>
-///     snapshot answers for the executable gate, the filesystem and network scope, and the
-///     environment — the same single source the Deno renderer and the broker consume (ADR
-///     0018 §12, ADR 0045). The platform renders that scope as a sandbox wrapper: seatbelt
-///     (<c>sandbox-exec</c>) on macOS and bubblewrap (<c>bwrap</c>) on Linux, each carrying the
-///     requested argv unchanged after the wrapper's own arguments. Without a launcher the mode
-///     decides: <see cref="ProcessSandboxMode.Prefer"/> launches unwrapped behind the same run
-///     gate and environment allowlist; <see cref="ProcessSandboxMode.Require"/> refuses.
-/// </summary>
-/// <remarks>
-///     The executable gate is deliberately the broker's posture, not the launch gate's: a
-///     cell-chosen executable is model-controlled code, so with no <c>run</c> rules the spawn
-///     is refused — identical to the child's own native Deno path (ADR 0045 decision 2a). The
-///     network switch is coarse and fail-closed: only <c>AllowAll</c>, or allows with no
-///     denial at all, turn networking on. Per-spawn grants whose realpath escapes the spelling
-///     they were granted by are dropped — a symlink planted on a granted path cannot steer the
-///     grant to its target (ADR 0045 decision 5a). Known limits, declared in the ADR: the
-///     per-executable classifier currently derives everything from the policy — the signature
-///     keeps the executable and arguments so per-tool profiles can refine without touching the
-///     seam.
-/// </remarks>
+/// <summary>Applies run rules and derives the platform sandbox from the same effective policy.
+/// A launch that needs sandbox bypass is returned as a pending approval, never a launch plan.</summary>
 internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
 {
     private readonly ProcessSandboxMode _mode;
     private readonly Func<string?> _locateSeatbelt;
     private readonly Func<string?> _locateBubblewrap;
     private readonly Func<string> _createTemporaryDirectory;
-    private readonly string? _trustedWorkspaceRoot;
+    private readonly MaieuticsProcessSandboxReadMode _readMode;
+    private readonly IReadOnlyList<string> _protectedPaths;
+    private readonly IReadOnlyList<string> _optionalProtectedPaths;
 
     internal PolicyProcessSandboxPolicy(
         ProcessSandboxMode mode,
         Func<string?>? locateSeatbelt = null,
         Func<string?>? locateBubblewrap = null,
         Func<string>? createTemporaryDirectory = null,
-        string? trustedWorkspaceRoot = null)
+        string? bubblewrapPath = null,
+        MaieuticsProcessSandboxReadMode readMode = MaieuticsProcessSandboxReadMode.Allowlist,
+        IReadOnlyList<string>? protectedPaths = null,
+        IReadOnlyList<string>? optionalProtectedPaths = null)
     {
         _mode = mode;
+        _readMode = readMode;
+        _protectedPaths = protectedPaths?.Select(Path.GetFullPath).ToArray() ?? [];
+        _optionalProtectedPaths = optionalProtectedPaths ?? [];
         _locateSeatbelt = locateSeatbelt ?? LocateSeatbelt;
-        _locateBubblewrap = locateBubblewrap ?? LocateBubblewrap;
+        _locateBubblewrap = locateBubblewrap ?? (() => LocateBubblewrap(bubblewrapPath));
         _createTemporaryDirectory = createTemporaryDirectory ??
             (static () => Directory.CreateTempSubdirectory("maieutics-spawn-").FullName);
-        _trustedWorkspaceRoot = trustedWorkspaceRoot;
     }
 
-    /// <summary>The mode the composition root binds from
-    /// <c>Maieutics:ProcessSandbox:Mode</c>; exposed for the tool to describe its posture.</summary>
-    internal ProcessSandboxMode Mode => _mode;
-
-    public ProcessLaunchPlan Plan(EffectivePolicy policy, string executable, IReadOnlyList<string> arguments)
+    public ProcessLaunchPlan Plan(
+        EffectivePolicy policy,
+        string executable,
+        IReadOnlyList<string> arguments,
+        bool outsideSandbox = false,
+        string? workingDirectory = null,
+        bool hasTerminal = false)
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentNullException.ThrowIfNull(arguments);
 
-        // The executable gate is the broker's posture (deny-by-default): the executable is
-        // chosen by cell code, and the run kind's grants — not its unrestricted launch-gate
-        // default — decide what runs. Denials win, then an explicit grant or AllowAll admits.
-        var run = policy.For(PermissionKind.Run);
-        if (run.DenyAll ||
-            PermissionMatching.MatchesAny(PermissionKind.Run, run.Deny, executable))
+        if (!RunGrant.Allows(policy, executable))
             return ProcessLaunchPlan.Denied(
                 $"The executable '{executable}' is not permitted by the session's run policy.");
-        if (!run.AllowAll &&
-            !PermissionMatching.MatchesAny(PermissionKind.Run, run.Allow, executable))
-            return ProcessLaunchPlan.Denied(
-                $"The executable '{executable}' is not granted by the session's run policy; " +
-                "the spawn surface denies by default (grant Run allows to admit executables).");
 
-        var environment = ProcessEnvironment.Capture(policy);
+        if (outsideSandbox && _mode == ProcessSandboxMode.Require)
+            return ProcessLaunchPlan.Denied("The process sandbox is required by configuration.");
+
+        var runDenials = policy.For(PermissionKind.Run).Deny;
+        if (runDenials.Count != 0)
+        {
+            // A launcher can otherwise search PATH differently from the spelling checked
+            // above. Launch the checked absolute path whenever an explicit denial applies.
+            var environment = ProcessEnvironment.Capture(policy);
+            var resolved = ProcessExecutable.Resolve(executable, workingDirectory, environment);
+            if (resolved is null)
+                return ProcessLaunchPlan.Denied(
+                    $"The executable '{executable}' could not be verified against the session's run policy.");
+            if (IsDeniedExecutable(runDenials, resolved, workingDirectory, environment))
+                return ProcessLaunchPlan.Denied(
+                    $"The executable '{executable}' is not permitted by the session's run policy.");
+            executable = resolved;
+        }
+
         if (_mode == ProcessSandboxMode.Off)
-            return ProcessLaunchPlan.Launch([executable, .. arguments], environment, sandboxed: false, null);
+            return Unwrapped(policy, executable, arguments);
 
-        // The per-spawn temporary directory: kernel-created, kernel-owned, deleted by the
-        // tool when the child settles — the shared system temp stays read-only, so a sandboxed
-        // child cannot squat another process's temp paths.
-        var temporaryDirectory = _createTemporaryDirectory();
-        var profile = Classify(policy, executable, arguments, temporaryDirectory, _trustedWorkspaceRoot);
+        if (outsideSandbox)
+            return RequestBypass(policy, executable, arguments, workingDirectory,
+                "The caller requested execution outside the process sandbox.");
 
         var launcher = OperatingSystem.IsMacOS() ? _locateSeatbelt() :
             OperatingSystem.IsLinux() ? _locateBubblewrap() : null;
         if (launcher is null)
         {
+            const string reason = "No process sandbox launcher is available (sandbox-exec on macOS, bubblewrap on Linux).";
             return _mode == ProcessSandboxMode.Require
-                ? WithAbandonedTemporaryDirectory(
-                    temporaryDirectory,
-                    ProcessLaunchPlan.Denied(
-                        "No process sandbox launcher is available on this platform " +
-                        "(sandbox-exec on macOS, bubblewrap on Linux) and the sandbox mode requires one."))
-                : WithAbandonedTemporaryDirectory(
-                    temporaryDirectory,
-                    ProcessLaunchPlan.Launch([executable, .. arguments], environment, sandboxed: false, null));
+                ? ProcessLaunchPlan.Denied(reason)
+                : RequestBypass(policy, executable, arguments, workingDirectory, reason);
         }
 
         if (policy.For(PermissionKind.Read).DenyAll)
-            return WithAbandonedTemporaryDirectory(temporaryDirectory, ProcessLaunchPlan.Denied(
-                "The process sandbox cannot launch a process when the policy denies all filesystem reads."));
+            return ProcessLaunchPlan.Denied(
+                "The process sandbox cannot launch a process when the policy denies all filesystem reads.");
 
+        string? temporaryDirectory = null;
         try
         {
+            temporaryDirectory = _createTemporaryDirectory();
+            var profile = Classify(policy, executable, arguments, temporaryDirectory, workingDirectory,
+                _readMode == MaieuticsProcessSandboxReadMode.HostRead, _protectedPaths, _optionalProtectedPaths);
             var argv = OperatingSystem.IsMacOS()
-                ? RenderSeatbelt(launcher, profile, executable, arguments)
-                : RenderBubblewrap(launcher, profile, executable, arguments, PrepareBubblewrapDenyFile(temporaryDirectory));
+                ? RenderSeatbelt(launcher, profile, executable, arguments, hasTerminal)
+                : RenderLinuxLaunch(launcher, profile, executable, arguments, temporaryDirectory);
             return ProcessLaunchPlan.Launch(
                 argv, ProcessEnvironment.CaptureSandbox(policy, temporaryDirectory),
                 sandboxed: true, temporaryDirectory);
         }
         catch (Exception exception) when (exception is NotSupportedException or IOException or UnauthorizedAccessException)
         {
-            return WithAbandonedTemporaryDirectory(temporaryDirectory, ProcessLaunchPlan.Denied(exception.Message));
+            ProcessLaunchPlan.DeleteTemporaryDirectory(temporaryDirectory);
+            return ProcessLaunchPlan.Denied(exception.Message);
         }
     }
 
-    /// <summary>Drops a per-spawn temporary directory the plan ended up not using: the
-    /// directory's owner is the plan, and a refused or unwrapped launch must not leak it.</summary>
-    private static ProcessLaunchPlan WithAbandonedTemporaryDirectory(
-        string? temporaryDirectory,
-        ProcessLaunchPlan plan)
+    private static ProcessLaunchPlan RequestBypass(
+        EffectivePolicy policy, string executable, IReadOnlyList<string> arguments,
+        string? workingDirectory, string reason)
     {
-        if (temporaryDirectory is not null)
+        if (HasDenials(policy.For(PermissionKind.Read)) ||
+            HasDenials(policy.For(PermissionKind.Write)) ||
+            HasDenials(policy.For(PermissionKind.Net)))
+            return ProcessLaunchPlan.Denied(
+                "The process cannot run outside the sandbox because it would drop explicit access denials.");
+
+        var environment = ProcessEnvironment.Capture(policy);
+        var resolved = ProcessExecutable.Resolve(executable, workingDirectory, environment);
+        if (resolved is null)
+            return ProcessLaunchPlan.Denied($"The executable '{executable}' could not be resolved for approval.");
+
+        if (IsDeniedExecutable(policy.For(PermissionKind.Run).Deny, resolved, workingDirectory, environment))
+            return ProcessLaunchPlan.Denied(
+                $"The executable '{resolved}' is not permitted by the session's run policy.");
+
+        var launch = new ProcessLaunchPlan.LaunchPlan([resolved, .. arguments], environment, false, null);
+        return new ProcessLaunchPlan.ApprovalRequiredPlan(reason, launch);
+    }
+
+    private static bool HasDenials(PermissionKindRules rules) => rules.DenyAll || rules.Deny.Count > 0;
+
+    private static bool IsDeniedExecutable(
+        IReadOnlyList<string> denials,
+        string executable,
+        string? workingDirectory,
+        IReadOnlyDictionary<string, string?> environment)
+    {
+        if (denials.Count == 0) return false;
+        if (PermissionMatching.MatchesAny(PermissionKind.Run, denials, executable)) return true;
+        if (ProcessExecutable.ResolvePhysicalPath(executable) is not { } physical) return true;
+        if (PermissionMatching.MatchesAny(PermissionKind.Run, denials, physical)) return true;
+
+        foreach (var denial in denials)
         {
-            try
-            {
-                Directory.Delete(temporaryDirectory, recursive: true);
-            }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
-            {
-            }
+            var path = ProcessExecutable.IsBareName(denial)
+                ? ProcessExecutable.Resolve(denial, workingDirectory, environment)
+                : Path.IsPathFullyQualified(denial) ? denial : null;
+            if (path is not null &&
+                (PermissionMatching.MatchesPath(path, executable) ||
+                 ProcessExecutable.ResolvePhysicalPath(path) is { } target && PermissionMatching.MatchesPath(target, physical)))
+                return true;
         }
 
-        return plan;
+        return false;
     }
+
+    private static ProcessLaunchPlan.LaunchPlan Unwrapped(
+        EffectivePolicy policy, string executable, IReadOnlyList<string> arguments) =>
+        new([executable, .. arguments], ProcessEnvironment.Capture(policy), false, null);
 
     /// <summary>The sandbox scope for one spawn, derived from the session's own policy: the
     /// child sees exactly the filesystem the session's read/write rules describe — the write
@@ -148,7 +176,10 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         string executable,
         IReadOnlyList<string> arguments,
         string? sandboxedTemporaryDirectory = null,
-        string? trustedWorkspaceRoot = null)
+        string? trustedWorkspaceRoot = null,
+        bool hostRead = false,
+        IReadOnlyList<string>? protectedPaths = null,
+        IReadOnlyList<string>? optionalProtectedPaths = null)
     {
         ArgumentNullException.ThrowIfNull(policy);
         var read = policy.For(PermissionKind.Read);
@@ -174,12 +205,16 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         // denial at all (host allowlists are not expressible in a launch profile) keeps it off.
         var networkAllowed = net.AllowAll && !net.DenyAll && net.Deny.Count == 0;
 
+        hostRead |= read.AllowAll;
         return new SandboxProfile(
             ReadOnlyPaths: [.. read.Allow, .. system],
             WritablePaths: writable,
-            DeniedPaths: [.. read.Deny, .. write.Deny],
+            ReadDeniedPaths: [.. read.Deny, .. protectedPaths ?? []],
             TrustedPaths: system,
-            NetworkAllowed: networkAllowed);
+            NetworkAllowed: networkAllowed,
+            WriteDeniedPaths: write.Deny,
+            HostRead: hostRead,
+            OptionalProtectedPaths: hostRead ? optionalProtectedPaths : null);
     }
 
     /// <summary>The read-only basics every spawned tool needs on its platform: the system
@@ -195,6 +230,19 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
             yield return "/usr/lib";
             yield return "/System/Library";
             yield return "/private/etc";
+            yield return "/usr/share/locale";
+            yield return "/Library/Ruby";
+            yield return "/Library/Developer/CommandLineTools";
+            yield return "/Applications/Xcode.app/Contents";
+            yield return "/var/select";
+            // readlink can be checked against the link itself under /var's physical parent.
+            yield return "/var/db/xcode_select_link";
+            const string developerLink = "/private/var/db/xcode_select_link";
+            yield return developerLink;
+            // xcrun needs Info.plist and frameworks beside Contents/Developer.
+            if (ResolveRealPath(developerLink) is { } developer &&
+                developer.EndsWith(".app/Contents/Developer", StringComparison.Ordinal))
+                yield return Path.GetDirectoryName(developer) ?? developer;
             yield return "/opt/homebrew";
             yield return "/usr/local";
         }
@@ -220,9 +268,10 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         string launcher,
         SandboxProfile profile,
         string executable,
-        IReadOnlyList<string> arguments)
+        IReadOnlyList<string> arguments,
+        bool hasTerminal = false)
     {
-        return [launcher, "-p", BuildSeatbeltProfile(profile), "--", executable, .. arguments];
+        return [launcher, "-p", BuildSeatbeltProfile(profile, hasTerminal), "--", executable, .. arguments];
     }
 
     /// <summary>The seatbelt profile for one spawn scope: every path walk stats the root, so
@@ -230,17 +279,20 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
     /// read-only; the writable set carries both read and write (a tool that writes a file must
     /// be able to read it back); the policy's read/write denials render as explicit deny rules
     /// (SBPL deny takes precedence over allow); and the network is fully denied unless the
-    /// policy grants it. Process operations are exec and fork only — no <c>process-info*</c>
-    /// (other processes' metadata stays private), and no mach-lookup (verified: shell, exec,
-    /// and pipe I/O run without it).</summary>
-    internal static string BuildSeatbeltProfile(SandboxProfile profile)
+    /// policy grants it. TTY job-control operations are available to PTY launches.</summary>
+    internal static string BuildSeatbeltProfile(SandboxProfile profile, bool hasTerminal = false)
     {
         var trusted = new HashSet<string>(profile.TrustedPaths, StringComparer.Ordinal);
         var builder = new StringBuilder(
             "(version 1)(allow file-read* (literal \"/\"))" +
             "(allow file-read* (subpath \"/dev\") (literal \"/dev\"))" +
-            "(allow file-write-data (literal \"/dev/null\"))" +
-            "(allow file-read* (subpath \"/private/var/select\") (literal \"/private/var/select\"))");
+            "(allow file-write-data (literal \"/dev/null\"))");
+        builder.Append("(allow sysctl-read)");
+        if (profile.HostRead) builder.Append("(allow file-read*)");
+        // getpwuid uses the local account-information service, including in ssh -V.
+        builder.Append("(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))");
+        if (hasTerminal)
+            builder.Append("(allow file-ioctl (literal \"/dev/tty\") (regex #\"^/dev/ttys[0-9]+$\"))");
         foreach (var path in profile.ReadOnlyPaths.Distinct(StringComparer.Ordinal))
             AppendPathGrant(builder, path, writable: false, trusted.Contains(path));
         foreach (var path in profile.WritablePaths.Distinct(StringComparer.Ordinal))
@@ -248,25 +300,30 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
         builder.Append(profile.NetworkAllowed
             ? "(allow network*)"
             : "(deny network*)");
+        if (profile.HostRead && profile.NetworkAllowed)
+            builder.Append("(deny network* (local unix-socket))(deny network-outbound (remote unix-socket))");
         builder.Append("(allow process-exec*)(allow process-fork)");
-        foreach (var path in profile.DeniedPaths.Distinct(StringComparer.Ordinal))
-        {
-            // Denials resolve without the steering guard (widening a deny is the safe
-            // direction) and render in both spellings, so a write phrased through a symlink
-            // cannot slip past a deny phrased resolved — or the reverse.
-            var lexical = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
-            var resolved = ResolveRealPath(path) ?? lexical;
-            foreach (var spelling in new[] { lexical, resolved }.Distinct(StringComparer.Ordinal))
-            {
-                var literal = EscapeProfileLiteral(spelling);
-                builder.Append("(deny file-read* (subpath \"").Append(literal).Append("\") (literal \"")
-                    .Append(literal).Append("\"))");
-                builder.Append("(deny file-write* (subpath \"").Append(literal).Append("\") (literal \"")
-                    .Append(literal).Append("\"))");
-            }
-        }
+        foreach (var path in profile.ReadDeniedPaths.Concat(profile.OptionalProtectedPaths ?? []).Distinct(StringComparer.Ordinal))
+            AppendDenial(path, "file-read*", "file-write*");
+        foreach (var path in profile.WriteDeniedPaths?.Distinct(StringComparer.Ordinal) ?? [])
+            AppendDenial(path, "file-write*");
 
         return builder.ToString();
+
+        void AppendDenial(string path, params string[] operations)
+        {
+            var lexical = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            // Keep both spellings, including when an existing ancestor is a symlink but
+            // the leaf does not exist yet.
+            var physical = ResolveRealPath(lexical) ?? ResolveMissingSandboxPath(lexical);
+            foreach (var spelling in new[] { lexical, physical }.Distinct(StringComparer.Ordinal))
+            {
+                var literal = EscapeProfileLiteral(spelling);
+                foreach (var operation in operations)
+                    builder.Append("(deny ").Append(operation).Append(" (subpath \"").Append(literal)
+                        .Append("\") (literal \"").Append(literal).Append("\"))");
+            }
+        }
     }
 
     /// <summary>One granted path, in both of its spellings: the lexical path as the process
@@ -344,33 +401,19 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
     [DllImport("libc", SetLastError = true, EntryPoint = "realpath")]
     private static extern IntPtr RealPath(string path, byte[] resolved);
 
-    private static string? LocateOnPath(string fileName, params string[] fixedPaths)
-    {
-        foreach (var candidate in fixedPaths)
-            if (File.Exists(candidate))
-                return candidate;
+    // The wrapper enforces the boundary, so a writable workspace or a relative PATH
+    // entry must never supply it. Use the platform's system installation paths.
+    private static string? LocateSeatbelt() =>
+        new[] { "/usr/bin/sandbox-exec", "/usr/sbin/sandbox-exec" }.FirstOrDefault(File.Exists);
 
-        var path = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrEmpty(path)) return null;
-        foreach (var directory in path.Split(Path.PathSeparator))
-        {
-            if (directory.Length == 0) continue;
-            var candidate = Path.Combine(directory, fileName);
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        return null;
-    }
-
-    private static string? LocateSeatbelt()
-    {
-        return LocateOnPath("sandbox-exec", "/usr/bin/sandbox-exec", "/usr/sbin/sandbox-exec");
-    }
-
-    private static string? LocateBubblewrap()
-    {
-        return LocateOnPath("bwrap", "/usr/bin/bwrap");
-    }
+    internal static string? LocateBubblewrap(string? configuredPath) =>
+        configuredPath is not null
+            ? File.Exists(configuredPath) ? configuredPath : null
+            : new[]
+            {
+                "/usr/bin/bwrap", "/usr/local/bin/bwrap", "/bin/bwrap",
+                "/run/current-system/sw/bin/bwrap", "/nix/var/nix/profiles/default/bin/bwrap"
+            }.FirstOrDefault(File.Exists);
 
     /// <summary>The filesystem and network scope one sandbox enforces; the platform renderers
     /// are the only consumers. <see cref="TrustedPaths" /> names the kernel-owned entries
@@ -380,7 +423,10 @@ internal sealed partial class PolicyProcessSandboxPolicy : IProcessSandboxPolicy
     internal sealed record SandboxProfile(
         IReadOnlyList<string> ReadOnlyPaths,
         IReadOnlyList<string> WritablePaths,
-        IReadOnlyList<string> DeniedPaths,
+        IReadOnlyList<string> ReadDeniedPaths,
         IReadOnlyList<string> TrustedPaths,
-        bool NetworkAllowed);
+        bool NetworkAllowed,
+        IReadOnlyList<string>? WriteDeniedPaths = null,
+        bool HostRead = false,
+        IReadOnlyList<string>? OptionalProtectedPaths = null);
 }

@@ -181,7 +181,7 @@ internal sealed partial class ReplControlHost : IDisposable
     private async Task<string?> AuthorizeAsync(HttpContext context)
     {
         if (OperatingSystem.IsWindows())
-            return TryGetCredentialIdentity(context, out var windowsIdentity)
+            return TryGetCredentialIdentity(context, out var windowsIdentity, out _)
                 ? windowsIdentity
                 : null;
 
@@ -219,9 +219,10 @@ internal sealed partial class ReplControlHost : IDisposable
             : null;
     }
 
-    private bool TryGetCredentialIdentity(HttpContext context, out string identity)
+    private bool TryGetCredentialIdentity(HttpContext context, out string identity, out int processId)
     {
         identity = string.Empty;
+        processId = 0;
         if (_credentialRegistry is null ||
             !context.Request.Headers.TryGetValue("Authorization", out var authorization))
             return false;
@@ -231,7 +232,23 @@ internal sealed partial class ReplControlHost : IDisposable
         if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
         var credential = value[prefix.Length..].Trim();
         return !string.IsNullOrWhiteSpace(credential) &&
-               _credentialRegistry.TryResolve(credential, out identity);
+               _credentialRegistry.TryResolve(credential, out identity, out processId);
+    }
+
+    private int GetAttestedProcessId(HttpContext context) =>
+        OperatingSystem.IsWindows()
+            ? TryGetCredentialIdentity(context, out _, out var pid) ? pid : 0
+            : ReplControlPeerProcess.GetProcessId(context);
+
+    private AgentSessionId? ResolveProcessOwner(int processId, string? replSessionId)
+    {
+        if (replSessionId is not null && processId > 0 &&
+            _registry.IsOwnedBy(processId, replSessionId) &&
+            _registry.TryGetOwnerSession(processId, out var owner) &&
+            AgentSessionId.TryParse(owner, out var ownerId))
+            return ownerId;
+
+        return null;
     }
 
     private async Task HandleWebSocketAsync(HttpContext context, CancellationToken connectionToken)
@@ -243,6 +260,7 @@ internal sealed partial class ReplControlHost : IDisposable
         }
 
         var peerProcessId = ReplControlPeerProcess.GetProcessId(context);
+        var attestedProcessId = OperatingSystem.IsWindows() ? GetAttestedProcessId(context) : peerProcessId;
         var authorizedIdentity = context.Items.TryGetValue(AuthorizedIdentityItem, out var value) &&
                                  value is string identityValue
             ? identityValue
@@ -339,6 +357,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     _logger.LogDebug("Control message received: {Message}.", LogText.Escape(text));
                 await HandleBusMessageAsync(
                     gateSessionId,
+                    ResolveProcessOwner(attestedProcessId, sessionId),
                     connection,
                     text,
                     toolInvocations,
@@ -482,6 +501,7 @@ internal sealed partial class ReplControlHost : IDisposable
 
     private async Task HandleBusMessageAsync(
         string gateSessionId,
+        AgentSessionId? processOwner,
         SessionBusConnection connection,
         string text,
         ICollection<Task> toolInvocations,
@@ -596,7 +616,7 @@ internal sealed partial class ReplControlHost : IDisposable
                     break;
                 }
 
-                toolInvocations.Add(HandleBusToolInvokeAsync(gateSessionId, connection, envelope, ct));
+                toolInvocations.Add(HandleBusToolInvokeAsync(gateSessionId, processOwner, connection, envelope, ct));
                 break;
             default:
                 await PushErrorAsync(
@@ -731,12 +751,14 @@ internal sealed partial class ReplControlHost : IDisposable
             request.CorrelationId,
             progressConnection,
             cancellationToken,
-            sessionId: requestSessionId).ConfigureAwait(false);
+            sessionId: requestSessionId,
+            processOwner: ResolveProcessOwner(GetAttestedProcessId(context), requestSessionId)).ConfigureAwait(false);
         await WriteEnvelopeAsync(context, envelope, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task HandleBusToolInvokeAsync(
         string sessionId,
+        AgentSessionId? processOwner,
         SessionBusConnection connection,
         ReplEnvelope envelope,
         CancellationToken cancellationToken)
@@ -763,7 +785,8 @@ internal sealed partial class ReplControlHost : IDisposable
                 envelope.CorrelationId,
                 connection,
                 cancellationToken,
-                sessionId).ConfigureAwait(false);
+                sessionId,
+                processOwner).ConfigureAwait(false);
             await PushAsync(
                 connection,
                 new ReplEnvelope(
@@ -845,7 +868,8 @@ internal sealed partial class ReplControlHost : IDisposable
         string? correlationId,
         SessionBusConnection? progressConnection,
         CancellationToken cancellationToken,
-        string? sessionId = null)
+        string? sessionId = null,
+        AgentSessionId? processOwner = null)
     {
         var function = _scriptTools.FirstOrDefault(candidate => candidate.Name == tool);
         if (function is null)
@@ -886,6 +910,11 @@ internal sealed partial class ReplControlHost : IDisposable
                 // degrading to the process level.
                 arguments.Context ??= new Dictionary<object, object?>();
                 arguments.Context[typeof(ScriptInvocationContext)] = new ScriptInvocationContext(sessionId);
+            }
+            if (processOwner is { } owner)
+            {
+                arguments.Context ??= new Dictionary<object, object?>();
+                arguments.Context[typeof(AgentSessionId)] = owner;
             }
             if (progressConnection is not null && !string.IsNullOrWhiteSpace(correlationId))
             {

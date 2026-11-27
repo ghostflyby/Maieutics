@@ -59,7 +59,8 @@ public sealed class TerminalSessionTests
             policy,
             TestOptions(),
             new FakeTerminalProcessFactory(process),
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff());
     }
 
     [Fact(Timeout = 10_000)]
@@ -91,7 +92,8 @@ public sealed class TerminalSessionTests
             EffectivePolicy.Default,
             options,
             new StalledTerminalProcessFactory(release.Task),
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff());
         try
         {
             var start = () => session.StartAsync(TestContext.Current.CancellationToken);
@@ -496,7 +498,8 @@ public sealed class TerminalSessionTests
             EffectivePolicy.Default,
             TestOptions(),
             factory,
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff());
         try
         {
             using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);

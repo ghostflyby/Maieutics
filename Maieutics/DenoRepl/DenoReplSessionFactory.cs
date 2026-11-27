@@ -49,6 +49,7 @@ internal sealed class LocalDenoReplSessionFactory(
     PluginHostManager? pluginHosts = null,
     IReplPolicyRegistrar? replPolicyRegistrar = null,
     ReplOwnerPolicyCache? ownerPolicyCache = null,
+    bool restrictNativeRun = false,
     string? processSandboxMode = null)
     : IDenoReplSessionFactory
 {
@@ -77,6 +78,7 @@ internal sealed class LocalDenoReplSessionFactory(
     private readonly ReplOwnerPolicyCache? _ownerPolicyCache = ownerPolicyCache;
 
     private readonly string? _processSandboxMode = processSandboxMode;
+    private readonly bool _restrictNativeRun = restrictNativeRun;
 
     private readonly ReplControlSessionRegistry _sessionRegistry =
         sessionRegistry ?? throw new ArgumentNullException(nameof(sessionRegistry));
@@ -117,7 +119,8 @@ internal sealed class LocalDenoReplSessionFactory(
                 ownerSessionId,
                 acquirer,
                 _logger,
-                startup.Token).ConfigureAwait(false);
+                startup.Token,
+                restrictNativeRun: _restrictNativeRun).ConfigureAwait(false);
             // The owner-keyed mirror of the same snapshot: the IDE workspace bridge judges a
             // script call against exactly the policy the broker holds for this session's REPL.
             if (policy is not null)
@@ -134,6 +137,7 @@ internal sealed class LocalDenoReplSessionFactory(
                 await TryStartHostDerivedAsync(
                     policy,
                     sessionId,
+                    ownerSessionId,
                     generation,
                     workingDirectory,
                     startup.Token).ConfigureAwait(false) is { } hostGeneration)
@@ -156,16 +160,17 @@ internal sealed class LocalDenoReplSessionFactory(
                     _controlHost.WindowsPipeName,
                     broker,
                     _options.AutoInstallModuleGraph,
+                    _restrictNativeRun,
                     _processSandboxMode),
                 _logger,
                 acquirer,
                 ownerSessionId,
                 startup.Token).ConfigureAwait(false);
-            _sessionRegistry.Register(process.ProcessId, sessionId);
             // The owner mapping backs the script tools' session-scoped gates (ADR 0042
             // decision 12): the hello identity is the REPL-local session id; the gates
             // key on the agent session the frontend announces against.
             _sessionRegistry.RegisterOwner(process.ProcessId, ownerSessionId.Value.ToString("N"));
+            _sessionRegistry.Register(process.ProcessId, sessionId);
 
             var connection = _evalHost.WaitForConnectionAsync(sessionId, generation, startup.Token);
             var connected = connection;
@@ -226,6 +231,7 @@ internal sealed class LocalDenoReplSessionFactory(
     private async Task<IDenoReplGeneration?> TryStartHostDerivedAsync(
         EffectivePolicy? policy,
         string sessionId,
+        AgentSessionId ownerSessionId,
         int generation,
         string workingDirectory,
         CancellationToken cancellationToken)
@@ -244,6 +250,7 @@ internal sealed class LocalDenoReplSessionFactory(
                 return null;
             }
 
+            _sessionRegistry.RegisterOwner(outcome.ProcessId, ownerSessionId.Value.ToString("N"));
             var connection = _evalHost.WaitForConnectionAsync(sessionId, generation, cancellationToken);
             var socket = await connection.ConfigureAwait(false);
             return new HostDerivedDenoReplGeneration(

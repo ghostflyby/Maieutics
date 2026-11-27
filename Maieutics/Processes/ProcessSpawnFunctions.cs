@@ -18,9 +18,7 @@ namespace Maieutics.Processes;
 ///     the launch vector (run-gated, environment-allowlisted, sandbox-wrapped when a launcher
 ///     exists), and this tool owns the child's whole lifetime — bounded output capture, a
 ///     declarative timeout that kills the process tree, cooperative cancellation, and strict
-///     UTF-8 decoding with typed failures. The tool is registered only when the sandbox mode
-///     is not <see cref="ProcessSandboxMode.Off"/>; its absence is the polyfill's per-call
-///     signal to keep the child's native Deno permission path.
+///     UTF-8 decoding with typed failures. Off mode uses the REPL's native Deno permissions.
 /// </summary>
 internal sealed class ProcessSpawnFunctions
 {
@@ -39,22 +37,22 @@ internal sealed class ProcessSpawnFunctions
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
         };
 
-    private readonly IProcessSandboxPolicy _sandbox;
+    private readonly ProcessExecution _execution;
     private readonly PermissionPolicyAcquirer _acquirer;
     private readonly Workspace _workspace;
 
     internal ProcessSpawnFunctions(
-        IProcessSandboxPolicy sandbox,
+        ProcessExecution execution,
         PermissionPolicyAcquirer acquirer,
         Workspace workspace)
     {
-        _sandbox = sandbox ?? throw new ArgumentNullException(nameof(sandbox));
+        _execution = execution ?? throw new ArgumentNullException(nameof(execution));
         _acquirer = acquirer ?? throw new ArgumentNullException(nameof(acquirer));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
         Functions =
         [
             CreateFunction(
-                (Func<string, AIFunctionArguments, string[]?, string?, int?, string[]?, CancellationToken, ValueTask<ProcessSpawnResult>>)
+                (Func<string, AIFunctionArguments, string[]?, string?, int?, string[]?, bool, CancellationToken, ValueTask<ProcessSpawnResult>>)
                     SpawnAsync,
                 "process_spawn",
                 "Runs one executable with arguments on behalf of the calling session's Deno child: " +
@@ -92,6 +90,8 @@ internal sealed class ProcessSpawnFunctions
         int? timeoutMs = null,
         [Description("Environment variable NAMES the child may receive; the values come from the policy's env allowlist, never from the caller. Omit for the full allowlisted environment.")]
         string[]? environmentNames = null,
+        [Description("Request one-time approval to run outside the process sandbox. Only supported without stdin.")]
+        bool outsideSandbox = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
@@ -134,10 +134,7 @@ internal sealed class ProcessSpawnFunctions
                     $"stdin exceeds {MaximumStdinBytes} UTF-8 bytes.");
         }
 
-        var session = WorkspaceToolCalls.TryGetSessionId(toolArguments) is { } text &&
-                      AgentSessionId.TryParse(text, out var parsed)
-            ? parsed
-            : (AgentSessionId?)null;
+        var session = ProcessExecution.RequireOwner(toolArguments);
         foreach (var argument in requestedArguments)
         {
             if (argument.Contains('\0'))
@@ -152,11 +149,9 @@ internal sealed class ProcessSpawnFunctions
         // denials subtract from the baseline as everywhere else.
         var root = _workspace.Capture().RootPath;
         var policy = _acquirer.Acquire(WorkspacePermissionSurface.ModelToolBaseline(root), session);
-        var plan = _sandbox.Plan(policy, executable, requestedArguments);
-        if (plan is ProcessLaunchPlan.DeniedPlan denied)
-            throw new AgentToolException("process_spawn_denied", denied.Reason);
-
-        var launch = (ProcessLaunchPlan.LaunchPlan)plan;
+        var launch = await _execution.PrepareAsync(
+            policy, executable, requestedArguments, root, "process_spawn", "process_spawn_denied",
+            session, outsideSandbox, reviewable: stdinBytes.Length == 0, cancellationToken).ConfigureAwait(false);
         if (environmentNames is { Length: > 0 })
         {
             // The caller selects names only; the values stay the policy allowlist's, so no
@@ -166,13 +161,12 @@ internal sealed class ProcessSpawnFunctions
             var selected = new HashSet<string>(
                 environmentNames,
                 OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-            launch = new ProcessLaunchPlan.LaunchPlan(
-                launch.Argv,
-                launch.Environment
+            launch = launch with
+            {
+                Environment = launch.Environment
                     .Where(pair => selected.Contains(pair.Key))
-                    .ToDictionary(static pair => pair.Key, static pair => pair.Value),
-                launch.Sandboxed,
-                launch.TemporaryDirectory);
+                    .ToDictionary(static pair => pair.Key, static pair => pair.Value)
+            };
         }
 
         return await RunAsync(
@@ -222,6 +216,7 @@ internal sealed class ProcessSpawnFunctions
         process.EnableRaisingEvents = true;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 process.Start();
@@ -292,22 +287,7 @@ internal sealed class ProcessSpawnFunctions
         }
         finally
         {
-            DeleteTemporaryDirectory(launch.TemporaryDirectory);
-        }
-    }
-
-    /// <summary>Best-effort cleanup of the per-spawn temporary directory: the child has
-    /// settled, and a file it still holds open (or a wedged tree) must not fail the answer.</summary>
-    private static void DeleteTemporaryDirectory(string? temporaryDirectory)
-    {
-        if (temporaryDirectory is null) return;
-        try
-        {
-            Directory.Delete(temporaryDirectory, recursive: true);
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
-        {
+            launch.ReleaseTemporaryDirectory();
         }
     }
 

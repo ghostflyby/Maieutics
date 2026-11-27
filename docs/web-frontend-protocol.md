@@ -427,7 +427,7 @@ the owner before any lookup, so an id can never cross-wire:
 |---|---|---|
 | `input-` | REPL stdin | `value`; no `action` |
 | `elicit-` | MCP elicitation (ADR 0029) | `value` plus `action` |
-| `approve-` | Tool approval (ADR 0044) | `value` plus `action` |
+| `approve-` | Tool approval (ADR 0044) and process execution approval (ADR 0045) | `value` plus `action` |
 
 The frame carries an explicit `kind` (`input` / `elicitation` / `approval`) so a
 frontend picks the right surface instead of inferring it from which optional
@@ -455,11 +455,31 @@ answer's `action` is the decision:
 | `cancel` | Denied |
 | absent or unknown | Denied |
 
+Process execution approvals (ADR 0045) use the same frame with `allowAlways: false`.
+The `schema.description` contains a JSON object with `workingDirectory` and `argv`,
+with the resolved absolute executable path as the first argument.
+Clients show only single-use approval and denial actions and decline if they
+cannot display the complete command. The server denies `always` and
+`always-allow` with a reason explaining that the approval is single-use.
+An absent `allowAlways` field selects the tool-approval behavior above.
+
 A denial is a recoverable tool failure: the model receives
-`{"status":"error","code":"tool_denied"}` and the turn continues. The gate never
+`{"status":"error","code":"tool_denied"}` or `process_approval_denied` for a
+process execution approval, and the turn continues. The gate never
 hangs and never silently executes — a run that ends, a session with no live
 stream, a timeout (120 s by default), and a malformed answer all resolve to a
 denial.
+
+Process launches also report recoverable failures using these codes.
+
+| Code | Condition |
+|---|---|
+| `process_session_required` | The request has no verified owning Agent session |
+| `process_spawn_denied` / `terminal_start_failed` | The effective policy refuses the launch |
+| `process_sandbox_required` | The launch requires a sandbox and cannot be approved outside it |
+| `process_approval_unavailable` | The launch needs approval and has no interactive session to provide it |
+| `process_approval_details_too_large` | The full command cannot fit in the approval context |
+| `process_approval_denied` | The approval was denied or a single-use request received session-wide consent |
 
 If the run ends before an answer arrives, the request is cancelled
 server-side and any late answer is `404`. A detached presentation scope

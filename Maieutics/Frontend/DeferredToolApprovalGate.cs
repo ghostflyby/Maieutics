@@ -1,4 +1,5 @@
 using Maieutics.Agent;
+using Maieutics.Processes;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Maieutics.Frontend;
@@ -10,7 +11,7 @@ namespace Maieutics.Frontend;
 ///     runtime configuration. Deferring resolution to the first approval breaks that cycle;
 ///     every call resolves lazily, long after composition has settled.
 /// </summary>
-internal sealed class DeferredToolApprovalGate(IServiceProvider services) : IAgentToolApprovalGate
+internal sealed class DeferredToolApprovalGate(IServiceProvider services) : IAgentToolApprovalGate, IProcessExecutionApproval
 {
     public ValueTask<AgentToolApprovalDecision> RequestApprovalAsync(
         AgentToolApprovalRequest request,
@@ -19,4 +20,8 @@ internal sealed class DeferredToolApprovalGate(IServiceProvider services) : IAge
         return services.GetRequiredService<FrontendToolApprovalPresenter>()
             .RequestApprovalAsync(request, cancellationToken);
     }
+
+    public ValueTask<AgentToolApprovalDecision> RequestAsync(
+        ProcessExecutionApprovalRequest request, CancellationToken cancellationToken) =>
+        services.GetRequiredService<FrontendToolApprovalPresenter>().RequestAsync(request, cancellationToken);
 }

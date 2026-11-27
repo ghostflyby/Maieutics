@@ -21,6 +21,7 @@ internal sealed record DenoReplProcessOptions(
     string? WindowsPipeName,
     DenoPermissionBroker Broker,
     bool AutoInstallModuleGraph = true,
+    bool RestrictNativeRun = false,
     string? ProcessSandboxMode = null);
 
 /// <summary>Thin adapter over <see cref="DenoRunProcess"/> for the Deno REPL child. Owns the
@@ -71,7 +72,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                 acquirer,
                 ownerSessionId,
                 logger,
-                cancellationToken)
+                cancellationToken,
+                restrictNativeRun: options.RestrictNativeRun)
             .ConfigureAwait(false);
         if (policy is null)
         {
@@ -89,7 +91,8 @@ internal sealed class DenoReplProcess : IAsyncDisposable
                              acquirer,
                              ownerSessionId,
                              logger,
-                             cancellationToken)
+                             cancellationToken,
+                             restrictNativeRun: options.RestrictNativeRun)
                          .ConfigureAwait(false)
                      ?? throw DenoReplPolicyBuilder.CreateMissingModuleGraphException();
         }

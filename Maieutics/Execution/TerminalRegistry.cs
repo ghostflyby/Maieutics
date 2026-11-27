@@ -1,5 +1,6 @@
 using Maieutics.Agent;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Execution;
@@ -12,7 +13,8 @@ internal sealed class TerminalRegistry(
     TerminalOptions options,
     ITerminalProcessFactory factory,
     ILogger<TerminalSession> logger,
-    PermissionPolicyAcquirer acquirer) : IAsyncDisposable
+    PermissionPolicyAcquirer acquirer,
+    ProcessExecution execution) : IAsyncDisposable
 {
     private const string DefaultSessionId = "default";
 
@@ -63,20 +65,32 @@ internal sealed class TerminalRegistry(
         IReadOnlyList<string> arguments,
         TimeSpan? timeout,
         TerminalSnapshotRequest snapshotRequest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool outsideSandbox = false)
     {
         // Without a timeout this starts a persistent session and returns immediately (the terminal_run
         // creation mode); with a timeout it runs a one-shot command through the deadline path. One-shot
         // sessions get a Guid id so they never occupy the lazy default slot; persistent sessions from
         // terminal_run also get a Guid id and are listed like any explicitly created session.
         var kind = timeout.HasValue ? TerminalSessionKind.OneShot : TerminalSessionKind.Persistent;
-        var session = Reserve(
-            ownerSessionId,
-            Guid.NewGuid().ToString("N"),
-            false,
-            kind,
-            executable,
-            arguments);
+        var workingDirectory = workspace.Capture().RootPath;
+        var policy = acquirer.Acquire(WorkspacePermissionSurface.ModelToolBaseline(workingDirectory), ownerSessionId);
+        // Authorization may suspend for user input. Resolve it before reserving a live PTY.
+        var launch = await execution.PrepareAsync(policy, executable, arguments, workingDirectory,
+            "terminal_run", "terminal_start_failed", ownerSessionId, outsideSandbox,
+            reviewable: kind == TerminalSessionKind.OneShot, cancellationToken, hasTerminal: true).ConfigureAwait(false);
+        TerminalSession session;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            session = Reserve(ownerSessionId, Guid.NewGuid().ToString("N"), false, kind, executable,
+                arguments, workingDirectory, policy, launch);
+        }
+        catch
+        {
+            launch.ReleaseTemporaryDirectory();
+            throw;
+        }
         if (timeout is { } deadline)
         {
             TerminalRunResult result;
@@ -88,7 +102,7 @@ internal sealed class TerminalRegistry(
             {
                 // A cancelled or failed one-shot is dead (its child was already terminated on the
                 // cancellation path): release the slot and dispose outside the registry lock.
-                await RemoveFinishedOneShotAsync(ownerSessionId, session).ConfigureAwait(false);
+                await RemoveAndDisposeAsync(ownerSessionId, session).ConfigureAwait(false);
                 throw;
             }
 
@@ -99,7 +113,7 @@ internal sealed class TerminalRegistry(
             // MaxSessionsPerAgent.
             if (result.Settled)
             {
-                await RemoveFinishedOneShotAsync(ownerSessionId, session).ConfigureAwait(false);
+                await RemoveAndDisposeAsync(ownerSessionId, session).ConfigureAwait(false);
             }
             else
             {
@@ -112,7 +126,15 @@ internal sealed class TerminalRegistry(
             return result;
         }
 
-        await session.StartAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await session.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await RemoveAndDisposeAsync(ownerSessionId, session).ConfigureAwait(false);
+            throw;
+        }
         var snapshot = session.GetSnapshot();
         return new TerminalRunResult(
             snapshot.SessionId,
@@ -241,24 +263,24 @@ internal sealed class TerminalRegistry(
     }
 
     internal async Task<TerminalInputResult> ExecuteAsync(
-        AgentToolContext toolContext,
+        AgentSessionId ownerSessionId,
         TerminalInputBatch batch,
         TerminalSnapshotRequest snapshotRequest,
         string? sessionId,
         CancellationToken cancellationToken)
     {
-        var session = GetOrReserveDefault(toolContext.SessionId, sessionId);
+        var session = GetOrReserveDefault(ownerSessionId, sessionId);
         return await session.ExecuteInputAsync(batch, snapshotRequest, cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<TerminalPasteResult> PasteAsync(
-        AgentToolContext toolContext,
+        AgentSessionId ownerSessionId,
         string text,
         TerminalSnapshotRequest snapshotRequest,
         string? sessionId,
         CancellationToken cancellationToken)
     {
-        var session = GetOrReserveDefault(toolContext.SessionId, sessionId);
+        var session = GetOrReserveDefault(ownerSessionId, sessionId);
         return await session.PasteAsync(text, snapshotRequest, cancellationToken).ConfigureAwait(false);
     }
 
@@ -280,7 +302,10 @@ internal sealed class TerminalRegistry(
     {
         // A control call never starts the shell: only a write (execute, paste) lazily creates the default session.
         var session = GetExisting(ownerSessionId, ResolveSessionId(sessionId));
-        return await session.InterruptAsync(snapshotRequest, cancellationToken).ConfigureAwait(false);
+        var result = await session.InterruptAsync(snapshotRequest, cancellationToken).ConfigureAwait(false);
+        if (session.IsApprovedOutsideSandbox)
+            await RemoveAndDisposeAsync(ownerSessionId, session).ConfigureAwait(false);
+        return result;
     }
 
     internal async Task<TerminalCloseResult> CloseAsync(
@@ -314,10 +339,9 @@ internal sealed class TerminalRegistry(
         return new TerminalCloseResult();
     }
 
-    /// <summary>Releases a finished one-shot session: removed under the lock, then disposed
-    /// outside it (the same order CloseAsync uses). A completed run's PTY is dead, so keeping it
-    /// registered would permanently consume one of the agent's session slots.</summary>
-    private async Task RemoveFinishedOneShotAsync(AgentSessionId ownerSessionId, TerminalSession session)
+    /// <summary>Releases a failed or finished session. Removes its slot under the lock
+    /// and disposes it outside the lock.</summary>
+    private async Task RemoveAndDisposeAsync(AgentSessionId ownerSessionId, TerminalSession session)
     {
         Remove(ownerSessionId, session.SessionId, session);
         try
@@ -328,7 +352,7 @@ internal sealed class TerminalRegistry(
         {
             logger.LogWarning(
                 exception,
-                "Could not dispose finished one-shot terminal session {SessionId}.",
+                "Could not dispose terminal session {SessionId}.",
                 session.SessionId);
         }
     }
@@ -347,7 +371,10 @@ internal sealed class TerminalRegistry(
                 throw NotFound(resolvedSessionId);
         }
 
-        return Reserve(ownerSessionId, DefaultSessionId, true, TerminalSessionKind.Persistent, options.Shell, options.Arguments);
+        var workingDirectory = workspace.Capture().RootPath;
+        var policy = acquirer.Acquire(WorkspacePermissionSurface.ModelToolBaseline(workingDirectory), ownerSessionId);
+        return Reserve(ownerSessionId, DefaultSessionId, true, TerminalSessionKind.Persistent, options.Shell,
+            options.Arguments, workingDirectory, policy);
     }
 
     private TerminalSession Reserve(
@@ -356,7 +383,10 @@ internal sealed class TerminalRegistry(
         bool isDefault,
         TerminalSessionKind kind,
         string executable,
-        IReadOnlyList<string> launchArguments)
+        IReadOnlyList<string> launchArguments,
+        string workingDirectory,
+        EffectivePolicy policy,
+        ProcessLaunchPlan.LaunchPlan? launch = null)
     {
         lock (_gate)
         {
@@ -377,14 +407,16 @@ internal sealed class TerminalRegistry(
             var created = new TerminalSession(
                 sessionId,
                 isDefault,
-                workspace.Capture().RootPath,
+                workingDirectory,
                 kind,
                 executable,
                 launchArguments,
-                acquirer.Acquire(PermissionLayer.Empty, ownerSessionId),
+                policy,
                 options,
                 factory,
-                logger);
+                logger,
+                execution,
+                launch);
             owned.Add(sessionId, created);
             return created;
         }

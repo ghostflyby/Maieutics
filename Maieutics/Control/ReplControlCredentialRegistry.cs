@@ -11,28 +11,33 @@ namespace Maieutics.Control;
 /// </summary>
 internal sealed class ReplControlCredentialRegistry
 {
-    private readonly ConcurrentDictionary<string, string> _credentials = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Credential> _credentials = new(StringComparer.Ordinal);
 
     /// <summary>Issues a fresh random credential bound to the control identity.</summary>
-    public string Issue(string identity)
+    public string Issue(string identity, int processId = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(identity);
         var bytes = RandomNumberGenerator.GetBytes(32);
         var token = Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        _credentials[token] = identity;
+        _credentials[token] = new Credential(identity, processId);
         return token;
     }
 
     /// <summary>Resolves a credential to its owning control identity.</summary>
-    public bool TryResolve(string credential, out string identity)
+    public bool TryResolve(string credential, out string identity) =>
+        TryResolve(credential, out identity, out _);
+
+    internal bool TryResolve(string credential, out string identity, out int processId)
     {
         if (_credentials.TryGetValue(credential, out var value))
         {
-            identity = value;
+            identity = value.Identity;
+            processId = value.ProcessId;
             return true;
         }
 
         identity = string.Empty;
+        processId = 0;
         return false;
     }
 
@@ -40,7 +45,8 @@ internal sealed class ReplControlCredentialRegistry
     public void Remove(string identity)
     {
         foreach (var pair in _credentials)
-            if (string.Equals(pair.Value, identity, StringComparison.Ordinal))
+            if (string.Equals(pair.Value.Identity, identity, StringComparison.Ordinal))
                 _credentials.TryRemove(pair.Key, out _);
     }
+    private sealed record Credential(string Identity, int ProcessId);
 }

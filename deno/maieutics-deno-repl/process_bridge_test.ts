@@ -3,7 +3,6 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   type CommandOutput,
   installProcessBridge,
-  isSpawnToolUnavailable,
   PROCESS_SANDBOX_ENV,
   type ProcessBridgeDeno,
 } from "./process_bridge.ts";
@@ -118,11 +117,10 @@ Deno.test("an armed non-zero exit and a kernel denial surface typed", async () =
     () => new harness.stub.Command("curl").output(),
     Error,
   );
-  assert(!isSpawnToolUnavailable(failure));
   assert(failure.message.startsWith("process_spawn_denied:"));
 });
 
-Deno.test("a timeout surfaces typed and tool absence falls back to the native API", async () => {
+Deno.test("an armed bridge propagates timeout and tool unavailability", async () => {
   const harness = stubDeno();
   const timeout = harness.invokeWith(() =>
     Promise.resolve({ exitCode: null, timedOut: true, stdout: "partial", stderr: "" })
@@ -134,15 +132,12 @@ Deno.test("a timeout surfaces typed and tool absence falls back to the native AP
     "process_spawn_timeout",
   );
 
-  // A fresh stub per install: the polyfill captures the current Command as its fallback, so
-  // installing twice over one stub would stack wrappers.
   const second = stubDeno();
   const absent = second.invokeWith(() => {
     throw new Error("tool_not_found: older kernel");
   });
   installProcessBridge(second.stub, "prefer", absent);
-  const fallback = await new second.stub.Command("git").output();
-  assertEquals(new TextDecoder().decode(fallback.stdout), "native");
+  await assertRejects(() => new second.stub.Command("git").output(), Error, "tool_not_found");
 });
 
 Deno.test("armed spawn/outputSync fail typed; cwd, identity, and inherited stdio are refused", async () => {

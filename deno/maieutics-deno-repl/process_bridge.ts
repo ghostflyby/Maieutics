@@ -13,8 +13,7 @@
  * a declarative timeout that kills the process tree. `spawn()` and
  * `outputSync()` have no kernel round trip: armed, they fail typed
  * (interactive processes belong to the terminal tools; a sync call cannot
- * await the kernel), and the per-call `tool_not_found` fallback keeps the
- * native API for every shape when the kernel does not serve the tool.
+ * await the kernel). If the kernel does not serve the tool, the launch fails.
  */
 
 /** The env var the kernel sets at spawn when the sandbox mode is armed. */
@@ -43,21 +42,6 @@ export interface CommandOutput {
   readonly stderr: Uint8Array;
 }
 
-/** The kernel's failure envelope, flattened by the client layer into
- * `Error` messages shaped `"<code>: <message>"`. */
-export function bridgeErrorCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  const colon = error.message.indexOf(":");
-  return colon > 0 ? error.message.slice(0, colon) : undefined;
-}
-
-/** The code that means the kernel does not serve the spawn tool (sandbox
- * mode Off, or a kernel predating ADR 0045): the per-call fallback to the
- * native API, exactly the pre-polyfill behavior. */
-export function isSpawnToolUnavailable(error: unknown): boolean {
-  return bridgeErrorCode(error) === "tool_not_found";
-}
-
 export interface ProcessBridgeDeno {
   Command: new (command: string, options?: CommandOptions) => {
     output(): Promise<CommandOutput>;
@@ -77,8 +61,6 @@ export function installProcessBridge(
   invoke: (tool: string, args: Record<string, unknown>) => Promise<unknown>,
 ): void {
   if (mode !== "prefer" && mode !== "require") return;
-
-  const OriginalCommand = denoObject.Command;
 
   class Command {
     readonly #command: string;
@@ -128,37 +110,29 @@ export function installProcessBridge(
         request.environmentNames = Object.keys(this.#options.env);
       }
 
-      try {
-        const answer = await invoke("process_spawn", request) as {
-          exitCode?: number | null;
-          timedOut?: boolean;
-          outputTruncated?: boolean;
-          stdout?: unknown;
-          stderr?: unknown;
-        };
-        if (answer.timedOut === true) {
-          const timeout = new Error(
-            "process_spawn_timeout: the process was killed after its timeout.",
-          ) as Error & { stdout?: Uint8Array; stderr?: Uint8Array };
-          // The kernel captured a prefix before the kill; carry it so the cell can inspect it.
-          timeout.stdout = encoder.encode(typeof answer.stdout === "string" ? answer.stdout : "");
-          timeout.stderr = encoder.encode(typeof answer.stderr === "string" ? answer.stderr : "");
-          throw timeout;
-        }
-
-        return {
-          success: answer.exitCode === 0,
-          code: answer.exitCode ?? -1,
-          stdout: encoder.encode(typeof answer.stdout === "string" ? answer.stdout : ""),
-          stderr: encoder.encode(typeof answer.stderr === "string" ? answer.stderr : ""),
-        };
-      } catch (error) {
-        if (isSpawnToolUnavailable(error)) {
-          const native = new OriginalCommand(this.#command, this.#options);
-          return native.output();
-        }
-        throw error;
+      const answer = await invoke("process_spawn", request) as {
+        exitCode?: number | null;
+        timedOut?: boolean;
+        outputTruncated?: boolean;
+        stdout?: unknown;
+        stderr?: unknown;
+      };
+      if (answer.timedOut === true) {
+        const timeout = new Error(
+          "process_spawn_timeout: the process was killed after its timeout.",
+        ) as Error & { stdout?: Uint8Array; stderr?: Uint8Array };
+        // The kernel captured a prefix before the kill; carry it so the cell can inspect it.
+        timeout.stdout = encoder.encode(typeof answer.stdout === "string" ? answer.stdout : "");
+        timeout.stderr = encoder.encode(typeof answer.stderr === "string" ? answer.stderr : "");
+        throw timeout;
       }
+
+      return {
+        success: answer.exitCode === 0,
+        code: answer.exitCode ?? -1,
+        stdout: encoder.encode(typeof answer.stdout === "string" ? answer.stdout : ""),
+        stderr: encoder.encode(typeof answer.stderr === "string" ? answer.stderr : ""),
+      };
     }
 
     spawn(): unknown {

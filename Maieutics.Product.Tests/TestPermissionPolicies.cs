@@ -1,6 +1,7 @@
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 
 namespace Maieutics.Product.Tests;
 
@@ -9,6 +10,8 @@ namespace Maieutics.Product.Tests;
 internal static class TestPermissionPolicies
 {
     public static PermissionPolicyAcquirer Unconfigured() => new(() => new UnconfiguredLayerSource(), new NullVariableSource());
+
+    internal static ProcessExecution ProcessSandboxOff() => new(new PolicyProcessSandboxPolicy(ProcessSandboxMode.Off));
 
     private sealed class UnconfiguredLayerSource : IPermissionLayerSource
     {

@@ -114,18 +114,31 @@ public sealed class MaieuticsPermissionKindOptions
     public bool DenyAll { get; set; }
 }
 
-/// <summary>Process-sandbox options (ADR 0045): the mode is the single switch. The enum
+/// <summary>Process-sandbox options (ADR 0045). The enum
 /// spelling in configuration is case-insensitive (<c>Off</c>, <c>Prefer</c>,
 /// <c>Require</c>).</summary>
 public sealed class MaieuticsProcessSandboxOptions
 {
-    /// <summary>The enforcement mode. The default is <c>Prefer</c>: cell-spawned processes run
-    /// through the kernel launch seam with the run gate, the policy environment, and a
-    /// platform sandbox whenever one is installed.</summary>
+    /// <summary>The enforcement mode. By default, <c>Prefer</c> confines terminal and REPL
+    /// commands in a platform sandbox and requires single-use approval for an eligible
+    /// launch outside it. <c>Require</c> disables the exception.</summary>
     public MaieuticsProcessSandboxMode Mode { get; set; } = MaieuticsProcessSandboxMode.Prefer;
+
+    /// <summary>The baseline for filesystem reads by sandboxed commands. Defaults to host reads
+    /// with protected paths and explicit denials.</summary>
+    public MaieuticsProcessSandboxReadMode ReadMode { get; set; } = MaieuticsProcessSandboxReadMode.HostRead;
+
+    /// <summary>An absolute path to a trusted Linux bubblewrap installation.</summary>
+    public string? BubblewrapPath { get; set; }
 
     internal void Validate()
     {
+        if (BubblewrapPath is not null && !Path.IsPathFullyQualified(BubblewrapPath))
+            throw new ArgumentException("The configured bubblewrap path must be absolute.");
+
+        if (!Enum.IsDefined(ReadMode))
+            throw new ArgumentException("The process sandbox read mode must be Allowlist or HostRead.");
+
         if (!Enum.IsDefined(Mode))
             throw new ArgumentException(
                 $"The process sandbox mode '{Mode}' is not one of Off, Prefer, Require.");
@@ -137,6 +150,16 @@ public enum MaieuticsProcessSandboxMode
     Off,
     Prefer,
     Require
+}
+
+/// <summary>Controls which host filesystem paths are visible to sandboxed commands.</summary>
+public enum MaieuticsProcessSandboxReadMode
+{
+    /// <summary>Admits the workspace, runtime paths, and configured read grants.</summary>
+    Allowlist,
+
+    /// <summary>Admits host-readable files subject to protected paths and explicit denials.</summary>
+    HostRead
 }
 
 public sealed class MaieuticsModelOptions

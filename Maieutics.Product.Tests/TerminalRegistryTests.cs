@@ -1,5 +1,6 @@
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Maieutics.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
@@ -17,7 +18,8 @@ public sealed class TerminalRegistryTests
             },
             new FakeTerminalProcessFactory(process),
             NullLogger<TerminalSession>.Instance,
-            TestPermissionPolicies.Unconfigured());
+            TestPermissionPolicies.Unconfigured(),
+            TestPermissionPolicies.ProcessSandboxOff());
     }
 
     [Fact(Timeout = 10_000)]
@@ -73,6 +75,47 @@ public sealed class TerminalRegistryTests
 
         await registry.CloseAsync(owner, result.SessionId, TestContext.Current.CancellationToken);
         Assert.Empty(registry.List(owner));
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task AnApprovedUnsandboxedOneShotCannotReceiveSubsequentTerminalInput()
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(5));
+        var process = new FakeTerminalProcess();
+        var owner = AgentSessionId.Create();
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer);
+        var approval = new ProcessExecution(sandbox, new AllowOnce());
+        await using var registry = new TerminalRegistry(
+            Workspace.Create(Directory.GetCurrentDirectory(), Directory.GetCurrentDirectory()),
+            new TerminalOptions(), new FakeTerminalProcessFactory(process), NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.Unconfigured(), approval);
+
+        var result = await registry.RunOnceAsync(owner, Assert.IsType<string>(Environment.ProcessPath), [], TimeSpan.FromMilliseconds(100),
+            new TerminalSnapshotRequest(), budget.Token, outsideSandbox: true);
+        Assert.False(result.Settled);
+
+        var paste = await Assert.ThrowsAnyAsync<AgentToolException>(() => registry.PasteAsync(
+            owner, "unreviewed", new TerminalSnapshotRequest(), result.SessionId, budget.Token));
+        var input = await Assert.ThrowsAnyAsync<AgentToolException>(() => registry.ExecuteAsync(
+            owner, TerminalInputBatchParser.Parse("t unreviewed"),
+            new TerminalSnapshotRequest(), result.SessionId, budget.Token));
+
+        Assert.Equal("terminal_input_denied", paste.Code);
+        Assert.Equal("terminal_input_denied", input.Code);
+        var interrupted = await registry.InterruptAsync(
+            owner, new TerminalSnapshotRequest(), result.SessionId, budget.Token);
+        Assert.True(interrupted.Settled);
+        Assert.True(process.Disposed);
+        Assert.Empty(process.HexWrites);
+        Assert.Empty(registry.List(owner));
+    }
+
+    private sealed class AllowOnce : IProcessExecutionApproval
+    {
+        public ValueTask<AgentToolApprovalDecision> RequestAsync(
+            ProcessExecutionApprovalRequest request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(AgentToolApprovalDecision.Allow("Approved for this test."));
     }
 
     private static async Task<TerminalRunResult> RunAsync(

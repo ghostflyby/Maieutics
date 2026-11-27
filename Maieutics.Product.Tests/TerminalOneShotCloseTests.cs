@@ -53,7 +53,8 @@ public sealed class TerminalOneShotCloseTests
             new TerminalOptions { SettleTimeout = TimeSpan.FromMilliseconds(30) },
             new FakeTerminalProcessFactory(fake),
             NullLogger<TerminalSession>.Instance,
-            TestPermissionPolicies.Unconfigured());
+            TestPermissionPolicies.Unconfigured(),
+            TestPermissionPolicies.ProcessSandboxOff());
         var provider = new TaskResourceProvider([new TerminalTaskResourceSource(registry)]);
         var owner = AgentSessionId.Create();
 
@@ -117,6 +118,7 @@ public sealed class TerminalOneShotCloseTests
                 SettleTimeout = TimeSpan.FromMilliseconds(30)
             },
             new FakeTerminalProcessFactory(process),
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff());
     }
 }

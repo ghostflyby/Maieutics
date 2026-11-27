@@ -5,6 +5,7 @@ import {
   approvalAnswer,
   approvalChoices,
   approvalTitle,
+  formatProcessApprovalContext,
   isApprovalRequest,
   planApproval,
 } from "./approval.ts";
@@ -67,7 +68,27 @@ async function present(
         frame.tool,
         frame.reason,
         frame.schema,
+        frame.allowAlways === false,
       );
+      if (frame.allowAlways === false) {
+        const command = formatProcessApprovalContext(plan.argumentContext);
+        if (!plan.usable || command === undefined) {
+          await answer(
+            vscode.l10n.t("The full command details could not be displayed."),
+            "decline",
+            true,
+          );
+          return;
+        }
+        const accept = vscode.l10n.t("Run outside sandbox once");
+        const selected = await vscode.window.showWarningMessage(
+          vscode.l10n.t("Allow this command to run outside the process sandbox?"),
+          { modal: true, detail: [plan.reason, command].filter(Boolean).join("\n\n") },
+          accept,
+        );
+        await answer("", selected === accept ? "accept" : "cancel", true);
+        return;
+      }
       const pick = plan.usable
         ? await vscode.window.showQuickPick(approvalChoices(plan).map((row) => ({ ...row })), {
           title: approvalTitle(plan),

@@ -76,7 +76,8 @@ public sealed class TerminalWorkspaceSaveTests
 
     private static TerminalRegistry Registry(string root, Factory factory) => new(
         Workspace.Create(root, root), new TerminalOptions(), factory,
-        NullLogger<TerminalSession>.Instance, TestPermissionPolicies.Unconfigured());
+        NullLogger<TerminalSession>.Instance, TestPermissionPolicies.Unconfigured(),
+        TestPermissionPolicies.ProcessSandboxOff());
 
     private static AIFunctionArguments Arguments(string json, AgentSessionId owner)
     {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -7,11 +8,12 @@ using Maieutics.Execution;
 using Maieutics.Permissions;
 using Maieutics.Processes;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
 
 /// <summary>The same real-process contract runs under seatbelt on macOS and bubblewrap
-/// on Linux. Require mode makes an unavailable or broken launcher a failure on either OS.</summary>
+/// on Linux. A broken installed launcher is a failure. Linux CI installs and probes bubblewrap.</summary>
 [Collection(ProductIntegrationCollection.Name)]
 [Trait("Category", "Sandbox")]
 public sealed class ProcessSandboxConformanceTests : IDisposable
@@ -37,6 +39,145 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         Assert.Equal("<a b;$(echo nope)>\n<中文\"quote>\nin\n", wrapped.GetProperty("stdout").GetString());
         Assert.Equal(plain.GetProperty("stdout").GetString(), wrapped.GetProperty("stdout").GetString());
         Assert.Equal(plain.GetProperty("stderr").GetString(), wrapped.GetProperty("stderr").GetString());
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task TerminalRunUsesTheSandboxWithoutARunGrantOrApproval()
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var outside = Path.Combine(PhysicalParent, "outside.txt");
+        var inside = Path.Combine(PhysicalWorkspace, "inside.txt");
+        await File.WriteAllTextAsync(outside, "outside", budget.Token);
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require);
+        await using var registry = new TerminalRegistry(
+            Workspace.Create(PhysicalWorkspace, PhysicalWorkspace),
+            new TerminalOptions(), new LocalTerminalProcessFactory(), NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.Unconfigured(), new ProcessExecution(sandbox));
+
+        var result = await registry.RunOnceAsync(AgentSessionId.Create(), "/bin/sh",
+            ["-c", "if /bin/cat \"$1\" >/dev/null 2>&1; then exit 17; fi; printf confined >\"$2\"", "test", outside, inside],
+            TimeSpan.FromSeconds(15), new TerminalSnapshotRequest(), budget.Token);
+
+        Assert.True(result.Settled);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("confined", await File.ReadAllTextAsync(inside, budget.Token));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task LinuxTerminalCanUseHomeAsWorkspaceWhenOptionalCredentialsAreAbsent()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This exercises absent Linux mount targets in a writable home.");
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var credential = Path.Combine(PhysicalWorkspace, ".npmrc");
+        var absent = Path.Combine(PhysicalWorkspace, ".aws");
+        var output = Path.Combine(PhysicalWorkspace, "output.txt");
+        await File.WriteAllTextAsync(credential, "private", budget.Token);
+        var protections = ProcessReadProtection.CaptureOptional([], PhysicalWorkspace, null, null);
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require,
+            readMode: MaieuticsProcessSandboxReadMode.HostRead, optionalProtectedPaths: protections);
+        var workspace = Workspace.Create(PhysicalWorkspace, PhysicalWorkspace);
+        await using var registry = new TerminalRegistry(
+            workspace, new TerminalOptions(), new LocalTerminalProcessFactory(), NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.Unconfigured(), new ProcessExecution(sandbox));
+
+        var terminal = await registry.RunOnceAsync(AgentSessionId.Create(), "/bin/sh",
+            ["-c", "if ( : <\"$1\" ) 2>/dev/null; then exit 6; fi; printf writable >\"$2\"",
+                "sandbox-test", credential, output],
+            TimeSpan.FromSeconds(15), new TerminalSnapshotRequest(), budget.Token);
+        Assert.True(terminal.Settled);
+        Assert.Equal(0, terminal.ExitCode);
+        Assert.Equal("writable", await File.ReadAllTextAsync(output, budget.Token));
+        Assert.False(Directory.Exists(absent));
+
+        var explicitDeny = new PermissionPolicyAcquirer(
+            () => new LayerSource(new PermissionLayer
+            {
+                Kinds = new Dictionary<PermissionKind, PermissionKindRules>
+                {
+                    [PermissionKind.Read] = new() { Deny = [absent] }
+                }
+            }), new VariableSource());
+        var policy = explicitDeny.Acquire(WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+        Assert.IsType<ProcessLaunchPlan.DeniedPlan>(
+            sandbox.Plan(policy, "/bin/sh", [], workingDirectory: PhysicalWorkspace));
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("/bin/zsh", "zsh-ok", "-f", "-c", "printf zsh-ok")]
+    [InlineData("/usr/bin/uname", "Darwin", "-a")]
+    [InlineData("/usr/bin/perl", "perl-ok", "-e", "print 'perl-ok'")]
+    [InlineData("/usr/bin/git", "git version", "--version")]
+    [InlineData("/usr/bin/python3", "Python 3", "--version")]
+    [InlineData("/usr/bin/ruby", "ruby-ok", "-e", "puts 'ruby-ok'")]
+    [InlineData("/usr/bin/ssh", "OpenSSH_", "-V")]
+    public async Task MacOsSystemToolsRunWithHostReadSandbox(
+        string executable, string expected, params string[] arguments)
+    {
+        if (!OperatingSystem.IsMacOS()) Assert.Skip("These are macOS system tools.");
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var control = await InvokeAsync(CreateFunctions(mode: ProcessSandboxMode.Off), executable, arguments, null, budget.Token);
+        if (control.GetProperty("exitCode").GetInt32() != 0)
+            Assert.Skip($"The host installation of {executable} is unavailable.");
+        var result = await InvokeAsync(CreateFunctions(readMode: MaieuticsProcessSandboxReadMode.HostRead),
+            executable, arguments, null, budget.Token);
+
+        Assert.True(result.GetProperty("sandboxed").GetBoolean());
+        Assert.True(result.GetProperty("exitCode").GetInt32() == 0, result.GetRawText());
+        Assert.Contains(expected, result.GetProperty("stdout").GetString() + result.GetProperty("stderr").GetString());
+    }
+
+    [Theory(Timeout = 30_000)]
+    [InlineData("/bin/sh", false)]
+    [InlineData("/bin/zsh", false)]
+    [InlineData("/bin/sh", true)]
+    [InlineData("/bin/zsh", true)]
+    public async Task MacOsSandboxedInteractiveShellInterruptsItsForegroundJob(string shell, bool hostRead)
+    {
+        if (!OperatingSystem.IsMacOS()) Assert.Skip("This verifies job control through Seatbelt.");
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var options = new TerminalOptions { GracefulExitTimeout = TimeSpan.FromSeconds(2) };
+        var policy = TestPermissionPolicies.Unconfigured().Acquire(
+            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+        await using var session = new TerminalSession("sandbox", false, PhysicalWorkspace,
+            TerminalSessionKind.Persistent, shell, shell == "/bin/zsh" ? ["-f", "-i"] : ["-i"],
+            policy, options, new LocalTerminalProcessFactory(), NullLogger<TerminalSession>.Instance,
+            new ProcessExecution(new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require, readMode: hostRead
+                ? MaieuticsProcessSandboxReadMode.HostRead
+                : MaieuticsProcessSandboxReadMode.Allowlist)));
+        var snapshot = new TerminalSnapshotRequest(Full: true);
+
+        await session.ExecuteInputAsync(TerminalInputBatchParser.Parse("t PS1='MAIEUTICS-'PROMPT\nk <CR>"),
+            snapshot, budget.Token);
+        await WaitForLineAsync(session, "MAIEUTICS-PROMPT", budget.Token);
+
+        const string job = """t /usr/bin/perl -MPOSIX -e '$|=1; $SIG{INT}=sub{exit 130}; die "not in foreground" unless POSIX::tcgetpgrp(0)==getpgrp(); print "MAIEUTICS-", "FOREGROUND\n"; select(undef,undef,undef,30)'; printf 'MAIEUTICS-%s:%s\n' INTERRUPTED "$?" """;
+        await session.ExecuteInputAsync(TerminalInputBatchParser.Parse(job + "\nk <CR>"), snapshot, budget.Token);
+        await WaitForLineAsync(session, "MAIEUTICS-FOREGROUND", budget.Token);
+        await session.InterruptAsync(snapshot, budget.Token);
+        await WaitForLineAsync(session, "MAIEUTICS-INTERRUPTED:130", budget.Token);
+        Assert.Equal("idle", session.GetSnapshot().State);
+    }
+
+    private static async Task WaitForLineAsync(TerminalSession session, string expected, CancellationToken token)
+    {
+        while (true)
+        {
+            var version = session.ScreenVersion;
+            var snapshot = session.Snapshot(new TerminalSnapshotRequest(Full: true));
+            if (snapshot.Frame.Lines.Any(line => line.Text.Contains(expected, StringComparison.Ordinal))) return;
+
+            try
+            {
+                await session.WaitForScreenVersionAsync(version + 1, token);
+            }
+            catch (OperationCanceledException)
+            {
+                Assert.Fail($"Terminal did not print {expected}. Last screen: " +
+                    string.Join(Environment.NewLine, snapshot.Frame.Lines.Select(line => line.Text)));
+            }
+        }
     }
 
     [Fact(Timeout = 30_000)]
@@ -128,6 +269,116 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         Assert.Equal("outside-canary\n", plain.GetProperty("stdout").GetString());
     }
 
+    [Theory(Timeout = 30_000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BroadReadPreservesProtectedPathsAndWorkspaceWrites(bool useReadAllowAll)
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var ordinary = Path.Combine(PhysicalParent, "developer.conf");
+        var secret = Path.Combine(PhysicalParent, "credentials");
+        await File.WriteAllTextAsync(ordinary, "normal configuration", budget.Token);
+        await File.WriteAllTextAsync(secret, "protected credential", budget.Token);
+        var alias = Path.Combine(PhysicalWorkspace, "credential-alias");
+        File.CreateSymbolicLink(alias, secret);
+        var output = Path.Combine(PhysicalWorkspace, "output.txt");
+        var functions = CreateFunctions(
+            new() { [PermissionKind.Read] = new() { AllowAll = useReadAllowAll } },
+            readMode: useReadAllowAll ? MaieuticsProcessSandboxReadMode.Allowlist : MaieuticsProcessSandboxReadMode.HostRead,
+            protectedPaths: [secret]);
+        var result = await ShellAsync(functions, """
+            cat "$1" || exit 5
+            if cat "$2" 2>/dev/null || cat "$3" 2>/dev/null; then exit 6; fi
+            if printf overwrite >"$1"; then exit 7; fi
+            printf produced >"$4"
+            """, [ordinary, secret, alias, output], null, budget.Token);
+        Assert.True(result.GetProperty("exitCode").GetInt32() == 0, result.GetRawText());
+        Assert.Equal("normal configuration", result.GetProperty("stdout").GetString());
+        Assert.Equal("produced", await File.ReadAllTextAsync(output, budget.Token));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task BroadReadKeepsAProtectedPathHiddenWhenTheHostCreatesItLater()
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var home = Directory.CreateDirectory(Path.Combine(PhysicalParent, "home")).FullName;
+        var protectedFile = Path.Combine(home, "credentials");
+        var normal = Path.Combine(home, "normal-config");
+        await File.WriteAllTextAsync(normal, "normal", budget.Token);
+        const string body = """
+            test "$(cat "$1")" = normal || exit 4
+            printf 'started\n'
+            read -r release || exit 5
+            if cat "$2" 2>/dev/null; then exit 6; fi
+            printf 'hidden\n'
+            """;
+        var policy = TestPermissionPolicies.Unconfigured().Acquire(
+            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require,
+            readMode: MaieuticsProcessSandboxReadMode.HostRead, protectedPaths: [protectedFile]);
+        var plan = Assert.IsType<ProcessLaunchPlan.LaunchPlan>(
+            sandbox.Plan(policy, "/bin/sh", ["-c", body, "test", normal, protectedFile],
+                workingDirectory: PhysicalWorkspace));
+        try
+        {
+            var startInfo = new ProcessStartInfo(plan.Argv[0])
+            {
+                UseShellExecute = false,
+                WorkingDirectory = PhysicalWorkspace,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            foreach (var argument in plan.Argv.Skip(1)) startInfo.ArgumentList.Add(argument);
+            startInfo.Environment.Clear();
+            foreach (var (name, value) in plan.Environment) startInfo.Environment[name] = value;
+
+            await using var child = await TestChildProcess.StartAsync(startInfo, budget.Token);
+            var ready = await child.Raw.StandardOutput.ReadLineAsync(budget.Token);
+            if (ready != "started")
+                Assert.Fail(await child.ReadToEndAsync(budget.Token));
+
+            await File.WriteAllTextAsync(protectedFile, "late credential", budget.Token);
+            await child.Raw.StandardInput.WriteLineAsync("continue".AsMemory(), budget.Token);
+            child.Raw.StandardInput.Close();
+            var output = await child.ReadToEndAsync(budget.Token);
+            Assert.Equal(0, child.Raw.ExitCode);
+            Assert.Equal("hidden\n", output);
+        }
+        finally
+        {
+            plan.ReleaseTemporaryDirectory();
+        }
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task HostReadCannotConnectToHostUnixSocketEvenWithIpNetworkAllowed()
+    {
+        RequireUnix();
+        using var budget = Budget(TestContext.Current.CancellationToken);
+        var socketPath = Path.Combine("/tmp", $"mc-{Guid.NewGuid():N}.sock");
+        using var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            server.Bind(new UnixDomainSocketEndPoint(socketPath));
+            server.Listen(1);
+            var functions = CreateFunctions(new() { [PermissionKind.Net] = new() { AllowAll = true } },
+                readMode: MaieuticsProcessSandboxReadMode.HostRead);
+            var result = await InvokeAsync(functions, "/usr/bin/curl",
+                ["--disable", "--noproxy", "*", "--unix-socket", socketPath, "--connect-timeout", "1", "--max-time", "2", "http://localhost/"],
+                null, budget.Token);
+            Assert.True(result.GetProperty("exitCode").GetInt32() == 7, result.GetRawText());
+            Assert.False(server.Poll(0, SelectMode.SelectRead));
+        }
+        finally
+        {
+            server.Dispose();
+            File.Delete(socketPath);
+        }
+    }
+
     [Fact(Timeout = 30_000)]
     public async Task AnExplicitReadGrantDoesNotBecomeAWriteGrant()
     {
@@ -164,7 +415,13 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         {
             var read = await InvokeAsync(functions, "/bin/cat", [path], null, budget.Token);
             Assert.True(read.GetProperty("sandboxed").GetBoolean());
-            Assert.NotEqual(0, read.GetProperty("exitCode").GetInt32());
+            if (readDenial)
+                Assert.NotEqual(0, read.GetProperty("exitCode").GetInt32());
+            else
+            {
+                AssertSuccess(read);
+                Assert.Equal("secret-canary\n", read.GetProperty("stdout").GetString());
+            }
             var write = await ShellAsync(functions,
                 "if printf overwritten >\"$1\"; then exit 42; fi", [path], null, budget.Token);
             AssertSuccess(write);
@@ -189,8 +446,16 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         var functions = CreateFunctions(new() { [kind] = new() { Deny = [PhysicalParent] } });
         var read = await InvokeAsync(functions, "/bin/cat", [canary], null, budget.Token);
         Assert.True(read.GetProperty("sandboxed").GetBoolean());
-        Assert.NotEqual(0, read.GetProperty("exitCode").GetInt32());
-        Assert.DoesNotContain("ancestor-canary", read.GetProperty("stdout").GetString() ?? string.Empty);
+        if (readDenial)
+        {
+            Assert.NotEqual(0, read.GetProperty("exitCode").GetInt32());
+            Assert.DoesNotContain("ancestor-canary", read.GetProperty("stdout").GetString() ?? string.Empty);
+        }
+        else
+        {
+            AssertSuccess(read);
+            Assert.Equal("ancestor-canary", read.GetProperty("stdout").GetString());
+        }
         var write = await ShellAsync(functions, "printf overwritten >\"$1\"", [canary], null, budget.Token);
         Assert.True(write.GetProperty("sandboxed").GetBoolean());
         Assert.NotEqual(0, write.GetProperty("exitCode").GetInt32());
@@ -257,9 +522,11 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
     }
 
     [Theory(Timeout = 30_000)]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task OnlyAnUnqualifiedNetworkGrantAllowsHostConnections(bool denyOverridesAllow)
+    [InlineData(false, MaieuticsProcessSandboxReadMode.Allowlist)]
+    [InlineData(true, MaieuticsProcessSandboxReadMode.Allowlist)]
+    [InlineData(true, MaieuticsProcessSandboxReadMode.HostRead)]
+    public async Task OnlyAnUnqualifiedNetworkGrantAllowsHostConnections(
+        bool denyOverridesAllow, MaieuticsProcessSandboxReadMode readMode)
     {
         RequireUnix();
         using var budget = Budget(TestContext.Current.CancellationToken);
@@ -277,10 +544,10 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
                     ? new() { AllowAll = true, Deny = ["example.invalid"] }
                     : new() { Allow = ["127.0.0.1"] }
             };
-            var denied = await InvokeAsync(CreateFunctions(deniedRules), "/usr/bin/curl", curl, null, budget.Token);
+            var denied = await InvokeAsync(CreateFunctions(deniedRules, readMode: readMode), "/usr/bin/curl", curl, null, budget.Token);
             Assert.True(denied.GetProperty("sandboxed").GetBoolean());
             Assert.NotEqual(0, denied.GetProperty("exitCode").GetInt32());
-            var allowed = await InvokeAsync(CreateFunctions(new() { [PermissionKind.Net] = new() { AllowAll = true } }),
+            var allowed = await InvokeAsync(CreateFunctions(new() { [PermissionKind.Net] = new() { AllowAll = true } }, readMode: readMode),
                 "/usr/bin/curl", curl, null, budget.Token);
             AssertSuccess(allowed);
             Assert.Equal("reachable\n", allowed.GetProperty("stdout").GetString());
@@ -380,6 +647,8 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             Assert.Skip("These conformance cases require seatbelt or bubblewrap.");
+        if (OperatingSystem.IsLinux() && PolicyProcessSandboxPolicy.LocateBubblewrap(null) is null)
+            Assert.Skip("The real Linux sandbox tests require bubblewrap.");
     }
 
     private static CancellationTokenSource Budget(CancellationToken cancellationToken)
@@ -399,7 +668,9 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         Dictionary<PermissionKind, PermissionKindRules>? rules = null,
         ProcessSandboxMode mode = ProcessSandboxMode.Require,
         Func<string>? createTemporaryDirectory = null,
-        string? workspaceRoot = null)
+        string? workspaceRoot = null,
+        MaieuticsProcessSandboxReadMode readMode = MaieuticsProcessSandboxReadMode.Allowlist,
+        IReadOnlyList<string>? protectedPaths = null)
     {
         var kinds = rules is null ? new Dictionary<PermissionKind, PermissionKindRules>() : new(rules);
         kinds[PermissionKind.Run] = new() { AllowAll = true };
@@ -407,7 +678,9 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
             () => new LayerSource(new PermissionLayer { Kinds = kinds }), new VariableSource());
         var root = workspaceRoot ?? _workspace.Path;
         return new ProcessSpawnFunctions(
-            new PolicyProcessSandboxPolicy(mode, createTemporaryDirectory: createTemporaryDirectory, trustedWorkspaceRoot: root),
+            new ProcessExecution(new PolicyProcessSandboxPolicy(
+                mode, createTemporaryDirectory: createTemporaryDirectory, readMode: readMode,
+                protectedPaths: protectedPaths)),
             acquirer, Workspace.Create(root, root));
     }
 
@@ -423,7 +696,7 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
             ["executable"] = executable, ["arguments"] = arguments, ["stdin"] = stdin, ["timeoutMs"] = 15000,
             Context = new Dictionary<object, object?>
             {
-                [typeof(ScriptInvocationContext)] = new ScriptInvocationContext(AgentSessionId.Create().Value.ToString("N"))
+                [typeof(AgentSessionId)] = AgentSessionId.Create()
             }
         }, token);
         return Assert.IsType<JsonElement>(result);

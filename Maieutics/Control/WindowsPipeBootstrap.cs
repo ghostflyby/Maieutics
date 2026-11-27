@@ -97,7 +97,7 @@ internal sealed class WindowsPipeBootstrap : IWindowsPipeBootstrap, IAsyncDispos
             return;
         }
 
-        var credential = _credentialRegistry.Issue(sessionId);
+        var credential = _credentialRegistry.Issue(sessionId, processId);
         var payload = Encoding.UTF8.GetBytes($"{{\"sessionId\":\"{sessionId}\",\"credential\":\"{credential}\"}}");
         await pipe.WriteAsync(payload, _lifetime.Token).ConfigureAwait(false);
         await pipe.FlushAsync(_lifetime.Token).ConfigureAwait(false);

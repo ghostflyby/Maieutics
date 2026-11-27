@@ -30,6 +30,8 @@ internal sealed class TerminalSession : IAsyncDisposable
     private readonly string _executable;
     private readonly IReadOnlyList<string> _launchArguments;
     private readonly EffectivePolicy _policy;
+    private readonly ProcessExecution _execution;
+    private ProcessLaunchPlan.LaunchPlan? _launch;
     private readonly Lock _signalGate = new();
     private readonly Lock _stateGate = new();
     private readonly Lock _terminalGate = new();
@@ -66,7 +68,9 @@ internal sealed class TerminalSession : IAsyncDisposable
         EffectivePolicy policy,
         TerminalOptions options,
         ITerminalProcessFactory factory,
-        ILogger<TerminalSession> logger)
+        ILogger<TerminalSession> logger,
+        ProcessExecution execution,
+        ProcessLaunchPlan.LaunchPlan? launch = null)
     {
         SessionId = sessionId;
         IsDefault = isDefault;
@@ -75,6 +79,8 @@ internal sealed class TerminalSession : IAsyncDisposable
         _executable = executable;
         _launchArguments = launchArguments;
         _policy = policy;
+        _execution = execution;
+        _launch = launch;
         _options = options;
         _factory = factory;
         _logger = logger;
@@ -104,6 +110,8 @@ internal sealed class TerminalSession : IAsyncDisposable
 
     internal TerminalSessionKind Kind => _kind;
 
+    internal bool IsApprovedOutsideSandbox => _launch is { AllowsTerminalInput: false };
+
     /// <summary>The number of terminal screen writes the pump has applied; tests wait on it to observe
     /// emitted output without consuming frame state.</summary>
     internal long ScreenVersion => Volatile.Read(ref _screenVersion);
@@ -127,6 +135,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
         finally
         {
+            _launch?.ReleaseTemporaryDirectory();
             _lifetime.Dispose();
             _lifecycleGate.Dispose();
             _executionGate.Dispose();
@@ -176,8 +185,14 @@ internal sealed class TerminalSession : IAsyncDisposable
             SetState(TerminalSessionState.Starting);
             try
             {
-                EnsureExecutableAllowed();
-                var environment = ProcessEnvironment.Capture(_policy);
+                // The default shell is lazy and can never request approval. Explicit PTYs
+                // already carry their plan from the registry.
+                var launch = _launch ??= await _execution.PrepareAsync(
+                    _policy, _executable, _launchArguments, _workingDirectory, "terminal_run",
+                    "terminal_start_failed", sessionId: null, outsideSandbox: false,
+                    reviewable: false, cancellationToken, hasTerminal: true).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var launchArguments = launch.Argv.Skip(1).ToArray();
                 // The spawn itself is a synchronous fork/exec; the start budget bounds how long
                 // StartAsync (and with it the lifecycle gate) can stall on a pathological PTY
                 // allocation. Exited is attached inside the task — before the awaiting caller
@@ -186,11 +201,12 @@ internal sealed class TerminalSession : IAsyncDisposable
                 var spawnTask = Task.Factory.StartNew(
                     () =>
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var spawned = _factory.Start(
-                            _executable,
-                            _launchArguments,
+                            launch.Argv[0],
+                            launchArguments,
                             _workingDirectory,
-                            environment,
+                            launch.Environment,
                             _options.Columns,
                             _options.Rows);
                         spawned.GracefulExitTimeout = _options.GracefulExitTimeout;
@@ -209,7 +225,8 @@ internal sealed class TerminalSession : IAsyncDisposable
                 }
                 catch (TimeoutException)
                 {
-                    _ = ReclaimLateSpawnAsync(spawnTask);
+                    _launch = null;
+                    _ = ReclaimLateSpawnAsync(spawnTask, launch, cancellationToken);
                     throw new AgentToolException(
                         "terminal_start_failed",
                         $"The terminal session '{SessionId}' exceeded its " +
@@ -219,7 +236,8 @@ internal sealed class TerminalSession : IAsyncDisposable
                 {
                     // Caller cancellation must surface as cancellation, not as a start failure
                     // (invariant 9); the not-yet-adopted spawn is reclaimed in case it lands late.
-                    _ = ReclaimLateSpawnAsync(spawnTask);
+                    _launch = null;
+                    _ = ReclaimLateSpawnAsync(spawnTask, launch, cancellationToken);
                     throw;
                 }
 
@@ -272,23 +290,34 @@ internal sealed class TerminalSession : IAsyncDisposable
     /// <summary>Disposes a spawn that completes after its start budget elapsed, so the late
     /// PTY child is reaped instead of leaking. A spawn that faults instead has no process to
     /// reclaim; the fault is observed here so it cannot vanish.</summary>
-    private async Task ReclaimLateSpawnAsync(Task<ITerminalProcess> spawnTask)
+    private async Task ReclaimLateSpawnAsync(
+        Task<ITerminalProcess> spawnTask, ProcessLaunchPlan.LaunchPlan launch, CancellationToken cancellationToken)
     {
-        ITerminalProcess? late;
         try
         {
-            late = await spawnTask.ConfigureAwait(false);
+            var late = await spawnTask.ConfigureAwait(false);
+            await late.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken == cancellationToken &&
+                                                           cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation won before the native spawn, so there is no child to reclaim.
         }
         catch (Exception exception)
         {
-            _logger.LogDebug(
-                exception,
-                "The terminal spawn for {SessionId} failed after its start budget had already elapsed.",
-                SessionId);
-            return;
+            _logger.LogWarning(exception, "Could not reclaim the late terminal spawn for {SessionId}.", SessionId);
         }
+        finally
+        {
+            launch.ReleaseTemporaryDirectory();
+        }
+    }
 
-        await late.DisposeAsync().ConfigureAwait(false);
+    private void EnsureInputAllowed()
+    {
+        if (IsApprovedOutsideSandbox)
+            throw new AgentToolException("terminal_input_denied",
+                "A command approved to run outside the sandbox cannot receive terminal input.");
     }
 
     internal async Task<TerminalInputResult> ExecuteInputAsync(
@@ -297,6 +326,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(batch);
+        EnsureInputAllowed();
         await StartAsync(cancellationToken).ConfigureAwait(false);
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -375,6 +405,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(text);
+        EnsureInputAllowed();
         await StartAsync(cancellationToken).ConfigureAwait(false);
         await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -454,66 +485,57 @@ internal sealed class TerminalSession : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         await StartAsync(cancellationToken).ConfigureAwait(false);
-        await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            ThrowIfDisposed();
-            if (GetState() == TerminalSessionState.Faulted) throw CreateFaultedException();
-
-            // The pump owns the pty reads; the pty library's own wait drains the stream with a sync read,
-            // which races the pump's pending async read, so completion is event-driven via the reaper's
-            // Exited signal instead.
+            await _executionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _exitCompletion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
+                ThrowIfDisposed();
+                if (GetState() == TerminalSessionState.Faulted) throw CreateFaultedException();
+
+                // The pump owns the pty reads; the pty library's own wait drains the stream with a sync read,
+                // which races the pump's pending async read, so completion is event-driven via the reaper's
+                // Exited signal instead.
+                try
+                {
+                    await _exitCompletion.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    return new TerminalRunResult(
+                        SessionId,
+                        GetWireState(),
+                        null,
+                        false,
+                        CaptureFrame(snapshotRequest));
+                }
+
+                // The child is reaped; let the pump drain the remaining output before capturing the final frame.
+                await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
+                int? completedExitCode;
+                lock (_stateGate)
+                {
+                    completedExitCode = _exitCode;
+                }
+
                 return new TerminalRunResult(
                     SessionId,
                     GetWireState(),
-                    null,
-                    false,
+                    completedExitCode,
+                    true,
                     CaptureFrame(snapshotRequest));
             }
-
-            // The child is reaped; let the pump drain the remaining output before capturing the final frame.
-            await WaitForSettleAsync(cancellationToken).ConfigureAwait(false);
-            int? completedExitCode;
-            lock (_stateGate)
+            finally
             {
-                completedExitCode = _exitCode;
+                _executionGate.Release();
             }
-
-            return new TerminalRunResult(
-                SessionId,
-                GetWireState(),
-                completedExitCode,
-                true,
-                CaptureFrame(snapshotRequest));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The caller (or the run) cancelled: terminate the child before surfacing so no orphan is left.
-            var current = _process;
-            if (current is not null)
-                try
-                {
-                    await current.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                    _logger.LogWarning(
-                        exception,
-                        "Could not terminate cancelled one-shot terminal session {SessionId}.",
-                        SessionId);
-                }
-
+            // Start already adopted the child. Cancellation can land even before acquiring
+            // the execution gate, so always stop the session before propagating it.
+            await CloseAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
-        }
-        finally
-        {
-            _executionGate.Release();
         }
     }
 
@@ -552,6 +574,13 @@ internal sealed class TerminalSession : IAsyncDisposable
         TerminalSnapshotRequest snapshotRequest,
         CancellationToken cancellationToken)
     {
+        if (IsApprovedOutsideSandbox)
+        {
+            // A PTY may be in raw mode. Close the one-shot without writing any input bytes.
+            await CloseAsync(cancellationToken).ConfigureAwait(false);
+            return new TerminalInterruptResult(true, CaptureFrame(snapshotRequest));
+        }
+
         var batch = new TerminalInputBatch(
             [new TerminalKeysOperation(1, [new TerminalKey(null, new TerminalCharKey('c', TerminalKeyModifiers.Control))])],
             1);
@@ -1028,22 +1057,6 @@ internal sealed class TerminalSession : IAsyncDisposable
         return new AgentToolException(
             "terminal_faulted",
             $"The terminal session '{SessionId}' is faulted and requires an explicit restart or close.");
-    }
-
-    /// <summary>Rejects the configured executable when the effective policy restricts <c>run</c>.
-    /// The default policy (and any policy without explicit run rules) grants <c>run</c> fully, so
-    /// nothing changes by default (ADR 0018 §7, decision 2); the check engages only when a layer
-    /// contributes an explicit run allowlist or deny. The verdict comes from the shared
-    /// general-start gate (Maieutics.Processes), so terminal and MCP server children judge
-    /// alike.</summary>
-    private void EnsureExecutableAllowed()
-    {
-        if (RunGrant.Allows(_policy, _executable))
-            return;
-
-        throw new AgentToolException(
-            "terminal_start_failed",
-            $"The executable '{_executable}' is not permitted by the effective policy.");
     }
 
     private void ThrowIfDisposed()

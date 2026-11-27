@@ -206,7 +206,8 @@ public sealed class ModelOrchestrationEndpointTests
             new TerminalOptions { SettleTimeout = TimeSpan.FromMilliseconds(30) },
             new FakeTerminalProcessFactory(terminalProcess),
             NullLogger<TerminalSession>.Instance,
-            TestPermissionPolicies.Unconfigured());
+            TestPermissionPolicies.Unconfigured(),
+            TestPermissionPolicies.ProcessSandboxOff());
         var taskResources = new TaskResourceProvider(
         [
             new AgentTaskResourceSource(

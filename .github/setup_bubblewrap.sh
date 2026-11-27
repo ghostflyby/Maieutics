@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sudo apt-get update
-sudo apt-get install --yes bubblewrap curl
+# These packages come from the Ubuntu archive. Use that archive without
+# requiring unrelated runner package feeds to be reachable.
+apt_sources=()
+if [[ -r /etc/apt/sources.list.d/ubuntu.sources ]]; then
+  apt_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+fi
+sudo apt-get "${apt_sources[@]}" update
+sudo apt-get "${apt_sources[@]}" install --yes bubblewrap curl
 bwrap --version
 
 probe() {

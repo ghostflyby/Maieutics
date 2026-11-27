@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using Maieutics.Agent;
 using Maieutics.Execution;
 using Maieutics.Permissions;
+using Maieutics.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
@@ -108,6 +109,85 @@ public sealed class TerminalSessionTests
             await session.DisposeAsync();
         }
     }
+
+    [Theory(Timeout = 10_000)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LinuxSandboxRetainsTheLaunchThreadUntilExitOrDisposal(bool childExits)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Bubblewrap binds the child to its Linux launch thread.");
+        var token = TestContext.Current.CancellationToken;
+        var child = new FakeTerminalProcess();
+        var factory = new StalledTerminalProcessFactory(Task.CompletedTask, child);
+        var session = CreateLinuxSandboxSession(factory, TestOptions());
+        Thread launchThread;
+        try
+        {
+            await session.StartAsync(token);
+            launchThread = await factory.StartEntered.WaitAsync(TimeSpan.FromSeconds(2), token);
+            Assert.True(launchThread.IsAlive,
+                "Returning from StartAsync must leave the live child's launch thread running.");
+
+            if (childExits)
+            {
+                child.RaiseExited(0);
+                await AssertLaunchThreadStopsAsync(launchThread, token);
+            }
+        }
+        finally
+        {
+            await session.DisposeAsync();
+        }
+
+        if (!childExits)
+            await AssertLaunchThreadStopsAsync(launchThread, token);
+    }
+
+    [Fact(Timeout = 10_000)]
+    public async Task LinuxSandboxDisposalDoesNotJoinAStalledNativeStart()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("This exercises cleanup of a retained Linux launch thread.");
+        var token = TestContext.Current.CancellationToken;
+        var child = new FakeTerminalProcess();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new StalledTerminalProcessFactory(release.Task, child);
+        var options = TestOptions();
+        options.StartupTimeout = TimeSpan.FromSeconds(1);
+        var session = CreateLinuxSandboxSession(factory, options);
+
+        try
+        {
+            var starting = session.StartAsync(token);
+            var launchThread = await factory.StartEntered.WaitAsync(TimeSpan.FromSeconds(2), token);
+
+            await session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3), token);
+            var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => starting);
+            Assert.Equal("terminal_start_failed", failure.Code);
+            Assert.True(launchThread.IsAlive, "Disposal must finish while the native start is still blocked.");
+            Assert.False(child.DisposedSignal.IsCompleted);
+
+            release.SetResult();
+            await child.DisposedSignal.WaitAsync(TimeSpan.FromSeconds(2), token);
+            await AssertLaunchThreadStopsAsync(launchThread, token);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await session.DisposeAsync();
+        }
+    }
+
+    private static async Task AssertLaunchThreadStopsAsync(Thread launchThread, CancellationToken cancellationToken)
+    {
+        Assert.True(await Task.Run(() => launchThread.Join(TimeSpan.FromSeconds(2)), cancellationToken),
+            "The launch thread must terminate after its child exits or is disposed.");
+    }
+
+    private static TerminalSession CreateLinuxSandboxSession(ITerminalProcessFactory factory, TerminalOptions options) =>
+        new("fake-linux-sandbox", true, Directory.GetCurrentDirectory(), TerminalSessionKind.OneShot,
+            "sh", [], EffectivePolicy.Default, options, factory, NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff(),
+            new ProcessLaunchPlan.LaunchPlan(["sh"], new Dictionary<string, string?>(), true, null));
 
     [Fact(Timeout = 10_000)]
     public async Task DefaultPolicyAllowsTheConfiguredExecutable()
@@ -629,11 +709,11 @@ internal sealed class FakeTerminalProcessFactory(FakeTerminalProcess process) : 
 internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTerminalProcess? process = null)
     : ITerminalProcessFactory
 {
-    private readonly TaskCompletionSource _startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<Thread> _startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Completes when the product has entered <see cref="Start"/> and is blocked on
     /// the release gate; tests await this instead of pacing against a sleep.</summary>
-    internal Task StartEntered => _startEntered.Task;
+    internal Task<Thread> StartEntered => _startEntered.Task;
 
     public ITerminalProcess Start(
         string shell,
@@ -643,7 +723,7 @@ internal sealed class StalledTerminalProcessFactory(Task pendingRelease, FakeTer
         int columns,
         int rows)
     {
-        _startEntered.TrySetResult();
+        _startEntered.TrySetResult(Thread.CurrentThread);
         pendingRelease.Wait();
         return process ?? new FakeTerminalProcess();
     }

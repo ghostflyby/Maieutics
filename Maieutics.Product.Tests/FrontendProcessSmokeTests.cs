@@ -148,10 +148,8 @@ public sealed class FrontendProcessSmokeTests
             relativeDiscoveryFile: Path.GetRelativePath(Path.GetTempPath(), discoveryFile));
         var discovery = await process.WaitForDiscoveryAsync(budget.Token);
         var token = Assert.IsType<string>(discovery.GetProperty("token").GetString());
-        using var client = new HttpClient
-        {
-            BaseAddress = new Uri(Assert.IsType<string>(discovery.GetProperty("url").GetString()))
-        };
+        using var client = new HttpClient();
+        client.BaseAddress = new Uri(Assert.IsType<string>(discovery.GetProperty("url").GetString()));
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
         var id = Assert.IsType<string>(session.GetProperty("id").GetString());

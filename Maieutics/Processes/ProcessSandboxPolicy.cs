@@ -41,6 +41,8 @@ internal abstract record ProcessLaunchPlan
     {
         internal bool AllowsTerminalInput { get; init; } = true;
 
+        internal bool RequiresLiveLauncherThread => OperatingSystem.IsLinux() && Sandboxed;
+
         internal void ReleaseTemporaryDirectory() => DeleteTemporaryDirectory(TemporaryDirectory);
     }
 

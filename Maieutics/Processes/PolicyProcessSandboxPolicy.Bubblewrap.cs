@@ -146,8 +146,8 @@ internal sealed partial class PolicyProcessSandboxPolicy
                 if (!Directory.Exists(lexical) && !File.Exists(lexical)) continue;
                 var resolved = ResolveRealPath(lexical) ?? lexical;
                 if (!trusted.Contains(lexical) && !SandboxContains(lexical, resolved)) continue;
-                if (writable && (writeDenials.Any(path => SandboxContains(path, resolved)) ||
-                                 (profile.HostRead && readDenials.Any(path => SandboxContains(path, resolved)))))
+                if (writable && (writeDenials.Any(denied => SandboxContains(denied, resolved)) ||
+                                 (profile.HostRead && readDenials.Any(denied => SandboxContains(denied, resolved)))))
                     continue;
                 if (trusted.Contains(lexical) && !profile.HostRead)
                 {

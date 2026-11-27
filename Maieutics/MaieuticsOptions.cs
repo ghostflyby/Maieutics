@@ -21,12 +21,11 @@ public sealed class MaieuticsOptions
     // overlay, between the built-in baseline and the workspace permissions.json profile.
     public MaieuticsPermissionsOptions Permissions { get; set; } = new();
 
-    /// <summary>Process-sandbox enforcement for spawns requested from inside Deno children
-    /// (ADR 0045): Off keeps those spawns on the child's own Deno permission path, Prefer
-    /// routes them through the kernel launch seam (run-gated deny-by-default, environment from
-    /// the policy allowlist) and wraps them when a platform launcher exists, Require refuses
-    /// spawns the platform cannot sandbox. Terminal and MCP children are governed by the run
-    /// launch gate and the environment allowlist, not this seam.</summary>
+    /// <summary>Process-sandbox enforcement for terminal commands and REPL subprocesses
+    /// (ADR 0045). Off uses the terminal run gate and environment allowlist or the REPL's
+    /// native Deno permissions. Prefer uses the platform launcher and can ask for one-shot
+    /// approval outside it. Require accepts only sandboxed launches. MCP servers use
+    /// their own executable policy and environment allowlist.</summary>
     public MaieuticsProcessSandboxOptions ProcessSandbox { get; set; } = new();
 
     internal void ValidateCommon()

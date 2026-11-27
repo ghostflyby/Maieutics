@@ -47,7 +47,7 @@ internal sealed class TerminalSession : IAsyncDisposable
     private TaskCompletionSource _screenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _screenVersion;
     private ITerminalProcess? _process;
-    private ProcessStart? _processStart;
+    private ProcessLaunchThread<ITerminalProcess>? _processStart;
 
     /// <summary>Ensures the child's exit is observed exactly once even though it can arrive
     /// through two paths: the reaper's <c>Exited</c> event and the post-spawn catch-up that
@@ -268,58 +268,27 @@ internal sealed class TerminalSession : IAsyncDisposable
         }
     }
 
-    private ProcessStart StartProcess(ProcessLaunchPlan.LaunchPlan launch, CancellationToken cancellationToken)
+    private ProcessLaunchThread<ITerminalProcess> StartProcess(
+        ProcessLaunchPlan.LaunchPlan launch, CancellationToken cancellationToken)
     {
         var arguments = launch.Argv.Skip(1).ToArray();
-        var ready = new TaskCompletionSource<ITerminalProcess>(TaskCreationOptions.RunContinuationsAsynchronously);
-        // Linux delivers bubblewrap's parent-death signal when the thread that forked it
-        // exits. Publish readiness separately and hold that thread until the PTY is reaped.
-        var parentLifetime = OperatingSystem.IsLinux() && launch.Sandboxed
-            ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
-            : null;
-        var worker = Task.Factory.StartNew(() =>
+        return ProcessLaunchThread<ITerminalProcess>.Start(() =>
         {
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var child = _factory.Start(
-                    launch.Argv[0], arguments, _workingDirectory, launch.Environment, _options.Columns, _options.Rows);
-                child.GracefulExitTimeout = _options.GracefulExitTimeout;
-                child.Exited += OnProcessExited;
-                ready.SetResult(child);
-            }
-            catch (OperationCanceledException exception) when (exception.CancellationToken == cancellationToken &&
-                                                               cancellationToken.IsCancellationRequested)
-            {
-                ready.SetCanceled(cancellationToken);
-                return;
-            }
-            catch (Exception exception)
-            {
-                ready.SetException(exception);
-                return;
-            }
-
-            parentLifetime?.Task.GetAwaiter().GetResult();
-        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        return new ProcessStart(ready.Task, worker, parentLifetime);
-    }
-
-    private sealed record ProcessStart(
-        Task<ITerminalProcess> Ready, Task Worker, TaskCompletionSource? ParentLifetime)
-    {
-        internal Task JoinAsync()
-        {
-            ParentLifetime?.TrySetResult();
-            return Worker;
-        }
+            var child = _factory.Start(
+                launch.Argv[0], arguments, _workingDirectory, launch.Environment, _options.Columns, _options.Rows);
+            child.GracefulExitTimeout = _options.GracefulExitTimeout;
+            child.Exited += OnProcessExited;
+            return child;
+        }, launch.RequiresLiveLauncherThread, cancellationToken);
     }
 
     /// <summary>Disposes a spawn that completes after its start budget elapsed, so the late
     /// PTY child is reaped instead of leaking. A spawn that faults instead has no process to
     /// reclaim; the fault is observed here so it cannot vanish.</summary>
     private async Task ReclaimLateSpawnAsync(
-        ProcessStart processStart, ProcessLaunchPlan.LaunchPlan launch, CancellationToken cancellationToken)
+        ProcessLaunchThread<ITerminalProcess> processStart,
+        ProcessLaunchPlan.LaunchPlan launch,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -693,7 +662,7 @@ internal sealed class TerminalSession : IAsyncDisposable
         // event path and the post-spawn catch-up replay.
         if (!ReferenceEquals(exited, Volatile.Read(ref _process))) return;
         if (Interlocked.Exchange(ref _exitObserved, 1) != 0) return;
-        _processStart?.ParentLifetime?.TrySetResult();
+        _processStart?.ReleaseParent();
 
         lock (_stateGate)
         {

@@ -214,12 +214,22 @@ internal sealed class ProcessSpawnFunctions
         using var process = new ChildProcess();
         process.StartInfo = startInfo;
         process.EnableRaisingEvents = true;
+        ProcessLaunchThread<bool>? launchThread = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                process.Start();
+                if (launch.RequiresLiveLauncherThread)
+                {
+                    launchThread = ProcessLaunchThread<bool>.Start(
+                        process.Start, keepParentAlive: true, cancellationToken);
+                    await launchThread.Ready.ConfigureAwait(false);
+                }
+                else
+                {
+                    process.Start();
+                }
             }
             catch (Exception exception) when (
                 exception is Win32Exception or PlatformNotSupportedException or IOException)
@@ -258,6 +268,7 @@ internal sealed class ProcessSpawnFunctions
             }
 
             var exited = await exitTask.ConfigureAwait(false);
+            launchThread?.ReleaseParent();
             var stdoutBytes = await stdout.ConfigureAwait(false);
             var stderrBytes = await stderr.ConfigureAwait(false);
 
@@ -287,7 +298,15 @@ internal sealed class ProcessSpawnFunctions
         }
         finally
         {
-            launch.ReleaseTemporaryDirectory();
+            try
+            {
+                if (launchThread is not null)
+                    await launchThread.JoinAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                launch.ReleaseTemporaryDirectory();
+            }
         }
     }
 

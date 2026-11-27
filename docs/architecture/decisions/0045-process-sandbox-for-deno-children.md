@@ -99,9 +99,12 @@ guard as seatbelt. Parent mounts precede writable child mounts, and the syntheti
 read-only without hiding workspace or per-launch temporary mounts.
 
 Linux delivers bubblewrap's parent-death signal when the thread that forked it
-exits. A sandboxed PTY publishes its startup result separately and keeps its
-launch thread alive until the child is reaped or disposal completes. The
-session joins that thread during cleanup, including after a late startup.
+exits. Sandboxed PTYs and captured REPL commands both publish their startup
+result separately from their launch thread's completion. A PTY releases
+the thread when the child is reaped or disposal completes, including after
+a late startup. Captured commands release it after the exit wait settles,
+including after timeout or cancellation has killed and reaped the child.
+Each owner joins its launch thread during cleanup.
 
 Denials are applied after all grants and synthetic mounts, including when a denied ancestor
 contains a granted workspace or private-temp mount. A root denial refuses launch.

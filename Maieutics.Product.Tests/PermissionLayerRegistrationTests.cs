@@ -173,7 +173,8 @@ public sealed class PermissionLayerRegistrationTests
 
         try
         {
-            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(
+                ["--config", configurationFile, "--Maieutics:ProcessSandbox:Mode=Off"]);
             builder.Services.RemoveAll<ITerminalProcessFactory>();
             builder.Services.AddSingleton<ITerminalProcessFactory>(
                 new FakeTerminalProcessFactory(new FakeTerminalProcess()));

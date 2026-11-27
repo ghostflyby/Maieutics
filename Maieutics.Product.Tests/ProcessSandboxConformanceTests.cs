@@ -99,7 +99,7 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
                     [PermissionKind.Read] = new() { Deny = [absent] }
                 }
             }), new VariableSource());
-        var policy = explicitDeny.Acquire(WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+        var policy = explicitDeny.Acquire(WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace));
         Assert.IsType<ProcessLaunchPlan.DeniedPlan>(
             sandbox.Plan(policy, "/bin/sh", [], workingDirectory: PhysicalWorkspace));
     }
@@ -139,7 +139,7 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         using var budget = Budget(TestContext.Current.CancellationToken);
         var options = new TerminalOptions { GracefulExitTimeout = TimeSpan.FromSeconds(2) };
         var policy = TestPermissionPolicies.Unconfigured().Acquire(
-            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace));
         await using var session = new TerminalSession("sandbox", false, PhysicalWorkspace,
             TerminalSessionKind.Persistent, shell, shell == "/bin/zsh" ? ["-f", "-i"] : ["-i"],
             policy, options, new LocalTerminalProcessFactory(), NullLogger<TerminalSession>.Instance,
@@ -315,7 +315,7 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
             printf 'hidden\n'
             """;
         var policy = TestPermissionPolicies.Unconfigured().Acquire(
-            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace), null);
+            WorkspacePermissionSurface.ModelToolBaseline(PhysicalWorkspace));
         var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require,
             readMode: MaieuticsProcessSandboxReadMode.HostRead, protectedPaths: [protectedFile]);
         var plan = Assert.IsType<ProcessLaunchPlan.LaunchPlan>(
@@ -359,9 +359,9 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         RequireUnix();
         using var budget = Budget(TestContext.Current.CancellationToken);
         var socketPath = Path.Combine("/tmp", $"mc-{Guid.NewGuid():N}.sock");
-        using var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try
         {
+            using var server = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             server.Bind(new UnixDomainSocketEndPoint(socketPath));
             server.Listen(1);
             var functions = CreateFunctions(new() { [PermissionKind.Net] = new() { AllowAll = true } },
@@ -374,7 +374,6 @@ public sealed class ProcessSandboxConformanceTests : IDisposable
         }
         finally
         {
-            server.Dispose();
             File.Delete(socketPath);
         }
     }

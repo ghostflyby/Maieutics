@@ -98,6 +98,11 @@ symlink spellings are recreated and grants bind their resolved paths, with the s
 guard as seatbelt. Parent mounts precede writable child mounts, and the synthetic root stays
 read-only without hiding workspace or per-launch temporary mounts.
 
+Linux delivers bubblewrap's parent-death signal when the thread that forked it
+exits. A sandboxed PTY publishes its startup result separately and keeps its
+launch thread alive until the child is reaped or disposal completes. The
+session joins that thread during cleanup, including after a late startup.
+
 Denials are applied after all grants and synthetic mounts, including when a denied ancestor
 contains a granted workspace or private-temp mount. A root denial refuses launch.
 Directories become unreadable, read-only empty mounts;

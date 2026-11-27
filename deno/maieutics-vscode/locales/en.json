@@ -24,5 +24,8 @@
   "unsupported": "Unsupported conversation request",
   "invalidText": "Invalid or oversized conversation text",
   "missingStylesheet": "Missing conversation output stylesheet",
-  "cancelDelivery": "View cancellation delivery failed"
+  "cancelDelivery": "View cancellation delivery failed",
+  "processApprovalPrompt": "Allow this command to run outside the process sandbox?",
+  "processApprovalAccept": "Run outside sandbox once",
+  "processApprovalDetailsUnavailable": "The full command details could not be displayed."
 }

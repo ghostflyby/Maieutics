@@ -120,7 +120,9 @@ public sealed class PermissionLayerRegistrationTests
         try
         {
             var process = new FakeTerminalProcess();
-            var builder = TestMaieuticsHost.CreateApplicationBuilder(["--config", configurationFile]);
+            // This fixture exercises the container's run policy with a fake child.
+            var builder = TestMaieuticsHost.CreateApplicationBuilder(
+                ["--config", configurationFile, "--Maieutics:ProcessSandbox:Mode=Off"]);
             builder.Services.RemoveAll<ITerminalProcessFactory>();
             builder.Services.AddSingleton<ITerminalProcessFactory>(new FakeTerminalProcessFactory(process));
             await using var host = builder.Build();

@@ -1,7 +1,4 @@
 {
-  "Allow this command to run outside the process sandbox?": "允许此命令在进程沙盒外运行吗？",
-  "Run outside sandbox once": "仅本次在沙盒外运行",
-  "The full command details could not be displayed.": "无法显示完整的命令详情。",
   "Conversation": "对话",
   "Conversation history": "对话历史",
   "Conversation entries": "对话条目",
@@ -100,5 +97,8 @@
   "Unsupported conversation request": "不支持此会话请求",
   "Invalid or oversized conversation text": "对话文本无效或过长",
   "Missing conversation output stylesheet": "缺少对话输出样式表",
-  "View cancellation delivery failed": "无法送达视图取消请求"
+  "View cancellation delivery failed": "无法送达视图取消请求",
+  "Allow this command to run outside the process sandbox?": "允许此命令在进程沙盒外运行吗？",
+  "Run outside sandbox once": "仅本次在沙盒外运行",
+  "The full command details could not be displayed.": "无法显示完整的命令详情。"
 }

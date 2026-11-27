@@ -24,5 +24,8 @@
   "unsupported": "不支持此会话请求",
   "invalidText": "对话文本无效或过长",
   "missingStylesheet": "缺少对话输出样式表",
-  "cancelDelivery": "无法送达视图取消请求"
+  "cancelDelivery": "无法送达视图取消请求",
+  "processApprovalPrompt": "允许此命令在进程沙盒外运行吗？",
+  "processApprovalAccept": "仅本次在沙盒外运行",
+  "processApprovalDetailsUnavailable": "无法显示完整的命令详情。"
 }

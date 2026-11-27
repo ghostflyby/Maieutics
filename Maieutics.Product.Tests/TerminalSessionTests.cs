@@ -119,19 +119,28 @@ public sealed class TerminalSessionTests
         var token = TestContext.Current.CancellationToken;
         var child = new FakeTerminalProcess();
         var factory = new StalledTerminalProcessFactory(Task.CompletedTask, child);
-        await using var session = CreateLinuxSandboxSession(factory, TestOptions());
+        var session = CreateLinuxSandboxSession(factory, TestOptions());
+        Thread launchThread;
+        try
+        {
+            await session.StartAsync(token);
+            launchThread = await factory.StartEntered.WaitAsync(TimeSpan.FromSeconds(2), token);
+            Assert.True(launchThread.IsAlive,
+                "Returning from StartAsync must leave the live child's launch thread running.");
 
-        await session.StartAsync(token);
-        var launchThread = await factory.StartEntered.WaitAsync(TimeSpan.FromSeconds(2), token);
-        Assert.True(launchThread.IsAlive, "Returning from StartAsync must leave the live child's launch thread running.");
-
-        if (childExits)
-            child.RaiseExited(0);
-        else
+            if (childExits)
+            {
+                child.RaiseExited(0);
+                await AssertLaunchThreadStopsAsync(launchThread, token);
+            }
+        }
+        finally
+        {
             await session.DisposeAsync();
+        }
 
-        Assert.True(await Task.Run(() => launchThread.Join(TimeSpan.FromSeconds(2)), token),
-            "The launch thread must terminate when the child exits or the session disposes it.");
+        if (!childExits)
+            await AssertLaunchThreadStopsAsync(launchThread, token);
     }
 
     [Fact(Timeout = 10_000)]
@@ -159,14 +168,19 @@ public sealed class TerminalSessionTests
 
             release.SetResult();
             await child.DisposedSignal.WaitAsync(TimeSpan.FromSeconds(2), token);
-            Assert.True(await Task.Run(() => launchThread.Join(TimeSpan.FromSeconds(2)), token),
-                "The late child must be disposed and its launch thread joined.");
+            await AssertLaunchThreadStopsAsync(launchThread, token);
         }
         finally
         {
             release.TrySetResult();
             await session.DisposeAsync();
         }
+    }
+
+    private static async Task AssertLaunchThreadStopsAsync(Thread launchThread, CancellationToken cancellationToken)
+    {
+        Assert.True(await Task.Run(() => launchThread.Join(TimeSpan.FromSeconds(2)), cancellationToken),
+            "The launch thread must terminate after its child exits or is disposed.");
     }
 
     private static TerminalSession CreateLinuxSandboxSession(ITerminalProcessFactory factory, TerminalOptions options) =>

@@ -2,17 +2,10 @@ using Maieutics.Permissions;
 
 namespace Maieutics.Processes;
 
-/// <summary>The single <c>run</c> launch gate for general process starts: terminal PTY children
-/// (ADR 0018 §7) and MCP server children judge identically because they call this predicate
-/// instead of carrying private copies of the rule, and a future launch path joins by calling it
-/// too. Denials always win (AGENTS.md invariant 20): <c>DenyAll</c> and any deny match reject
-/// before grants are consulted, so a deny entry subtracts from whatever the grants would otherwise
-/// allow. An explicit allowlist restricts to the granted commands and directory prefixes (path
-/// boundary — a grant of a directory never admits a sibling name); with no allowlist the kind
-/// stays at its unrestricted default minus the denials already applied (ADR 0018 §7 decision 2).
-/// The unrestricted default is the one deliberate difference from the broker's deny-by-default
-/// for the same kind: general starts launch user-configured executables, while the broker judges
-/// model-controlled code.</summary>
+/// <summary>The executable gate for kernel-owned process starts. Explicit deny rules take
+/// precedence over grants. An explicit allowlist restricts the requested executable, while
+/// an absent allowlist permits it subject to the denials. The sandbox and any required
+/// approval are decided separately. Native Deno permission requests use the broker.</summary>
 internal static class RunGrant
 {
     /// <summary>Whether the effective policy permits starting <paramref name="command"/>. Deny

@@ -48,7 +48,7 @@ internal sealed class FrontendOptions
 
         return new FrontendOptions
         {
-            DiscoveryFile = discoveryFile,
+            DiscoveryFile = Path.GetFullPath(discoveryFile),
             Port = ReserveLoopbackPort(),
             Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
         };

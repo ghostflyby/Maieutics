@@ -294,6 +294,7 @@ export interface EventFrame {
   /** Why a tool needs approval (policy text, never model output). Approval frames only;
    * the tool's own name rides the shared `tool` field above. */
   reason?: string;
+  allowAlways?: boolean;
   /** The MCP elicitation form schema, or an approval request's read-only argument
    * context. Shared because both ride the same `schema` field. */
   schema?: unknown;

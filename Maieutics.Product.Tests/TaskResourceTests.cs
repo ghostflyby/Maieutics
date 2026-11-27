@@ -316,7 +316,8 @@ public sealed class TaskResourceTests
             new TerminalOptions { SettleTimeout = TimeSpan.FromMilliseconds(30) },
             new FakeTerminalProcessFactory(new FakeTerminalProcess()),
             NullLogger<TerminalSession>.Instance,
-            TestPermissionPolicies.Unconfigured());
+            TestPermissionPolicies.Unconfigured(),
+            TestPermissionPolicies.ProcessSandboxOff());
     }
 
     private sealed class TaskHarness : IAsyncDisposable
@@ -331,7 +332,8 @@ public sealed class TaskResourceTests
                 new TerminalOptions { SettleTimeout = TimeSpan.FromMilliseconds(30) },
                 new FakeTerminalProcessFactory(Process),
                 NullLogger<TerminalSession>.Instance,
-                TestPermissionPolicies.Unconfigured());
+                TestPermissionPolicies.Unconfigured(),
+                TestPermissionPolicies.ProcessSandboxOff());
             Provider = new TaskResourceProvider([new TerminalTaskResourceSource(Registry)]);
             Resources = new ResourceRegistry(
             [

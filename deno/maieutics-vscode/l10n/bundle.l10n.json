@@ -1,4 +1,7 @@
 {
+  "Allow this command to run outside the process sandbox?": "Allow this command to run outside the process sandbox?",
+  "Run outside sandbox once": "Run outside sandbox once",
+  "The full command details could not be displayed.": "The full command details could not be displayed.",
   "Conversation": "Conversation",
   "Conversation history": "Conversation history",
   "Conversation entries": "Conversation entries",

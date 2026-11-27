@@ -4,6 +4,7 @@ import {
   approvalAnswer,
   approvalChoices,
   approvalTitle,
+  formatProcessApprovalContext,
   isApprovalRequest,
   planApproval,
 } from "./approval.ts";
@@ -65,6 +66,16 @@ Deno.test("an oversized argument context is truncated rather than rendered whole
   assertEquals(plan.argumentContext?.endsWith("…"), true);
 });
 
+Deno.test("single-use approvals keep complete command JSON or reject it before display", () => {
+  const description = JSON.stringify({ workingDirectory: "/", argv: ["echo", "value"] });
+  const complete = planApproval("Allow?", "process_spawn", undefined, { description }, true);
+  assertEquals(complete.argumentContext, description);
+  const oversized = planApproval("Allow?", "process_spawn", undefined, {
+    description: JSON.stringify({ workingDirectory: "/", argv: ["echo", "x".repeat(2048)] }),
+  }, true);
+  assertEquals(oversized.argumentContext, undefined);
+});
+
 Deno.test("the choices expose all four decisions with allow-once first", () => {
   const plan = planApproval("Allow?", "remove_file", undefined, undefined);
   const choices = approvalChoices(plan);
@@ -112,4 +123,16 @@ Deno.test("each action maps to itself with an empty value", () => {
   for (const action of ["accept", "always", "decline", "cancel"] as const) {
     assertEquals(approvalAnswer(action), { value: "", action });
   }
+});
+
+Deno.test("process approval shows Unicode and keeps invisible argument controls escaped", () => {
+  const details = formatProcessApprovalContext(
+    String
+      .raw`{"workingDirectory":"/tmp","argv":["/bin/echo","\u4e2d\u6587 \ud83d\ude00","line\nbreak","left\u202eright"]}`,
+  );
+
+  assertEquals(details?.includes("中文 😀"), true);
+  assertEquals(details?.includes(String.raw`line\nbreak`), true);
+  assertEquals(details?.includes(String.raw`left\u{202e}right`), true);
+  assertEquals(formatProcessApprovalContext('{"workingDirectory":"/tmp","argv":[]}'), undefined);
 });

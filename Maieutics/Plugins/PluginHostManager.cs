@@ -106,16 +106,16 @@ internal readonly record struct ExtensionCallOutcome(
 /// <summary>Outcome of a <c>host.repl.derive</c> instruction. <see cref="Spawned"/> means the host
 /// reported <c>host.repl.spawned</c> (pid + broker policy registered); <see cref="Failed"/> means
 /// the host reported <c>host.repl.deriveFailed</c> before any pid existed.</summary>
-internal readonly record struct ReplDeriveOutcome(bool Failed, string Message)
+internal readonly record struct ReplDeriveOutcome(bool Failed, string Message, int ProcessId)
 {
-    public static ReplDeriveOutcome Spawned()
+    public static ReplDeriveOutcome Spawned(int processId)
     {
-        return new ReplDeriveOutcome(false, string.Empty);
+        return new ReplDeriveOutcome(false, string.Empty, processId);
     }
 
     public static ReplDeriveOutcome DeriveFailed(string message)
     {
-        return new ReplDeriveOutcome(true, message);
+        return new ReplDeriveOutcome(true, message, 0);
     }
 }
 
@@ -3206,7 +3206,7 @@ internal sealed partial class PluginHostManager(
     private void CompleteDeriveSpawned(HostReplSpawnedPayload payload)
     {
         if (_pendingDerives.TryRemove(DeriveKey(payload.SessionId, payload.Generation), out var completion))
-            completion.TrySetResult(ReplDeriveOutcome.Spawned());
+            completion.TrySetResult(ReplDeriveOutcome.Spawned(payload.Pid));
     }
 
     /// <summary>Signals the pending <c>host.repl.derive</c> completion that the host rejected the

@@ -396,7 +396,8 @@ public sealed class McpProcessPolicyTests
             policy,
             new TerminalOptions { Columns = 40, Rows = 10, SettleTimeout = TimeSpan.FromMilliseconds(30) },
             new FakeTerminalProcessFactory(new FakeTerminalProcess()),
-            NullLogger<TerminalSession>.Instance);
+            NullLogger<TerminalSession>.Instance,
+            TestPermissionPolicies.ProcessSandboxOff());
     }
 
     private static EffectivePolicy BuildPolicy(params (PermissionKind Kind, PermissionKindRules Rules)[] kinds)

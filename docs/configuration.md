@@ -361,29 +361,67 @@ Ordinary workspace files are unaffected: they keep the containment-only workspac
 
 ### Process sandbox
 
-Processes spawned from inside a Deno child — a REPL cell's `new Deno.Command(...)` — run
-through the kernel's launch seam (ADR 0045): the session's `Run` rules gate the executable
-deny-by-default (grant `Run` allows to admit executables), the read/write/net rules shape a
-platform sandbox (seatbelt on macOS, bubblewrap on Linux) around it, and the environment
-comes from the policy's env allowlist. `Maieutics:ProcessSandbox:Mode` selects the posture:
+Terminal and REPL commands share the kernel launch policy (ADR 0045). An explicit
+`Run` allowlist restricts the requested executable. Direct command launches
+check explicit run denials against the requested name, resolved executable path,
+and symlink target. Bare deny entries also match the executable they resolve to
+using the policy's `PATH`. With an explicit run denial, the kernel resolves bare
+commands against that `PATH` before launch and passes the checked absolute path
+to the launcher. An absent `PATH` or unresolved name causes the launch to be refused.
+On Windows, extensionless executable lookup honors the order of `.COM` and
+`.EXE` in the policy's `PATHEXT`, with those two extensions as the default.
+Shell scripts require an explicit interpreter.
 
-- `Off` — the spawn tool is not registered and the polyfill stays inert: cell spawns keep the
-  child's own broker `run` check (deny-by-default), exactly the pre-ADR behavior.
-- `Prefer` (the default) — spawn through the kernel and wrap in a platform sandbox when a
-  launcher is installed; without one, launch unwrapped behind the same run gate and
-  environment allowlist.
-- `Require` — refuse any spawn the platform cannot sandbox.
+The sandbox uses the session's read, write, and network rules and
+the policy's environment allowlist. Set `Maieutics:ProcessSandbox:Mode` at startup.
 
-The polyfill supports `output()` semantics (captured stdout/stderr, exit code, a timeout —
-pass Deno's `timeout` option, forwarded as the kill budget — that kills the process tree);
-interactive processes belong to the terminal tools, and binary output must be redirected to
-a file.
+- `Prefer` is the default. Commands run in the platform sandbox without an
+  additional launch approval. If the launcher is missing or the caller requests
+  `outsideSandbox: true`, an eligible command needs one-time approval.
+  The approval shows and binds the resolved executable path, argv, and working
+  directory. Explicit filesystem or network denials prevent this exception.
+- `Require` requires the platform sandbox and refuses requests to run outside it.
+- `Off` uses the legacy launch policy. The terminal uses the executable gate and
+  environment allowlist. Deno uses the native broker-checked `run` permission.
 
-Linux uses bubblewrap 0.9 or newer with unprivileged user namespaces enabled. Install the
-distribution's `bubblewrap` package; on Ubuntu, AppArmor must permit `/usr/bin/bwrap` to create
-user namespaces. CI installs and probes the launcher before running the same `Require`-mode
-conformance cases on Linux and macOS. A present launcher that cannot initialize its namespaces
-fails the spawn; it never causes a retry outside the sandbox.
+Set `Maieutics:ProcessSandbox:ReadMode` at startup to choose the read baseline
+for sandboxed commands.
+
+- `HostRead` is the default. Commands can read host files
+  accessible to the current OS account, subject to explicit read denials and
+  the built-in protections for common credential paths and Maieutics
+  configuration, session data, and runtime endpoints. Add explicit read
+  denials for sensitive data stored elsewhere.
+- `Allowlist` limits reads to the workspace, required system paths, private
+  temporary storage, and any paths granted by the permission policy. The
+  session owner can add a scoped read grant with
+  `%permissions allow read /absolute/path`. An effective `Read.AllowAll`
+  selects broad host reads.
+
+Either read baseline keeps writes scoped to the workspace, private temporary
+storage, and explicit write grants. A read denial hides the path and also
+prevents writes. A write denial alone preserves otherwise granted read access.
+The startup read setting applies to subprocesses. Direct Deno filesystem
+operations and other tools use their own effective permission policy.
+Sandboxed commands in both modes are denied access to the frontend discovery
+file, including when its configured path is relative to the startup directory.
+
+An exception is available for one-shot terminal commands with a timeout and
+captured REPL commands without stdin. For a terminal command approved outside the
+sandbox, `terminal_interrupt` stops the session through the terminal's shutdown
+sequence. Input and paste are disallowed for that session.
+
+The REPL bridge supports `Deno.Command.output()`, including the optional timeout
+that bounds execution and terminates the process tree. Interactive processes use
+the terminal tools. To capture binary output, redirect it to a file.
+
+Linux uses bubblewrap 0.9 or newer with unprivileged user namespaces enabled. The
+kernel looks for bubblewrap at system installation paths, including the Nix
+system profiles. For a custom installation such as Linuxbrew, set
+`Maieutics:ProcessSandbox:BubblewrapPath` to the absolute path of a trusted
+bubblewrap executable. On Ubuntu, AppArmor must permit the launcher to create
+user namespaces. A launcher that fails to initialize never triggers a retry
+outside the sandbox.
 
 Both platforms preserve argv, stdin, exit status, the workspace working directory, explicit
 read/write grants, deny-wins rules, and launch-owned temporary storage. Policy-admitted
@@ -393,11 +431,23 @@ keeps synthetic parent directories read-only, and applies denial masks after gra
 An explicit read-deny-all refuses a sandboxed launch on either platform rather than letting
 the required runtime mounts override that denial.
 
-Linux mount masks require existing denied targets. A missing denied path beneath an exposed
-directory returns `process_spawn_denied`; this includes stale rules beneath the synthetic
-`/dev` and `/proc` trees. The path is not silently ignored or created in the host workspace.
-Denials also hide granted descendant mounts when they target an ancestor of the workspace or
-private temporary tree; denying `/` refuses launch.
+In Linux broad-read mode, a denied entry under a read-only host directory is
+excluded from that directory's view for the life of the command. This also
+hides protected entries created after launch. Other denial masks require an
+existing target within an exposed directory. An absent optional built-in path
+under a writable grant is omitted for that launch so a workspace such as
+`$HOME` remains usable. A credential created there during an active command
+can be visible to that command and is protected on subsequent launches.
+Missing explicit denials and required runtime paths refuse the launch when an
+exposed path cannot be masked.
+The kernel creates no mountpoints in the host workspace. Denials also hide
+granted descendant mounts when they target an ancestor of the workspace or
+private temporary tree. Denying `/` refuses launch.
+
+If a Linux kernel's discovery file or explicitly selected configuration file
+is removed from a writable workspace while the kernel is running, subsequent
+sandboxed launches are refused until the path is restored. Restarting the
+kernel republishes the discovery file.
 
 Linux grants bind paths that exist when planning the launch. A nonexistent allow path is
 omitted, so it cannot expose a new tree outside the existing mounts; creating it under an
@@ -411,10 +461,12 @@ namespace. This returns a sandboxed process result with a nonzero exit code and 
 diagnostic on stderr, rather than a pre-launch `process_spawn_denied`. The requested command
 does not run, no unwrapped retry occurs, and the launch-owned temporary tree is removed.
 
-Network rules retain the existing coarse switch: only an unqualified allow-all
-enables IP networking. Linux network namespaces do not filter filesystem Unix sockets inside
-otherwise granted trees; deny those paths explicitly when needed. Seatbelt can be stricter
-for such sockets. These kernel differences are recorded in ADR 0045.
+Only an unqualified network allow-all enables IP networking. Broad-read commands
+cannot connect to host Unix sockets, including when IP networking is enabled.
+Linux hostname resolution that depends exclusively on a host Unix socket
+may fail in this mode.
+With the Linux allowlist baseline, a filesystem Unix socket can remain reachable
+inside a granted directory. Use explicit path denials to hide it.
 
 ## Skills
 

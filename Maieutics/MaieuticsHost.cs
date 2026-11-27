@@ -287,13 +287,10 @@ public static class MaieuticsHost
             MaieuticsProcessSandboxMode.Require => Processes.ProcessSandboxMode.Require,
             _ => Processes.ProcessSandboxMode.Prefer
         };
-        builder.Services.AddSingleton<Processes.IProcessSandboxPolicy>(services =>
-            new Processes.PolicyProcessSandboxPolicy(
-                processSandboxMode,
-                trustedWorkspaceRoot: services.GetRequiredService<Workspace>().RootPath));
+        builder.Services.AddSingleton<Processes.ProcessExecution>();
         builder.Services.AddSingleton<Processes.ProcessSpawnFunctions>(static services =>
             new Processes.ProcessSpawnFunctions(
-                services.GetRequiredService<Processes.IProcessSandboxPolicy>(),
+                services.GetRequiredService<Processes.ProcessExecution>(),
                 services.GetRequiredService<PermissionPolicyAcquirer>(),
                 services.GetRequiredService<Workspace>()));
         builder.Services.AddSingleton<MaieuticsCommandExecutor>(static services => new MaieuticsCommandExecutor(
@@ -324,6 +321,24 @@ public static class MaieuticsHost
         builder.Services.AddSingleton<ReplEvalWebSocketHost>();
         builder.Services.AddSingleton<ReplOutputWebSocketHost>();
         var frontendOptions = FrontendOptions.Create(builder.Configuration["Maieutics:Frontend:DiscoveryFile"]);
+        var protectedProcessPaths = new[]
+        {
+            configurationFile.Required ? configurationFile.Path : null,
+            frontendOptions.DiscoveryFile,
+            OperatingSystem.IsWindows() ? null : controlSocketPath
+        }.OfType<string>().Select(Path.GetFullPath).ToArray();
+        builder.Services.AddSingleton<Processes.IProcessSandboxPolicy>(
+            new Processes.PolicyProcessSandboxPolicy(processSandboxMode,
+                bubblewrapPath: processSandboxOptions.BubblewrapPath,
+                readMode: processSandboxOptions.ReadMode,
+                protectedPaths: protectedProcessPaths,
+                optionalProtectedPaths: Processes.ProcessReadProtection.CaptureOptional(
+                    [applicationPaths.AgentRoot, applicationPaths.PluginDataRoot, applicationPaths.PluginApprovalsPath,
+                        applicationPaths.OutputRendererStagingRoot, applicationPaths.RuntimeRoot,
+                        configurationFile.Required ? null : configurationFile.Path],
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"),
+                    Environment.GetEnvironmentVariable("SSH_AUTH_SOCK"))));
         builder.Services.AddSingleton(frontendOptions);
         if (frontendOptions.Enabled)
             // Registered after the control listener so the Windows control-address probe keeps
@@ -405,8 +420,11 @@ public static class MaieuticsHost
         // Same cycle for the approval gate: the runtime configuration builds it into every run
         // profile, and the presenter depends on the session service that depends back on the
         // configuration. Registered as the gate the Agent runtime sees.
+        builder.Services.AddSingleton<DeferredToolApprovalGate>();
         builder.Services.AddSingleton<IAgentToolApprovalGate>(static services =>
-            new DeferredToolApprovalGate(services));
+            services.GetRequiredService<DeferredToolApprovalGate>());
+        builder.Services.AddSingleton<Processes.IProcessExecutionApproval>(static services =>
+            services.GetRequiredService<DeferredToolApprovalGate>());
         builder.Services.AddSingleton<FrontendTurnQueue>();
         builder.Services.AddSingleton<FrontendPluginSurfaceAdapter>();
         builder.Services.AddSingleton<IFrontendPluginSurface>(static services =>
@@ -474,9 +492,8 @@ public static class MaieuticsHost
                     .. services.GetRequiredService<IdeFunctions>().Functions,
                     .. services.GetRequiredService<IdeDebugTools>().Functions,
                     .. services.GetRequiredService<WorkspaceBridgeFunctions>().Functions,
-                    // Registered only outside Off mode (ADR 0045): the REPL's Deno.Command
-                    // polyfill treats the tool's absence as its per-call fallback to the
-                    // child's native permission path.
+                    // Off mode leaves Deno.Command on the native permission path. Once
+                    // armed, the REPL requires the kernel tool for every process start.
                     .. (processSandboxMode == Processes.ProcessSandboxMode.Off
                         ? []
                         : services.GetRequiredService<Processes.ProcessSpawnFunctions>().Functions)
@@ -532,9 +549,12 @@ public static class MaieuticsHost
         // against exactly the policy the broker holds for the session's REPL child.
         builder.Services.AddSingleton<ReplOwnerPolicyCache>();
         // The polyfill's arming signal (ADR 0045): the mode string rides the child env.
-        var processSandboxSignal = processSandboxMode == Processes.ProcessSandboxMode.Off
-            ? null
-            : processSandboxMode.ToString().ToLowerInvariant();
+        var processSandboxSignal = processSandboxMode switch
+        {
+            Processes.ProcessSandboxMode.Prefer => "prefer",
+            Processes.ProcessSandboxMode.Require => "require",
+            _ => null
+        };
         builder.Services.AddSingleton<IDenoReplSessionFactory>(services =>
             new LocalDenoReplSessionFactory(
                 services.GetRequiredService<DenoReplOptions>(),
@@ -550,7 +570,8 @@ public static class MaieuticsHost
                 services.GetService<PluginHostManager>(),
                 services.GetService<IReplPolicyRegistrar>(),
                 services.GetRequiredService<ReplOwnerPolicyCache>(),
-                processSandboxSignal));
+                restrictNativeRun: processSandboxMode != Processes.ProcessSandboxMode.Off,
+                processSandboxMode: processSandboxSignal));
         builder.Services.AddSingleton(static services =>
             new DenoReplRegistry(
                 services.GetRequiredService<Workspace>(),

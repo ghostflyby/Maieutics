@@ -281,7 +281,8 @@ internal sealed class FrontendRunStream : IAsyncDisposable, IFrontendPresentatio
                     ServerId: request.ServerId,
                     Kind: request.Kind,
                     Tool: request.Tool,
-                    Reason: request.Reason),
+                    Reason: request.Reason,
+                    AllowAlways: request.AllowAlways),
                 trackSequence: true);
         }
 

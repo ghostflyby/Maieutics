@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Maieutics.Agent;
+using Maieutics.Processes;
 using Microsoft.Extensions.Logging;
 
 namespace Maieutics.Frontend;
@@ -15,7 +16,7 @@ namespace Maieutics.Frontend;
 ///     with a typed reason. Denying is the only safe default for an action the user did not
 ///     affirmatively approve.
 /// </remarks>
-internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IAgentChildScopeRegistry
+internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IAgentChildScopeRegistry, IProcessExecutionApproval
 {
     /// <summary>How long a pending approval waits before denying itself. The composition root
     /// supplies the configured value; this is the fallback for a host that supplies none.</summary>
@@ -26,7 +27,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     private readonly TimeSpan _waitTimeout;
     private readonly Lock _gate = new();
 
-    private readonly Dictionary<string, TaskCompletionSource<AgentToolApprovalDecision>> _pending =
+    private readonly Dictionary<string, PendingApproval> _pending =
         new(StringComparer.Ordinal);
 
     /// <summary>Child session → owning session, so a request raised inside a subagent run is
@@ -86,36 +87,55 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     /// and REPL prefixes, so the input endpoint dispatches by identity rather than by guessing.</summary>
     internal const string RequestIdPrefix = "approve-";
 
-    public async ValueTask<AgentToolApprovalDecision> RequestApprovalAsync(
+    public ValueTask<AgentToolApprovalDecision> RequestApprovalAsync(
         AgentToolApprovalRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        return RequestAsync(request.SessionId, request.ToolName, request.Reason, BuildPrompt(request),
+            request.Arguments, allowAlways: true, cancellationToken);
+    }
 
+    public ValueTask<AgentToolApprovalDecision> RequestAsync(
+        ProcessExecutionApprovalRequest request, CancellationToken cancellationToken) =>
+        RequestAsync(request.SessionId, request.Tool, request.Reason,
+            "Allow this command to run once outside the process sandbox?",
+            request.Command, allowAlways: false, cancellationToken);
+
+    private async ValueTask<AgentToolApprovalDecision> RequestAsync(
+        AgentSessionId sessionId,
+        string tool,
+        string reason,
+        string prompt,
+        JsonElement arguments,
+        bool allowAlways,
+        CancellationToken cancellationToken)
+    {
         var requestId = RequestIdPrefix + Guid.NewGuid().ToString("N");
         var completion = new TaskCompletionSource<AgentToolApprovalDecision>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_gate)
         {
-            _pending[requestId] = completion;
+            _pending[requestId] = new PendingApproval(completion, allowAlways);
         }
 
         bool published;
         try
         {
             published = _publisher.TryPublishPresentation(
-                PresentationSession(request.SessionId),
+                PresentationSession(sessionId),
                 "input.request",
                 JsonSerializer.SerializeToElement(
                     new FrontendInputRequest(
                         requestId,
-                        BuildPrompt(request),
+                        prompt,
                         Password: false,
-                        Schema: BuildApprovalSchema(request),
+                        Schema: BuildApprovalSchema(arguments),
                         ServerId: null,
                         Kind: FrontendInputKind.Approval,
-                        Tool: request.ToolName,
-                        Reason: request.Reason),
+                        Tool: tool,
+                        Reason: reason,
+                        AllowAlways: allowAlways ? null : false),
                     FrontendJsonContext.Default.FrontendInputRequest));
         }
         catch (Exception exception)
@@ -130,7 +150,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
             _logger.LogWarning(
                 exception,
                 "Publishing the approval request for tool '{Tool}' failed.",
-                request.ToolName);
+                tool);
             return AgentToolApprovalDecision.Deny(
                 "The approval request could not be presented to the frontend.");
         }
@@ -172,7 +192,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
 
             _logger.LogWarning(
                 "The approval request for tool '{Tool}' timed out after {Seconds:0.#} seconds; denied.",
-                request.ToolName,
+                tool,
                 _waitTimeout.TotalSeconds);
             return AgentToolApprovalDecision.Deny(
                 $"The approval request timed out after {_waitTimeout.TotalSeconds:0.#} seconds.");
@@ -196,21 +216,21 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     }
 
     /// <summary>Completes a pending approval from the shared input endpoint. The action is
-    /// the elicitation vocabulary reused: <c>accept</c> approves, anything else denies.
-    /// <c>always</c> is an accept that also remembers the tool for this session.
+    /// the elicitation vocabulary reused: <c>accept</c> approves once. <c>always</c>
+    /// remembers the tool for the session only when the request permits it.
     /// Returns false when the request already settled — answered, timed out, or cancelled —
     /// so the caller answers 404 instead of claiming a decision was recorded.</summary>
     internal bool TryCompleteInput(string requestId, string? action, string value)
     {
-        TaskCompletionSource<AgentToolApprovalDecision>? completion;
+        PendingApproval? pending;
         lock (_gate)
         {
             // The map removal is the claim: whoever removes the entry owns the outcome, so an
             // answer that races the wait's own timeout either wins outright or draws the 404.
-            if (!_pending.Remove(requestId, out completion)) return false;
+            if (!_pending.Remove(requestId, out pending)) return false;
         }
 
-        return completion.TrySetResult(MapDecision(action, value));
+        return pending.Completion.TrySetResult(MapDecision(action, value, pending.AllowAlways));
     }
 
     /// <summary>Whether the id belongs to this presenter. The input endpoint uses it to pick
@@ -218,7 +238,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
     internal static bool OwnsRequestId(string requestId) =>
         requestId.StartsWith(RequestIdPrefix, StringComparison.Ordinal);
 
-    private static AgentToolApprovalDecision MapDecision(string? action, string value)
+    private static AgentToolApprovalDecision MapDecision(string? action, string value, bool allowAlways)
     {
         var normalized = action?.Trim().ToLowerInvariant();
         return normalized switch
@@ -227,10 +247,11 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
                 true,
                 "Approved by the user.",
                 AlwaysAllow: false),
-            "always" or "always-allow" => new AgentToolApprovalDecision(
+            "always" or "always-allow" when allowAlways => new AgentToolApprovalDecision(
                 true,
                 "Approved by the user for the rest of this session.",
                 AlwaysAllow: true),
+            "always" or "always-allow" => AgentToolApprovalDecision.Deny(ProcessExecution.SingleUseApprovalReason),
             "decline" or "deny" or "reject" => AgentToolApprovalDecision.Deny(
                 string.IsNullOrWhiteSpace(value) ? "Denied by the user." : value),
             "cancel" => AgentToolApprovalDecision.Deny("The approval request was cancelled."),
@@ -249,7 +270,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
 
     /// <summary>A minimal form the existing frontend can render: the tool's arguments as
     /// read-only context. The decision itself rides the answer's action, not a field.</summary>
-    private static JsonElement BuildApprovalSchema(AgentToolApprovalRequest request)
+    private static JsonElement BuildApprovalSchema(JsonElement context)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -262,8 +283,8 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
             // Arguments ride the schema's description rather than as editable fields: the user
             // approves the call the model made, and editing it here would create a second,
             // unreviewed argument source.
-            var arguments = request.Arguments.ValueKind == JsonValueKind.Object
-                ? request.Arguments.GetRawText()
+            var arguments = context.ValueKind == JsonValueKind.Object
+                ? context.GetRawText()
                 : "{}";
             if (arguments.Length <= 2048) writer.WriteString("description", arguments);
             writer.WriteEndObject();
@@ -272,4 +293,7 @@ internal sealed class FrontendToolApprovalPresenter : IAgentToolApprovalGate, IA
         using var document = JsonDocument.Parse(stream.ToArray());
         return document.RootElement.Clone();
     }
+
+    private sealed record PendingApproval(
+        TaskCompletionSource<AgentToolApprovalDecision> Completion, bool AllowAlways);
 }

@@ -36,26 +36,46 @@ export function planApproval(
   toolName: unknown,
   reason: unknown,
   schema: unknown,
+  singleUse = false,
 ): ApprovalPlan {
   const name = typeof toolName === "string" ? toolName.trim() : "";
   return {
     toolName: name,
     prompt,
     reason: typeof reason === "string" && reason.trim().length > 0 ? reason : undefined,
-    argumentContext: readArgumentContext(schema),
+    argumentContext: readArgumentContext(schema, singleUse),
     usable: name.length > 0,
   };
 }
 
-/** The read-only argument context the server puts in the schema's description.
- * Anything that is not a bounded string is ignored rather than rendered. */
-function readArgumentContext(schema: unknown): string | undefined {
+/** Command approvals need the complete JSON. Other tool approvals use a preview. */
+function readArgumentContext(schema: unknown, singleUse: boolean): string | undefined {
   if (typeof schema !== "object" || schema === null) return undefined;
   const description = (schema as Record<string, unknown>).description;
   if (typeof description !== "string") return undefined;
   const trimmed = description.trim();
   if (trimmed.length === 0 || trimmed === "{}") return undefined;
-  return trimmed.length > 2048 ? `${trimmed.slice(0, 2048)}…` : trimmed;
+  if (trimmed.length <= 2048) return trimmed;
+  return singleUse ? undefined : `${trimmed.slice(0, 2048)}…`;
+}
+
+/** Formats the read-only command while visibly escaping controls and bidi marks. */
+export function formatProcessApprovalContext(context: string | undefined): string | undefined {
+  if (context === undefined) return undefined;
+  try {
+    const { workingDirectory, argv } = JSON.parse(context);
+    if (
+      typeof workingDirectory !== "string" || !Array.isArray(argv) ||
+      argv.length === 0 || !argv.every((argument) => typeof argument === "string")
+    ) return undefined;
+    return JSON.stringify({ workingDirectory, argv }, null, 2)
+      .replace(
+        /[\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}]/gu,
+        (character) => `\\u{${character.codePointAt(0)?.toString(16)}}`,
+      );
+  } catch {
+    return undefined;
+  }
 }
 
 /** The quick-pick rows for one plan, most-permissive first: `always` is the

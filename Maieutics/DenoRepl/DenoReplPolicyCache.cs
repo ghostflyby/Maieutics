@@ -55,7 +55,8 @@ internal static class DenoReplPolicyCache
         AgentSessionId ownerSessionId,
         PermissionPolicyAcquirer acquirer,
         ILogger logger,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool restrictNativeRun = false)
     {
         EffectivePolicy? policy;
         try
@@ -71,7 +72,8 @@ internal static class DenoReplPolicyCache
                     acquirer,
                     ownerSessionId,
                     logger,
-                    cancellationToken)
+                    cancellationToken,
+                    restrictNativeRun)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

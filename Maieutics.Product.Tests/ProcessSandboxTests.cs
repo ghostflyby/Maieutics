@@ -1,15 +1,17 @@
 using System.Text.Json;
 using Maieutics.Agent;
 using Maieutics.Execution;
+using Maieutics.Frontend;
 using Maieutics.Permissions;
 using Maieutics.Processes;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Maieutics.Product.Tests;
 
-/// <summary>The process-sandbox seam (ADR 0045): the run gate is deny-by-default (the broker's
-/// posture — a cell-chosen executable is model-controlled code), the mode decides wrapping,
-/// the platform renderers carry the original argv positionally and render every read/write
+/// <summary>The process-sandbox seam (ADR 0045): the run gate respects explicit policy,
+/// the mode decides wrapping or approval, and the platform renderers carry the original
+/// argv positionally and render every read/write
 /// denial as an explicit deny rule, and the spawn tool owns the child — bounded capture that
 /// never kills on the cap, a tree-killing timeout, strict UTF-8, per-spawn temporary
 /// directory cleanup, and the policy environment. The realpath/steering behavior is exercised
@@ -27,17 +29,23 @@ public sealed class ProcessSandboxTests : IDisposable
     // ---------- plan matrix ----------
 
     [Fact]
-    public void WithoutRunRulesTheSpawnSurfaceDeniesByDefault()
+    public void WithoutRunRulesASandboxedCommandNeedsNoGrant()
     {
-        // The broker's posture, not the launch gate's unrestricted default: a cell-chosen
-        // executable is model-controlled code, and the sanctioned path must not be weaker
-        // than the escape hatch (the native Deno.Command broker check).
-        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer, locateSeatbelt: () => "/usr/bin/sandbox-exec");
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+            Assert.Skip("Only macOS and Linux have a process sandbox launcher.");
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer,
+            locateSeatbelt: () => "/usr/bin/sandbox-exec", locateBubblewrap: () => "/usr/bin/bwrap");
 
-        var plan = sandbox.Plan(Policy(run: null), "/bin/echo", ["hi"]);
-
-        var denied = Assert.IsType<ProcessLaunchPlan.DeniedPlan>(plan);
-        Assert.Contains("denies by default", denied.Reason, StringComparison.Ordinal);
+        var launch = Assert.IsType<ProcessLaunchPlan.LaunchPlan>(
+            sandbox.Plan(Policy(run: null), "/bin/echo", ["hi"]));
+        try
+        {
+            Assert.True(launch.Sandboxed);
+        }
+        finally
+        {
+            launch.ReleaseTemporaryDirectory();
+        }
     }
 
     [Fact]
@@ -52,17 +60,62 @@ public sealed class ProcessSandboxTests : IDisposable
         Assert.Contains("run policy", denied.Reason, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void ARunAllowlistAdmitsTheSpawn()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RunDenialsApplyToBareNamesAndSymlinks(bool sandboxed)
     {
-        var policy = Policy(run: new PermissionKindRules { Allow = ["/bin/echo"] });
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux()) Assert.Skip("The fixture uses a POSIX shell.");
+        var environment = ProcessEnvironment.Capture(Policy(run: null));
+        var shell = Assert.IsType<string>(ProcessExecutable.Resolve("sh", _workspace.Path, environment));
+        var target = Assert.IsType<string>(PolicyProcessSandboxPolicy.ResolveRealPath(shell));
+        var alias = Path.Combine(_workspace.Path, "shell-alias");
+        File.CreateSymbolicLink(alias, target);
+        var sandbox = new PolicyProcessSandboxPolicy(
+            sandboxed ? ProcessSandboxMode.Require : ProcessSandboxMode.Off,
+            locateSeatbelt: () => "/usr/bin/sandbox-exec", locateBubblewrap: () => "/usr/bin/bwrap",
+            createTemporaryDirectory: () => Directory.CreateDirectory(Path.Combine(_workspace.Path, "temp")).FullName);
+
+        foreach (var (requested, deniedPath) in new[]
+                 {
+                     ("sh", shell), (alias, target), (target, alias), (shell, "sh"), (alias, "sh")
+                 })
+        {
+            var policy = Policy(run: new PermissionKindRules { Deny = [deniedPath] });
+            var denied = Assert.IsType<ProcessLaunchPlan.DeniedPlan>(
+                sandbox.Plan(policy, requested, [], workingDirectory: _workspace.Path));
+            Assert.Contains("run policy", denied.Reason, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void WindowsExecutableResolutionUsesNativePathExtensionsInPolicyOrder()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("This checks Windows executable suffix resolution.");
+        var executable = Path.Combine(_workspace.Path, "probe.exe");
+        var legacy = Path.Combine(_workspace.Path, "probe.com");
+        File.WriteAllText(Path.Combine(_workspace.Path, "probe.cmd"), string.Empty);
+        File.WriteAllText(executable, string.Empty);
+        File.WriteAllText(legacy, string.Empty);
+        var environment = new Dictionary<string, string?> { ["PATH"] = _workspace.Path, ["PATHEXT"] = ".CMD;.COM;.EXE" };
+
+        Assert.Equal(legacy, ProcessExecutable.Resolve("probe", _workspace.Path, environment), ignoreCase: true);
+        Assert.Equal(executable, ProcessExecutable.Resolve("probe.exe", _workspace.Path, environment));
+        Assert.Null(ProcessExecutable.ResolvePhysicalPath(executable + "\0"));
+    }
+
+    [Fact]
+    public void AnExplicitRunAllowlistRejectsOtherExecutablesBeforeApproval()
+    {
+        var executable = Assert.IsType<string>(Environment.ProcessPath);
+        var policy = Policy(run: new PermissionKindRules { Allow = [executable] });
         var sandbox = new PolicyProcessSandboxPolicy(
             ProcessSandboxMode.Prefer,
             locateSeatbelt: () => null,
             locateBubblewrap: () => null);
 
-        var launch = Assert.IsType<ProcessLaunchPlan.LaunchPlan>(sandbox.Plan(policy, "/bin/echo", ["hi"]));
-        Assert.False(launch.Sandboxed, "no launcher: Prefer launches unwrapped behind the gate");
+        Assert.IsType<ProcessLaunchPlan.ApprovalRequiredPlan>(sandbox.Plan(policy, executable, ["hi"]));
+        Assert.IsType<ProcessLaunchPlan.DeniedPlan>(sandbox.Plan(policy, "/bin/sh", [], outsideSandbox: true));
     }
 
     [Fact]
@@ -78,21 +131,24 @@ public sealed class ProcessSandboxTests : IDisposable
     }
 
     [Fact]
-    public void PreferWithoutALauncherLaunchesUnwrappedAndRequireRefuses()
+    public void PreferWithoutALauncherRequiresApprovalAndRequireRefuses()
     {
         var policy = Policy(run: new PermissionKindRules { AllowAll = true });
         var prefer = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer, locateSeatbelt: () => null, locateBubblewrap: () => null);
         var require = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Require, locateSeatbelt: () => null, locateBubblewrap: () => null);
 
-        var unwrapped = Assert.IsType<ProcessLaunchPlan.LaunchPlan>(prefer.Plan(policy, "git", ["status"]));
-        Assert.False(unwrapped.Sandboxed);
+        var executable = Assert.IsType<string>(Environment.ProcessPath);
+        var pending = Assert.IsType<ProcessLaunchPlan.ApprovalRequiredPlan>(prefer.Plan(policy, executable, ["status"]));
+        Assert.False(pending.Candidate.Sandboxed);
+        Assert.Equal([executable, "status"], pending.Candidate.Argv);
+        Assert.IsType<ProcessLaunchPlan.DeniedPlan>(require.Plan(policy, "git", ["status"], outsideSandbox: true));
 
         var refusal = Assert.IsType<ProcessLaunchPlan.DeniedPlan>(require.Plan(policy, "git", ["status"]));
         Assert.Contains("sandbox launcher", refusal.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ARefusedRequirePlanDeletesItsTemporaryDirectory()
+    public void ARefusedRequirePlanDoesNotAllocateATemporaryDirectory()
     {
         string? created = null;
         var require = new PolicyProcessSandboxPolicy(
@@ -110,8 +166,79 @@ public sealed class ProcessSandboxTests : IDisposable
             require.Plan(Policy(run: new PermissionKindRules { AllowAll = true }), "git", []));
 
         Assert.NotNull(refusal);
-        Assert.NotNull(created);
-        Assert.False(Directory.Exists(created), "the unused per-spawn temporary directory is deleted");
+        Assert.Null(created);
+    }
+
+    [Fact]
+    public void OutsideSandboxCannotDropExplicitAccessDenials()
+    {
+        var policy = Policy(run: null, netDeny: "example.com:443");
+        var prefer = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer,
+            locateSeatbelt: () => null, locateBubblewrap: () => null);
+
+        Assert.IsType<ProcessLaunchPlan.DeniedPlan>(prefer.Plan(policy, "git", ["status"]));
+        Assert.IsType<ProcessLaunchPlan.DeniedPlan>(prefer.Plan(policy, "git", ["status"], outsideSandbox: true));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task MissingLauncherRequiresFreshOneShotApprovalBeforeStartingTheProcess()
+    {
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+            Assert.Skip("This process probe uses a POSIX shell.");
+
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(20));
+        var publisher = new RecordingFramePublisher();
+        var presenter = new FrontendToolApprovalPresenter(publisher, NullLogger<FrontendToolApprovalPresenter>.Instance);
+        var sandbox = new PolicyProcessSandboxPolicy(ProcessSandboxMode.Prefer,
+            locateSeatbelt: () => null, locateBubblewrap: () => null);
+        var functions = new ProcessSpawnFunctions(new ProcessExecution(sandbox, presenter),
+            TestPermissionPolicies.Unconfigured(), Workspace.Create(_workspace.Path, _workspace.Path));
+        var owner = AgentSessionId.Create();
+        const string command = """{"executable":"sh","arguments":["-c","printf '已启动' >> canary.txt"]}""";
+        var canary = Path.Combine(_workspace.Path, "canary.txt");
+
+        var deniedLaunch = InvokeAsync(functions, "process_spawn", command, owner, budget.Token);
+        await publisher.WaitForCountAsync(1, budget.Token);
+        var deniedRequest = Assert.IsType<FrontendInputRequest>(
+            publisher.Single("input.request").Data.Deserialize(FrontendJsonContext.Default.FrontendInputRequest));
+        Assert.False(deniedRequest.AllowAlways ?? true);
+        var displayed = Assert.IsType<string>(deniedRequest.Schema?.GetProperty("description").GetString());
+        Assert.Contains("已启动", displayed, StringComparison.Ordinal);
+        using var reviewed = JsonDocument.Parse(displayed);
+        Assert.Equal(_workspace.Path, reviewed.RootElement.GetProperty("workingDirectory").GetString());
+        var approvedPath = Assert.IsType<string>(reviewed.RootElement.GetProperty("argv")[0].GetString());
+        Assert.True(Path.IsPathFullyQualified(approvedPath));
+        Assert.Equal("sh", Path.GetFileName(approvedPath));
+        Assert.Equal("printf '已启动' >> canary.txt", reviewed.RootElement.GetProperty("argv")[2].GetString());
+        Assert.False(File.Exists(canary));
+        Assert.True(presenter.TryCompleteInput(deniedRequest.RequestId, "always", string.Empty));
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => deniedLaunch);
+        Assert.Equal("process_approval_denied", failure.Code);
+        Assert.Equal("This command can only be approved once.", failure.Message);
+        Assert.False(File.Exists(canary));
+
+        var approvedLaunch = InvokeAsync(functions, "process_spawn", command, owner, budget.Token);
+        await publisher.WaitForCountAsync(2, budget.Token);
+        var approvedRequest = Assert.IsType<FrontendInputRequest>(
+            publisher.Published[1].Data.Deserialize(FrontendJsonContext.Default.FrontendInputRequest));
+        Assert.False(presenter.TryCompleteInput(deniedRequest.RequestId, "accept", string.Empty));
+        Assert.True(presenter.TryCompleteInput(approvedRequest.RequestId, "accept", string.Empty));
+        var result = Assert.IsType<JsonElement>(await approvedLaunch);
+        Assert.False(result.GetProperty("sandboxed").GetBoolean());
+        Assert.Equal(0, result.GetProperty("exitCode").GetInt32());
+        Assert.Equal("已启动", await File.ReadAllTextAsync(canary, budget.Token));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task AnUnverifiedScriptCannotFallBackToProcessWidePermissions()
+    {
+        var functions = CreateFunctions(mode: ProcessSandboxMode.Off);
+        var arguments = new AIFunctionArguments { ["executable"] = "unused" };
+        var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() =>
+            functions.Functions[0].InvokeAsync(arguments, TestContext.Current.CancellationToken).AsTask());
+
+        Assert.Equal("process_session_required", failure.Code);
     }
 
     // ---------- profile shape ----------
@@ -134,8 +261,7 @@ public sealed class ProcessSandboxTests : IDisposable
         // SBPL literals escape backslashes and quotes; the expected form mirrors the renderer.
         var expected = denied.Replace("\\", "\\\\").Replace("\"", "\\\"");
         Assert.Contains(expected, profileText, StringComparison.Ordinal);
-        // Narrow process operations only: no blanket process*, no mach-lookup at all.
-        Assert.DoesNotContain("mach-lookup", profileText, StringComparison.Ordinal);
+        Assert.DoesNotContain("(allow mach-lookup)", profileText, StringComparison.Ordinal);
         Assert.Contains("(allow process-exec*)(allow process-fork)", profileText, StringComparison.Ordinal);
     }
 
@@ -307,17 +433,20 @@ public sealed class ProcessSandboxTests : IDisposable
     }
 
     [Fact(Timeout = 30_000)]
-    public async Task TheToolDeniesByDefaultWithoutRunGrants()
+    public async Task TheToolRunsSandboxedWithoutARunGrant()
     {
-        TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
-        var functions = CreateFunctions(runRules: PermissionKindRules.Empty);
-        var failure = await Record.ExceptionAsync(() => InvokeAsync(functions, "process_spawn", """
-            {"executable":"/bin/echo","arguments":["hi"]}
-            """));
+        if (OperatingSystem.IsWindows()) Assert.Skip("Windows has no process sandbox launcher.");
+        if (OperatingSystem.IsLinux() && PolicyProcessSandboxPolicy.LocateBubblewrap(null) is null)
+            Assert.Skip("The real Linux sandbox test requires bubblewrap.");
 
-        var denial = Assert.IsType<AgentToolException>(failure);
-        Assert.Equal("process_spawn_denied", denial.Code);
-        Assert.Contains("denies by default", denial.Message, StringComparison.Ordinal);
+        var functions = CreateFunctions(mode: ProcessSandboxMode.Require, runRules: PermissionKindRules.Empty);
+        var result = Assert.IsType<JsonElement>(await InvokeAsync(functions, "process_spawn", """
+            {"executable":"/bin/echo","arguments":["hi"]}
+            """, cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.True(result.GetProperty("sandboxed").GetBoolean());
+        Assert.Equal(0, result.GetProperty("exitCode").GetInt32());
+        Assert.Equal("hi\n", result.GetProperty("stdout").GetString());
     }
 
     [Fact(Timeout = 30_000)]
@@ -449,7 +578,7 @@ public sealed class ProcessSandboxTests : IDisposable
         var acquirer = new PermissionPolicyAcquirer(
             () => new FixedLayerSource(new PermissionLayer()), new NullVariableSource());
         var functions = new ProcessSpawnFunctions(
-            new MissingLauncherSandbox(temporary), acquirer, Workspace.Create(_workspace.Path, _workspace.Path));
+            new ProcessExecution(new MissingLauncherSandbox(temporary)), acquirer, Workspace.Create(_workspace.Path, _workspace.Path));
         var failure = await Assert.ThrowsAnyAsync<AgentToolException>(() => InvokeAsync(
             functions, "process_spawn", """{"executable":"unused"}"""));
         Assert.Equal("process_spawn_failed", failure.Code);
@@ -458,7 +587,8 @@ public sealed class ProcessSandboxTests : IDisposable
 
     private sealed class MissingLauncherSandbox(string temporary) : IProcessSandboxPolicy
     {
-        public ProcessLaunchPlan Plan(EffectivePolicy policy, string executable, IReadOnlyList<string> arguments) =>
+        public ProcessLaunchPlan Plan(EffectivePolicy policy, string executable, IReadOnlyList<string> arguments,
+            bool outsideSandbox = false, string? workingDirectory = null, bool hasTerminal = false) =>
             ProcessLaunchPlan.Launch([Path.Combine(temporary, "missing-launcher")],
                 new Dictionary<string, string?>(), sandboxed: true, temporary);
     }
@@ -474,8 +604,6 @@ public sealed class ProcessSandboxTests : IDisposable
         PermissionKind kind = PermissionKind.Run,
         PermissionKindRules? runRules = null)
     {
-        // Without an explicit run posture the test session grants every executable; the
-        // deny-by-default posture has its own dedicated tests above.
         var kinds = new Dictionary<PermissionKind, PermissionKindRules>
         {
             [PermissionKind.Run] = runRules ?? new PermissionKindRules { AllowAll = true }
@@ -491,7 +619,7 @@ public sealed class ProcessSandboxTests : IDisposable
             () => new FixedLayerSource(new PermissionLayer { Kinds = kinds }),
             new NullVariableSource());
         return new ProcessSpawnFunctions(
-            new PolicyProcessSandboxPolicy(mode, trustedWorkspaceRoot: _workspace.Path),
+            new ProcessExecution(new PolicyProcessSandboxPolicy(mode)),
             acquirer,
             Workspace.Create(_workspace.Path, _workspace.Path));
     }
@@ -526,7 +654,9 @@ public sealed class ProcessSandboxTests : IDisposable
     private static async Task<object?> InvokeAsync(
         ProcessSpawnFunctions functions,
         string name,
-        string argumentsJson)
+        string argumentsJson,
+        AgentSessionId? sessionId = null,
+        CancellationToken? cancellationToken = null)
     {
         var function = functions.Functions.Single(candidate => candidate.Name == name);
         using var document = JsonDocument.Parse(argumentsJson);
@@ -537,11 +667,10 @@ public sealed class ProcessSandboxTests : IDisposable
             {
                 Context = new Dictionary<object, object?>
                 {
-                    [typeof(ScriptInvocationContext)] = new ScriptInvocationContext(
-                        AgentSessionId.Create().Value.ToString("N"))
+                    [typeof(AgentSessionId)] = sessionId ?? AgentSessionId.Create()
                 }
             },
-            TestContext.Current.CancellationToken);
+            cancellationToken ?? TestContext.Current.CancellationToken);
     }
 
     private sealed class FixedLayerSource(PermissionLayer appDefaults) : IPermissionLayerSource

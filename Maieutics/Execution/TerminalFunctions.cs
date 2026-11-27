@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Maieutics.Agent;
+using Maieutics.Processes;
 using Microsoft.Extensions.AI;
 
 namespace Maieutics.Execution;
@@ -41,12 +42,14 @@ internal sealed class TerminalFunctions
                 "For IDE-backed builds/tests set saveWorkspace=true to save all workspace documents before " +
                 "sending input; a save failure sends no input."),
             CreateFunction(
-                (Func<string, AIFunctionArguments, string[]?, int?, bool?, int?, bool?, CancellationToken, ValueTask<TerminalRunResult>>)
+                (Func<string, AIFunctionArguments, string[]?, int?, bool?, int?, bool?, bool, CancellationToken, ValueTask<TerminalRunResult>>)
                 RunAsync,
                 "terminal_run",
                 "Starts a PTY session running an executable with arguments and returns its screen. Without " +
                 "timeout this creates a persistent interactive session (state 'idle'); pass timeout to run " +
-                "the program as a one-shot command: state 'completed' with the exitCode and final frame when " +
+                "the program as a one-shot command. Set outsideSandbox=true to request one-time approval " +
+                "for a command that must run outside the sandbox. Such a command cannot receive terminal input. " +
+                "A one-shot returns state 'completed' with the exitCode and final frame when " +
                 "it finishes in time, or state 'running' with sessionId as a live handle to poll with " +
                 "terminal_snapshot, feed input with terminal_input, interrupt with terminal_interrupt, or " +
                 "close with terminal_close; a running one-shot also returns taskUri, a " +
@@ -83,8 +86,8 @@ internal sealed class TerminalFunctions
                 (Func<AIFunctionArguments, bool?, int?, string?, CancellationToken, ValueTask<TerminalInterruptResult>>)
                 InterruptAsync,
                 "terminal_interrupt",
-                "Sends the terminal interrupt byte (Ctrl-C) to the running foreground program. Returns the " +
-                "screen after the interrupt settles. Requires an existing session; the default session is " +
+                "Interrupts the running foreground program (Ctrl-C). An approved one-shot outside the sandbox " +
+                "is closed without writing input. Returns the screen after the interrupt settles. Requires an existing session; the default session is " +
                 "created by the first terminal_input or terminal_paste.")
         ];
     }
@@ -96,7 +99,7 @@ internal sealed class TerminalFunctions
         if (saveWorkspace != true) return;
         if (_savePreparation is not { } preparation)
             throw new AgentToolException("ide_unavailable", "No IDE workspace save service is available; the command was not started.");
-        await preparation.SaveAllAsync(AgentToolContext.GetRequired(arguments).SessionId, cancellationToken).ConfigureAwait(false);
+        await preparation.SaveAllAsync(ProcessExecution.RequireOwner(arguments), cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
@@ -142,7 +145,7 @@ internal sealed class TerminalFunctions
         var batch = TerminalInputBatchParser.Parse(input);
         await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.ExecuteAsync(
-            AgentToolContext.GetRequired(arguments),
+            ProcessExecution.RequireOwner(arguments),
             batch,
             new TerminalSnapshotRequest(full, maxCharacters),
             sessionId,
@@ -164,10 +167,15 @@ internal sealed class TerminalFunctions
         int? maxCharacters = null,
         [Description("For IDE-backed builds/tests set true: save all dirty workspace documents before starting/sending input. Any save failure prevents execution. Defaults to false.")]
         bool? saveWorkspace = null,
+        [Description("Request one-time approval to run outside the sandbox. Requires a one-shot timeout.")]
+        bool outsideSandbox = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(executable))
             throw new AgentToolException("terminal_invalid_arguments", "executable is required and cannot be empty.");
+
+        if (outsideSandbox && !timeout.HasValue)
+            throw new AgentToolException("terminal_invalid_arguments", "outsideSandbox requires a one-shot timeout.");
 
         ValidateSnapshotRequest(maxCharacters);
         if (timeout is { } and (< 1 or > 600))
@@ -177,14 +185,15 @@ internal sealed class TerminalFunctions
 
         await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.RunOnceAsync(
-            AgentToolContext.GetRequired(arguments).SessionId,
+            ProcessExecution.RequireOwner(arguments),
             executable,
             argumentsList ?? [],
             timeout is { } deadline
                 ? TimeSpan.FromSeconds(deadline)
                 : null,
             new TerminalSnapshotRequest(full, maxCharacters),
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            outsideSandbox).ConfigureAwait(false);
     }
 
     [Description("Returns the current terminal screen.")]
@@ -203,7 +212,7 @@ internal sealed class TerminalFunctions
             ValidateSnapshotRequest(maxCharacters);
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(_registry.Snapshot(
-                AgentToolContext.GetRequired(arguments).SessionId,
+                ProcessExecution.RequireOwner(arguments),
                 new TerminalSnapshotRequest(full, maxCharacters),
                 sessionId));
         }
@@ -234,7 +243,7 @@ internal sealed class TerminalFunctions
         ValidateSnapshotRequest(maxCharacters);
         await PrepareWorkspaceAsync(saveWorkspace, arguments, cancellationToken).ConfigureAwait(false);
         return await _registry.PasteAsync(
-            AgentToolContext.GetRequired(arguments),
+            ProcessExecution.RequireOwner(arguments),
             text,
             new TerminalSnapshotRequest(full, maxCharacters),
             sessionId,
@@ -249,7 +258,7 @@ internal sealed class TerminalFunctions
         CancellationToken cancellationToken = default)
     {
         return await _registry.CloseAsync(
-            AgentToolContext.GetRequired(arguments).SessionId,
+            ProcessExecution.RequireOwner(arguments),
             sessionId,
             cancellationToken).ConfigureAwait(false);
     }
@@ -260,7 +269,7 @@ internal sealed class TerminalFunctions
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(_registry.List(AgentToolContext.GetRequired(arguments).SessionId));
+        return ValueTask.FromResult(_registry.List(ProcessExecution.RequireOwner(arguments)));
     }
 
     [Description("Sends the terminal interrupt byte (Ctrl-C) to the foreground program.")]
@@ -276,7 +285,7 @@ internal sealed class TerminalFunctions
     {
         ValidateSnapshotRequest(maxCharacters);
         return await _registry.InterruptAsync(
-            AgentToolContext.GetRequired(arguments).SessionId,
+            ProcessExecution.RequireOwner(arguments),
             new TerminalSnapshotRequest(full, maxCharacters),
             sessionId,
             cancellationToken).ConfigureAwait(false);

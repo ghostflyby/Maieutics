@@ -310,7 +310,8 @@ internal sealed record FrontendInputRequest(
     string? ServerId = null,
     [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null,
     [property: JsonPropertyName("tool")] string? Tool = null,
-    [property: JsonPropertyName("reason")] string? Reason = null);
+    [property: JsonPropertyName("reason")] string? Reason = null,
+    [property: JsonPropertyName("allowAlways")] bool? AllowAlways = null);
 
 /// <summary>An input answer body (frontend to server). The optional action carries the
 /// terminal choice: elicitation uses accept/decline/cancel, tool approval additionally accepts
@@ -434,7 +435,8 @@ internal sealed record FrontendEventFrame(
     bool? Approved = null,
     [property: JsonPropertyName("alwaysAllow")]
     bool? AlwaysAllow = null,
-    [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null);
+    [property: JsonPropertyName("kind")] FrontendInputKind? Kind = null,
+    [property: JsonPropertyName("allowAlways")] bool? AllowAlways = null);
 
 /// <summary>One active skill of the catalog, as served by <c>GET /v1/skills</c> for
 /// frontend completion and pickers (ADR 0039): name doubles as the <c>skill://</c> host

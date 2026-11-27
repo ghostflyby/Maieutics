@@ -98,3 +98,19 @@ deno run --no-prompt \
 
 Windows reuses the existing Kestrel listener and grants only its concrete loopback port. FFI is
 limited to the absolute `kernel32.dll` path used for process-verified named-pipe bootstrap.
+
+## Deno permissions
+
+With process sandbox mode `Prefer` or `Require`, the native Deno subprocess
+permission is disabled. `Deno.Command.output()` uses the kernel's process policy
+instead. An unavailable tool fails the command. In `Prefer` mode a script can
+request one-time approval using
+`maieutics.tools.invoke("process_spawn", { executable, arguments, outsideSandbox: true })`.
+This requires a live frontend and a command without stdin. In `Off` mode, the
+native API uses the usual broker-checked `run` permission.
+
+The kernel applies the same `Maieutics:ProcessSandbox:ReadMode` to captured
+commands and terminal sessions. The default `HostRead` enables broad host
+reads with protected paths while keeping writes and networking under the session
+policy. Set `Allowlist` to limit reads to granted and required system paths.
+This setting applies to subprocesses launched by the kernel.

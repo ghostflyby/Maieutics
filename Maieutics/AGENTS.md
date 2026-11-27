@@ -22,7 +22,7 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
   (ADR 0039).
 - `Maieutics.Terminal` — PTY sessions, headless VT screen, terminal key encoding, and `terminal_*` tools.
 - `Maieutics.Permissions` — layered declarative permissions, variable interpolation, effective policy, Deno rendering.
-- `Maieutics.Processes` — general process start policy (environment allowlist, future sandbox enforcement seam).
+- `Maieutics.Processes` — general process start policy, environment allowlist, and process sandbox enforcement.
 - `Maieutics.DenoExecution` — supervised internal `deno run` children and the Deno permission broker.
 - `Maieutics.DenoRepl` — REPL sessions, eval protocol, presentation above `DenoExecution`.
 - `Maieutics.Plugins` — plugin manifest, host manager, extension points, MCP coordination, skill contributions.
@@ -65,8 +65,10 @@ domain whose files participate in one call tree; it is not a folder mirror. The 
   recomputed by consumers.
 - The Deno REPL and plugin host are internal Deno children: they are privileged by Deno permissions and are not
   process-sandbox targets. The processes they ask the kernel to start go through the `Maieutics.Processes` sandbox
-  seam instead: the REPL's `Deno.Command` polyfill routes them to the `process_spawn` tool, whose run gate is
-  deny-by-default and whose sandbox profile derives from the same effective policy (ADR 0045).
+  seam instead. Terminal and REPL commands share the same launch decision (ADR 0045), with explicit run
+  restrictions and a sandbox profile derived from the effective policy. In `Prefer` and `Require` modes the
+  broker blocks native REPL subprocess creation, and `Prefer` requires one-shot user approval for eligible
+  launches outside the sandbox.
 - The output renderer is another internal Deno child. It uses an offline bundle and a captured presentation-scope
   effective policy rendered before launch. Its compiler parent never evaluates model-authored modules.
   Passive Markdown and data templates keep their restricted contracts; explicitly selected Vue and completed

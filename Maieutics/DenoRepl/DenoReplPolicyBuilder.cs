@@ -38,7 +38,8 @@ internal static class DenoReplPolicyBuilder
         PermissionPolicyAcquirer acquirer,
         AgentSessionId? ownerSessionId,
         ILogger logger,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool restrictNativeRun = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleDirectory);
@@ -55,7 +56,19 @@ internal static class DenoReplPolicyBuilder
                 cancellationToken)
             .ConfigureAwait(false);
         if (esbuildWasm is null) return null;
-        return Build(moduleDirectory, workingDirectory, configFile, lockFile, ipcAddress, esbuildWasm, windowsPipeName, acquirer, ownerSessionId);
+        var policy = Build(moduleDirectory, workingDirectory, configFile, lockFile, ipcAddress, esbuildWasm,
+            windowsPipeName, acquirer, ownerSessionId);
+        if (!restrictNativeRun) return policy;
+
+        // Explicit run grants still govern the kernel's launch plan. The broker and the
+        // derived worker's static shell must prevent direct execution outside that plan.
+        return policy with
+        {
+            Kinds = new Dictionary<PermissionKind, PermissionKindRules>(policy.Kinds)
+            {
+                [PermissionKind.Run] = new() { DenyAll = true }
+            }
+        };
     }
 
     /// <summary>Synchronous policy computation from an already-resolved esbuild-wasm path.</summary>

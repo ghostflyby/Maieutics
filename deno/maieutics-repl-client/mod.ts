@@ -209,6 +209,8 @@ export interface TerminalRunOptions {
   /** The one-shot deadline in seconds, 1 through 600; omit for a persistent
    * interactive session (matches the kernel's terminal_run `timeout`). */
   timeoutSeconds?: number;
+  /** Request approval for one execution outside the sandbox. Requires a timeout. */
+  outsideSandbox?: boolean;
   full?: boolean;
   maxCharacters?: number;
   signal?: AbortSignal;
@@ -1046,7 +1048,8 @@ function createTerminal(tools: ReplTools): ReplTerminal {
     run: (options) =>
       invoke("terminal_run", {
         executable: options.executable,
-        ...(options.args ? { arguments: options.args } : {}),
+        ...(options.args ? { argumentsList: options.args } : {}),
+        ...(options.outsideSandbox === true ? { outsideSandbox: true } : {}),
         ...(options.timeoutSeconds !== undefined ? { timeout: options.timeoutSeconds } : {}),
         ...(options.full ? { full: true } : {}),
         ...(options.maxCharacters !== undefined ? { maxCharacters: options.maxCharacters } : {}),

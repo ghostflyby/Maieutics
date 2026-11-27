@@ -100,6 +100,77 @@ public sealed class FrontendProcessSmokeTests
     }
 
     [Theory(Timeout = 120_000)]
+    [InlineData(null, true)]
+    [InlineData(MaieuticsProcessSandboxReadMode.Allowlist, false)]
+    public async Task PublishedExecutableRunsSandboxedCommandsThroughItsRealRepl(
+        MaieuticsProcessSandboxReadMode? readMode, bool hostRead)
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("Windows has no process sandbox launcher.");
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(90));
+        await using var workspace = TempArea.Create("process-smoke");
+        await using var host = TempArea.Create("process-host-smoke");
+        var dataRoot = Path.Combine(host.Path, "data");
+        var ordinary = Path.Combine(host.Path, "tool.conf");
+        var discoveryFile = Path.Combine(host.Path, "discovery.json");
+        var agentRoot = Directory.CreateDirectory(Path.Combine(dataRoot, "agent")).FullName;
+        var protectedFile = Path.Combine(agentRoot, "protected.txt");
+        await File.WriteAllTextAsync(ordinary, "sandboxed", budget.Token);
+        await File.WriteAllTextAsync(protectedFile, "private", budget.Token);
+        var code = $$"""
+            const ordinary = {{JsonSerializer.Serialize(ordinary)}};
+            const protectedFile = {{JsonSerializer.Serialize(protectedFile)}};
+            const discoveryFile = {{JsonSerializer.Serialize(discoveryFile)}};
+            const hostRead = {{JsonSerializer.Serialize(hostRead)}};
+            const child = await new Deno.Command("/bin/cat", { args: [ordinary] }).output();
+            if (child.success !== hostRead || (hostRead && new TextDecoder().decode(child.stdout) !== "sandboxed"))
+              throw new Error("Captured command did not honor the configured read baseline");
+            const secret = await new Deno.Command("/bin/cat", { args: [protectedFile] }).output();
+            if (secret.success) throw new Error("Captured command read private kernel data");
+            const discovery = await new Deno.Command("/bin/sh", {
+              args: ["-c", '( : <"$1" ) 2>/dev/null', "smoke", discoveryFile],
+            }).output();
+            if (discovery.success) throw new Error("Captured command opened the relative discovery file");
+            const terminal = await maieutics.connect().terminal.run({
+              executable: "/bin/sh",
+              args: ["-c", "if cat \"$2\" 2>/dev/null; then exit 4; fi; if test \"$3\" = host; then cat \"$1\"; else if cat \"$1\" 2>/dev/null; then exit 5; fi; printf sandboxed; fi > terminal-smoke.txt",
+                     "smoke", ordinary, protectedFile, hostRead ? "host" : "allowlist"],
+              timeoutSeconds: 10,
+            });
+            if (!terminal.settled || terminal.exitCode !== 0)
+              throw new Error("Terminal command failed: " + JSON.stringify(terminal));
+            "process-sandbox-published";
+            """;
+        await using var provider = new GatedModelProvider(ModelApiFlavor.ChatCompletions, ProviderGateMode.Scripted,
+            toolFlow: true, toolName: "repl_execute", toolArgumentsJson: JsonSerializer.Serialize(new { code }),
+            expectedToolResultText: "process-sandbox-published");
+        await using var process = StartHostProcess(provider.Endpoint, workspace.Path, dataRoot: dataRoot, readMode: readMode,
+            relativeDiscoveryFile: Path.GetRelativePath(Path.GetTempPath(), discoveryFile));
+        var discovery = await process.WaitForDiscoveryAsync(budget.Token);
+        var token = Assert.IsType<string>(discovery.GetProperty("token").GetString());
+        using var client = new HttpClient
+        {
+            BaseAddress = new Uri(Assert.IsType<string>(discovery.GetProperty("url").GetString()))
+        };
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var session = await client.GetFromJsonAsync<JsonElement>("/v1/agent/session", budget.Token);
+        var id = Assert.IsType<string>(session.GetProperty("id").GetString());
+        using var submitted = await client.PostAsJsonAsync($"/v1/agent/sessions/{id}/queue",
+            new { items = new[] { new { text = "Run the sandboxed commands" } } }, budget.Token);
+        Assert.Equal(HttpStatusCode.Accepted, submitted.StatusCode);
+
+        var queued = await submitted.Content.ReadFromJsonAsync<JsonElement>(budget.Token);
+        var item = Assert.Single(queued.GetProperty("items").EnumerateArray());
+        var itemId = Assert.IsType<string>(item.GetProperty("id").GetString());
+        var runId = await WaitForQueuedRunAsync(client, id, itemId, token, budget.Token);
+        var transcript = await WaitForTranscriptTurnAsync(client, id, runId, token, budget.Token);
+        await provider.Completion.WaitAsync(budget.Token);
+        var output = Path.Combine(workspace.Path, "terminal-smoke.txt");
+        Assert.True(File.Exists(output), transcript.GetRawText());
+        Assert.Equal("sandboxed", await File.ReadAllTextAsync(output, budget.Token));
+    }
+
+    [Theory(Timeout = 120_000)]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PublishedExecutableClassifiesProviderFailures(bool streaming)
@@ -666,7 +737,8 @@ public sealed class FrontendProcessSmokeTests
 
     private static SmokeHostProcess StartHostProcess(
         Uri endpoint,
-        string workspaceRoot, bool autoTitle = false)
+        string workspaceRoot, bool autoTitle = false, string? dataRoot = null,
+        MaieuticsProcessSandboxReadMode? readMode = null, string? relativeDiscoveryFile = null)
     {
         var nativeExecutable = Environment.GetEnvironmentVariable("MAIEUTICS_TEST_HOST_EXECUTABLE");
         var executablePath = string.IsNullOrWhiteSpace(nativeExecutable)
@@ -680,8 +752,9 @@ public sealed class FrontendProcessSmokeTests
         var configurationFile = Path.Combine(
             Path.GetTempPath(), $"maieutics-smoke-config-{Guid.NewGuid():N}.json");
         File.WriteAllText(configurationFile, "{}");
-        var discoveryPath = Path.Combine(
-            Path.GetTempPath(), $"maieutics-smoke-discovery-{Guid.NewGuid():N}.json");
+        var discoveryPath = relativeDiscoveryFile is null
+            ? Path.Combine(Path.GetTempPath(), $"maieutics-smoke-discovery-{Guid.NewGuid():N}.json")
+            : Path.GetFullPath(relativeDiscoveryFile, Path.GetTempPath());
 
         var startInfo = new ProcessStartInfo
         {
@@ -695,9 +768,14 @@ public sealed class FrontendProcessSmokeTests
         startInfo.ArgumentList.Add("--config");
         startInfo.ArgumentList.Add(configurationFile);
         startInfo.ArgumentList.Add("--frontend-discovery");
-        startInfo.ArgumentList.Add(discoveryPath);
+        startInfo.ArgumentList.Add(relativeDiscoveryFile ?? discoveryPath);
         startInfo.ArgumentList.Add("--Maieutics:DataRoot");
-        startInfo.ArgumentList.Add(Path.Combine(workspaceRoot, "data"));
+        startInfo.ArgumentList.Add(dataRoot ?? Path.Combine(workspaceRoot, "data"));
+        if (readMode is { } selectedReadMode)
+        {
+            startInfo.ArgumentList.Add("--Maieutics:ProcessSandbox:ReadMode");
+            startInfo.ArgumentList.Add(selectedReadMode.ToString());
+        }
         startInfo.ArgumentList.Add("--Maieutics:Agent:AutoTitle");
         startInfo.ArgumentList.Add(autoTitle ? "true" : "false");
         startInfo.ArgumentList.Add("--model");
@@ -710,6 +788,8 @@ public sealed class FrontendProcessSmokeTests
         startInfo.Environment["Maieutics__Providers__OpenAI__ApiFlavor"] =
             nameof(OpenAiApiFlavor.ChatCompletions);
         startInfo.Environment["Maieutics__Workspace__Root"] = workspaceRoot;
+        startInfo.Environment.Remove("Maieutics__ProcessSandbox__Mode");
+        startInfo.Environment.Remove("Maieutics__ProcessSandbox__ReadMode");
         startInfo.Environment.Remove("Maieutics__Model__Provider");
         startInfo.Environment.Remove("MAIEUTICS_CONFIG");
         startInfo.Environment.Remove("MAIEUTICS_PROVIDER");

@@ -90,6 +90,8 @@ jobs:
                   "media/conversationTheme.css",
                   "media/conversationOutput.css",
                   "media/outputClient.js",
+                  "media/notebookLocalization.js",
+                  "media/notebookTranslations.js",
                   "runtime/formActorHost.js",
               }
               for renderer in manifest["contributes"]["notebookRenderer"]:

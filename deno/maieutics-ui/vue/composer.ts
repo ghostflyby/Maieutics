@@ -57,7 +57,8 @@ export const ConversationComposer = defineComponent({
             onKeydown: (event: KeyboardEvent) => {
               if (
                 event.key === "Enter" && (event.metaKey || event.ctrlKey) &&
-                !event.isComposing && !view.signal.aborted &&
+                // WebKit can emit compositionend before the IME-confirming Enter.
+                !event.isComposing && event.keyCode !== 229 && !view.signal.aborted &&
                 event.currentTarget instanceof HTMLTextAreaElement
               ) {
                 event.preventDefault();

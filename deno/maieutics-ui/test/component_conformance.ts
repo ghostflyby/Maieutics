@@ -176,6 +176,20 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
       }),
     );
     equal(panels[0].submissions.length, 0, "newline or IME composition submitted a message");
+    shortcutEditor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    for (const modifier of ["ctrlKey", "metaKey"]) {
+      const confirming = new KeyboardEvent("keydown", {
+        key: "Enter",
+        [modifier]: true,
+        isComposing: false,
+        keyCode: 229,
+        bubbles: true,
+        cancelable: true,
+      });
+      shortcutEditor.dispatchEvent(confirming);
+      assert(!confirming.defaultPrevented, "the shortcut cancelled WebKit's IME confirmation");
+    }
+    equal(panels[0].submissions.length, 0, "WebKit's post-composition Enter submitted a message");
     for (const modifier of ["ctrlKey", "metaKey"]) {
       shortcutEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -196,7 +210,7 @@ export async function runComponentConformance(artifact: Artifact): Promise<strin
       "shortcut cleared a draft before host acknowledgement",
     );
     passed.push(
-      "composer send shortcuts preserve newline, IME composition and host-owned draft acknowledgement",
+      "composer send shortcuts preserve newline, WebKit IME confirmation and host-owned draft acknowledgement",
     );
     const editors = panels.map(({ inputRoot }) => {
       const editor = inputRoot.querySelector<HTMLTextAreaElement>(".mui-editor");

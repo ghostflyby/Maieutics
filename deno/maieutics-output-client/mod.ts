@@ -12,6 +12,7 @@ export const renderTurn: typeof import("./types.d.ts").renderTurn = renderTurnMa
 export { mountVueIsland, vueUpdatesComplete } from "./vueIslands.ts";
 export { createFormRenderer } from "./forms.ts";
 export { createActorFormRenderer } from "./actorForms.ts";
+export { formatOutputMessage } from "./localization.ts";
 export type { FormMessage, FormRenderer } from "./forms.ts";
 export { createPluginHttpClient, useFetch } from "./pluginFetch.ts";
 export type { PluginFetch, PluginHttpClient, PluginHttpOptions } from "./types.d.ts";

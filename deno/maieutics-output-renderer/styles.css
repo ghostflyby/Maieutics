@@ -114,4 +114,8 @@ SOFTWARE.
 .dark :where(.maieutics-output) .shiki span,
 :where(.maieutics-output).dark .shiki span{color:var(--shiki-dark);}:where(.maieutics-output) .table-of-contents{margin:16px 0;}:where(.maieutics-output) .template-value[data-template-state='pending'],
 :where(.maieutics-output) .template-value[data-template-state='incomplete']{color:var(--vp-c-text-2);}:where(.maieutics-output) .template-value[data-template-state='failed'],
-:where(.maieutics-output) .template-value[data-template-state='cancelled']{color:var(--vp-c-danger-1);}:where(.maieutics-output) .math-block{overflow-x:auto;padding:8px 0;}:where(.maieutics-output) mjx-container{display:inline-block;max-width:100%;}:where(.maieutics-output) mjx-container svg{max-width:100%;height:auto;}
+:where(.maieutics-output) .template-value[data-template-state='cancelled']{color:var(--vp-c-danger-1);}:where(.maieutics-output) .math-block{overflow-x:auto;padding:8px 0;}:where(.maieutics-output) mjx-container{display:inline-block;max-width:100%;}:where(.maieutics-output) mjx-container svg{max-width:100%;height:auto;}:where(.maieutics-output) .mermaid-block{margin-block:16px;}:where(.maieutics-output) .mermaid-diagram{display:block;max-inline-size:100%;height:auto;border-radius:8px;color-scheme:light dark;}:host-context(.vscode-dark) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.vscode-high-contrast) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.dark) :where(.maieutics-output) .mermaid-diagram,
+:where(.maieutics-output).dark .mermaid-diagram{color-scheme:dark;}:host-context(.vscode-light) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.vscode-high-contrast-light) :where(.maieutics-output) .mermaid-diagram{color-scheme:light;}:where(.maieutics-output) .mermaid-block > details > summary{cursor:pointer;color:var(--vp-c-text-2);}

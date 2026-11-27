@@ -48,6 +48,14 @@ if (import.meta.main) {
         "vendor/markdown-it-mathjax3/LICENSE",
       )}*/\n` +
       `/*! MathJax 3.2.2 (Apache-2.0)\n${await Deno.readTextFile("vendor/mathjax/LICENSE")}*/\n` +
+      `/*! Beautiful Mermaid 1.1.3 (MIT)\n${await Deno.readTextFile(
+        "vendor/beautiful-mermaid/LICENSE",
+      )}*/\n` +
+      `/*! ELK.js 0.11.1 (EPL-2.0)\nSource: https://github.com/kieler/elkjs/tree/0.11.1\n${await Deno
+        .readTextFile("vendor/beautiful-mermaid/elkjs.LICENSE")}*/\n` +
+      `/*! entities 7.0.1 (BSD-2-Clause)\n${await Deno.readTextFile(
+        "vendor/beautiful-mermaid/entities.LICENSE",
+      )}*/\n` +
       normalizeBundle(await Deno.readTextFile(path)),
   );
 }

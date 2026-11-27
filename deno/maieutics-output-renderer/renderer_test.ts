@@ -887,6 +887,60 @@ Deno.test("math macros are local, unsupported resource commands and oversized fo
   assertEquals(bounded.diagnostics?.at(-1)?.code, "math_limit");
 });
 
+Deno.test("closed Mermaid fences render as self-contained images with copyable source", async () => {
+  using renderer = await createOutputRenderer();
+  const diagrams = [
+    "flowchart LR\nA[开始] --> B[完成]",
+    "sequenceDiagram\nAlice->>Bob: Hello",
+    "stateDiagram-v2\n[*] --> Ready",
+    "classDiagram\nAnimal <|-- Duck",
+    "erDiagram\nCUSTOMER ||--o{ ORDER : places",
+    "xychart-beta\nx-axis [Jan, Feb]\ny-axis 0 --> 10\nbar [4, 7]",
+  ];
+  for (const diagram of diagrams) {
+    const source = `~~~mermaid [Workflow]\n${diagram}\n~~~`;
+    const { html, diagnostics } = await renderer.render("diagram", source);
+    const encoded =
+      /<img class="mermaid-diagram" src="data:image\/svg\+xml,([^"]+)" alt="Workflow">/
+        .exec(html)?.[1];
+    assert(encoded, `Expected a diagram image for ${diagram}`);
+    const svg = decodeURIComponent(encoded);
+    assert(svg.startsWith("<svg ") && svg.endsWith("</svg>"));
+    assert(!svg.includes("fonts.googleapis.com"), "Diagram styles must use local fonts.");
+    assert(!html.includes("<svg "), "The SVG belongs to an image, outside the document DOM.");
+    assertStringIncludes(html, "<details><summary>Mermaid</summary>");
+    assertStringIncludes(html, 'class="code-copy"');
+    assertEquals(diagnostics, []);
+  }
+});
+
+Deno.test("incomplete, unsupported and over-budget Mermaid fences retain code presentation", async () => {
+  using renderer = await createOutputRenderer();
+  const flowchart = "~~~mermaid\nflowchart LR\nA --> B";
+  const sources = [
+    flowchart,
+    flowchart + "\n> ~~~",
+    '~~~mermaid\npie\n"A": 1\n~~~',
+    "~~~mermaid\nflowchart LR\n???\n~~~",
+    `~~~mermaid\nflowchart LR\nA[${"x".repeat(8_192)}]\n~~~`,
+  ];
+  for (const source of sources) {
+    const { html } = await renderer.render("diagram", source);
+    assert(!html.includes('class="mermaid-diagram"'));
+    assertStringIncludes(html, 'class="code-block language-mermaid"');
+  }
+  const closed = flowchart + "\n~~~";
+  const many = await renderer.render("diagram", Array(9).fill(closed).join("\n\n"));
+  assertEquals(many.html.match(/class="mermaid-diagram"/g)?.length, 8);
+  assertEquals(many.html.match(/class="code-copy"/g)?.length, 9);
+  const nested = await renderer.render(
+    "diagram",
+    closed.split("\n").map((line) => "> " + line).join("\n"),
+  );
+  assertStringIncludes(nested.html, 'class="mermaid-diagram"');
+  assertEquals(nested.diagnostics, []);
+});
+
 Deno.test("common language grammars and exact copy payloads are bundled", async () => {
   using renderer = await createOutputRenderer();
   for (const language of ["py", "sh", "cs", "cpp", "go", "rs", "sql", "yaml", "html", "css"]) {
@@ -917,7 +971,7 @@ Deno.test("unclosed fence diagnostics retain original lines with frontmatter and
   assertEquals(valid.diagnostics, []);
 });
 
-Deno.test("progressive Vue carries math and code controls through the same template compiler", async () => {
+Deno.test("progressive Vue carries math, diagrams and code controls through the template compiler", async () => {
   using renderer = await createOutputRenderer();
   const source =
     '<script setup>import {ref} from "vue";const count=ref(0)</script>\n\n<button @click="count++">{{count}}</button>\n\n$x^2$\n\n~~~py\nprint("hi")\n~~~';
@@ -932,13 +986,19 @@ Deno.test("progressive Vue carries math and code controls through the same templ
 
 $$
 \frac{1}{2}
-$$`,
+$$
+
+~~~mermaid
+flowchart LR
+A --> B
+~~~`,
     undefined,
     { compileOnly: true },
   );
   assertEquals(later.vue?.setupKey, initial.vue?.setupKey);
   assertEquals(later.vue?.code, "");
   assertStringIncludes(later.vue?.renderCode ?? "", "svg");
+  assertStringIncludes(later.vue?.renderCode ?? "", "data:image/svg+xml,");
 });
 
 Deno.test("late ClientOnly templates retain the sealed setup identity and compile only client expressions", async () => {

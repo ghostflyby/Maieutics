@@ -1,8 +1,11 @@
 import { createActorFormRenderer } from "./outputClient.js";
+import { createNotebookLocalizer } from "./notebookLocalization.js";
 
 /** Notebook adapter: all component and state handling lives in the shared Vue client. */
 export function activate(context) {
+  const localization = createNotebookLocalizer();
   const client = createActorFormRenderer({
+    localize: localization.localize,
     postMessage: (message) => context.postMessage?.(message),
   });
   context.onDidReceiveMessage?.((message) => {
@@ -14,6 +17,7 @@ export function activate(context) {
   });
   return {
     renderOutputItem(output, element) {
+      localization.select(output.metadata);
       const value = output.json();
       client.render(output.id, value, element);
       context.postMessage?.({

@@ -19,13 +19,13 @@ export function installDiagnostics(md: MarkdownIt): void {
       : 0;
     state.env.sourceLineOffset = offset;
     for (const token of state.tokens) {
-      if (token.type !== "fence" || !token.map || diagnostics.length >= 32) continue;
-      const last = lines[token.map[1] - 1] ?? "";
-      const character = token.markup[0];
-      const closing = new RegExp(
-        `^[ \\t>]*${character === "`" ? "`" : "~"}{${token.markup.length},}[ \\t\\r]*$`,
-      );
-      if (token.map[1] - token.map[0] > 1 && closing.test(last)) continue;
+      if (token.type !== "fence" || !token.map) continue;
+      // Markdown-it excludes the closing marker from content but includes it in the line range.
+      const bodyLines = token.content.split("\n").length -
+        Number(token.content === "" || token.content.endsWith("\n"));
+      const fenceClosed = token.map[1] - token.map[0] === bodyLines + 2;
+      token.meta = { ...token.meta, fenceClosed };
+      if (fenceClosed || diagnostics.length >= 32) continue;
       const opening = lines[token.map[0]] ?? "";
       diagnostics.push({
         code: "unclosed_code_fence",

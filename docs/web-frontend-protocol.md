@@ -143,6 +143,12 @@ returned stylesheet; they require no executable document code. Mixed groups reta
 visible Markdown. Frontends may preserve tab choices locally; neither choice nor derived HTML enters
 canonical history or notebook v1 persistence. The rendering API shapes and version remain unchanged.
 
+Closed `mermaid` fences in shared Markdown can return a self-contained SVG image under
+`img-src data:`, with a disclosure containing the original copyable source. Supported diagram
+types are flowchart, sequence, state, class, entity–relationship and XY chart. Incomplete,
+unsupported and over-budget diagrams retain ordinary fenced code. The image uses the existing
+HTML/CSS projection and is regenerated from the saved Markdown.
+
 ## Discovery and authentication
 
 The frontend spawns the executable and passes the discovery file location:

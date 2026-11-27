@@ -40,12 +40,23 @@ export const StoredSessionMetadataKey = "maieuticsSessionId";
 export const ReplDisplayMetadataKey = "maieuticsRepl";
 export const TimelineSnapshotMetadataKey = "maieuticsTimelineNode";
 
+/** Attach the editor's language to the in-memory output for its browser renderer. */
+export function localizedNotebookOutput(
+  items: vscode.NotebookCellOutputItem[],
+  metadata?: Record<string, unknown>,
+): vscode.NotebookCellOutput {
+  return new vscode.NotebookCellOutput(items, {
+    ...metadata,
+    maieuticsLocale: vscode.env.language,
+  });
+}
+
 /** All timeline nodes use the turn renderer, which owns assistant SSR and native fallback. */
 export function timelineNotebookOutput(
   node: OutputSnapshot,
   liveAssistant = false,
 ): vscode.NotebookCellOutput {
-  return new vscode.NotebookCellOutput(
+  return localizedNotebookOutput(
     turnOutputItems(node, liveAssistant).map(outputItemFromSpec),
   );
 }
@@ -198,7 +209,7 @@ function snapshotFromMarkdownOutputs(cell: vscode.NotebookCellData): OutputSnaps
 /** Restores native rich values and one structured output per timeline node. */
 export function renderSnapshotOutputs(output: OutputSnapshot): vscode.NotebookCellOutput[] {
   const outputs = (output.repl ?? []).map((display) =>
-    new vscode.NotebookCellOutput(bundleItems(display.data), { [ReplDisplayMetadataKey]: display })
+    localizedNotebookOutput(bundleItems(display.data), { [ReplDisplayMetadataKey]: display })
   );
   outputs.push(
     ...timelineOutputSnapshots(output).map((node) => timelineNotebookOutput(node)),

@@ -137,9 +137,10 @@ jobs:
         run: |
           deno task check:conversation
           deno fmt --no-config --check buildConversation.ts
-          deno lint --no-config buildConversation.ts
+          deno fmt --no-config --line-width 100 --check webview/
+          deno lint --no-config webview/ buildConversation.ts
           deno task build:conversation
-          git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css media/conversationOutput.css l10n/
+          git diff --exit-code --stat -- media/conversation.js media/conversation.css media/conversationTheme.css media/conversationOutput.css media/notebookTranslations.js l10n/
 
       - name: JSR publish dry-run (plugin SDK)
         working-directory: deno/maieutics-plugin-sdk
@@ -406,7 +407,7 @@ jobs:
         env:
           MAIEUTICS_VSCODE_TEST_LOCALE: zh-cn
           MAIEUTICS_VSCODE_TEST_LANGUAGE_PACK: MS-CEINTL.vscode-language-pack-zh-hans
-          MAIEUTICS_VSCODE_TEST_FILTER: conversation panel pages history
+          MAIEUTICS_VSCODE_TEST_FILTER: VS Code display language
           MAIEUTICS_VSCODE_DIAGNOSTICS_DIR: ${{ github.workspace }}/extension-test-logs/localized
         run: deno run -A test/vscode_runner.ts
 

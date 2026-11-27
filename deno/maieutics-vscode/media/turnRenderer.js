@@ -3,6 +3,7 @@ import {
   renderSubagents as subagentsHtml,
   renderTurn as render,
 } from "./outputClient.js";
+import { createNotebookLocalizer } from "./notebookLocalization.js";
 
 function escapeHtml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
@@ -82,7 +83,9 @@ export async function activate(context) {
   const markdown = await context.getRenderer("vscode.markdown-it-renderer");
   if (markdown === undefined) throw new Error("VS Code Markdown renderer is unavailable.");
   markdown.extendMarkdownIt(protectMarkdownHtml);
+  const localization = createNotebookLocalizer();
   const client = createOutputRenderer({
+    localize: localization.localize,
     sendMessage: (message) => context.postMessage?.(message),
     renderMarkdown: (text, element, options) =>
       markdown.renderOutputItem(
@@ -113,6 +116,7 @@ export async function activate(context) {
   context.onDidReceiveMessage?.((message) => client.receive(message));
   return {
     renderOutputItem(output, element, signal) {
+      localization.select(output.metadata);
       const kind = output.mime === "application/vnd.maieutics.live-assistant+json"
         ? "assistant"
         : output.mime === "application/vnd.maieutics.vue+json"

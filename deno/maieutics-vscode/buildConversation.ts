@@ -13,8 +13,10 @@ await Deno.copyFile(new URL("webview/output.css", root), new URL("media/conversa
 
 // Convert the owning modules' message catalogs to VS Code's source-string bundles.
 const bundles = new Map<string, Map<string, string>>();
+const notebookBundles = new Map<string, Record<string, string>>();
+const outputCatalogs = "../maieutics-output-client/locales/";
 const placeholders = (message: string) => [...message.matchAll(/\{\d+\}/g)].map(([token]) => token).sort().join(" ");
-for (const path of ["../maieutics-ui/locales/", "../maieutics-output-client/locales/", "locales/"]) {
+for (const path of ["../maieutics-ui/locales/", outputCatalogs, "locales/"]) {
   const directory = new URL(path, root);
   const source = await readCatalog(new URL("en.json", directory));
   const files = [];
@@ -26,6 +28,12 @@ for (const path of ["../maieutics-ui/locales/", "../maieutics-output-client/loca
     const catalog = file === "en.json" ? source : await readCatalog(new URL(file, directory));
     if (Object.keys(source).sort().join() !== Object.keys(catalog).sort().join()) {
       throw new Error(`Localization keys differ in ${path}${file}`);
+    }
+    if (path === outputCatalogs && locale !== "en") {
+      notebookBundles.set(
+        locale,
+        Object.fromEntries(Object.keys(source).map((key) => [source[key], catalog[key]])),
+      );
     }
     let bundle = bundles.get(locale);
     if (!bundle) {
@@ -45,6 +53,10 @@ for (const path of ["../maieutics-ui/locales/", "../maieutics-output-client/loca
     }
   }
 }
+await Deno.writeTextFile(
+  new URL("media/notebookTranslations.js", root),
+  `export default ${JSON.stringify(Object.fromEntries(notebookBundles))};\n`,
+);
 await Deno.mkdir(new URL("l10n/", root), { recursive: true });
 for (const [locale, bundle] of bundles) {
   const name = locale === "en" ? "bundle.l10n.json" : `bundle.l10n.${locale}.json`;

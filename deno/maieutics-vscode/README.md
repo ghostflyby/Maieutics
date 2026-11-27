@@ -62,17 +62,17 @@ notebook Markdown, webview SSR delivery, live form actions over the binary Actor
 theme tokens. The shared browser suites own the layout, Markdown, SSR revision, and Vue interaction
 checks.
 
-The conversation follows the VS Code display language. `build:conversation` combines the English and
-Simplified Chinese catalogs from this host, the conversation components, and the shared output
-client into VS Code's `l10n/` bundles. Components receive a translation function from the host.
-English is the fallback for untranslated languages. Add another language by supplying a catalog
-named by its locale. The build checks keys and placeholders against the English catalog.
+Conversation, Notebook turn output and Notebook forms follow the VS Code display language.
+`build:conversation` combines the host and component catalogs into VS Code's `l10n/` bundles and
+exports the shared output catalog for the notebook browser renderers. Notebook renderers receive the
+editor language in in-memory output metadata. The saved notebook holds the original content. English
+is the fallback for untranslated messages. Add another language by supplying a catalog named by its
+locale. The build checks keys and placeholders against the English catalog.
 
-CI repeats the conversation bridge case with an isolated Simplified Chinese editor profile. For a
-local run, set `MAIEUTICS_VSCODE_TEST_LOCALE` to the locale and
+CI repeats the conversation, notebook diagnostic and notebook form cases in an isolated Simplified
+Chinese editor profile. For a local run, set `MAIEUTICS_VSCODE_TEST_LOCALE` to the locale and
 `MAIEUTICS_VSCODE_TEST_LANGUAGE_PACK` to a Marketplace extension ID or local VSIX path. Use
-`MAIEUTICS_VSCODE_TEST_FILTER='conversation panel pages history'` with `deno task test:vscode`. The
-case reads the owning source catalogs for its expected host label and shared composer placeholder.
+`MAIEUTICS_VSCODE_TEST_FILTER='VS Code display language'` with `deno task test:vscode`.
 
 Requires VS Code 1.101 or later. Its extension host provides Node 22, required by the bundled Actor
 runtime's `Promise.withResolvers` use; see the

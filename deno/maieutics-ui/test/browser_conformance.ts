@@ -27,6 +27,10 @@ export async function runBrowserConformance(): Promise<string[]> {
       return await checkLoadedGesture(artifact);
     case "projection-anchor":
       return await checkProjectionAnchor(artifact);
+    case "range-diagnostics":
+      return await runReviewConformance(artifact);
+    case "composer":
+      return await runComponentConformance(artifact);
     case undefined:
       break;
     default:

@@ -1092,7 +1092,7 @@ const tests: HostTest[] = [
     run: testNotebookVueFormAsync,
   },
   {
-    name: "notebook form adapter routes actions over its host-issued Actor channel",
+    name: "notebook form adapter routes Actor actions and follows the VS Code display language",
     run: testNotebookFormActorAsync,
   },
   { name: "extension is installed and activates", run: testActivationAsync },
@@ -1120,7 +1120,11 @@ const tests: HostTest[] = [
     name: "restored headings and tables render without a connected kernel",
     run: testRestoredMarkdownWithoutKernelAsync,
   },
-  { name: "SSR snapshots reach the turn renderer under webview CSP", run: testSsrRenderingAsync },
+  {
+    name:
+      "SSR snapshots reach the turn renderer under webview CSP and follow the VS Code display language",
+    run: testSsrRenderingAsync,
+  },
   { name: "the .maieuticsnb serializer round-trips the fixture", run: testSerializerAsync },
   {
     name: "rich output metadata survives saves without bloating headers or persisting code",
@@ -1171,7 +1175,7 @@ const tests: HostTest[] = [
   },
   {
     name:
-      "conversation panel pages history, streams changes and preserves drafts in a real webview",
+      "conversation panel pages history, preserves drafts and follows the VS Code display language",
     run: testConversationPanelAsync,
   },
   {

@@ -128,6 +128,18 @@ if (
 ) throw new Error("Offline math/code/diagnostic contract failed.");
 console.log("Offline SVG math, multilingual code and source diagnostics passed.");
 
+const diagram = await renderer.render(
+  "mermaidoffline",
+  "~~~mermaid\nflowchart LR\nA[Start] --> B[Done]\n~~~",
+);
+if (
+  !diagram.html.includes('class="mermaid-diagram" src="data:image/svg+xml,') ||
+  !diagram.html.includes("Start") || !diagram.html.includes('class="code-copy"')
+) {
+  throw new Error("Offline Mermaid diagram and source fallback failed.");
+}
+console.log("Offline Mermaid diagram passed.");
+
 const clientOnly = await renderer.renderAssistant(
   "clientonlyoffline",
   '<script setup>const stage=import.meta.env.SSR?"server":"client";const browser=()=>window.location.protocol;</script>\n\n<p>{{stage}}</p>\n\n<ClientOnly><span>{{browser()}}</span></ClientOnly>',

@@ -267,6 +267,20 @@ retained client instance. Async setup and undeclared template context names are 
 blank-line prefix candidates are attempted. Existing source, worker and output limits apply. The
 renderer retains no producer or JS document VM. See the protocol for capability negotiation.
 
+## Mermaid diagrams
+
+Closed `mermaid` fences render flowcharts, sequence diagrams, state diagrams, class diagrams,
+entity–relationship diagrams and XY charts. The kernel bundles Beautiful Mermaid and its layout
+engine for offline rendering. Each SVG is embedded as an image with a light/dark palette and local
+fonts. Expand the **Mermaid** disclosure to see and copy the source.
+
+Open fences remain code while streaming. Empty diagrams and source the renderer rejects or cannot
+render within its limits also keep the ordinary copyable code block. The limits are eight render
+attempts per snapshot, 8,192 source units and 128 line/semicolon separators per diagram, 128,000
+encoded image units per diagram, and 192,000 encoded image units per snapshot. Mermaid images use
+the same Markdown snapshots as other content, including Markdown compiled into live Vue. A saved
+Notebook needs an attached renderer to display the derived diagram.
+
 ## Math, copy controls and diagnostics
 
 Inline `$...$` and block `$$...$$` formulas render as offline SVG using MathJax 3.2.2. The dollar

@@ -844,6 +844,25 @@ Vue and progressive Vue paths, source-line diagnostics, and existing ref/compute
 Warning-free Release build, NativeAOT publishing, offline smoke, bundle freshness, types/lint/format
 and diff checks pass. Linux/Windows CI remains to be run.
 
+## Mermaid diagrams
+
+The shared Markdown fence renderer bundles Beautiful Mermaid 1.1.3 with ELK.js 0.11.1 to render
+flowcharts, sequence diagrams, state diagrams, class diagrams, entity–relationship diagrams and
+XY charts offline. The vendor licenses and ELK.js source reference ship in the service bundle.
+Only closed fences enter diagram rendering. Detect closure from Markdown-it's token line range
+and body length, so nested fences follow the parser and an incomplete streaming prefix keeps its
+code block. Rejected, empty and over-budget diagrams also retain their copyable source. Each
+snapshot limits attempts, input and output. Later Markdown snapshots re-render from source.
+
+The generated SVG is isolated in an `<img>` data URL, with a native disclosure for source and the
+existing copy control. Browser image context keeps diagram links and scripts inert and prevents
+external resource loads. The renderer strips generated font imports, and the CSS selects a
+matching light or dark palette through the image's color scheme. Notebook and Conversation apply
+the same HTML, including compiled Vue Markdown and progressive render-function updates.
+Frontends need `img-src data:` where their content security policy restricts images. Diagram
+markup is derived presentation. Notebook snapshots store the original Markdown and use their
+existing native fallback until the rendering service is available.
+
 ## Upstream default content theme (implemented 2026-11-10)
 
 The output now uses VitePress v1.6.4 default content styling rather than the former hand-written

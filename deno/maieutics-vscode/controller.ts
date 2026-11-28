@@ -62,6 +62,7 @@ import {
 import {
   bundleItems,
   drainPendingObjectItems,
+  localizedNotebookOutput,
   NotebookType,
   outputItemFromSpec,
   readStoredSessionId,
@@ -2407,7 +2408,7 @@ function replOutputSync(
   client: FrontendClient,
 ): vscode.NotebookCellOutput {
   const items = bundleItems(entry.data, (sha) => client.fetchObject(sha));
-  return new vscode.NotebookCellOutput(items, { [ReplDisplayMetadataKey]: entry });
+  return localizedNotebookOutput(items, { [ReplDisplayMetadataKey]: entry });
 }
 
 /** Awaits the async binary fills and replaces the attached segment's items in
@@ -2488,5 +2489,5 @@ function isNotFound(error: unknown): boolean {
 
 /** Commands and immediate errors may use one whole-turn item of the same renderer. */
 function structuredOutput(snapshot: OutputSnapshot): vscode.NotebookCellOutput {
-  return new vscode.NotebookCellOutput(turnOutputItems(snapshot).map(outputItemFromSpec));
+  return localizedNotebookOutput(turnOutputItems(snapshot).map(outputItemFromSpec));
 }

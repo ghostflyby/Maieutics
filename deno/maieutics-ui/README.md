@@ -106,8 +106,9 @@ and accessibility text. `locales/zh-CN.json` contains the matching Chinese catal
 
 History exposes a simple `.mui-history-heading` without explanatory demo copy. Hosts can visually
 hide this heading while keeping it available for assistive navigation. The independent composer
-supports Ctrl/Cmd+Enter to submit; Enter inserts a newline, and active IME composition never
-submits. The host still acknowledges a captured submission before its draft is cleared.
+supports Ctrl/Cmd+Enter to submit; Enter inserts a newline, and IME composition or candidate
+confirmation never submits. The host still acknowledges a captured submission before its draft is
+cleared.
 
 Load the component stylesheet once for the document. It contains the required virtual-list layout
 and the default theme, with no page/body/button reset for unrelated host content:
@@ -287,7 +288,7 @@ metadata are excluded. Assertions identify the violated mechanism rather than a 
 pixel delta.
 
 `deno task check:evidence` recomputes the input inventory/hashes, then executes all declared
-mutations and the unmodified browser suite. Each mutation runs its addressed scroll fixture. The
+mutations and the unmodified browser suite. Each mutation runs its addressed browser fixture. The
 negative runs must fail at their intended assertions; a surviving mutant or an unrelated startup
 failure rejects the gate. The restored scenario names and count must equal the actual executed
 output. Matching JSON/hashes alone cannot satisfy this check. CI runs this complete gate without a

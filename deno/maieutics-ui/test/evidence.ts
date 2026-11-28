@@ -70,12 +70,56 @@ export const scrollMutations = [
     },
     assertion: "projection acknowledgement lost its pixel offset",
   },
+  {
+    name: "index-capacity-presented-as-generic-error",
+    scenario: "range-diagnostics",
+    mutation: {
+      file: "localization.ts",
+      before: 'return "indexCapacity";',
+      after: 'return "readFailure";',
+      expected_matches: 1,
+    },
+    assertion: "zero-progress page admission did not present index_capacity",
+  },
+  {
+    name: "range-capacity-presented-as-index-capacity",
+    scenario: "range-diagnostics",
+    mutation: {
+      file: "localization.ts",
+      before: 'return "rangeCapacity";',
+      after: 'return "indexCapacity";',
+      expected_matches: 1,
+    },
+    assertion: "fragmented page admission did not present range_capacity",
+  },
+  {
+    name: "waiting-range-cancel-label-replaced",
+    scenario: "range-diagnostics",
+    mutation: {
+      file: "vue/history.ts",
+      before: "props.localize(messages.cancelRetry)",
+      after: "props.localize(messages.loadRange)",
+      expected_matches: 1,
+    },
+    assertion: "waiting range must offer cancellation and retry",
+  },
+  {
+    name: "post-composition-enter-guard-removed",
+    scenario: "composer",
+    mutation: {
+      file: "vue/composer.ts",
+      before: " && event.keyCode !== 229",
+      after: "",
+      expected_matches: 1,
+    },
+    assertion: "the shortcut cancelled WebKit's IME confirmation",
+  },
 ] as const;
 
 export type ScrollMutationCase = typeof scrollMutations[number];
 
 export interface ScrollMutation {
-  readonly file: "vue/history.ts";
+  readonly file: "localization.ts" | "vue/history.ts" | "vue/composer.ts";
   readonly before: string;
   readonly after: string;
   readonly expected_matches: number;

@@ -15,13 +15,16 @@
     "exclude": [
       "maieutics-output-renderer/styles.css",
       "maieutics-output-renderer/vendor/vitepress/styles/",
+      "maieutics-vscode/webview/",
       "maieutics-vscode/media/outputClient.js",
+      "maieutics-vscode/media/notebookTranslations.js",
       "maieutics-vscode/runtime/formActorHost.js",
       "maieutics-vscode/media/conversation.js"
     ]
   },
   "lint": {
     "exclude": [
+      "maieutics-vscode/webview/",
       "maieutics-vscode/media/outputClient.js",
       "maieutics-vscode/runtime/formActorHost.js",
       "maieutics-vscode/media/conversation.js"

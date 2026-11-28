@@ -7,6 +7,7 @@ import {
   transformerNotationFocus,
   transformerNotationHighlight,
 } from "@shikijs/transformers";
+import { renderMermaid } from "./mermaid.ts";
 
 interface FenceInfo {
   language: string;
@@ -69,7 +70,7 @@ function includesLine(ranges: FenceInfo["ranges"], line: number): boolean {
 
 /** Installs VitePress-style passive code presentation with statically loaded Shiki grammars. */
 export function installCodeFences(md: MarkdownIt, highlighter: HighlighterCore): void {
-  md.renderer.rules.fence = (tokens, index) => {
+  md.renderer.rules.fence = (tokens, index, _options, env) => {
     const token = tokens[index];
     const info = readFenceInfo(token.info);
     const language = highlighter.getLoadedLanguages().includes(info.language)
@@ -112,11 +113,19 @@ export function installCodeFences(md: MarkdownIt, highlighter: HighlighterCore):
     const caption = info.title === undefined || tab !== undefined
       ? ""
       : `<div class="code-title">${md.utils.escapeHtml(info.title)}</div>`;
-    const block = `<div class="code-block language-${
+    const code = `<div class="code-block language-${
       md.utils.escapeHtml(info.language)
     }">${caption}<button type="button" class="code-copy" data-code-copy="${
       md.utils.escapeHtml(token.content)
     }" aria-label="复制代码">复制</button>${html}</div>\n`;
+    const diagram = info.language === "mermaid" && token.meta?.fenceClosed
+      ? renderMermaid(token.content, env)
+      : undefined;
+    const block = diagram === undefined
+      ? code
+      : `<div class="mermaid-block"><img class="mermaid-diagram" src="${diagram}" alt="${
+        md.utils.escapeHtml(info.title || "Mermaid")
+      }"><details><summary>Mermaid</summary>${code}</details></div>\n`;
     if (tab === undefined) return block;
     const id = `${tab.group}-tab-${tab.index}`;
     const label = md.utils.escapeHtml(info.title || info.language);

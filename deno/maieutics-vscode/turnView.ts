@@ -786,7 +786,7 @@ function subagentMark(status: SubagentStatus): string {
 }
 
 /** Renders the subagent timeline as markdown: one quoted block per child —
- * the `🤖 子代理` status heading, the child's tool bullets, then the child's
+ * the subagent status heading, the child's tool bullets, then the child's
  * report text. EVERY line carries the `> ` prefix so the child's own
  * markdown structure (headings, fences, lists) cannot escape the subagent
  * indentation level; bare `>` keeps the quote continuous across blank
@@ -801,17 +801,17 @@ export function subagentSnapshotLines(
   for (const child of subagents) {
     const lines: string[] = [];
     const code = child.code === undefined ? "" : ` (\`${child.code}\`)`;
-    lines.push(`> 🤖 **子代理** · ${subagentMark(child.status)}${code}`);
+    lines.push(`> 🤖 **Subagent** · ${subagentMark(child.status)}${code}`);
     for (const line of toolSnapshotLines(child.tools)) lines.push(quoted(line));
     if (child.text.length > 0) {
       for (const line of child.text.split("\n")) lines.push(quoted(line));
     }
-    if (child.truncated === true) lines.push(quoted("> ⚠️ 子代理输出被截断。"));
+    if (child.truncated === true) lines.push(quoted("> ⚠️ Subagent output was truncated."));
     while (lines.length > 0 && lines.at(-1) === ">") lines.pop();
     blocks.push(lines);
   }
   if (overflow) {
-    blocks.push([quoted(`⚠️ 子代理过多，仅显示前 ${MaximumSubagents} 个。`)]);
+    blocks.push([quoted(`⚠️ Too many subagents. Only the first ${MaximumSubagents} are shown.`)]);
   }
   const out: string[] = [];
   for (const block of blocks) {

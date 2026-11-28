@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 // @deno-types="../../runtime/formActorHost.d.ts"
 import { FormActorHost } from "../../runtime/formActorHost.js";
 import { FormActorGateway } from "../../formActorGateway.ts";
+import { localizedNotebookOutput } from "../../serializer.ts";
 
 /** Exercise the actual notebook adapter and its host-issued Actor channel. */
 export async function testNotebookFormActorAsync(): Promise<void> {
@@ -56,6 +57,10 @@ export async function testNotebookFormActorAsync(): Promise<void> {
     const asset = (name: string) =>
       panel.webview.asWebviewUri(vscode.Uri.joinPath(extension.extensionUri, "media", name))
         .toString();
+    const outputMetadata = localizedNotebookOutput([]).metadata;
+    const snapshotLabel = vscode.env.language === "zh-cn"
+      ? "快照 — 此表单未连接"
+      : "Snapshot — this form is not connected";
     panel.webview.html =
       `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws://127.0.0.1:*;"></head><body><script type="module">
       const vscode = acquireVsCodeApi();
@@ -67,7 +72,12 @@ export async function testNotebookFormActorAsync(): Promise<void> {
         const posted = []; let receive;
         window.addEventListener('message', event => receive?.(event.data));
         const notebook = adapter.activate({postMessage:(message)=>{posted.push(message); vscode.postMessage(message);},onDidReceiveMessage:(handler)=>{receive=handler;}});
-        const savedActor = element(); notebook.renderOutputItem({id:'actor-snapshot',json:()=>({...output,snapshot:true})},savedActor);
+        const savedActor = element(); notebook.renderOutputItem({id:'actor-snapshot',metadata:${
+        JSON.stringify(outputMetadata)
+      },json:()=>({...output,snapshot:true})},savedActor);
+        assert(savedActor.shadowRoot.textContent.includes(${
+        JSON.stringify(snapshotLabel)
+      }), 'snapshot status follows the VS Code display language');
         assert(!posted.some(message=>message.source==='maieutics-form-actor'), 'snapshot forms do not initialize an Actor connection');
         const adapted = element(); notebook.renderOutputItem({id:'notebook',json:()=>output}, adapted);
         assert(posted.find(message=>message.source==='maieutics-form-actor')?.type === 'request', 'the notebook adapter requests an Actor capability from its owning editor');

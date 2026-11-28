@@ -743,7 +743,7 @@ Deno.test("subagentLines quote-prefix every line so child markdown cannot escape
   });
 
   const lines = view.subagentLines();
-  assert(lines[0].startsWith("> 🤖 **子代理** · ⏳"), lines.join("\n"));
+  assert(lines[0].startsWith("> 🤖 **Subagent** · ⏳"), lines.join("\n"));
   for (const line of lines) {
     // Bare ">" is the quote-continuation marker for blank child lines.
     assert(line === "" || line === ">" || line.startsWith("> "), line);
@@ -761,7 +761,7 @@ Deno.test("subagent folds cap child count and text length", () => {
   assertEquals((view.finalOutput().subagents ?? []).length, MaximumSubagents);
   // The overflow note renders once in the shared segment.
   assert(
-    view.subagentLines().some((line) => line.includes("子代理过多")),
+    view.subagentLines().some((line) => line.includes("Too many subagents")),
     view.subagentLines().join("\n"),
   );
 
@@ -783,11 +783,11 @@ Deno.test("subagentSnapshotLines composes blocks with blank-line separators", ()
     { status: "failed", text: "", tools: [], code: "cancelled" },
   ]);
   assertEquals(lines, [
-    "> 🤖 **子代理** · ✅",
+    "> 🤖 **Subagent** · ✅",
     "> - ✅ `workspace_list`",
     "> done",
     "",
-    "> 🤖 **子代理** · ❌ (`cancelled`)",
+    "> 🤖 **Subagent** · ❌ (`cancelled`)",
   ]);
 });
 

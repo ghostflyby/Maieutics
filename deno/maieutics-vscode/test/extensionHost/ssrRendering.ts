@@ -91,6 +91,11 @@ const CodeDemoSource = [
   '{ "total": 42 }',
   "~~~",
   ":::",
+  "",
+  "~~~mermaid [Workflow]",
+  "flowchart LR",
+  "A[Start] --> B[Done]",
+  "~~~",
 ].join("\n");
 
 /** Exercises the production extension bridge and actual notebook MIME renderer, without a model call. */
@@ -228,6 +233,13 @@ export async function testSsrRenderingAsync(): Promise<void> {
     viewColumn: vscode.ViewColumn.Beside,
     preserveFocus: true,
   }, { enableScripts: true, localResourceRoots: [extension.extensionUri, markdown.extensionUri] });
+  const fixtureDiagram = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
+  );
+  const outputMetadata = timelineNotebookOutput({ text: "" }).metadata;
+  const diagnosticLocation = vscode.env.language === "zh-cn"
+    ? "第 3 行，第 1 列"
+    : "Line 3, column 1";
   const progressiveRender = (showDouble: boolean, showSection: boolean) =>
     `return function(_ctx,_cache,$props,$setup){const {h}=Vue;return h("div",{class:"maieutics-output vp-doc"},[h("button",{class:"progressive-counter",onClick:()=>{$setup.count++}},String($setup.count)),${
       showDouble ? 'h("p",{class:"progressive-double"},String($setup.doubled)),' : ""
@@ -312,7 +324,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           <fieldset class="vp-code-group"><legend>Code examples</legend>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-0" checked><label for="${documentId}-tab-0">report.ts</label><div class="code-panel"><div class="code-block"><button type="button" class="code-copy" data-code-copy="// [!code highlight]&#10;const total = 42;&#10;const added = 1; // [!code ++]&#10;">复制</button><pre class="shiki"><code><span class="line highlighted" data-line="7">const total = 42;</span></code></pre></div></div></div>
           <div class="code-tab"><input type="radio" name="${documentId}-code-group-0" id="${documentId}-tab-1"><label for="${documentId}-tab-1">report.json</label><div class="code-panel"><pre class="shiki"><code>{ "total": 42 }</code></pre></div></div>
-          </fieldset></div>`,
+          </fieldset><div class="mermaid-block"><img class="mermaid-diagram" src="${fixtureDiagram}" alt="Workflow"><details><summary>Mermaid</summary><pre>flowchart LR</pre></details></div></div>`,
           diagnostics: text.includes("unclosed-demo")
             ? [{ code: "unclosed_code_fence" as const, line: 3, column: 1 }]
             : [],
@@ -355,7 +367,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
       vscode.Uri.joinPath(markdown.extensionUri, "notebook-out", "index.js"),
     );
     panel.webview.html = `<!doctype html><html><head>
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline';">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${panel.webview.cspSource} 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:;">
       <style id="_defaultStyles">body { font-size: 13px; }</style></head><body>
       <script type="module">
       const vscode = acquireVsCodeApi();
@@ -387,6 +399,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           }
         });
         const element = document.createElement("div"); document.body.appendChild(element);
+        const outputMetadata = ${JSON.stringify(outputMetadata)};
         const source = ${JSON.stringify(CodeDemoSource)};
         const vueRuntime = await import(new URL("./outputClient.js", ${
       JSON.stringify(rendererUri.toString())
@@ -433,7 +446,7 @@ export async function testSsrRenderingAsync(): Promise<void> {
           assert(sentAfterDispose===0 && !preparingElement.querySelector(".maieutics-turn"),"disposed preparation cannot publish or commit late content");
         }
         delivered=Promise.withResolvers();
-        await api.renderOutputItem({ id: "ssr-demo", json: () => ({ text: source }) }, element);
+        await api.renderOutputItem({ id: "ssr-demo", metadata: outputMetadata, json: () => ({ text: source }) }, element);
         await delivered.promise;
         const node = element.querySelector('[data-render-engine="ssr"]');
         assert(node, "the actual turn renderer switches to SSR");
@@ -444,6 +457,12 @@ export async function testSsrRenderingAsync(): Promise<void> {
         assert(root.querySelector("style")?.textContent.includes("--vscode"), "host-scoped styles are delivered through messaging");
         assert(root.querySelector('.line.highlighted[data-line="7"]'), "line metadata reaches the actual browser");
         assert(root.querySelector(".github-alert.note")?.textContent.includes("Shared alert"), "upstream alert parsing reaches the browser");
+        const diagram=root.querySelector("img.mermaid-diagram");
+        assert(diagram?.alt==="Workflow" && diagram.src.startsWith("data:image/svg+xml,"),"Mermaid reaches the browser as an SVG image");
+        await diagram.decode();
+        const diagramSource=diagram.closest(".mermaid-block").querySelector("details");
+        diagramSource.querySelector("summary").click();
+        assert(diagram.naturalWidth>0 && diagramSource.open && diagramSource.querySelector("pre").textContent.includes("flowchart LR"),"Mermaid image decodes and its source is expandable");
         if (${client !== undefined}) {
           const wrapper=root.querySelector(".maieutics-output");
           const diffLine=root.querySelector('.line.diff.add[data-line="8"]');
@@ -486,7 +505,9 @@ export async function testSsrRenderingAsync(): Promise<void> {
         await delivered.promise;
         const diagnosticNode = diagnosticElement.querySelector('[data-render-engine="ssr"]');
         const diagnosticRoot = diagnosticNode.shadowRoot ?? diagnosticNode;
-        assert(diagnosticRoot.querySelector('[data-component-diagnostic]')?.textContent.includes("Line 3"),"sealed fence diagnostics display original source coordinates");
+        assert(diagnosticRoot.querySelector('[data-component-diagnostic]')?.textContent.includes(${
+      JSON.stringify(diagnosticLocation)
+    }),"sealed fence diagnostics display original source coordinates in the VS Code language");
         api.disposeOutputItem("diagnostic-demo");
         if (${client !== undefined}) {
           const bigElement=document.createElement("div");document.body.appendChild(bigElement);

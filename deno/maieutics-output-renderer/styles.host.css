@@ -147,3 +147,27 @@
   max-width: 100%;
   height: auto;
 }
+:where(.maieutics-output) .mermaid-block {
+  margin-block: 16px;
+}
+:where(.maieutics-output) .mermaid-diagram {
+  display: block;
+  max-inline-size: 100%;
+  height: auto;
+  border-radius: 8px;
+  color-scheme: light dark;
+}
+:host-context(.vscode-dark) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.vscode-high-contrast) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.dark) :where(.maieutics-output) .mermaid-diagram,
+:where(.maieutics-output).dark .mermaid-diagram {
+  color-scheme: dark;
+}
+:host-context(.vscode-light) :where(.maieutics-output) .mermaid-diagram,
+:host-context(.vscode-high-contrast-light) :where(.maieutics-output) .mermaid-diagram {
+  color-scheme: light;
+}
+:where(.maieutics-output) .mermaid-block > details > summary {
+  cursor: pointer;
+  color: var(--vp-c-text-2);
+}

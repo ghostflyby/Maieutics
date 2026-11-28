@@ -6,6 +6,7 @@ import {
   ConversationRuntime,
 } from "../mod.ts";
 import { FixtureConversation } from "../fixtures/conversation.ts";
+import messages from "../locales/en.json" with { type: "json" };
 import {
   abortable,
   assert,
@@ -90,6 +91,11 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       '[data-range-state="waiting-for-stream"] button',
     );
     assert(retry, "waiting range has no recovery control");
+    equal(
+      retry.textContent,
+      messages.cancelRetry,
+      "waiting range must offer cancellation and retry",
+    );
     retry.click();
     await guarded(restarted.promise, "retry was blocked by the previous active range request");
     await waitFor(
@@ -154,11 +160,17 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
       () => !!capacityRoot.querySelector('[data-range-state="failed"]'),
       "zero-progress page admission did not settle the failed range",
     );
+    equal(
+      capacityRoot.querySelector('[data-range-state="failed"] .mui-range-label')?.firstChild
+        ?.textContent,
+      messages.indexCapacity,
+      "zero-progress page admission did not present index_capacity",
+    );
     viewport.dispatchEvent(new Event("scroll"));
     await frame();
     equal(capacityReads, 1, "a zero-progress page was requested again on the next range scan");
     passed.push(
-      "zero-progress page admission stops automatic range requests with a capacity result",
+      "index_capacity stops automatic retries after zero-progress page admission",
     );
   } finally {
     capacityHandle.unmount();
@@ -194,13 +206,19 @@ export async function runReviewConformance(artifact: Artifact): Promise<string[]
     viewport.dispatchEvent(new Event("scroll"));
     await waitFor(
       () => !!fragmentedRoot.querySelector('[data-range-state="failed"]'),
-      "range capacity failure never completed",
+      "fragment capacity failure never completed",
+    );
+    equal(
+      fragmentedRoot.querySelector('[data-range-state="failed"] .mui-range-label')?.firstChild
+        ?.textContent,
+      messages.rangeCapacity,
+      "fragmented page admission did not present range_capacity",
     );
     assert(
       fragmentedRuntime.projection.rows === beforeFragmentRows,
       "failed fragment pruning mutated the published index",
     );
-    passed.push("fragment capacity marks the range as failed without changing the projection");
+    passed.push("range_capacity marks the range failed without changing the projection");
   } finally {
     fragmentedHandle.unmount();
     await fragmentedRuntime.dispose();

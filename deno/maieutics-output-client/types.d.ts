@@ -58,6 +58,9 @@ export type OutputMessage =
 /** Host-owned translation and positional formatting of bundled English message sources. */
 export type OutputLocalizer = (message: string, ...args: readonly (string | number)[]) => string;
 
+/** Format English message sources or their host-supplied translations. */
+export declare const formatOutputMessage: OutputLocalizer;
+
 /** Host services. No VS Code APIs, credentials, network or clipboard globals are captured. */
 export interface OutputRendererOptions {
   readonly localize?: OutputLocalizer;
